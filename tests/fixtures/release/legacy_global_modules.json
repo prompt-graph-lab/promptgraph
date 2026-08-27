@@ -1,0 +1,57 @@
+{
+  "module_library": {
+    "旧式フラット": "青い髪, smile",
+    "現在グラフ": {
+      "body": "red dress, ribbon",
+      "type": "generic",
+      "category": "Outfit",
+      "description": "Synthetic compatibility fixture",
+      "extension_metadata": {
+        "future_key": "preserved"
+      },
+      "graph": {
+        "id": "module_current_graph",
+        "name": "現在グラフ",
+        "type": "module_graph",
+        "version": 1,
+        "nodes": [
+          {
+            "id": "n1",
+            "kind": "token",
+            "text": "red dress",
+            "role": "core"
+          },
+          {
+            "id": "n2",
+            "kind": "token",
+            "text": "ribbon",
+            "role": "core"
+          }
+        ],
+        "edges": [
+          {
+            "source": "n1",
+            "target": "n2",
+            "kind": "sequence"
+          }
+        ],
+        "child_module_refs": [],
+        "related_module_refs": [],
+        "metadata": {
+          "role": "generic",
+          "tags": [],
+          "notes": "synthetic"
+        },
+        "boundary_policy": {
+          "preserve_connected_extras": true,
+          "allow_split": true,
+          "allow_merge": true
+        },
+        "replacement_policy": {
+          "mode": "flatten_current",
+          "future_modes": []
+        }
+      }
+    }
+  }
+}

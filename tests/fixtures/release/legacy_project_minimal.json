@@ -1,0 +1,33 @@
+{
+  "source_directory": "legacy-relative-source",
+  "merge_by_word_only": true,
+  "prompt_lines": [
+    {
+      "id": "legacy-line-1",
+      "original_file_name": "参照.png",
+      "original_index": 0,
+      "current_index": 0,
+      "original_text": "青い髪, smile",
+      "current_text": "青い髪, smile",
+      "tokens": [
+        "青い髪",
+        "smile"
+      ],
+      "image_path": "refs/参照.png",
+      "generated_candidates": [
+        "candidates/候補.png"
+      ],
+      "legacy_line_extension": {
+        "not_guaranteed": true
+      }
+    }
+  ],
+  "module_library": {
+    "旧式キャラクター": "青い髪, smile"
+  },
+  "nodes": {},
+  "edges": [],
+  "legacy_top_level_extension": {
+    "not_guaranteed": true
+  }
+}

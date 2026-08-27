@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Temporary / debug
+tmp/
+temp/
+*.tmp
+
+# Output / generated
+generated/
+output/
+exports/
+projects/
+
+# Release artifacts (generated outside version control)
+/dist/
+/*.zip
+/SHA256SUMS.txt
+
+# ComfyUI / local assets（使ってるなら）
+models/
+checkpoints/
+
+# Notebook
+.ipynb_checkpoints/
