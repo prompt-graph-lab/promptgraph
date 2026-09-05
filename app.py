@@ -1,3 +1,13 @@
+from core.prompt_inspection import (
+    get_structural_stats,
+    extract_module_reference_names_from_text,
+    detect_novelai_syntax_fragments,
+    _prompt_token_diff,
+)
+from core.comfy_prompt_binding import (
+    _replace_clip_text_prompts,
+    _workflow_submitted_prompt_debug,
+)
 import streamlit as st
 from streamlit_agraph import agraph, Node, Edge, Config
 from core.animadex_discovery import (
@@ -1590,61 +1600,9 @@ def show_upgrade_dialog(message: str):
     if st.button("閉じる"):
         st.rerun()
 
-def get_structural_stats(old_text, new_text):
-    from core.parser import parse_prompt, extract_node_metadata
-    from core.operations import get_display_tokens_from_text
-    
-    old_display_tokens = get_display_tokens_from_text(old_text)
-    new_display_tokens = get_display_tokens_from_text(new_text)
-    
-    # We still want to count modules from the raw tokens
-    raw_new_tokens = parse_prompt(new_text)
-    
-    token_delta = len(new_display_tokens) - len(old_display_tokens)
-    mod_count = sum(1 for t in raw_new_tokens if t.startswith("<mod:"))
-    has_weights = any(extract_node_metadata(t)["weight"] != 1.0 for t in new_display_tokens)
-    
-    change_ratio = 0
-    if old_display_tokens:
-        import difflib
-        sm = difflib.SequenceMatcher(None, old_display_tokens, new_display_tokens)
-        change_ratio = 1.0 - sm.ratio()
-        
-    return {
-        "token_delta": token_delta,
-        "mod_count": mod_count,
-        "has_weights": has_weights,
-        "change_ratio": change_ratio
-    }
-
 def _markdown_code(value: str) -> str:
     escaped = str(value).replace("`", "\\`")
     return f"`{escaped}`"
-
-def extract_module_reference_names_from_text(text: str) -> list[str]:
-    names = []
-    seen = set()
-    for token in parse_prompt(text or ""):
-        info = extract_mod_info(token)
-        name = (info.get("name") or "").strip()
-        if not name or name in seen:
-            continue
-        names.append(name)
-        seen.add(name)
-    return names
-
-def detect_novelai_syntax_fragments(prompt_text: str) -> list[str]:
-    fragments = []
-    seen = set()
-    for token in parse_prompt(prompt_text or ""):
-        fragment = token.strip()
-        if "::" not in fragment:
-            continue
-        if fragment in seen:
-            continue
-        fragments.append(fragment)
-        seen.add(fragment)
-    return fragments
 
 def render_prompt_syntax_diagnostics(prompt_text: str, fragment_limit: int = 10):
     module_names = extract_module_reference_names_from_text(prompt_text)
@@ -1900,39 +1858,6 @@ def render_module_token_inspector(project, namespace: str, module_name: str, bod
             next_tokens = _dedupe_prompt_tokens([*body_tokens, add_token.strip()])
             st.session_state[body_key] = _module_body_from_tokens(next_tokens)
             st.rerun()
-
-def _split_prompt_for_diff(text: str) -> list[str]:
-    return [part.strip() for part in str(text or "").split(",") if part.strip()]
-
-def _prompt_token_diff(source_prompt: str, current_prompt: str) -> dict:
-    source_tokens = _split_prompt_for_diff(source_prompt)
-    current_tokens = _split_prompt_for_diff(current_prompt)
-    source_counts = Counter(source_tokens)
-    current_counts = Counter(current_tokens)
-
-    removed = []
-    remaining_current = current_counts.copy()
-    for token in source_tokens:
-        if remaining_current[token] > 0:
-            remaining_current[token] -= 1
-        else:
-            removed.append(token)
-
-    added = []
-    remaining_source = source_counts.copy()
-    for token in current_tokens:
-        if remaining_source[token] > 0:
-            remaining_source[token] -= 1
-        else:
-            added.append(token)
-
-    return {
-        "source_tokens": source_tokens,
-        "current_tokens": current_tokens,
-        "removed": removed,
-        "added": added,
-        "shared_count": len(source_tokens) - len(removed),
-    }
 
 def _render_diff_token_list(label: str, tokens: list[str], preview_limit: int = 50) -> None:
     st.caption(label)
@@ -2287,161 +2212,6 @@ def _workflow_metadata_debug_status(image_metadata):
         "force_shared": force_shared,
         "selected_source": selected_source,
         "fallback_reason": fallback_reason,
-    }
-
-
-def _replace_clip_text_prompts(workflow_json, line, image_metadata=None):
-    if not isinstance(workflow_json, dict):
-        return 0
-
-    nodes = workflow_json.get("nodes", workflow_json)
-    if not isinstance(nodes, dict):
-        return 0
-
-    current_positive = getattr(line, "current_text", "") or ""
-    current_negative = getattr(line, "negative_prompt", "") or ""
-    imported_positive = (image_metadata or {}).get("prompt_text") or ""
-    imported_negative = (image_metadata or {}).get("negative_prompt") or ""
-    replacements = 0
-    clip_nodes = []
-    prompt_roles = _infer_workflow_prompt_node_ids(nodes)
-    resolved_positive = False
-    resolved_negative = False
-
-    for positive_node_id in prompt_roles.get("positive", []):
-        inputs = nodes[positive_node_id].get("inputs", {})
-        if isinstance(inputs, dict) and isinstance(inputs.get("text"), str):
-            inputs["text"] = current_positive
-            replacements += 1
-            resolved_positive = True
-
-    for negative_node_id in prompt_roles.get("negative", []):
-        inputs = nodes[negative_node_id].get("inputs", {})
-        if isinstance(inputs, dict) and isinstance(inputs.get("text"), str):
-            inputs["text"] = current_negative
-            replacements += 1
-            resolved_negative = True
-
-    if resolved_positive and resolved_negative:
-        return replacements
-
-    for node in nodes.values():
-        if not isinstance(node, dict):
-            continue
-        if "CLIPTextEncode" not in str(node.get("class_type", "")):
-            continue
-        inputs = node.get("inputs", {})
-        if isinstance(inputs, dict) and isinstance(inputs.get("text"), str):
-            clip_nodes.append(inputs)
-
-    for inputs in clip_nodes:
-        text = inputs.get("text", "")
-        if not resolved_positive and imported_positive and text == imported_positive:
-            inputs["text"] = current_positive
-            replacements += 1
-            resolved_positive = True
-        elif not resolved_negative and imported_negative and text == imported_negative:
-            inputs["text"] = current_negative
-            replacements += 1
-            resolved_negative = True
-
-    if not resolved_positive and replacements == 0 and len(clip_nodes) == 1:
-        clip_nodes[0]["text"] = current_positive
-        replacements += 1
-
-    return replacements
-
-
-def _workflow_link_node_id(value):
-    if isinstance(value, list) and value:
-        return str(value[0])
-    if isinstance(value, dict) and value.get("node_id") is not None:
-        return str(value.get("node_id"))
-    return None
-
-
-def _workflow_node_has_text_input(node) -> bool:
-    inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
-    return isinstance(inputs, dict) and isinstance(inputs.get("text"), str)
-
-
-def _collect_upstream_text_node_ids(nodes: dict, start_node_id: str) -> list[str]:
-    if not isinstance(nodes, dict) or not start_node_id:
-        return []
-
-    text_node_ids = []
-    visited = set()
-    stack = [str(start_node_id)]
-    while stack:
-        node_id = stack.pop()
-        if node_id in visited:
-            continue
-        visited.add(node_id)
-
-        node = nodes.get(node_id)
-        if not isinstance(node, dict):
-            continue
-        if _workflow_node_has_text_input(node):
-            text_node_ids.append(node_id)
-
-        inputs = node.get("inputs", {})
-        if not isinstance(inputs, dict):
-            continue
-        for value in inputs.values():
-            linked_node_id = _workflow_link_node_id(value)
-            if linked_node_id and linked_node_id not in visited:
-                stack.append(linked_node_id)
-    return text_node_ids
-
-
-def _infer_workflow_prompt_node_ids(nodes: dict) -> dict:
-    prompt_roles = {"positive": [], "negative": []}
-    if not isinstance(nodes, dict):
-        return prompt_roles
-
-    seen = {"positive": set(), "negative": set()}
-    for node in nodes.values():
-        if not isinstance(node, dict):
-            continue
-        class_type = str(node.get("class_type") or node.get("type") or "")
-        if "ksampler" not in class_type.lower():
-            continue
-        inputs = node.get("inputs", {})
-        if not isinstance(inputs, dict):
-            continue
-        positive_id = _workflow_link_node_id(inputs.get("positive"))
-        negative_id = _workflow_link_node_id(inputs.get("negative"))
-        for role, start_node_id in (("positive", positive_id), ("negative", negative_id)):
-            if not start_node_id:
-                continue
-            for text_node_id in _collect_upstream_text_node_ids(nodes, start_node_id):
-                if text_node_id in seen[role]:
-                    continue
-                prompt_roles[role].append(text_node_id)
-                seen[role].add(text_node_id)
-    return prompt_roles
-
-
-def _workflow_submitted_prompt_debug(workflow_json, line) -> dict:
-    nodes = workflow_json.get("nodes", workflow_json) if isinstance(workflow_json, dict) else {}
-    roles = _infer_workflow_prompt_node_ids(nodes)
-
-    def node_texts(role):
-        texts = []
-        for node_id in roles.get(role, []):
-            node = nodes.get(node_id) if isinstance(nodes, dict) else None
-            inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
-            text = inputs.get("text", "") if isinstance(inputs, dict) else ""
-            texts.append(text if isinstance(text, str) else "")
-        return texts
-
-    return {
-        "expected_positive_prompt": getattr(line, "current_text", "") or "",
-        "expected_negative_prompt": getattr(line, "negative_prompt", "") or "",
-        "positive_node_ids": roles.get("positive", []),
-        "negative_node_ids": roles.get("negative", []),
-        "submitted_positive_prompts": node_texts("positive"),
-        "submitted_negative_prompts": node_texts("negative"),
     }
 
 
