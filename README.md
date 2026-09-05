@@ -115,6 +115,13 @@ export checks on its private side; the public tree carries the reviewed source
 bytes, runtime contract, and product tests. Roadmap, research, and historical
 planning remain excluded.
 
+## Related research
+
+- [LineageEditor](https://github.com/m-otani/LineageEditor) — a research
+  prototype that generalizes ideas explored in PromptGraph's Lineage from
+  prompt and illustration editing to research processes involving conditions,
+  evidence, decisions, artifacts, dependencies, and revisions.
+
 ## Source repository note
 
 User-facing Pro v1 terminology is defined by the current product UI and the
