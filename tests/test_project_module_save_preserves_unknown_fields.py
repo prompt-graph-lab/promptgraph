@@ -84,6 +84,39 @@ class ProjectModuleSavePreservesUnknownFieldsTests(unittest.TestCase):
             },
         )
 
+    def test_omitted_category_keeps_main_default_and_unknown_fields(self):
+        project = Project()
+        project.module_library = {
+            "pose": {
+                "body": "old pose",
+                "type": "generic",
+                "category": "Style",
+                "extension": {"nested": {"preserve": True}},
+            }
+        }
+
+        set_module_entry(project, "pose", "new pose")
+
+        updated_entry = project.module_library["pose"]
+        self.assertEqual(updated_entry["category"], "Character")
+        self.assertEqual(
+            updated_entry["extension"],
+            {"nested": {"preserve": True}},
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir) / "project.json"
+            save_project_to_json(project, destination)
+            reopened = load_project_from_json(destination)
+            self.assertEqual(
+                reopened.module_library["pose"]["category"],
+                "Character",
+            )
+            self.assertEqual(
+                reopened.module_library["pose"]["extension"],
+                {"nested": {"preserve": True}},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2247,7 +2247,7 @@ def set_module_entry(
         module_type,
         core_tokens,
         min_match_tokens,
-        category,
+        normalize_global_module_category(category),
     )
 
 def update_module_entry_preserving_metadata(
