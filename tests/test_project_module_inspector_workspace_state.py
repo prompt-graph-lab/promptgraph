@@ -76,9 +76,6 @@ class _RenderStub:
 
 class ProjectModuleInspectorWorkspaceStateTests(unittest.TestCase):
     helper_names = (
-        "_parse_module_rule_text",
-        "_format_module_rule_text",
-        "_module_tokens_from_body",
         "prepare_project_module_inspector_selection_widget_state",
         "sync_project_module_inspector_selection_widget_state",
         "prepare_project_module_inspector_body_widget_state",
@@ -107,7 +104,11 @@ class ProjectModuleInspectorWorkspaceStateTests(unittest.TestCase):
 
     def _load_functions(self, *names, namespace):
         module = ast.Module(
-            body=[self.functions[name] for name in names],
+            body=[
+                node for node in self.tree.body
+                if isinstance(node, ast.ImportFrom)
+                and node.module == "core.module_token_rules"
+            ] + [self.functions[name] for name in names],
             type_ignores=[],
         )
         ast.fix_missing_locations(module)

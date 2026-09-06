@@ -1,8 +1,9 @@
 # Incremental app extraction
 
-Implemented against public `prompt-graph-lab/promptgraph` main commit
+The initial extraction (PR #2) was implemented against public
+`prompt-graph-lab/promptgraph` main commit
 `8462a54cbbf4984e1f224e07041b53df00209d22`. That baseline's `app.py` has
-24,900 lines and 634 top-level functions. This change moves 11 functions into
+24,900 lines and 634 top-level functions. That change moved 11 functions into
 two responsibility-specific modules; `app.py` remains the Streamlit entry point.
 
 ## Responsibility and dependency map
@@ -35,7 +36,7 @@ session state, history/save ordering, filesystem resolution and UI rendering.
 Importing `app.py` executes the UI, so extracting functions by importing the app
 back into a new module would create the wrong dependency direction.
 
-## Implemented steps
+## Initial extraction (PR #2)
 
 1. **Prompt inspection — `core.prompt_inspection`.** Structural statistics,
    Module reference names, suspicious NovelAI fragments and source/current token
@@ -65,7 +66,7 @@ selection, whereas the generation path traverses upstream connections and has
 its own metadata/single-CLIP fallback rules. Unifying them would require a
 separate behavior decision.
 
-## Validation
+## Initial extraction validation
 
 - `setup.bat`: fresh application-local CPython 3.14.4 environment on Windows 11
   build 26200; all 54 locked runtime packages match, `pip check` passes.
@@ -91,6 +92,53 @@ separate behavior decision.
   Only the Codex in-app browser was available; Edge/Chrome were not verified.
   No live ComfyUI generation was submitted.
 
+## Module token rules extraction
+
+The next step starts from public main `3e944c1` (the merge of PR #2). Seven
+read-only helpers move to `core.module_token_rules`: rule-text parsing,
+rule/body formatting, body tokenization, match keys, match-key sets and
+Inspector deduplication. The only dependency is the existing `core.parser`.
+`app.py` imports the same names directly; the moved function ASTs and the
+remaining app AST are unchanged apart from this import. This step reduces the
+app from 24,670 to 24,633 lines and from 623 to 616 top-level functions.
+
+These helpers serve the Global Library editor, Project Module editor, Module
+Inspector, Module-match preview, core-token draft initialization and Attribute
+Group token input. Their shared responsibility is translating between editable
+token text and comparison keys. They do not own Module graph normalization,
+validation, application to Illustrations, or stored Module entries.
+
+The distinction between rule parsing and Inspector deduplication is intentional:
+rule input retains `smile` and `(smile:1.2)` as different literal forms, while
+Inspector deduplication compares parser base words and retains the first form.
+Both continue using `lower()`, not `casefold()`. Body parsing and formatting
+preserve duplicates and order. Structural Module markers keep their fallback
+keys, while the unchanged preview renderer excludes them from highlighting.
+
+All renderers, draft/widget keys, Project mutations, history, attribute updates,
+save/load and ComfyUI preparation remain in their existing owners. Moving the
+entire Inspector would also move those stateful responsibilities; this step
+stops at the token boundary.
+
+Validation adds 11 direct regression tests and five retained-renderer integration
+tests covering weighted/Unicode/duplicate/empty inputs, first-form retention,
+non-mutating helpers, core highlighting, Add Token and Update Body draft behavior,
+preview escaping and Attribute Group input. The direct tests also pass against
+the original main definitions. Two existing workspace-state test loaders now
+execute the real app import instead of extracting the moved definitions; their
+14 draft/navigation/save/reset tests continue to pass.
+
+The full suite (`.venv/Scripts/python.exe -m unittest discover -s tests -v`)
+runs 985 tests in 237.336 seconds: 977 pass, eight existing Windows symlink
+privilege skips, no failures. The same 54-package runtime lock and `pip check`
+also pass. Browser results for this step are recorded in its PR.
+
+The browser smoke test uses an isolated synthetic Project in the running locked
+app: open Authoring from Gallery, inspect weighted Core rows, Update Body From
+Inspector, Add Token, and Back/reopen with unsaved body/Core drafts intact.
+Save Project Module applies the draft to the in-memory Project; the Sidebar
+save writes the Project JSON. These remain separate existing actions.
+
 ## Remaining risks and next boundaries
 
 There is no Project schema or save/load change. This does not establish support
@@ -99,8 +147,7 @@ positive and negative roles still receives the negative assignment last and
 counts twice; this existing behavior is characterized, not corrected here.
 The literal-comma display diff also retains its existing grouping limitations.
 
-Next, extract the Module rule/token normalization helpers as another read-only
-boundary, or extend workflow preparation into a module with explicit workflow
+Next, extend workflow preparation into a module with explicit workflow
 text and settings inputs. Keep metadata/file selection separate from execution.
 Only then consider moving a complete UI panel, with its session/widget keys and
 history/reset contract documented and exercised through navigation tests.
@@ -108,6 +155,16 @@ Candidate normalization is a later candidate: first separate its path resolution
 record compatibility and session-cache dependencies from adoption mutations.
 Moving all Gallery or all Module UI at once would cross too many of those owners.
 
-Unrelated observation: the locked Streamlit runtime emits an existing
+Unrelated observations: the locked Streamlit runtime emits an existing
 `st.components.v1.html` deprecation warning. The keyboard/clipboard iframe
 compatibility owner is unchanged; replacing it is outside this extraction.
+The Module token rules smoke test also reports a `gallery_page_size` warning
+about assigning both a widget default and session state. Its unchanged Gallery
+pagination owner is outside this extraction as well.
+The synthetic save check also exposes an existing compatibility limitation:
+Project Module Editor calls `core.operations.set_module_entry`, which replaces
+the entry and drops unknown extension fields (reproduced with a synthetic
+`extension` key). The same unchanged core function reproduces this on the base
+main revision. This differs from the metadata-preserving Global Module editing
+path and is recorded for separate investigation, not changed or generalized
+as part of token extraction.
