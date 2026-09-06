@@ -2239,21 +2239,16 @@ def set_module_entry(
     min_match_tokens: Optional[int] = None,
     category: Optional[str] = None,
 ) -> None:
-    module_type = module_type if module_type in MODULE_TYPES else DEFAULT_MODULE_TYPE
-    module_graph = create_blank_module_graph(module_name, module_body or "", module_type)
-    body = ", ".join(flatten_module_graph_to_tokens(module_graph))
-    module_tokens = _module_rule_tokens(body)
-    get_project_module_library(project)[module_name] = {
-        "body": body,
-        "type": module_type,
-        "category": normalize_global_module_category(category),
-        "graph": module_graph,
-        "core_tokens": _normalize_module_rule_tokens(core_tokens) if core_tokens is not None else module_tokens[:1],
-        "min_match_tokens": _clamp_module_min_match(
-            min_match_tokens if min_match_tokens is not None else len(module_tokens),
-            module_tokens,
-        ),
-    }
+    module_library = get_project_module_library(project)
+    module_library[module_name] = update_module_entry_preserving_metadata(
+        module_library.get(module_name),
+        module_name,
+        module_body,
+        module_type,
+        core_tokens,
+        min_match_tokens,
+        category,
+    )
 
 def update_module_entry_preserving_metadata(
     existing_entry: Any,
