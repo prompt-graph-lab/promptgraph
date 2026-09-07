@@ -159,14 +159,30 @@ Project schema, save/load behavior, or UI/session ownership.
 Focused regression tests cover the extracted helper's group mapping,
 placeholder escaping, missing-binding warning, retained single-line caller,
 retained Focus preview caller, and the legacy Project preview/save round trip.
-The full suite runs 994 tests in 239.376 seconds: 986 pass, eight existing
-Windows symlink privilege skips, and no failures. The available in-app browser
-smoke starts the locked Streamlit app, opens and leaves the ComfyUI Settings
-workspace, and returns to the no-Project main screen; no generation is
-submitted. A disposable synthetic Project and workflow are prepared for the
-Focus preview and save/reopen smoke, but the implementer browser session had
-no available browser surface to observe that flow, so it is not claimed as
-passed here.
+The clean full suite run at the implementation commit runs 994 tests in
+239.376 seconds: 986 pass, eight existing Windows symlink privilege skips,
+and no failures. A later rerun at `ebaf9e9` was captured in
+`tmp/workflow-preparation-full-suite.log` and exhausted the Windows Python
+process memory while Streamlit-heavy tests read or compiled `app.py`: it ran
+989 tests and ended with seven errors plus eight skips. The affected checks
+were the two Project Save As UI cases
+(`test_path_change_invalidates_confirmation_without_writing_either_target`
+and `test_successful_project_open_clears_pending_confirmation`), the Save As
+snapshot setup, four release-runtime contract checks
+(`test_active_app_has_no_removed_width_keyword`,
+`test_common_x86_64_architecture_label_is_supported`,
+`test_direct_requirements_are_exactly_the_six_validated_pins`, and
+`test_exact_runtime_lock_environment_passes`); the traceback for each ends in
+`MemoryError` while reading/compiling source or constructing the affected UI.
+The clean result remains the authoritative full-suite evidence for this
+application-only change. The Codex in-app browser smoke uses a disposable synthetic
+Project and workflow: it auto-opens the Project, enters Graph Edit and Focus
+Edit for `smoke.png`, and expands the workflow preview. The preview shows
+positive `smoke, prompt`, negative `old negative`, and unchanged sampler
+links. Editing the prompt to `smoke, verified`, saving the Focus changes,
+using the Sidebar Project save, and reloading preserves the edited token and
+the unchanged negative prompt in the disk JSON. No generation is submitted.
+Edge/Chrome and a live ComfyUI endpoint are not verified.
 
 ## Remaining risks and next boundaries
 
