@@ -1,3 +1,5 @@
+from core.comfy_prompt_request import prepare_prompt_request
+
 import json
 import urllib.request
 import urllib.parse
@@ -454,22 +456,8 @@ def generate_image_with_progress(workflow_json: dict, server_address: str, outpu
     進捗中は {"type": "...", "text": "...", "value": float} の辞書をyieldする。
     完了時に保存された画像のパスを返す（ジェネレータの戻り値、または最終yieldの特別な形式で）。
     """
-    server_address = server_address.replace("http://", "").replace("https://", "").strip("/")
-    client_id = str(uuid.uuid4())
-    
-    # シード値をランダム化してComfyUIのキャッシュを回避する
-    for node_id, node_data in workflow_json.items():
-        if isinstance(node_data, dict) and "inputs" in node_data:
-            inputs = node_data["inputs"]
-            for seed_key in ["seed", "noise_seed"]:
-                if seed_key in inputs and isinstance(inputs[seed_key], (int, float)):
-                    # 一般的な最大値 (2^64 - 1) までの範囲で乱数を生成
-                    inputs[seed_key] = random.randint(0, 0xffffffffffffffff)
-                    
-    p = {"prompt": workflow_json, "client_id": client_id}
-    data = json.dumps(p).encode('utf-8')
-    req = urllib.request.Request(f"http://{server_address}/prompt", data=data)
-    
+    server_address, client_id, req = prepare_prompt_request(workflow_json, server_address)
+
     yield {"type": "status", "text": "Connecting to ComfyUI...", "value": 0.0}
     
     try:

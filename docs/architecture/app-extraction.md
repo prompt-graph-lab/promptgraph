@@ -206,6 +206,30 @@ remain in `app.py` until a separate execution request or submission owner is
 designed. Any panel extraction must document and test its session/widget keys
 and history/reset contract through navigation tests.
 
+## Prompt request construction
+
+Following PR #7, the next coherent boundary is inside `core.comfyui`, rather
+than another app wrapper. `core.comfy_prompt_request.prepare_prompt_request`
+accepts an already prepared workflow dictionary and server address, and returns
+the normalized address, generated client ID, and an unsent urllib Request.
+It preserves in-place numeric seed randomization (including bool/float values),
+iteration order, JSON encoding, URL normalization and preparation exceptions.
+It does not unwrap workflow nodes or expand prompts. This is request construction,
+not a pure function: UUID/random generation and workflow mutation are intentional.
+
+`generate_image_with_progress` calls it lazily before its first status yield.
+HTTP submission, connection errors, WebSocket progress and output capture remain
+in that generator. All app callers, source selection, active-token expansion,
+session/UI ownership, Candidate handling and Project persistence remain unchanged.
+The moved statements and remaining core AST are equivalent after inlining the
+helper; app.py is byte-for-byte unchanged. Deterministic tests cover request
+bytes, mutation, wrapped workflows, failure order and generator laziness.
+
+The next possible boundary is HTTP prompt submission and response validation,
+characterized using a mocked transport before extraction. Keep status yields,
+WebSocket lifecycle and output capture separate; no live server is needed to
+establish that contract.
+
 Candidate normalization is a later candidate: first separate its path
 resolution, record compatibility and session-cache dependencies from adoption
 mutations.
