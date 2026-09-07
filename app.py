@@ -17,6 +17,7 @@ from core.comfy_prompt_binding import (
     _replace_clip_text_prompts,
     _workflow_submitted_prompt_debug,
 )
+from core.comfy_workflow_preparation import _build_line_workflow_from_text
 import streamlit as st
 from streamlit_agraph import agraph, Node, Edge, Config
 from core.animadex_discovery import (
@@ -53,7 +54,7 @@ import logging
 from contextlib import contextmanager
 from collections import Counter, deque
 from datetime import datetime, timezone
-from core.comfyui import generate_image_with_progress, inject_prompt_to_workflow
+from core.comfyui import generate_image_with_progress
 from core.comfy_workflow import detect_workflow_shape, get_lora_loader_candidates, get_text_encode_candidates, inject_lora_into_api_workflow, inject_prompts_into_api_workflow, parse_workflow_json, summarize_workflow_nodes, workflow_to_json_text
 from core.generation_settings_analysis import analyze_generation_settings
 from core.gallery_generation import (
@@ -2176,34 +2177,6 @@ def _workflow_metadata_debug_status(image_metadata):
         "selected_source": selected_source,
         "fallback_reason": fallback_reason,
     }
-
-
-def _build_line_workflow_from_text(workflow_text, line, settings, project=None, disabled_modules=None, image_metadata=None):
-    line_prompt = getattr(line, "current_text", "") or ""
-    mapping = settings.get("comfy_mapping")
-    if mapping and "group_map" in mapping:
-        workflow_json = json.loads(workflow_text)
-        if project is not None:
-            from core.comfyui import build_prompt_by_group
-            grouped = build_prompt_by_group(project, line, disabled_modules or set())
-        else:
-            grouped = {"default": [line_prompt]}
-        return inject_prompt_to_workflow(
-            workflow_json,
-            grouped,
-            mapping,
-            fallback_prompt=line_prompt,
-        ), ""
-
-    warning = ""
-    if "__PROMPT__" in workflow_text:
-        workflow_text = workflow_text.replace("__PROMPT__", json.dumps(line_prompt)[1:-1])
-        return json.loads(workflow_text), warning
-
-    workflow_json = json.loads(workflow_text)
-    if _replace_clip_text_prompts(workflow_json, line, image_metadata=image_metadata) == 0:
-        warning = "The workflow JSON does not contain '__PROMPT__'. The prompt may not be injected."
-    return workflow_json, warning
 
 
 def build_single_line_workflow(workflow_path, line, settings, project=None, disabled_modules=None):

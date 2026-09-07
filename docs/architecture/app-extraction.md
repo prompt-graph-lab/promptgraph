@@ -139,6 +139,31 @@ Inspector, Add Token, and Back/reopen with unsaved body/Core drafts intact.
 Save Project Module applies the draft to the in-memory Project; the Sidebar
 save writes the Project JSON. These remain separate existing actions.
 
+## Workflow preparation extraction
+
+Starting from public `main` commit `2301030a63e0d99a53e6de900ae424f5c1fdb80d`,
+`core.comfy_workflow_preparation` now owns the pure text-to-workflow step
+`_build_line_workflow_from_text`. It preserves the existing three branches:
+group mapping delegates to `build_prompt_by_group` and
+`inject_prompt_to_workflow`, `__PROMPT__` replacement keeps the existing JSON
+escaping, and ordinary API workflows use the existing CLIP binding helper and
+warning. The new module does not import `app.py`.
+
+`build_single_line_workflow` and `_build_focus_line_workflow_preview` remain
+the callers. They still own metadata/file selection, shared settings and
+session state, active-token expansion, and preview source labels. ComfyUI
+submission, Candidate handling, Project mutation, history, and persistence
+remain outside this boundary. The extraction therefore does not change the
+Project schema, save/load behavior, or UI/session ownership.
+
+Focused regression tests cover the extracted helper's group mapping,
+placeholder escaping, missing-binding warning, retained single-line caller,
+retained Focus preview caller, and the legacy Project preview/save round trip.
+The full suite runs 994 tests in 239.376 seconds: 986 pass, eight existing
+Windows symlink privilege skips, and no failures. Browser smoke starts the
+locked Streamlit app, opens and leaves the ComfyUI Settings workspace, and
+returns to the no-Project main screen; no generation was submitted.
+
 ## Remaining risks and next boundaries
 
 There is no Project schema or save/load change. This does not establish support
@@ -147,10 +172,11 @@ positive and negative roles still receives the negative assignment last and
 counts twice; this existing behavior is characterized, not corrected here.
 The literal-comma display diff also retains its existing grouping limitations.
 
-Next, extend workflow preparation into a module with explicit workflow
-text and settings inputs. Keep metadata/file selection separate from execution.
-Only then consider moving a complete UI panel, with its session/widget keys and
-history/reset contract documented and exercised through navigation tests.
+The next workflow boundary is execution preparation around the retained
+single-line callers. Keep metadata/file selection and active-token expansion
+separate from that step, and characterize its settings and error contracts
+before moving any UI panel. Any panel extraction must document and test its
+session/widget keys and history/reset contract through navigation tests.
 Candidate normalization is a later candidate: first separate its path resolution,
 record compatibility and session-cache dependencies from adoption mutations.
 Moving all Gallery or all Module UI at once would cross too many of those owners.

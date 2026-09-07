@@ -7,18 +7,28 @@ avoid executing Streamlit's top-level UI or reading a user's settings.
 import ast
 import copy
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from core.comfyui import inject_prompt_to_workflow
+from core import comfy_workflow_preparation
 from core.io import find_image_metadata_for_line, load_project_from_json, save_project_to_json
 from core.operations import get_active_tokens
+from core.project import PromptLine, PromptNode, Project
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _SessionState(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
 
 
 class AppExtractedPromptIntegrationTests(unittest.TestCase):
@@ -28,11 +38,15 @@ class AppExtractedPromptIntegrationTests(unittest.TestCase):
         names = {
             "_load_json_from_text", "_is_executable_comfy_workflow",
             "_workflow_text_from_line_metadata", "_build_line_workflow_from_text",
-            "build_single_line_workflow", "_markdown_code", "render_prompt_syntax_diagnostics",
+            "build_single_line_workflow", "_build_focus_line_workflow_preview",
+            "_markdown_code", "render_prompt_syntax_diagnostics",
         }
         nodes = [node for node in tree.body if (
             isinstance(node, ast.ImportFrom)
-            and node.module in {"core.prompt_inspection", "core.comfy_prompt_binding"}
+            and node.module in {
+                "core.prompt_inspection", "core.comfy_prompt_binding",
+                "core.comfy_workflow_preparation",
+            }
         ) or (isinstance(node, ast.FunctionDef) and node.name in names)]
         cls.code = compile(ast.Module(body=nodes, type_ignores=[]), str(ROOT / "app.py"), "exec")
 
@@ -42,7 +56,6 @@ class AppExtractedPromptIntegrationTests(unittest.TestCase):
             "st": self.st, "json": json, "copy": copy,
             "find_image_metadata_for_line": find_image_metadata_for_line,
             "get_active_tokens": get_active_tokens,
-            "inject_prompt_to_workflow": inject_prompt_to_workflow,
         }
         exec(self.code, self.namespace)
 
@@ -66,11 +79,46 @@ class AppExtractedPromptIntegrationTests(unittest.TestCase):
     def test_workflow_builder_keeps_group_mapping_branch(self):
         line = SimpleNamespace(current_text="smile")
         inject = Mock(return_value={"mapped": True})
-        self.namespace["inject_prompt_to_workflow"] = inject
         mapping = {"group_map": {"default": "p"}}
-        self.assertEqual(self.namespace["_build_line_workflow_from_text"]("{}", line, {"comfy_mapping": mapping}),
-                         ({"mapped": True}, ""))
+        with patch.object(comfy_workflow_preparation, "inject_prompt_to_workflow", inject):
+            self.assertEqual(
+                self.namespace["_build_line_workflow_from_text"]("{}", line, {"comfy_mapping": mapping}),
+                ({"mapped": True}, ""),
+            )
         inject.assert_called_once_with({}, {"default": ["smile"]}, mapping, fallback_prompt="smile")
+
+    def test_group_mapping_uses_real_group_expansion_and_disabled_modules(self):
+        project = Project(nodes={
+            "skip": PromptNode("skip", "skip", 0),
+            "keep": PromptNode("keep", "keep", 0),
+            "negative": PromptNode("negative", "negative", 0, group="negative"),
+        })
+        line = PromptLine(
+            id="line-1", original_file_name="", original_index=0, current_index=0,
+            original_text="<mod:disabled>, skip, </mod:disabled>, keep, negative",
+            current_text="keep, negative",
+            tokens=["<mod:disabled>", "skip", "</mod:disabled>", "keep", "negative"],
+            node_path=["open", "skip", "close", "keep", "negative"],
+        )
+        workflow = {
+            "positive": {"inputs": {"text": ""}},
+            "negative": {"inputs": {"text": ""}},
+        }
+        mapping = {
+            "group_map": {"default": "positive", "negative": "negative"},
+            "positive": {"node_id": "positive", "input_key": "text"},
+            "negative": {"node_id": "negative", "input_key": "text"},
+            "merge_mode": "overwrite",
+        }
+
+        result, warning = self.namespace["_build_line_workflow_from_text"](
+            json.dumps(workflow), line, {"comfy_mapping": mapping},
+            project=project, disabled_modules={"disabled"},
+        )
+
+        self.assertEqual(result["positive"]["inputs"]["text"], "keep")
+        self.assertEqual(result["negative"]["inputs"]["text"], "negative")
+        self.assertEqual(warning, "")
 
     def test_legacy_project_can_preview_and_round_trip_without_data_changes(self):
         project = load_project_from_json(str(ROOT / "tests/fixtures/release/legacy_project_minimal.json"))
@@ -116,6 +164,27 @@ class AppExtractedPromptIntegrationTests(unittest.TestCase):
         self.assertEqual(project, before)
         self.assertEqual(json.loads(metadata["raw_metadata"]["PROMPT"]), workflow)
         fallback.assert_not_called()
+
+    def test_focus_preview_uses_the_imported_workflow_builder(self):
+        state = _SessionState(
+            settings={},
+            disabled_modules=set(),
+            force_shared_comfy_workflow=True,
+        )
+        self.st.session_state = state
+        line = SimpleNamespace(id="line-1", tokens=["smile"], current_text="smile")
+        workflow = {"p": {"inputs": {"text": "__PROMPT__"}}}
+        with tempfile.TemporaryDirectory() as directory:
+            workflow_path = Path(directory) / "workflow.json"
+            workflow_path.write_text(json.dumps(workflow), encoding="utf-8")
+            state["comfy_workflow_path"] = str(workflow_path)
+            self.namespace["resolve_effective_comfy_workflow_path"] = lambda path: (str(path), "test")
+            self.namespace["os"] = os
+            preview = self.namespace["_build_focus_line_workflow_preview"](None, line)
+
+        self.assertEqual(preview["source_kind"], "shared workflow")
+        self.assertEqual(preview["workflow_json"]["p"]["inputs"]["text"], "smile")
+        self.assertEqual(preview["warning"], "")
 
 
 if __name__ == "__main__":
