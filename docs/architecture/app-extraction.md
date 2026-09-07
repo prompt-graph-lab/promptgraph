@@ -225,10 +225,27 @@ The moved statements and remaining core AST are equivalent after inlining the
 helper; app.py is byte-for-byte unchanged. Deterministic tests cover request
 bytes, mutation, wrapped workflows, failure order and generator laziness.
 
-The next possible boundary is HTTP prompt submission and response validation,
-characterized using a mocked transport before extraction. Keep status yields,
-WebSocket lifecycle and output capture separate; no live server is needed to
-establish that contract.
+## HTTP prompt submission
+
+Following PR #8, `core.comfy_prompt_submission.submit_prompt_request` accepts
+the already constructed urllib Request and normalized server address (used in
+error text), and returns the response's truthy `prompt_id` without coercion.
+It owns only `urlopen(req)`, context-managed response reading, JSON decoding,
+ID lookup and validation. The original `URLError` translation covers the same
+try block, including context exit; malformed JSON and non-object response
+errors still propagate. Falsey IDs fail only after the response context exits.
+
+Request preparation remains before the Connecting status yield; submission
+remains between that yield and Prompt queued. Both yields, generator laziness,
+WebSocket creation/lifecycle, progress, timeout, history polling and output
+capture remain in `generate_image_with_progress`. `app.py` is unchanged.
+Mocked transport tests establish success, exact request identity, context
+lifetime, exception ordering, ID semantics and the generator event sequence.
+The moved statements and remaining core AST match after helper inlining.
+
+The next candidate is characterization of WebSocket connection setup and
+cleanup/error contracts using a fake socket. Do not combine receive-loop
+interpretation, timeouts or output polling into a broad transport abstraction.
 
 Candidate normalization is a later candidate: first separate its path
 resolution, record compatibility and session-cache dependencies from adoption

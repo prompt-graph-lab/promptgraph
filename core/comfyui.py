@@ -1,3 +1,4 @@
+from core.comfy_prompt_submission import submit_prompt_request
 from core.comfy_prompt_request import prepare_prompt_request
 
 import json
@@ -460,15 +461,7 @@ def generate_image_with_progress(workflow_json: dict, server_address: str, outpu
 
     yield {"type": "status", "text": "Connecting to ComfyUI...", "value": 0.0}
     
-    try:
-        with urllib.request.urlopen(req) as response:
-            result = json.loads(response.read())
-            prompt_id = result.get("prompt_id")
-    except urllib.error.URLError as e:
-        raise Exception(f"Failed to connect to ComfyUI at {server_address}. Is it running? Error: {e}")
-
-    if not prompt_id:
-        raise Exception("Failed to get prompt_id from ComfyUI.")
+    prompt_id = submit_prompt_request(req, server_address)
 
     yield {"type": "status", "text": "Prompt queued. Waiting for execution...", "value": 0.0}
 
