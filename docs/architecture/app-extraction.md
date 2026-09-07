@@ -243,9 +243,30 @@ Mocked transport tests establish success, exact request identity, context
 lifetime, exception ordering, ID semantics and the generator event sequence.
 The moved statements and remaining core AST match after helper inlining.
 
-The next candidate is characterization of WebSocket connection setup and
-cleanup/error contracts using a fake socket. Do not combine receive-loop
-interpretation, timeouts or output polling into a broad transport abstraction.
+## WebSocket connection setup
+
+Following PR #9, `core.comfy_websocket_setup.connect_progress_socket` accepts
+the normalized server address and client ID and returns the connected socket
+after `settimeout(1.0)`. Construction remains outside the setup try block;
+constructor exceptions propagate unchanged, while connect/settimeout failures
+retain the existing `Failed to connect to ComfyUI WebSocket: ...` wrapping.
+The exact URL and call order are unchanged. Setup happens only when iteration
+resumes after the Prompt queued yield, following HTTP submission.
+
+Cleanup remains in `generate_image_with_progress`. It closes on normal
+execution completion and execution timeout. It does not close on setup failure,
+receive-loop failure, execution_error, or early generator close during execution.
+Closing the generator before setup constructs no socket. A receive timeout
+retries until the existing execution timeout policy applies. These asymmetric
+contracts are characterized on the baseline before extraction, not repaired.
+Receive interpretation, progress, completion detection, timeout policy and
+output polling/capture remain unchanged, as does app.py. Fake-socket tests and
+AST inlining checks verify the boundary without a live server.
+
+The next candidate is read-only receive-message interpretation, first
+characterizing ignored/malformed messages, progress scaling and completion
+IDs. Keep socket cleanup and timeout policy with the generator; do not combine
+them with output polling into a broad transport abstraction.
 
 Candidate normalization is a later candidate: first separate its path
 resolution, record compatibility and session-cache dependencies from adoption

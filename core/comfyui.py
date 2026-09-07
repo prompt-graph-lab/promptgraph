@@ -1,3 +1,4 @@
+from core.comfy_websocket_setup import connect_progress_socket
 from core.comfy_prompt_submission import submit_prompt_request
 from core.comfy_prompt_request import prepare_prompt_request
 
@@ -465,13 +466,8 @@ def generate_image_with_progress(workflow_json: dict, server_address: str, outpu
 
     yield {"type": "status", "text": "Prompt queued. Waiting for execution...", "value": 0.0}
 
-    ws = websocket.WebSocket()
-    try:
-        ws.connect(f"ws://{server_address}/ws?clientId={client_id}")
-        ws.settimeout(1.0)
-    except Exception as e:
-        raise Exception(f"Failed to connect to ComfyUI WebSocket: {e}")
-        
+    ws = connect_progress_socket(server_address, client_id)
+
     image_infos = []
     start_time = time.time()
     
