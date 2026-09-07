@@ -160,9 +160,10 @@ Focused regression tests cover the extracted helper's group mapping,
 placeholder escaping, missing-binding warning, retained single-line caller,
 retained Focus preview caller, and the legacy Project preview/save round trip.
 The full suite runs 994 tests in 239.376 seconds: 986 pass, eight existing
-Windows symlink privilege skips, and no failures. Browser smoke starts the
-locked Streamlit app, opens and leaves the ComfyUI Settings workspace, and
-returns to the no-Project main screen; no generation was submitted.
+Windows symlink privilege skips, and no failures. Browser smoke uses a
+disposable synthetic Project and workflow JSON, opens Focus Edit, expands the
+workflow preview, and checks that the injected positive prompt is present
+before saving and reopening the same Project; no generation is submitted.
 
 ## Remaining risks and next boundaries
 

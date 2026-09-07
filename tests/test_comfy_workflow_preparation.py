@@ -38,7 +38,9 @@ class ComfyWorkflowPreparationTests(unittest.TestCase):
         line = SimpleNamespace(current_text='quote " slash \\ and\n青', negative_prompt="blur")
         workflow_text = (
             '{"p": {"class_type": "CLIPTextEncode", "inputs": {"text": "__PROMPT__"}}, '
-            '"n": {"class_type": "CLIPTextEncode", "inputs": {"text": "old negative"}}}'
+            '"n": {"class_type": "CLIPTextEncode", "inputs": {"text": "old negative"}}, '
+            '"s": {"class_type": "KSampler", "inputs": '
+            '{"positive": ["p", 0], "negative": ["n", 0]}}}'
         )
 
         result, warning = comfy_workflow_preparation._build_line_workflow_from_text(
@@ -47,6 +49,7 @@ class ComfyWorkflowPreparationTests(unittest.TestCase):
 
         self.assertEqual(result["p"]["inputs"]["text"], line.current_text)
         self.assertEqual(result["n"]["inputs"]["text"], "old negative")
+        self.assertEqual(result["s"]["inputs"]["negative"], ["n", 0])
         self.assertEqual(warning, "")
         self.assertEqual(json.loads(workflow_text)["p"]["inputs"]["text"], "__PROMPT__")
 
