@@ -192,13 +192,23 @@ positive and negative roles still receives the negative assignment last and
 counts twice; this existing behavior is characterized, not corrected here.
 The literal-comma display diff also retains its existing grouping limitations.
 
-The next workflow boundary is execution preparation around the retained
-single-line callers. Keep metadata/file selection and active-token expansion
-separate from that step, and characterize its settings and error contracts
-before moving any UI panel. Any panel extraction must document and test its
-session/widget keys and history/reset contract through navigation tests.
-Candidate normalization is a later candidate: first separate its path resolution,
-record compatibility and session-cache dependencies from adoption mutations.
+Execution preparation around the retained single-line callers has now been
+characterized without moving code. Focus generation and the legacy single-line
+builder still combine workflow source selection, active-token expansion, and
+the call into the pure text-to-workflow builder. The multi-run caller combines
+settings/session fallback resolution, progress UI, live submission, output
+capture, Candidate mutation, persistence, and execution logging. The focused
+characterization tests pin the settings fallback, missing-workflow error,
+copied injection line, per-run file-prefix ordering, and warning/logging
+contracts. There is no natural extraction left in this slice without crossing
+one of those owners or introducing a callback-only wrapper, so the callers
+remain in `app.py` until a separate execution request or submission owner is
+designed. Any panel extraction must document and test its session/widget keys
+and history/reset contract through navigation tests.
+
+Candidate normalization is a later candidate: first separate its path
+resolution, record compatibility and session-cache dependencies from adoption
+mutations.
 Moving all Gallery or all Module UI at once would cross too many of those owners.
 
 Unrelated observations: the locked Streamlit runtime emits an existing
