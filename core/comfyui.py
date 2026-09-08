@@ -1,3 +1,4 @@
+from core.comfy_message_interpretation import interpret_progress_message
 from core.comfy_websocket_setup import connect_progress_socket
 from core.comfy_prompt_submission import submit_prompt_request
 from core.comfy_prompt_request import prepare_prompt_request
@@ -478,33 +479,11 @@ def generate_image_with_progress(workflow_json: dict, server_address: str, outpu
             
         try:
             out = ws.recv()
-            if isinstance(out, str):
-                message = json.loads(out)
-                msg_type = message.get("type")
-                data = message.get("data", {})
-                
-                if msg_type == "execution_start":
-                    yield {"type": "status", "text": "Execution started", "value": 0.05}
-                elif msg_type == "executing":
-                    node = data.get("node")
-                    if node is None and data.get("prompt_id") == prompt_id:
-                        # 完了
-                        break
-                elif msg_type == "progress":
-                    value = data.get("value", 0)
-                    max_val = data.get("max", 1)
-                    if max_val > 0:
-                        progress = value / max_val
-                        # 10% ~ 90% の範囲にスケーリング
-                        scaled_progress = 0.1 + (progress * 0.8)
-                        yield {"type": "progress", "text": f"Sampling... {value}/{max_val}", "value": scaled_progress}
-                elif msg_type == "execution_success" and data.get("prompt_id") == prompt_id:
-                    break
-                elif msg_type == "execution_error":
-                    error_msg = data.get("exception_message", "Unknown error")
-                    node_id = data.get("node_id", "")
-                    node_type = data.get("node_type", "")
-                    raise Exception(f"ComfyUI Execution Error in node {node_id} ({node_type}): {error_msg}")
+            completed, event = interpret_progress_message(out, prompt_id)
+            if completed:
+                break
+            if event is not None:
+                yield event
         except websocket.WebSocketTimeoutException:
             continue
         except Exception as e:
