@@ -263,10 +263,28 @@ Receive interpretation, progress, completion detection, timeout policy and
 output polling/capture remain unchanged, as does app.py. Fake-socket tests and
 AST inlining checks verify the boundary without a live server.
 
-The next candidate is read-only receive-message interpretation, first
-characterizing ignored/malformed messages, progress scaling and completion
-IDs. Keep socket cleanup and timeout policy with the generator; do not combine
-them with output polling into a broad transport abstraction.
+## Received-message interpretation
+
+Following PR #10, `core.comfy_message_interpretation.interpret_progress_message`
+accepts one received payload and the submitted prompt ID. It returns
+`(completed, event)`: ignored payloads return `(False, None)`, completion
+returns `(True, None)`, and status/progress messages return the existing event
+dictionary. It performs no socket operations and mutates no inputs.
+
+Baseline characterization pins non-string payloads being ignored, malformed
+JSON/non-object failures, unknown types, completion ID/node comparisons,
+progress defaults and the existing unclamped 0.1 + ratio * 0.8 scaling.
+Execution errors retain their text/defaults. Parsing and interpretation errors
+still reach the generator's original exception wrapper; no validation or
+broader catching was added. The AST matches when helper returns are converted
+back to the original yield/break statements and the adapter is inlined.
+
+`generate_image_with_progress` still owns recv, receive-timeout retries,
+execution timeout, status yielding, socket close, lifecycle and output polling.
+app.py is unchanged. Existing early-close and failure cleanup semantics remain.
+The next candidate is a separate characterization of history/output polling
+results and errors in its existing core owner; do not widen this receive
+interpreter to include polling or cleanup.
 
 Candidate normalization is a later candidate: first separate its path
 resolution, record compatibility and session-cache dependencies from adoption
