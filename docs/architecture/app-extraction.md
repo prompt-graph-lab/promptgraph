@@ -380,6 +380,31 @@ remain outside this step. Next, review the existing generator-to-diagnostic
 integration for missing-output failure evidence before considering any further
 owner change; do not force another extraction solely to reduce file size.
 
+## Missing-output integration
+
+Following PR #14, tests characterize the retained generator orchestration;
+no runtime extraction is warranted. After execution completion/close, the
+Execution done. Fetching image... status (0.95) is yielded before polling.
+Resuming calls the poller with server address, prompt ID and the same workflow.
+The eight required poll-result keys are read directly, then extraction metadata
+output_node_ids/output_keys_by_node/image_like_fields is read with existing
+defaults. Missing keys and malformed values are not normalized.
+
+Falsey image_infos triggers diagnostic construction with the original poll
+objects and workflow, and attempt_count=len(attempt_logs). The generator warns
+with `Comfy output missing after polling: %s`, formats the same diagnostic
+object and raises ComfyOutputError. Truthy diagnostics retain identity; falsey
+diagnostics use the exception's existing empty-dict fallback. No directory
+creation, URL building, download, file write or done event occurs on this branch.
+Truthy image_infos proceeds toward directory creation without missing-output
+diagnostics. Poller/builder/logger/formatter failures propagate directly.
+
+Tests reuse the real diagnostic helpers for integration and mocks for ordering
+and short-circuit evidence. Generator lifecycle, polling internals, downloading,
+diagnostic wording and app.py remain unchanged. The next candidate is bounded
+characterization of download-phase failure/partial-success orchestration using
+fake responses and temporary output paths, before considering any extraction.
+
 Candidate normalization is a later candidate: first separate its path
 resolution, record compatibility and session-cache dependencies from adoption
 mutations.
