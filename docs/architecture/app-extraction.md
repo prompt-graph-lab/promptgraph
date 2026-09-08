@@ -319,6 +319,35 @@ app.py change is made. The next natural step is characterization of the existing
 image-record extraction helper's precedence, deduplication and compatibility
 rules, rather than a broad history/transport abstraction.
 
+## Image-output extraction
+
+Following PR #12, three deterministic helpers move unchanged to
+`core.comfy_image_outputs`, with their original names still imported by
+`core.comfyui`. Recognition accepts nonempty string filenames whose lowercased
+splitext extension is png/jpg/jpeg/webp/gif/bmp; it does not validate paths.
+Collection traverses dictionaries/lists in insertion order. An images/gifs list
+is treated as terminal records, not recursively searched. Records keep filename,
+subfolder (default empty), type (default output) and exact indexed _debug_path.
+
+Extraction inspects string-normalized configured SaveImage IDs first. Any images
+there suppress fallback; otherwise all dictionary output nodes are scanned.
+Output keys themselves are not normalized for lookup: numeric keys can miss the
+SaveImage pass but be found in fallback, retaining numeric _node_id. Diagnostics
+stringify output IDs and can collapse numeric/string key collisions.
+
+Deduplication uses (filename, subfolder, type), retaining the first record and
+its node/path; diagnostic image_like_fields retains duplicates. Explicit field
+values are not sanitized; unhashable subfolder/type values still raise TypeError.
+The six result keys remain images, image_like_fields, save_nodes_with_outputs,
+save_node_output_keys, output_node_ids and output_keys_by_node. Inputs are not
+mutated. Baseline characterization passes before movement; moved and remaining
+ASTs match. app.py is unchanged.
+
+History fetch/selection, polling/retry/sleep, status interpretation, diagnostics,
+download and path saving remain in their existing owners. Next, characterize
+the existing output-diagnostic construction/formatting contract before deciding
+whether it needs a separate owner; do not combine it with transport or polling.
+
 Candidate normalization is a later candidate: first separate its path
 resolution, record compatibility and session-cache dependencies from adoption
 mutations.
