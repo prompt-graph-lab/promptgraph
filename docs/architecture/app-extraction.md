@@ -282,9 +282,42 @@ back to the original yield/break statements and the adapter is inlined.
 `generate_image_with_progress` still owns recv, receive-timeout retries,
 execution timeout, status yielding, socket close, lifecycle and output polling.
 app.py is unchanged. Existing early-close and failure cleanup semantics remain.
-The next candidate is a separate characterization of history/output polling
-results and errors in its existing core owner; do not widen this receive
-interpreter to include polling or cleanup.
+## History/output polling contract
+
+Following PR #11, `_poll_comfy_output_history` remains in its existing core
+owner; this step adds characterization only. Its inputs are server address,
+prompt ID, workflow, and keyword-only max_attempts (default 8) and
+interval_seconds (default 0.75). It already delegates history lookup, image
+extraction and failure-status interpretation to focused helpers, so another
+move would not establish a useful smaller responsibility.
+
+Each attempt fetches history, interprets it and appends a log containing
+attempt (one-based), history_found (truthiness of the resolved record),
+outputs_keys (ordered extraction output_node_ids), and
+save_image_nodes_with_outputs. Images take precedence over failure status;
+either ends polling. Success/non-failure status without images retries.
+Sleep receives the interval unchanged only between continuing attempts, never
+after success, failure-status exit or the final attempt. Nonpositive integer
+attempt counts perform no fetch; invalid attempt types are not normalized.
+
+Only history-fetch exceptions are swallowed: history becomes {}, the exception
+string is recorded/logged, and normal interpretation/retry continues. A later
+successful fetch clears the error even when its result has no images.
+History interpretation, extraction, status checking and sleep exceptions
+propagate. Diagnostic formatting is unchanged.
+
+The result keys are history, prompt_history, outputs, extraction, image_infos,
+attempt_logs, last_history_fetch_error and save_image_node_ids. History and its
+resolved record/outputs retain their existing references; image_infos aliases
+extraction.images. Returned state describes the final attempted fetch, with all
+attempt logs retained. Zero attempts return initialized empty state plus the
+workflow's SaveImage node IDs.
+
+`generate_image_with_progress` still owns the surrounding lifecycle, missing
+image diagnostics and subsequent image downloading/path saving. No runtime or
+app.py change is made. The next natural step is characterization of the existing
+image-record extraction helper's precedence, deduplication and compatibility
+rules, rather than a broad history/transport abstraction.
 
 Candidate normalization is a later candidate: first separate its path
 resolution, record compatibility and session-cache dependencies from adoption
