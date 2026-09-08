@@ -348,6 +348,38 @@ download and path saving remain in their existing owners. Next, characterize
 the existing output-diagnostic construction/formatting contract before deciding
 whether it needs a separate owner; do not combine it with transport or polling.
 
+## Output-diagnostic contract
+
+Following PR #13, diagnostic construction/formatting is characterized in place.
+The builder depends on existing history sampling, status interpretation and
+workflow classification helpers. Moving it now would require moving excluded
+owners, importing back from comfyui, or dependency plumbing; this step therefore
+changes tests/docs only. app.py and all runtime code remain unchanged.
+
+The ordered diagnostic keys remain queued_prompt_id, history_prompt_ids_sample,
+target_history_found, target_status, target_status_messages, target_outputs_keys,
+save_image_node_ids, save_image_outputs_found, save_image_nodes_with_outputs,
+save_image_node_output_keys, workflow_node_count, workflow_save_image_node_ids,
+workflow_output_node_ids, attempt_count, last_history_fetch_error and attempts.
+History sampling keeps the first eight stringified keys. Status messages keep
+the first five; attempts keep the final COMFY_OUTPUT_POLL_ATTEMPTS records.
+Both slices copy the container but retain record references. SaveImage ID lists,
+extraction node lists and node-output-key dictionaries are stored directly.
+
+Status and raw/wrapped workflow compatibility remain with existing helpers.
+Output keys retain insertion order and original types. Presence flags use
+truthiness; the error field uses `value or "none"` without coercion. Formatting
+retains the exact multiline wording, order, punctuation, no trailing newline,
+Python representations and yes/no truthiness. Missing fields and explicit None
+format as None; extra keys are ignored. Malformed inputs and failing str/repr
+operations propagate rather than being caught. Neither operation mutates inputs.
+
+Polling/generator owners still assemble inputs and decide when diagnostics are
+used; transport, image extraction, status/classification semantics and download
+remain outside this step. Next, review the existing generator-to-diagnostic
+integration for missing-output failure evidence before considering any further
+owner change; do not force another extraction solely to reduce file size.
+
 Candidate normalization is a later candidate: first separate its path
 resolution, record compatibility and session-cache dependencies from adoption
 mutations.
