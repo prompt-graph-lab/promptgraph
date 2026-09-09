@@ -1,3 +1,6 @@
+from core.comfy_status_interpretation import (_comfy_status_summary, _comfy_status_is_failure)
+from core.comfy_workflow_outputs import (_workflow_output_nodes, _workflow_save_image_nodes)
+from core.comfy_history_interpretation import (_history_outputs, _history_prompt_record, _history_prompt_ids_sample)
 from core.comfy_history_fetch import fetch_comfy_history as _fetch_comfy_history
 from core.comfy_image_download import download_image_to_path
 from core.comfy_image_outputs import (IMAGE_LIST_KEYS, _looks_like_comfy_image_record, _collect_image_outputs, _extract_history_images)
@@ -25,86 +28,6 @@ class ComfyOutputError(Exception):
     def __init__(self, message, diagnostics=None):
         super().__init__(message)
         self.diagnostics = diagnostics or {}
-
-
-
-def _history_outputs(history, prompt_id):
-    if not isinstance(history, dict):
-        return {}
-    prompt_history = history.get(prompt_id)
-    if not isinstance(prompt_history, dict) and len(history) == 1:
-        prompt_history = next(iter(history.values()))
-    if not isinstance(prompt_history, dict):
-        return {}
-    outputs = prompt_history.get("outputs", {})
-    return outputs if isinstance(outputs, dict) else {}
-
-def _history_prompt_record(history, prompt_id):
-    if not isinstance(history, dict):
-        return {}
-    prompt_history = history.get(prompt_id)
-    if not isinstance(prompt_history, dict) and len(history) == 1:
-        prompt_history = next(iter(history.values()))
-    return prompt_history if isinstance(prompt_history, dict) else {}
-
-def _history_prompt_ids_sample(history, limit=8):
-    if not isinstance(history, dict):
-        return []
-    return [str(prompt_id) for prompt_id in list(history.keys())[:limit]]
-
-def _workflow_output_nodes(workflow_json):
-    node_ids = []
-    if not isinstance(workflow_json, dict):
-        return node_ids
-    target_nodes = workflow_json.get("nodes", workflow_json)
-    if not isinstance(target_nodes, dict):
-        return node_ids
-    for node_id, node_data in target_nodes.items():
-        if not isinstance(node_data, dict):
-            continue
-        class_type = str(node_data.get("class_type") or node_data.get("type") or "")
-        if class_type in {"SaveImage", "PreviewImage"} or class_type.endswith(".SaveImage") or class_type.endswith(".PreviewImage"):
-            node_ids.append(str(node_id))
-    return node_ids
-
-def _workflow_save_image_nodes(workflow_json):
-    node_ids = []
-    if not isinstance(workflow_json, dict):
-        return node_ids
-    target_nodes = workflow_json.get("nodes", workflow_json)
-    if not isinstance(target_nodes, dict):
-        return node_ids
-    for node_id, node_data in target_nodes.items():
-        if not isinstance(node_data, dict):
-            continue
-        class_type = str(node_data.get("class_type") or node_data.get("type") or "")
-        if class_type == "SaveImage" or class_type.endswith(".SaveImage"):
-            node_ids.append(str(node_id))
-    return node_ids
-
-def _comfy_status_summary(prompt_history):
-    status = prompt_history.get("status", {}) if isinstance(prompt_history, dict) else {}
-    if isinstance(status, dict):
-        status_value = status.get("status_str")
-        if status_value is None and "completed" in status:
-            status_value = "completed" if status.get("completed") else "not_completed"
-        messages = status.get("messages", [])
-        return str(status_value or "unknown"), messages if isinstance(messages, list) else []
-    if status:
-        return str(status), []
-    return "unknown", []
-
-def _comfy_status_is_failure(prompt_history):
-    status_value, messages = _comfy_status_summary(prompt_history)
-    lowered = status_value.lower()
-    if lowered in {"error", "failed", "failure"}:
-        return True
-    for message in messages:
-        if not isinstance(message, (list, tuple)) or not message:
-            continue
-        if str(message[0]).lower() in {"execution_error", "error", "failed"}:
-            return True
-    return False
 
 
 def _build_output_diagnostics(

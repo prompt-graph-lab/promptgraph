@@ -685,3 +685,41 @@ sharing lifecycle policy. Candidate C leaves clock, close and suspension visible
 together and is simpler than either candidate. Runtime and `app.py` remain
 unchanged. Reconsider only for an actual independent execution consumer, not
 for line-count reduction; no adjacent cleanup is proposed.
+
+### Batched output interpretation extraction
+
+Three independent small, already-characterized helper clusters now have focused
+owners. They are intentionally batched to share one integration/full-suite
+validation surface, not to redesign polling or its data model.
+
+- `core.comfy_history_interpretation`: `_history_prompt_record`,
+  `_history_outputs`, `_history_prompt_ids_sample`. Dict-only selection first
+  uses the exact prompt ID, then the sole value if the direct value is not a
+  dict and history has exactly one entry. Record/output dicts retain identity;
+  non-dict outputs become empty dicts. Sampling retains insertion order, native
+  slicing (including unusual limits/errors), then str conversion; no sorting.
+- `core.comfy_workflow_outputs`: `_workflow_output_nodes` and
+  `_workflow_save_image_nodes`. Raw/wrapped dict nodes, insertion order and
+  str IDs are retained, including duplicate strings from distinct keys.
+  Class resolution remains `class_type or type or ""`, then str; exact or
+  dotted SaveImage/PreviewImage suffixes are case-sensitive. Save-only excludes
+  PreviewImage. Invalid container/entry handling is unchanged.
+- `core.comfy_status_interpretation`: `_comfy_status_summary` and
+  `_comfy_status_is_failure`. Only a None status_str permits the completed-key
+  fallback (including explicitly present None); other falsey values become
+  unknown. List messages retain identity. Status failure words are error,
+  failed, failure; list/tuple message heads recognize execution_error, error,
+  failed after str/lower only. No trimming, mutation or error wrapping is added.
+
+All names remain imported into `core.comfyui`; polling/diagnostic callers and
+existing tested patch seams remain intact. The status failure helper resolves
+its summary sibling in the new module; no tests patch the old summary symbol.
+Bodies are literal moves. Polling retry/error/sleep policy, diagnostic payloads,
+receive lifecycle, downloads and final event remain unchanged, as does `app.py`.
+Existing polling/diagnostic tests provide most coverage; small direct tests add
+only selection/slice, class fallback/ID collision and status vocabulary/alias
+edges. No forwarding wrappers or new schemas are introduced.
+
+No next extraction is justified by this move alone. The retained diagnostics
+and poller are already coherent owners; revisit only for a concrete maintenance
+need. The prior decisions to keep final-event and receive lifecycle inline stand.
