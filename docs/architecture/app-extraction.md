@@ -589,3 +589,25 @@ identity and assembly-failure tests provide sufficient evidence for this review;
 no speculative test is added. Runtime and `app.py` are unchanged. There is no
 next extraction PR proposed for this final-event boundary. Revisit only if a
 real second producer or independent success-diagnostic policy emerges.
+
+### History HTTP fetch extraction
+
+`core.comfy_history_fetch.fetch_comfy_history(server_address, prompt_id)` owns
+only `http://{server_address}/history/{prompt_id}` construction, HTTP open,
+response context entry/read, JSON decoding and context exit before returning
+the decoded value. Interpolation remains raw: no encoding, normalization,
+headers, timeout argument or status/result-type validation is added. Decode
+occurs inside the response context; exit failures can override a successful
+return. Exceptions propagate unchanged with no logging or fallback.
+
+`core.comfyui` imports it as `_fetch_comfy_history`, preserving the private
+poller patch seam and unchanged polling tests. Retry counts, sleep, swallowed
+fetch errors, logging, history selection, output/status interpretation and
+attempt diagnostics remain with the poller and its existing helpers. The body
+is moved literally; now-unused json/urllib.request imports are removed from
+that module. `app.py`, generator and final-event ownership are unchanged.
+
+The next candidate is a bounded design review of the retained WebSocket
+receive/progress lifecycle, checking whether timeout, close and yield ownership
+can remain clear without a broad transport abstraction. No extraction there is
+assumed or implemented in this PR.

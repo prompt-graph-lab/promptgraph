@@ -1,3 +1,4 @@
+from core.comfy_history_fetch import fetch_comfy_history as _fetch_comfy_history
 from core.comfy_image_download import download_image_to_path
 from core.comfy_image_outputs import (IMAGE_LIST_KEYS, _looks_like_comfy_image_record, _collect_image_outputs, _extract_history_images)
 from core.comfy_message_interpretation import interpret_progress_message
@@ -5,8 +6,6 @@ from core.comfy_websocket_setup import connect_progress_socket
 from core.comfy_prompt_submission import submit_prompt_request
 from core.comfy_prompt_request import prepare_prompt_request
 
-import json
-import urllib.request
 import urllib.parse
 import urllib.error
 import time
@@ -107,10 +106,6 @@ def _comfy_status_is_failure(prompt_history):
             return True
     return False
 
-
-def _fetch_comfy_history(server_address, prompt_id):
-    with urllib.request.urlopen(f"http://{server_address}/history/{prompt_id}") as response:
-        return json.loads(response.read())
 
 def _build_output_diagnostics(
     *,
