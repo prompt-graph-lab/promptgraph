@@ -495,3 +495,26 @@ Download/write ownership remains with `download_image_to_path`. Runtime code and
 existing generator's successful final-event metadata defaults/aliasing and
 post-download assembly failures, rather than further path-allocation extraction.
 No such follow-up is implemented here.
+
+### Final done-event characterization (runtime unchanged)
+
+Successful-event metadata uses `.get` defaults only for missing extraction keys:
+`output_node_ids=[]`, `output_keys_by_node={}`, `image_like_fields=[]`, and final
+`save_nodes_with_outputs=[]`. Present falsey values pass through unchanged.
+The event reuses supplied metadata containers, attempt logs and SaveImage node
+IDs without copying. The retained download tests cover the complete payload,
+first successful primary path, shared paths/saved_paths and original images.
+
+Final diagnostics compute `len(attempt_logs)` (not attempt numbers) and retain
+the original logs object. This happens after successful download and before
+`extraction.get("save_nodes_with_outputs", [])`. A malformed logs value therefore
+fails before that final lookup; a lookup failure also propagates unchanged.
+Neither failure enters the per-image warning/continue handler or emits a done
+event; already-written files remain, with no cleanup. Tests use a download
+boundary fake that writes real bytes into temporary files.
+
+Runtime code and `app.py` remain unchanged. The next candidate is design review
+of a narrow final-event assembly helper receiving already-collected metadata
+and download results, preserving these aliases and evaluation order. Such an
+extraction is only worthwhile if it clarifies ownership; no builder or payload
+redesign is introduced here.
