@@ -130,3 +130,21 @@ class WebSocketSetupTests(unittest.TestCase):
         next(self.generator)
         self.generator.close()
         self.socket.close.assert_not_called()
+
+    def test_event_identity_suspension_and_injected_error_remain_inside_handler(self):
+        self.queued()
+        event = {'type': 'progress', 'text': 'sentinel', 'value': .5}
+        with patch.object(comfyui, 'interpret_progress_message', return_value=(False, event)):
+            self.assertIs(next(self.generator), event)
+            self.socket.recv.assert_called_once()
+            self.socket.close.assert_not_called()
+            self.poll.assert_not_called()
+            error = ValueError('injected at yield')
+            with self.assertRaises(Exception) as caught:
+                self.generator.throw(error)
+        self.assertIs(type(caught.exception), Exception)
+        self.assertEqual(str(caught.exception), 'WebSocket error or execution failed: injected at yield')
+        self.assertIs(caught.exception.__context__, error)
+        self.assertIsNone(caught.exception.__cause__)
+        self.socket.recv.assert_called_once()
+        self.socket.close.assert_not_called()
