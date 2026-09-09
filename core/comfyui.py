@@ -1,3 +1,4 @@
+from core.comfy_status_interpretation import (_comfy_status_summary, _comfy_status_is_failure)
 from core.comfy_workflow_outputs import (_workflow_output_nodes, _workflow_save_image_nodes)
 from core.comfy_history_interpretation import (_history_outputs, _history_prompt_record, _history_prompt_ids_sample)
 from core.comfy_history_fetch import fetch_comfy_history as _fetch_comfy_history
@@ -27,37 +28,6 @@ class ComfyOutputError(Exception):
     def __init__(self, message, diagnostics=None):
         super().__init__(message)
         self.diagnostics = diagnostics or {}
-
-
-
-
-
-
-
-
-def _comfy_status_summary(prompt_history):
-    status = prompt_history.get("status", {}) if isinstance(prompt_history, dict) else {}
-    if isinstance(status, dict):
-        status_value = status.get("status_str")
-        if status_value is None and "completed" in status:
-            status_value = "completed" if status.get("completed") else "not_completed"
-        messages = status.get("messages", [])
-        return str(status_value or "unknown"), messages if isinstance(messages, list) else []
-    if status:
-        return str(status), []
-    return "unknown", []
-
-def _comfy_status_is_failure(prompt_history):
-    status_value, messages = _comfy_status_summary(prompt_history)
-    lowered = status_value.lower()
-    if lowered in {"error", "failed", "failure"}:
-        return True
-    for message in messages:
-        if not isinstance(message, (list, tuple)) or not message:
-            continue
-        if str(message[0]).lower() in {"execution_error", "error", "failed"}:
-            return True
-    return False
 
 
 def _build_output_diagnostics(
