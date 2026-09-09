@@ -423,3 +423,31 @@ the entry and drops unknown extension fields (reproduced with a synthetic
 main revision. This differs from the metadata-preserving Global Module editing
 path and is recorded for separate investigation, not changed or generalized
 as part of token extraction.
+
+### Download-phase characterization (runtime unchanged)
+
+Offline tests now pin the generator's download phase after truthy polled
+`image_infos`. Directory creation (`exist_ok=True`), required filename lookup,
+subfolder/type defaults, URL encoding and unique-path selection precede the
+per-image exception handler: their failures propagate without download warnings.
+The normalized server address is used verbatim; `urlencode` receives filename,
+subfolder and type in that order. The URL is recorded before path selection;
+paths use the original `file_prefix + "_" + filename` composition.
+
+HTTP open/context entry, response read, binary file open/write and context exit
+are inside the handler. Failures produce the existing filename/error warning
+and a 0.95 warning event, then processing resumes at the next record. A path is
+successful only after both contexts exit; this does not guarantee that failed
+attempts leave no local bytes. Partial success emits `done` with the first
+successful path and all successful paths, retaining attempted URLs and errors.
+Total failure emits the individual warnings before the existing generic
+exception with prompt, output metadata, attempted URLs/count and error evidence.
+
+The exact final event includes output metadata, original image records,
+attempted URLs, saved paths and errors, plus attempt count/logs and SaveImage
+node diagnostics. Polling, generator yields/lifecycle, downloading and file
+ownership remain in `generate_image_with_progress`; runtime code and `app.py`
+are unchanged. The next smallest candidate is the single-image HTTP response
+read/binary-write operation with explicit URL and save-path inputs, characterized
+against these context-exit/error contracts before extraction. Keep warning
+emission, aggregation, path selection and generator ownership separate.
