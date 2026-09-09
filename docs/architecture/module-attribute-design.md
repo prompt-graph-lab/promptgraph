@@ -492,6 +492,8 @@ Status: design history and conceptual direction. This section records how the Mo
 
 The reason to write it down is that the current implementation looks like a token-matching tool while the thing it is actually approximating is semantic replacement. Someone reading only the code could reasonably conclude the heuristics are the design. They are not; they are the part of the design that could be built safely first.
 
+One thing to get right before reading further: a persisted Module Graph representation already exists in this repository. What does not exist yet is replacement that uses its structure. The section is careful to keep those two apart.
+
 ### Generation 1: Module as an explicit prompt component
 
 The earliest useful mental model treated a Module as a reusable prompt component: a named block of prompt tokens that could be defined once and referenced from many lines.
@@ -532,24 +534,47 @@ and, increasingly, a Module is better understood as semantic structure than as a
 
 The current implementation already reflects part of it. Module Swap looks for a contiguous span of matched tokens first, and when there is none it removes the matched tokens wherever they sit and inserts the replacement at the position of the first match. It does not require the semantic unit to be contiguous in order to act on it.
 
+### What already exists: Module Graph v1
+
+Modules are not stored only as flat token text today. `core/modules.py` defines a persisted Module Graph representation, and `normalize_module_library()` builds and normalizes one for every entry in the library -- including entries that were saved as a bare string body -- writing the normalized library back onto the Project:
+
+```text
+module_graph (type: module_graph, version: 1)
+    nodes                  token nodes and module_ref nodes
+    edges                  ordered sequence edges
+    child_module_refs      Modules referenced from inside this Module
+    related_module_refs
+    metadata               role, tags, notes
+    boundary_policy        preserve_connected_extras, allow_split, allow_merge
+    replacement_policy     mode: flatten_current
+                           future_modes: replace_exact_subgraph,
+                                         replace_core_preserve_extras,
+                                         replace_including_optional,
+                                         map_variant
+```
+
+So the container, its versioning, its normalization and validation path, and its declared policy vocabulary are implemented and persisted. What is *not* implemented is any operation that reads the structure in order to replace part of it. `boundary_policy` and `replacement_policy` are recorded but not yet consumed by an operation, node roles are assigned uniformly when the graph is built rather than carrying a semantic distinction, and the edges describe token order rather than correspondence.
+
+The current `replacement_policy.mode` names this exactly: `flatten_current`. `get_module_body()` flattens an existing graph back into prompt tokens, and everything downstream -- Module Candidate discovery, Module Swap, active-prompt expansion -- consumes that flattened token list. The four `future_modes` are the vocabulary for the capability that does not exist yet.
+
 ### Swap v1 as a practical bridge
 
-Production needed character and outfit replacement to work before any graph-backed Module model existed. The answer was to build replacement on top of what was already there: Module prompt-token bodies, Core Tokens, loose matching, the existing token matching and replacement code, preview before apply, and Prompt Drift visibility where the change could invalidate an existing image.
+Production needed character and outfit replacement to work before any *graph-aware replacement* existed. The answer was to build replacement on top of what was already usable: the flattened Module body, Core Tokens, loose matching, the existing token matching and replacement code, preview before apply, and Prompt Drift visibility where the change could invalidate an existing image.
 
 Conceptually this matters more than it looks:
 
 ```text
 Swap v1 approximates semantic subgraph replacement
-without storing an actual graph.
+without using the stored graph's structure during replacement.
 ```
 
-It does so by treating a Module definition partly as a recognition profile rather than only as output text — asking, in effect, *does enough of this semantic unit appear on this line that this replacement is probably appropriate?*
+The graph is there; the replacement path flattens past it. Swap obtains the effective Module body through `get_module_body()`, which collapses the graph to tokens, and then works entirely in token space: match keys, Core Token gating, span or scattered-token replacement. It approximates the intended behavior by treating a Module definition partly as a recognition profile rather than only as output text — asking, in effect, *does enough of this semantic unit appear on this line that this replacement is probably appropriate?*
 
 This was not a failed placeholder for the real design. It turned out to be practically useful enough to become a major production workflow, and much of it was used on Projects that never materialized explicit `<mod:name>` bindings at all.
 
 What must stay accurate about it:
 
-- Core Tokens and Minimum Match Thresholds are an early recognition mechanism, as section 5 already states. They are not a semantic graph.
+- Core Tokens and Minimum Match Thresholds are an early recognition mechanism, as section 5 already states. They operate on the flattened Module body, not on the Module Graph's structure.
 - They are not occurrence-level bindings. Nothing about a match is persisted; the match is recomputed and re-previewed each time.
 - The two mechanisms are not interchangeable, and the distinction is worth keeping straight when reasoning about either. Module Candidate discovery gates on the Core Tokens all being present and then requires the matched token count to reach the Minimum Match Threshold. Module Swap gates on Core Tokens in strict mode, drops that gate in loose mode, and does not consult the Minimum Match Threshold at all.
 - A loose match must never be presented as certain persisted structure. It is a proposal for a preview, not a recorded fact about the line.
@@ -574,22 +599,25 @@ Stated against what exists today: the implemented Attribute Group Swap is a prev
 
 ```text
 Flat token metadata is being used to approximate graph correspondence
-before a graph representation exists.
+while replacement still runs on flattened tokens.
 ```
 
-### Conceptual generation 2: explicit semantic structure
+### Conceptual generation 2: semantics the replacement path can use
 
-The next conceptual generation makes explicit what generation 1 leaves implicit. Its pieces are already described elsewhere in this document rather than invented here: Module identity, AttributeSlot, Attribute Variant, StateDomain, LineBinding, occurrence-level state, and the idea of comparing corresponding parts rather than comparing text.
+Given Module Graph v1, the next conceptual generation is not about introducing a graph. The container exists. It is about enriching that structure with meaning and, more importantly, about replacement that actually reads it. Its pieces are already described elsewhere in this document rather than invented here: Module identity, AttributeSlot, Attribute Variant, StateDomain, LineBinding, occurrence-level state, and the idea of comparing corresponding parts rather than comparing text.
 
 The shift is:
 
 ```text
-from  flat token body + recognition metadata
-to    semantic structure
+from  a persisted graph that replacement flattens away
+      + flat token recognition metadata
+to    that same structure, carrying meaning
       + explicit correspondence between source and replacement
       + occurrence-level binding and state
       + explainable partial replacement
 ```
+
+The missing capability is graph-aware replacement, not a graph object. If the existing Module Graph can carry what is needed -- semantic node roles instead of uniform ones, correspondence beyond sequence edges, a `replacement_policy.mode` beyond `flatten_current` -- then it should be evolved rather than replaced. The `future_modes` already recorded there are a reasonable starting vocabulary for that conversation.
 
 The consequence for replacement is the point:
 
@@ -684,7 +712,7 @@ It also matters because many real production Projects used Module Swap successfu
 
 ### What this history is evidence for
 
-The practical success of loose-match Module Swap is evidence that the semantic-structure hypothesis was useful before any structure was stored. The current implementation approximates part of graph-like replacement behavior using token matching, Core / Optional metadata, semantic Attributes and Slots, and preview-first application, and that approximation carried real production work.
+The practical success of loose-match Module Swap is evidence that the semantic-structure hypothesis was useful before the stored structure was used for replacement. The current implementation approximates part of graph-like replacement behavior using token matching, Core / Optional metadata, semantic Attributes and Slots, and preview-first application, and that approximation carried real production work.
 
 That is useful evidence for the direction. It is not proof that the current heuristic model is complete, and it is not a reason to skip the explicit model: the same production use also produced the failure modes this document already records — residue left outside a too-narrow Module boundary, state encoded into Variant names, and unassigned tokens with no defined handling.
 
@@ -709,4 +737,5 @@ Current limitations:
 - No full NovelAI parser.
 - Current Core Tokens and Minimum Match Thresholds remain the active v1 recognition tools; selected-token Core / Optional metadata does not yet change candidate matching behavior.
 - Current module apply remains preview-first and replaces matched tokens with module references without inserting missing tokens.
-- The Module Evolution section is design history and conceptual direction only. Conceptual generations 2 and 3, including semantic-subgraph replacement and inference-assisted transformation, have no schema, runtime behavior, migration path, or date.
+- Module Graph v1 (`module_graph`, version 1) is built, normalized, validated, and persisted for every Module entry, but no operation consumes its structure: `boundary_policy` and `replacement_policy` are recorded and not read, and `get_module_body()` flattens the graph to tokens for Module Candidate discovery, Module Swap, and active-prompt expansion. The current `replacement_policy.mode` is `flatten_current`.
+- The Module Evolution section is design history and conceptual direction only. Conceptual generations 2 and 3, including graph-aware semantic-subgraph replacement and inference-assisted transformation, have no schema, runtime behavior, migration path, or date.
