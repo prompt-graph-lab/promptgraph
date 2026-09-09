@@ -1,3 +1,4 @@
+from core.comfy_image_download import download_image_to_path
 from core.comfy_image_outputs import (IMAGE_LIST_KEYS, _looks_like_comfy_image_record, _collect_image_outputs, _extract_history_images)
 from core.comfy_message_interpretation import interpret_progress_message
 from core.comfy_websocket_setup import connect_progress_socket
@@ -436,10 +437,7 @@ def generate_image_with_progress(workflow_json: dict, server_address: str, outpu
         save_path = _unique_save_path(output_dir, f"{file_prefix}_{filename}")
 
         try:
-            with urllib.request.urlopen(image_url) as response:
-                image_data = response.read()
-                with open(save_path, "wb") as f:
-                    f.write(image_data)
+            download_image_to_path(image_url, save_path)
             saved_paths.append(save_path)
         except Exception as e:
             error_text = f"Failed to download image {filename}: {e}"
