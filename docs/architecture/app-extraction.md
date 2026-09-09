@@ -518,3 +518,74 @@ of a narrow final-event assembly helper receiving already-collected metadata
 and download results, preserving these aliases and evaluation order. Such an
 extraction is only worthwhile if it clarifies ownership; no builder or payload
 redesign is introduced here.
+
+### Final-event ownership design review
+
+**Recommendation: keep the final event and its success diagnostics inline;
+no further extraction is justified here.** The literal is the natural terminal
+representation of state already owned or collected by the generator. The
+nonempty-success check, first-path selection, warning/continue policy, partial
+success, total failure and yield timing remain generator responsibilities.
+
+Candidate A, a whole-event builder, would need **11 independent inputs**. A
+concrete signature for comparison (not a planned API) in a hypothetical
+`core/comfy_done_event.py` would be:
+
+```python
+build_done_event(*, saved_paths, download_errors, attempted_view_urls,
+                 prompt_id, output_node_ids, output_keys_by_node,
+                 image_like_fields, attempt_logs, save_image_node_ids,
+                 extraction, image_infos)
+```
+
+| Inputs | Ownership and reference requirements |
+| --- | --- |
+| `saved_paths` | Generator download result; first element supplies primary path; the same list supplies both paths fields. |
+| `download_errors`, `attempted_view_urls` | Generator download evidence containers, passed through unchanged. |
+| `prompt_id` | Submission identifier, normally an immutable string; no conversion. |
+| `output_node_ids`, `output_keys_by_node`, `image_like_fields` | Extraction metadata already read before downloading; preserve container identity and present falsey values. |
+| `attempt_logs` | Polling diagnostic container; retain identity and compute its length. |
+| `save_image_node_ids` | Polling/workflow diagnostic metadata; retain container identity. |
+| `extraction` | Original extraction mapping, needed for the late success-node lookup. |
+| `image_infos` | Polled image records; retain original container identity. |
+
+No socket, clock, UI or other lifecycle input belongs in this builder. Even
+keyword-only arguments would merely relocate a dict plus eleven bindings.
+Passing the entire poll result or a new context/schema to hide the count would
+blur owners. Re-reading the three earlier extraction values in a builder would
+also change lookup timing; they must remain separate inputs.
+
+Candidate B is a coherent but marginally useful smaller boundary: a hypothetical
+`_build_success_diagnostics(attempt_logs, save_image_node_ids, extraction)` in
+`core/comfyui.py` could assemble the four nested fields. These three inputs are
+polling/extraction diagnostics, and original containers must pass through. It
+would compute `len(attempt_logs)` before the final
+`extraction.get("save_nodes_with_outputs", [])`. Precomputing the latter as a
+call argument would reverse the pinned failure order. The call would have to
+remain at the nested dict's current position, after `saved_paths[0]`, after
+successful downloading and outside the per-image catch. There is no branching
+or independent policy to remove: a one-use helper for four fields adds a jump
+without a meaningful reduction in complexity. Do not extract it now.
+
+Both conceptual helpers would only assemble new outer dictionaries and reuse
+inputs, with no intentional mutation, I/O, yields, retries or knowledge of
+download-failure policy. They must not catch, wrap or normalize failures.
+For ordinary containers they are deterministic/read-only; custom `__len__` or
+`get` implementations can raise or have effects, so strict purity cannot be
+promised. Candidate A must retain first-path access before length evaluation,
+then the final lookup; Candidate B must retain the latter two in that order.
+Failures still leave downloaded bytes on disk with no warning or done yield.
+
+Repository Python-source searches for done events, `Completed!`,
+`comfy_output_diagnostics` and success-node fields found one production success
+event constructor. `app.py` consumes/copies debug fields rather than constructing
+the same event. Missing-output diagnostics and polling attempt logs share some
+field names but have different shapes and timing; they are not reusable success
+builders. Test expectations are not production duplication.
+
+Candidate C therefore wins: keep the literal visible next to its terminal
+yield. PR #17's exact payload/partial-success tests and PR #20's defaults,
+identity and assembly-failure tests provide sufficient evidence for this review;
+no speculative test is added. Runtime and `app.py` are unchanged. There is no
+next extraction PR proposed for this final-event boundary. Revisit only if a
+real second producer or independent success-diagnostic policy emerges.
