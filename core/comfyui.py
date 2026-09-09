@@ -1,3 +1,4 @@
+from core.comfy_polling_policy import COMFY_OUTPUT_POLL_ATTEMPTS, COMFY_OUTPUT_POLL_INTERVAL_SECONDS
 from core.comfy_status_interpretation import (_comfy_status_summary, _comfy_status_is_failure)
 from core.comfy_workflow_outputs import (_workflow_output_nodes, _workflow_save_image_nodes)
 from core.comfy_history_interpretation import (_history_outputs, _history_prompt_record, _history_prompt_ids_sample)
@@ -20,8 +21,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-COMFY_OUTPUT_POLL_ATTEMPTS = 8
-COMFY_OUTPUT_POLL_INTERVAL_SECONDS = 0.75
 
 
 class ComfyOutputError(Exception):
