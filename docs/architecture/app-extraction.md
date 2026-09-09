@@ -451,3 +451,21 @@ are unchanged. The next smallest candidate is the single-image HTTP response
 read/binary-write operation with explicit URL and save-path inputs, characterized
 against these context-exit/error contracts before extraction. Keep warning
 emission, aggregation, path selection and generator ownership separate.
+
+### Single-image download extraction
+
+`core.comfy_image_download.download_image_to_path(image_url, save_path)` now
+owns only HTTP open, response entry/read, binary file open/write and both
+context exits. It returns `None` on completion and catches or wraps no exceptions.
+The original nested statements were moved unchanged; direct offline tests pin
+bytes, ordering and exception identity, including failures from context exits.
+The download-phase integration tests remain unchanged.
+
+The generator retains directory creation, record lookup, URL/path construction,
+attempted URLs, successful paths, warning text/yields, continuation and all
+aggregation. Path registration still follows successful helper return, so a
+response-exit failure can leave bytes while producing a warning instead of a
+successful path. Partial success, total failure and the final event are unchanged.
+`app.py` is untouched. The next small candidate is characterization of the
+existing `_unique_save_path` collision/path-selection contract, without moving
+it or combining it with download or generator ownership.
