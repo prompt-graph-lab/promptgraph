@@ -1,3 +1,4 @@
+from core.comfy_history_interpretation import (_history_outputs, _history_prompt_record, _history_prompt_ids_sample)
 from core.comfy_history_fetch import fetch_comfy_history as _fetch_comfy_history
 from core.comfy_image_download import download_image_to_path
 from core.comfy_image_outputs import (IMAGE_LIST_KEYS, _looks_like_comfy_image_record, _collect_image_outputs, _extract_history_images)
@@ -28,29 +29,8 @@ class ComfyOutputError(Exception):
 
 
 
-def _history_outputs(history, prompt_id):
-    if not isinstance(history, dict):
-        return {}
-    prompt_history = history.get(prompt_id)
-    if not isinstance(prompt_history, dict) and len(history) == 1:
-        prompt_history = next(iter(history.values()))
-    if not isinstance(prompt_history, dict):
-        return {}
-    outputs = prompt_history.get("outputs", {})
-    return outputs if isinstance(outputs, dict) else {}
 
-def _history_prompt_record(history, prompt_id):
-    if not isinstance(history, dict):
-        return {}
-    prompt_history = history.get(prompt_id)
-    if not isinstance(prompt_history, dict) and len(history) == 1:
-        prompt_history = next(iter(history.values()))
-    return prompt_history if isinstance(prompt_history, dict) else {}
 
-def _history_prompt_ids_sample(history, limit=8):
-    if not isinstance(history, dict):
-        return []
-    return [str(prompt_id) for prompt_id in list(history.keys())[:limit]]
 
 def _workflow_output_nodes(workflow_json):
     node_ids = []
