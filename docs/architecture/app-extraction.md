@@ -723,3 +723,42 @@ edges. No forwarding wrappers or new schemas are introduced.
 No next extraction is justified by this move alone. The retained diagnostics
 and poller are already coherent owners; revisit only for a concrete maintenance
 need. The prior decisions to keep final-event and receive lifecycle inline stand.
+
+### Batched remaining utility owners
+
+Five independent decisions share one repository/context load, one combined
+relevant-test pass and one final full-suite run. All five are literal extractions:
+
+- A: `core.comfy_polling_policy` owns the constants 8 attempts and 0.75 seconds.
+  Re-exported names preserve imports and definition-time poller defaults; the
+  signature remains unchanged. Diagnostics imports the attempts constant here.
+- B: `core.comfy_output_diagnostics` owns construction and exact formatting.
+  Key order, falsey fallbacks, metadata aliases, first-five message slice,
+  last-eight attempt slice, key types and all malformed-input exceptions remain.
+  It imports interpretation/policy owners directly, never `core.comfyui`.
+- C: `core.comfy_save_path` owns native basename/join/splitext/exists selection,
+  falsey filename fallback and first-gap suffixing. No reservation, creation,
+  normalization or exception handling is introduced.
+- D: `core.comfy_group_prompt` owns node/token traversal, Module stack filtering,
+  last-matching close, grouping/value lookup and malformed-marker warnings.
+  Existing eager `node.word` default evaluation is unchanged.
+- E: `core.comfy_workflow_injection` owns ordered destination aggregation,
+  fallback/merge/overwrite, dedup and in-place workflow mutation. Config lookup
+  before the per-destination try, warnings and broad caught errors remain at
+  their original boundaries; the same workflow object is returned.
+
+All existing entry names are imported back into `core.comfyui`. Workflow
+preparation still uses that seam. D/E bind `logging.getLogger("core.comfyui")`,
+which is the same logger singleton: name, routing and logger-method patches
+remain effective. Replacing the entire comfyui.logger variable would not rebind
+these module references; no existing caller/test relies on that replacement.
+Likewise diagnostics resolves its helper/constant globals in its new owner;
+existing diagnostic entry-point patches and constant imports remain usable.
+
+Existing diagnostics/path tests were sufficient; only small direct D/E tests
+were added for actual traversal/injection and shared logging (preparation tests
+mock those operations). Poller fetch/time/logger seams, retry policy and
+signature, generator/yield/close ownership, app.py and persistence/UI remain
+unchanged. No wrappers, callback parameters or new result schemas are added.
+Remaining orchestration should stay inline; no next extraction is justified
+solely to continue this series.
