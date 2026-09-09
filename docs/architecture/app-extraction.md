@@ -611,3 +611,77 @@ The next candidate is a bounded design review of the retained WebSocket
 receive/progress lifecycle, checking whether timeout, close and yield ownership
 can remain clear without a broad transport abstraction. No extraction there is
 assumed or implemented in this PR.
+
+### Receive/progress lifecycle design review
+
+**Recommendation: keep the receive/progress lifecycle inline. No next extraction
+PR is justified for this boundary.** `generate_image_with_progress` already
+owns suspension and the transition to polling; the read-only protocol decisions
+are separately owned by `interpret_progress_message`.
+
+Current timing and asymmetry matter. After connection, `start_time=time.time()`
+is recorded once. Each iteration checks `time.time() - start_time > timeout`
+before receiving. Expiry closes then raises plain `Exception` with
+`ComfyUI execution timeout ({timeout}s exceeded)`; that iteration never receives.
+`WebSocketTimeoutException` inside the try retries without closing; the next
+iteration checks overall time again. Other `Exception` instances become
+`Exception("WebSocket error or execution failed: ...")` with implicit original
+`__context__`, no explicit cause, and no socket close. Close/clock failures
+outside the try propagate directly. Completion breaks, closes, then yields
+`Execution done. Fetching image...`; polling waits for the next resume.
+
+Candidate A could be a nested `wait_for_comfy_execution(ws, prompt_id, timeout,
+start_time)` generator with module clock/interpreter dependencies and an outer
+`yield from` call. It would have to retain both normal and timeout close policy,
+receive retries, translation and suspension, while setup and polling stay outside.
+Starting its clock on first iteration instead of at the current point would
+require care. Clock/interpreter callbacks are unnecessary extra API; a service
+object would obscure the same state. A callback event sink cannot preserve
+caller-driven suspension; a buffered event stream delays errors and progress.
+A nested generator can forward the same event and resume its loop, but `.throw()`
+and `.close()` are delegated by `yield from`: the inner try must still surround
+the yield, and neither owner may add a cleanup finally. Exception context and
+ordinary timing can be preserved deliberately, but extra frames and delegated
+lifecycle add complexity without reuse. Splitting close between two generators
+would make ownership harder still.
+
+Candidate B, `receive_execution_update(ws, prompt_id)`, could combine recv and
+interpretation. Swallowing receive timeout needs a retry outcome (or conflates
+retry with the interpreter's ignored `(False, None)`); yielding, overall timeout,
+completion and closing still remain outside. More importantly, moving exception
+translation into that helper would exclude exceptions injected at the outer
+progress yield. Keeping an outer handler to preserve those semantics largely
+retains today's loop and duplicates classification or leaves the helper as just
+two calls. This is not a useful new protocol/owner.
+
+| Responsibility | Current / Candidate C | Candidate A | Candidate B |
+| --- | --- | --- | --- |
+| Socket setup and reference | Outer generator/setup helper | Outer passes socket | Outer passes socket |
+| Timeout clock/state | Outer, before each recv | Inner check, explicit start time | Outer unchanged |
+| Receive | Outer | Inner | Step helper |
+| Receive-timeout retry | Outer | Inner | Helper classifies, outer repeats |
+| Message interpretation | Existing interpreter | Same interpreter via inner | Same interpreter via step |
+| Event object | Interpreter result passed unchanged | Same object forwarded | Same object returned |
+| Event yield | Outer inside try | Inner via outer yield from | Outer, still needs handler |
+| Completion decision | Interpreter flag, outer break | Inner consumes flag | Outer consumes flag |
+| Normal/expiry close | Outer; no universal cleanup | Must move together to inner | Outer unchanged |
+| Exception translation | Outer includes suspended yield | Inner must include yield | Cannot fully move from outer |
+| Transition to polling | Outer after fetching-status resume | Outer after delegation | Outer unchanged |
+
+The current suspension points are: Connecting (request prepared, not submitted),
+Prompt queued (submitted, socket not constructed), interpreted event (socket
+open, inside try), fetching status (socket closed, polling not started), and
+later download warning/done events (outside receive lifecycle). Resuming an
+interpreted event returns to the loop and its next timeout check. `.close()` at
+that yield raises GeneratorExit, outside `Exception`, and performs no socket
+cleanup; closing before setup constructs nothing. Preserve that asymmetry,
+not a new finally. The added single test pins same-event identity, no extra
+receive while suspended, and injected ValueError translation/context without
+close. Existing tests cover ordinary retries, completion, errors and early close.
+
+Production searches for recv, interpreter calls, wrapper text and execution
+timeout found only this loop (tests excluded). No second producer justifies
+sharing lifecycle policy. Candidate C leaves clock, close and suspension visible
+together and is simpler than either candidate. Runtime and `app.py` remain
+unchanged. Reconsider only for an actual independent execution consumer, not
+for line-count reduction; no adjacent cleanup is proposed.
