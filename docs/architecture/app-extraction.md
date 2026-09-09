@@ -469,3 +469,29 @@ successful path. Partial success, total failure and the final event are unchange
 `app.py` is untouched. The next small candidate is characterization of the
 existing `_unique_save_path` collision/path-selection contract, without moving
 it or combining it with download or generator ownership.
+
+### Unique save-path characterization (runtime unchanged)
+
+`_unique_save_path(output_dir, file_name)` remains an appropriately placed small
+core helper; characterization alone does not justify moving it. It applies
+native `os.path.basename` to `file_name or "comfy_output.png"`, joins that name
+to the output directory, and splits the entire candidate with `os.path.splitext`.
+It returns the initial candidate if absent; otherwise `_1`, `_2`, etc. are
+inserted before the final extension, stopping at the first absent candidate.
+Multi-dot and dot-leading names retain native splitext semantics. A trailing
+native separator gives an empty basename rather than triggering the fallback.
+For the tested string/Path directory inputs the returned path is a string.
+
+`os.path.exists` counts directories as collisions as well as files. Path-operation
+exceptions propagate directly; truthy invalid filename types are not normalized.
+Selection creates neither files nor directories and reserves nothing: repeated
+calls can return the same path, and another writer may create it before download.
+This existing non-atomic limitation is documented, not changed.
+
+The generator still creates directories and passes `f"{file_prefix}_{filename}"`
+to this helper; the unchanged download-phase tests pin that integration.
+Download/write ownership remains with `download_image_to_path`. Runtime code and
+`app.py` are unchanged. The next small candidate is characterization of the
+existing generator's successful final-event metadata defaults/aliasing and
+post-download assembly failures, rather than further path-allocation extraction.
+No such follow-up is implemented here.
