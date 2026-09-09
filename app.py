@@ -15612,6 +15612,7 @@ def render_graph_edit_illustration_editor(project, line, *, reorder_disabled=Fal
             if st.button("🎯 Focus Edit", key=f"focus_btn_{line.id}"):
                 st.session_state.focused_line_id = line.id
                 st.session_state.highlighted_line_id = line.id
+                sync_focus_text_area_state(line)
                 st.rerun()
 
             thumbnail_path = _line_thumbnail_path(line)
