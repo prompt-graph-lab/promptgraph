@@ -1,3 +1,6 @@
+from core.generation_duration import (
+    _format_duration,
+)
 from core.consistency_presentation import (
     _format_percent,
     _compact_label_list,
@@ -9682,17 +9685,6 @@ def render_sequence_preview_panel(project, preview: dict) -> None:
             st.rerun()
 
 
-def _format_duration(seconds: float) -> str:
-    if seconds <= 0:
-        return "不明"
-    seconds = int(round(seconds))
-    minutes, secs = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"約{hours}時間{minutes}分"
-    if minutes:
-        return f"約{minutes}分{secs:02d}秒"
-    return f"約{secs}秒"
 
 def _gallery_generation_average_seconds() -> float | None:
     durations = [
