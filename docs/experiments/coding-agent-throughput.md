@@ -25,8 +25,8 @@ with their own results.
 ## GitHub record
 
 On 2026-09-10, GitHub metadata was checked for the listed PRs. PRs #17 through
-#25 and #27 through #31 were reported as merged into `main`; the local
-`origin/main` was fetched through the PR #31 merge commit. GitHub PR metadata
+#25 and #27 through #32 were reported as merged into `main`; the local
+`origin/main` was fetched through the PR #32 merge commit. GitHub PR metadata
 does not contain the interactive quota observations, so the values below are
 retained from the development-session record rather than replaced with empty
 or inferred values.
@@ -57,6 +57,9 @@ or inferred values.
 | [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) Luna | Luna landing and delivery phase | 85/14 → 82/13 | -3% | -1% | 6m21s | full suite 1122 passed / 8 skipped / 552 subtests / 236.52s; empirical observation only |
 | [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) combined | Astra implementation plus Luna landing | 100/16 → 82/13 | -18% | -3% | 8m45s | sequential total; empirical observation only |
 | PR #32 Astra phase | Astra Low; two-cluster prompt-line selection and PromptCloud calculations | 82/13 → 53/9 | -29% | -4% | 3m23s | Cluster A: 5 helpers; Cluster B: 4 helpers; 9 helpers total; independent checkpoint commits; focused 4 passed and 3 passed; no Auto compact; empirical observation only |
+| PR #32 Luna phase | Luna landing and delivery phase | 53/9 → 50/8 | -3% | -1% | not recorded | previous PR32 landing endpoint; full-suite/delivery timing was not retained in this log; empirical observation only |
+| PR #32 combined | Astra implementation plus Luna landing | 82/13 → 50/8 | -32% | -5% | not recorded | sequential total endpoint from the PR32 Astra and Luna phases; wall time was not retained in this log; empirical observation only |
+| Current readonly-clusters Astra phase | Astra; Module scope inspection plus Node selection matching | 50/8 → 30/5 | -20% | -3% | 4m04s | 3 helpers across 2 natural clusters; commits `6a56ffd` and `c3ffebc`; focused 5 and 7 passed; baseline characterization passed; no Auto compact; empirical observation only |
 
 ## Canonical run notes
 
@@ -161,6 +164,27 @@ wall-time measurement was recorded at the Cluster A checkpoint, so the data
 does not support inferring the marginal cost or benefit of Cluster B. This is an
 empirical observation and hypothesis about this run, not evidence of stable
 accounting behavior or a model-wide efficiency improvement.
+
+### PR #32: Luna landing and combined measurement
+
+The PR32 Luna landing phase continued from the Astra checkpoint at 53/9 and
+ended at 50/8, an observed 5h delta of -3% and a weekly delta of -1%. The
+landing-phase wall time and full-suite result were not retained in the
+available handoff record. The combined sequential endpoint was 82/13 to 50/8,
+an observed 5h delta of -32% and a weekly delta of -5%; its wall time was also
+not retained. These are empirical observations only, and the 50/8 endpoint is
+used as the starting pair for the next readonly-clusters Astra phase.
+
+### Readonly-clusters Astra implementation phase
+
+Astra completed two independently committed natural read-only clusters in one
+implementation phase: `core.module_scope_inspection` with one helper and
+`core.node_selection_matching` with two helpers. The observed UI quota changed
+from 50/8 to 30/5 over 4m04s, a 5h delta of -20% and a weekly delta of -3%.
+Focused validation passed with 5 and 7 tests respectively, baseline
+characterization passed, and no Auto compact was observed. This is an
+empirical observation from the implementation-only handoff, not evidence of
+stable accounting behavior or a model-wide efficiency improvement.
 
 ## Findings
 
