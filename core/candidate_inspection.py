@@ -188,3 +188,24 @@ def _candidate_route_candidate_seed(candidate):
     if isinstance(candidate, dict):
         return candidate.get("seed")
     return None
+
+
+def _candidate_image_swap_lineage_info(candidate, candidate_path, previous_main, swapped_at):
+    swap_info = {
+        "mode": "swap_main_image_with_candidate",
+        "new_main_image_path": candidate_path,
+        "previous_main_image_path": previous_main.get("path") or "",
+        "previous_main_image_field": previous_main.get("field") or "",
+        "swapped_at": swapped_at,
+    }
+    if isinstance(candidate, dict):
+        candidate_source = candidate.get("source")
+        if candidate_source:
+            swap_info["candidate_source"] = str(candidate_source)
+        candidate_seed = candidate.get("seed")
+        if candidate_seed is not None:
+            swap_info["candidate_seed"] = candidate_seed
+        candidate_workflow = _candidate_prompt_value(candidate, "workflow", "workflow_path", "workflow_name")
+        if candidate_workflow:
+            swap_info["candidate_workflow"] = str(candidate_workflow)
+    return swap_info

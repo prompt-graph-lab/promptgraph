@@ -74,3 +74,12 @@ class CandidateInspectionTests(unittest.TestCase):
         self.assertEqual(c._candidate_route_candidate_seed(record),0)
         self.assertEqual(c._candidate_prompt_value(None,'x'),'')
         self.assertIsNone(c._candidate_route_candidate_seed(None))
+
+    def test_swap_lineage_projection_does_not_adopt_or_mutate(self):
+        seed=[]; candidate={'seed':seed,'source':'s','workflow_name':'w'}; previous={'path':None,'field':'image_path'}
+        self.assertEqual(c._candidate_image_swap_lineage_info(candidate,'new',previous,'time'),{
+            'mode':'swap_main_image_with_candidate','new_main_image_path':'new','previous_main_image_path':'',
+            'previous_main_image_field':'image_path','swapped_at':'time','candidate_source':'s','candidate_seed':[], 'candidate_workflow':'w'})
+        self.assertIs(c._candidate_image_swap_lineage_info(candidate,'new',previous,'time')['candidate_seed'],seed)
+        self.assertEqual(previous,{'path':None,'field':'image_path'})
+        with self.assertRaises(AttributeError): c._candidate_image_swap_lineage_info({},'x',None,'t')

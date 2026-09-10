@@ -1,3 +1,4 @@
+from core.candidate_inspection import _candidate_image_swap_lineage_info
 from core.candidate_inspection import _candidate_prompt_value, _candidate_route_candidate_workflow, _candidate_route_candidate_seed
 from core.candidate_inspection import _sort_candidates_for_display
 from core.candidate_inspection import _candidate_is_pinned, _candidate_is_trashed, _active_candidates, _trashed_candidates
@@ -4480,27 +4481,6 @@ def _mark_candidate_record_swapped_to_main(line, candidate_path, swap_info):
     if matched:
         line.generated_candidates = _normalize_candidate_records(updated)
         _sync_line_generated_candidates_to_session(line, line.generated_candidates)
-
-
-def _candidate_image_swap_lineage_info(candidate, candidate_path, previous_main, swapped_at):
-    swap_info = {
-        "mode": "swap_main_image_with_candidate",
-        "new_main_image_path": candidate_path,
-        "previous_main_image_path": previous_main.get("path") or "",
-        "previous_main_image_field": previous_main.get("field") or "",
-        "swapped_at": swapped_at,
-    }
-    if isinstance(candidate, dict):
-        candidate_source = candidate.get("source")
-        if candidate_source:
-            swap_info["candidate_source"] = str(candidate_source)
-        candidate_seed = candidate.get("seed")
-        if candidate_seed is not None:
-            swap_info["candidate_seed"] = candidate_seed
-        candidate_workflow = _candidate_prompt_value(candidate, "workflow", "workflow_path", "workflow_name")
-        if candidate_workflow:
-            swap_info["candidate_workflow"] = str(candidate_workflow)
-    return swap_info
 
 
 def set_candidate_as_empty_line_image(project, line, candidate):
