@@ -1,3 +1,6 @@
+from core.agraph_selection import (
+    normalize_agraph_selection,
+)
 from core.comfy_candidate_presentation import (
     _comfy_candidate_label,
     _candidate_default_index,
@@ -425,31 +428,6 @@ def default_new_project_dir(project_name: str = "MyProject") -> str:
     return os.path.abspath(os.path.join(default_projects_dir(), expanded_name))
 
 # --- State Management ---
-def normalize_agraph_selection(return_value, project):
-    if not return_value:
-        return []
-
-    raw_items = return_value if isinstance(return_value, list) else [return_value]
-    ids = []
-
-    for item in raw_items:
-        if isinstance(item, str):
-            ids.append(item)
-        elif isinstance(item, dict):
-            if "id" in item:
-                ids.append(item["id"])
-            elif "node" in item:
-                ids.append(item["node"])
-        else:
-            if hasattr(item, "id"):
-                ids.append(item.id)
-
-    valid_ids = []
-    for nid in ids:
-        if nid in project.nodes and nid not in valid_ids:
-            valid_ids.append(nid)
-
-    return valid_ids
 
 def sanitize_selected_node_ids(project=None):
     project = project or st.session_state.get("project")
