@@ -168,3 +168,23 @@ def _sort_candidates_for_display(candidates):
             key=lambda item: (not _candidate_is_pinned(item[1]), item[0]),
         )
     ]
+
+
+def _candidate_prompt_value(candidate, *keys):
+    if not isinstance(candidate, dict):
+        return ""
+    for key in keys:
+        value = candidate.get(key)
+        if value:
+            return value
+    return ""
+
+
+def _candidate_route_candidate_workflow(candidate) -> str:
+    return str(_candidate_prompt_value(candidate, "workflow", "workflow_path", "workflow_name") or "")
+
+
+def _candidate_route_candidate_seed(candidate):
+    if isinstance(candidate, dict):
+        return candidate.get("seed")
+    return None

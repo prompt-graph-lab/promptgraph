@@ -1,3 +1,4 @@
+from core.candidate_inspection import _candidate_prompt_value, _candidate_route_candidate_workflow, _candidate_route_candidate_seed
 from core.candidate_inspection import _sort_candidates_for_display
 from core.candidate_inspection import _candidate_is_pinned, _candidate_is_trashed, _active_candidates, _trashed_candidates
 from core.candidate_inspection import _candidate_metadata_caption
@@ -4442,16 +4443,6 @@ def _line_has_representative_image(line):
     return bool(_resolved_line_main_image_path(line))
 
 
-def _candidate_prompt_value(candidate, *keys):
-    if not isinstance(candidate, dict):
-        return ""
-    for key in keys:
-        value = candidate.get(key)
-        if value:
-            return value
-    return ""
-
-
 def _candidate_path_matches(path_a, path_b):
     normalized_a = _normalize_candidate_path(path_a)
     normalized_b = _normalize_candidate_path(path_b)
@@ -5108,16 +5099,6 @@ def _candidate_route_duplicate_exists(project, parent_line_id: str, candidate_pa
         if _candidate_path_matches(lineage_candidate_path, candidate_path):
             return True
     return False
-
-
-def _candidate_route_candidate_workflow(candidate) -> str:
-    return str(_candidate_prompt_value(candidate, "workflow", "workflow_path", "workflow_name") or "")
-
-
-def _candidate_route_candidate_seed(candidate):
-    if isinstance(candidate, dict):
-        return candidate.get("seed")
-    return None
 
 
 def _candidate_route_target_lines(project, scope: str, selected_line_ids: list[str] | None = None) -> dict:

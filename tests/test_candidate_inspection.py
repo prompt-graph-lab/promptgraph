@@ -66,3 +66,11 @@ class CandidateInspectionTests(unittest.TestCase):
         self.assertEqual(result,[b,d,a,None]); self.assertIs(result[0],b)
         self.assertEqual(records,[a,b,None,d])
         with self.assertRaises(TypeError): c._sort_candidates_for_display(None)
+
+    def test_provenance_values_preserve_alias_and_seed_zero(self):
+        value=['workflow']; record={'workflow':0,'workflow_path':value,'seed':0}
+        self.assertIs(c._candidate_prompt_value(record,'workflow','workflow_path'),value)
+        self.assertEqual(c._candidate_route_candidate_workflow(record),"['workflow']")
+        self.assertEqual(c._candidate_route_candidate_seed(record),0)
+        self.assertEqual(c._candidate_prompt_value(None,'x'),'')
+        self.assertIsNone(c._candidate_route_candidate_seed(None))
