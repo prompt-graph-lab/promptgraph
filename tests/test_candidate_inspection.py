@@ -13,3 +13,13 @@ class CandidateInspectionTests(unittest.TestCase):
         line=NS(selected_candidate_path='',generated_image_path=path)
         self.assertIs(c._selected_candidate_path(line),path)
         self.assertIsNone(c._selected_candidate_path(NS()))
+
+    def test_prompt_metadata_source_gate_and_field_priority(self):
+        record={'source':'manual_import','prompt_text':' p ','negative':' n '}
+        self.assertEqual(c._candidate_prompt_metadata(record),{})
+        record['candidate_prompt_source']='imported_image_metadata'
+        before=copy.deepcopy(record)
+        self.assertEqual(c._candidate_prompt_metadata(record),{'positive_prompt':'p','negative_prompt':'n'})
+        self.assertEqual(record,before)
+        self.assertEqual(c._candidate_prompt_metadata({'prompt_text':' ','positive_prompt':'fallback'}),{})
+        self.assertEqual(c._candidate_prompt_metadata({'negative_prompt':7}),{'positive_prompt':'','negative_prompt':'7'})

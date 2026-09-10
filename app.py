@@ -1,3 +1,4 @@
+from core.candidate_inspection import _candidate_prompt_metadata
 from core.candidate_inspection import _candidate_path, _selected_candidate_path
 from core.module_token_rules import (
     _parse_module_rule_text,
@@ -4057,33 +4058,6 @@ def _make_imported_candidate_record(path, line):
     }
     image_metadata = extract_image_metadata_for_path(_runtime_asset_path(path))
     return _copy_candidate_image_metadata_fields(record, image_metadata)
-
-
-def _candidate_prompt_metadata(candidate) -> dict:
-    if not isinstance(candidate, dict):
-        return {}
-
-    if candidate.get("source") == "manual_import" and candidate.get("candidate_prompt_source") != "imported_image_metadata":
-        return {}
-
-    positive_prompt = str(
-        candidate.get("prompt_text")
-        or candidate.get("positive_prompt")
-        or candidate.get("source_prompt")
-        or ""
-    ).strip()
-    negative_prompt = str(
-        candidate.get("negative_prompt")
-        or candidate.get("source_negative_prompt")
-        or candidate.get("negative")
-        or ""
-    ).strip()
-    if not positive_prompt and not negative_prompt:
-        return {}
-    return {
-        "positive_prompt": positive_prompt,
-        "negative_prompt": negative_prompt,
-    }
 
 
 def _apply_candidate_prompt_to_line(line, candidate) -> bool:
