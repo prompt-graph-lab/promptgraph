@@ -796,3 +796,24 @@ Candidate/Gallery integration tests cover the retained call sites. The next
 Candidate/Gallery boundary should be considered only when a similarly pure,
 non-mutating owner is evident; no mutation or UI extraction follows from this
 cluster alone.
+
+### Graph display calculations
+
+`core.graph_display` owns the complete contiguous six-helper Graph display
+cluster: line-node membership, display ordering, wrapped positions, initial
+node selection, branch/spine hints, and cooccurrence overlay edges. These
+calculations consume existing nodes and line paths and return display data;
+they neither construct nor mutate the graph. They share one consumer, the
+Graph renderer, and require no imports or callbacks into the app.
+
+The same names remain imported in `app.py`. Stable ties, duplicate handling,
+depth/count thresholds, integer position truncation, malformed-input exceptions
+and existing edge-limit behavior are preserved. In particular, a zero overlay
+edge limit still permits the first eligible edge because the limit is checked
+after appending. This extraction does not correct that behavior.
+
+Graph construction, renderer styling, session selection, neighborhood expansion,
+Focus navigation and the neighboring status/navigation controls remain in
+`app.py` or their existing owners. Module inspection was not selected because
+its library lookup can normalize Project state; Gallery scope resolution also
+crosses session-dependent selection. Neither belongs in this read-only owner.
