@@ -16120,7 +16120,6 @@ def line_group_scope_options(project):
         options[f"group::{group_name}"] = f"Group: {group_name} ({len(valid_line_ids)} lines)"
     return options
 
-
 def render_batch_preview_text(
     text,
     operation,
