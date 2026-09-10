@@ -862,3 +862,33 @@ highlighting, PromptLine/Project mutation, save/load and history, and any other
 UI ownership remain in `app.py` or their existing owners. This boundary is a
 calculation owner only; it does not change the PromptCloud data model or project
 persistence semantics.
+
+### Module scope inspection
+
+`core.module_scope_inspection` owns the read-only `preview_module_scope`
+projection used by the Module Inspector. It scans the existing prompt-line
+tokens, skips deleted lines, counts inline and ranged Module occurrences,
+records malformed marker cases, and returns the existing bounded example rows.
+The lazy parser lookup, marker-stack behavior, token ordering, falsey/default
+handling and direct exception behavior remain unchanged.
+
+Module selection, edit-scope session state, rename/apply mutation, history,
+save/load, and Streamlit rendering remain in `app.py`. This owner does not
+normalize Project data, write files, or introduce a Module schema or persistence
+format. The extraction is a calculation boundary only; the retained Module
+Inspector caller continues to own the UI and edit-scope lifecycle.
+
+### Node selection matching
+
+`core.node_selection_matching` owns the read-only `get_node_match_terms` and
+`remap_selected_nodes_for_line` helpers used when Graph selections are carried
+into a focused prompt line. The owner preserves literal/display/word/original
+terms, parser-derived base-word terms, exact-match precedence, selected-ID
+ordering and duplicates, path ordering and fallback deduplication. It does not
+mutate the Project, nodes, prompt line, or selection inputs.
+
+`preserve_focus_selection_context` remains the app-level caller and retains
+session-state update ordering and the existing selected-node sanitization seam.
+Graph rendering, Focus navigation, widget/session ownership, history,
+persistence, and prompt mutation remain outside this owner. No schema,
+save/load, or navigation behavior is changed by the extraction.

@@ -25,8 +25,8 @@ with their own results.
 ## GitHub record
 
 On 2026-09-10, GitHub metadata was checked for the listed PRs. PRs #17 through
-#25 and #27 through #31 were reported as merged into `main`; the local
-`origin/main` was fetched through the PR #31 merge commit. GitHub PR metadata
+#25 and #27 through #32 were reported as merged into `main`; the local
+`origin/main` was fetched through the PR #32 merge commit. GitHub PR metadata
 does not contain the interactive quota observations, so the values below are
 retained from the development-session record rather than replaced with empty
 or inferred values.
@@ -57,6 +57,10 @@ or inferred values.
 | [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) Luna | Luna landing and delivery phase | 85/14 → 82/13 | -3% | -1% | 6m21s | full suite 1122 passed / 8 skipped / 552 subtests / 236.52s; empirical observation only |
 | [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) combined | Astra implementation plus Luna landing | 100/16 → 82/13 | -18% | -3% | 8m45s | sequential total; empirical observation only |
 | PR #32 Astra phase | Astra Low; two-cluster prompt-line selection and PromptCloud calculations | 82/13 → 53/9 | -29% | -4% | 3m23s | Cluster A: 5 helpers; Cluster B: 4 helpers; 9 helpers total; independent checkpoint commits; focused 4 passed and 3 passed; no Auto compact; empirical observation only |
+| PR #32 handoff-confusion noise | Luna mistakenly treated the Astra handoff as remaining work | 53/9 → 52/8 | -1% | -1% | 54s | explicit workflow noise; not part of normal Luna landing; empirical observation only |
+| PR #32 Luna phase | Normal Luna landing and delivery phase | 52/8 → 50/8 | -2% | 0% | 8m03s | Auto compact shortly after the initial git/repository check; broader relevant validation 33 passed; full suite 1129 passed / 8 skipped / 552 subtests / 236.30s; empirical observation only |
+| PR #32 combined | Observed end-to-end including handoff-confusion noise | 82/13 → 50/8 | -32% | -5% | 12m20s | includes the separate 54s handoff-confusion interval; do not interpret as a clean combined phase; empirical observation only |
+| Current readonly-clusters Astra phase | Astra; Module scope inspection plus Node selection matching | 50/8 → 30/5 | -20% | -3% | 4m04s | 3 helpers across 2 natural clusters; commits `6a56ffd` and `c3ffebc`; focused 5 and 7 passed; baseline characterization passed; no Auto compact; empirical observation only |
 
 ## Canonical run notes
 
@@ -161,6 +165,37 @@ wall-time measurement was recorded at the Cluster A checkpoint, so the data
 does not support inferring the marginal cost or benefit of Cluster B. This is an
 empirical observation and hypothesis about this run, not evidence of stable
 accounting behavior or a model-wide efficiency improvement.
+
+### PR #32: handoff noise, Luna landing, and combined measurement
+
+After the PR32 Astra phase ended at 53/9, a separate 54-second interval moved
+from 53/9 to 52/8, an observed 5h delta of -1% and a weekly delta of -1%.
+Luna mistakenly treated the Astra handoff as work remaining. This is explicit
+workflow noise, not part of the normal Luna landing phase.
+
+The normal PR32 Luna landing then moved from 52/8 to 50/8 over 8m03s, an
+observed 5h delta of -2% and a weekly delta of 0%. Auto compact occurred
+shortly after the initial git/repository check. Broader relevant validation
+passed 33 tests, and the full suite passed with 1129 passed, 8 skipped, 552
+subtests, in 236.30 seconds.
+
+The observed end-to-end run, including the handoff-confusion noise, moved from
+82/13 to 50/8 over 12m20s, an observed 5h delta of -32% and a weekly delta of
+-5%. The clean Astra plus normal Luna wall-time sum is 11m26s, but no clean
+combined quota delta is presented because the intervening handoff noise
+consumed 1%/1%. All of these are empirical observations only; they do not
+establish stable accounting behavior.
+
+### Readonly-clusters Astra implementation phase
+
+Astra completed two independently committed natural read-only clusters in one
+implementation phase: `core.module_scope_inspection` with one helper and
+`core.node_selection_matching` with two helpers. The observed UI quota changed
+from 50/8 to 30/5 over 4m04s, a 5h delta of -20% and a weekly delta of -3%.
+Focused validation passed with 5 and 7 tests respectively, baseline
+characterization passed, and no Auto compact was observed. This is an
+empirical observation from the implementation-only handoff, not evidence of
+stable accounting behavior or a model-wide efficiency improvement.
 
 ## Findings
 
