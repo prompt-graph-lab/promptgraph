@@ -1,3 +1,7 @@
+from core.comma_tag_text import (
+    _format_comma_tags,
+    _parse_comma_tags,
+)
 from core.lora_mapping_presentation import (
     _lora_loader_candidate_label,
     _lora_ref_weight_label,
@@ -3533,22 +3537,8 @@ def _compact_label_list(labels: list[str], limit: int = 4) -> str:
     return ", ".join(labels[:limit]) + f", +{len(labels) - limit} more"
 
 
-def _format_comma_tags(tags) -> str:
-    if not isinstance(tags, list):
-        return ""
-    return ", ".join(str(tag).strip() for tag in tags if str(tag).strip())
 
 
-def _parse_comma_tags(text: str) -> list[str]:
-    tags = []
-    seen = set()
-    for part in str(text or "").split(","):
-        tag = part.strip()
-        if not tag or tag in seen:
-            continue
-        seen.add(tag)
-        tags.append(tag)
-    return tags
 
 
 def render_generation_settings_consistency_panel(container=st):
