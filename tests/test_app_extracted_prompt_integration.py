@@ -45,7 +45,7 @@ class AppExtractedPromptIntegrationTests(unittest.TestCase):
             isinstance(node, ast.ImportFrom)
             and node.module in {
                 "core.prompt_inspection", "core.comfy_prompt_binding",
-                "core.comfy_workflow_preparation",
+                "core.comfy_workflow_preparation", "core.comfy_workflow_metadata",
             }
         ) or (isinstance(node, ast.FunctionDef) and node.name in names)]
         cls.code = compile(ast.Module(body=nodes, type_ignores=[]), str(ROOT / "app.py"), "exec")
