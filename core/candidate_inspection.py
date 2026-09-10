@@ -95,3 +95,33 @@ def get_candidate_prompt_text(candidate) -> str:
         if prompt_text and not _looks_like_workflow_json_prompt(prompt_text):
             return prompt_text
     return ""
+
+
+def get_original_prompt_text(line) -> str:
+    return str(getattr(line, "original_text", "") or "").strip()
+
+
+def normalize_prompt_for_revert_compare(text: str) -> list[str]:
+    text = str(text or "")
+    if not text.strip():
+        return []
+    try:
+        return [str(token).strip() for token in parse_prompt(text) if str(token).strip()]
+    except Exception:
+        return [part.strip() for part in re.split(r"\s*,\s*", text.strip()) if part.strip()]
+
+
+def is_line_prompt_changed_from_original(line) -> bool:
+    original_text = get_original_prompt_text(line)
+    if not original_text:
+        return False
+    current_text = str(getattr(line, "current_text", "") or "").strip()
+    return normalize_prompt_for_revert_compare(current_text) != normalize_prompt_for_revert_compare(original_text)
+
+
+def _prompt_original_status_label(line) -> str:
+    if not get_original_prompt_text(line):
+        return "Prompt: no original"
+    if is_line_prompt_changed_from_original(line):
+        return "Prompt: edited"
+    return "Prompt: original"

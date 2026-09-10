@@ -33,3 +33,14 @@ class CandidateInspectionTests(unittest.TestCase):
         self.assertFalse(c._looks_like_workflow_json_prompt('"text"'))
         self.assertIsNone(c._candidate_nested_value({'x':[]},'x','key'))
         self.assertEqual(c.get_candidate_prompt_text(None),'')
+
+    def test_original_prompt_comparison_and_parser_error_fallback(self):
+        line=NS(original_text=' a, b ',current_text='a,b')
+        self.assertFalse(c.is_line_prompt_changed_from_original(line))
+        self.assertEqual(c._prompt_original_status_label(line),'Prompt: original')
+        line.current_text='b,a'
+        self.assertEqual(c._prompt_original_status_label(line),'Prompt: edited')
+        self.assertEqual(c._prompt_original_status_label(NS(current_text='x')),'Prompt: no original')
+        with patch.object(c,'parse_prompt',side_effect=ValueError('legacy')):
+            self.assertEqual(c.normalize_prompt_for_revert_compare(' a ,, b '),['a','b'])
+        self.assertEqual(c.normalize_prompt_for_revert_compare(None),[])

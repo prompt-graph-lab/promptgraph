@@ -1,3 +1,4 @@
+from core.candidate_inspection import get_original_prompt_text, normalize_prompt_for_revert_compare, is_line_prompt_changed_from_original, _prompt_original_status_label
 from core.candidate_inspection import _looks_like_workflow_json_prompt, _candidate_nested_value, get_candidate_prompt_text
 from core.candidate_inspection import _candidate_prompt_metadata
 from core.candidate_inspection import _candidate_path, _selected_candidate_path
@@ -4083,28 +4084,6 @@ def _apply_candidate_prompt_to_line(line, candidate) -> bool:
     return changed
 
 
-def get_original_prompt_text(line) -> str:
-    return str(getattr(line, "original_text", "") or "").strip()
-
-
-def normalize_prompt_for_revert_compare(text: str) -> list[str]:
-    text = str(text or "")
-    if not text.strip():
-        return []
-    try:
-        return [str(token).strip() for token in parse_prompt(text) if str(token).strip()]
-    except Exception:
-        return [part.strip() for part in re.split(r"\s*,\s*", text.strip()) if part.strip()]
-
-
-def is_line_prompt_changed_from_original(line) -> bool:
-    original_text = get_original_prompt_text(line)
-    if not original_text:
-        return False
-    current_text = str(getattr(line, "current_text", "") or "").strip()
-    return normalize_prompt_for_revert_compare(current_text) != normalize_prompt_for_revert_compare(original_text)
-
-
 def _set_line_current_prompt(line, prompt_text: str) -> bool:
     prompt_text = str(prompt_text or "")
     previous_text = str(getattr(line, "current_text", "") or "")
@@ -4216,14 +4195,6 @@ def _consume_gallery_prompt_widget_sync(line):
     st.session_state.gallery_prompt_widget_sync_pending = [
         line_id for line_id in pending if line_id != getattr(line, "id", "")
     ]
-
-
-def _prompt_original_status_label(line) -> str:
-    if not get_original_prompt_text(line):
-        return "Prompt: no original"
-    if is_line_prompt_changed_from_original(line):
-        return "Prompt: edited"
-    return "Prompt: original"
 
 
 def _get_persistent_line_candidates(line):
