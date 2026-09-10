@@ -25,8 +25,8 @@ with their own results.
 ## GitHub record
 
 On 2026-09-10, GitHub metadata was checked for the listed PRs. PRs #17 through
-#25 and #27 through #29 were reported as merged into `main`; the local
-`origin/main` was fetched through the PR #29 merge commit. GitHub PR metadata
+#25 and #27 through #30 were reported as merged into `main`; the local
+`origin/main` was fetched through the PR #30 merge commit. GitHub PR metadata
 does not contain the interactive quota observations, so the values below are
 retained from the development-session record rather than replaced with empty
 or inferred values.
@@ -53,6 +53,7 @@ or inferred values.
 | [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) Astra | Astra Low; Graph display calculation cluster | 42/22 → 20/18 | -22% | -4% | 3m56s | focused 29 passed; 6 helpers; AST and diff checks; **noise: interrupted suite startup** |
 | [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) Luna | Luna Max Fast; landing and delivery phase | 20/18 → 17/18 | -3% | 0% | 6m02s | broader Graph tests 49; 1115 passed / 8 skipped / 552 subtests / 236.42s full suite; AST and diff checks |
 | [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) combined | Astra implementation plus Luna landing | 42/22 → 17/18 | -25% | -4% | 9m58s | sequential total; **noise: interrupted suite startup** |
+| PR #31 Astra phase | Astra Low; AnimaDex record-inspection cluster | 100/16 → 85/14 | -15% | -2% | 2m24s | clean implementation-only run; 6 helpers; focused 7 passed; empirical observation only |
 
 ## Canonical run notes
 
@@ -125,6 +126,16 @@ Luna Max Fast then ran the broader Graph tests (49 passed), the full suite
 (1115 passed, 8 skipped, 552 subtests, 236.42 seconds), AST equivalence, and
 `git diff --check`, followed by documentation, final review, push, and PR
 delivery. The combined sequential wall time was 9m58s.
+
+### PR #31: clean AnimaDex record-inspection implementation phase
+
+Astra Low selected one natural coherent AnimaDex record-inspection cluster and
+moved six helpers covering record identity, search text, filtering, labels,
+summary rows, and metadata preview rows. Focused validation passed with 7
+tests. The observed UI quota changed from 100/16 to 85/14 over 2m24s, a 5h
+delta of -15% and a weekly delta of -2%. This is an empirical observation from
+this implementation-only run, not evidence of a stable accounting change or a
+model-wide efficiency improvement.
 
 ## Findings
 
