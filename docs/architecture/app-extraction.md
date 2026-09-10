@@ -18,7 +18,7 @@ proposed new package hierarchy.
 | Editing context and navigation | `open_management_workspace`, `reset_*_session_state`, graph selection, Focus navigation | Shared session keys, widget mirrors, pending resets, Project switching |
 | Undo and persistence orchestration | `push_history`, `undo`, `load_project_json_into_session`, Save As confirmation helpers | `Project.clone`, `core.io`, settings, filesystem snapshots, rerun/reset ordering |
 | Project management and assets | `render_project_management_workspace`, discovery, import, fork and asset panels | `core.project_discovery`, `core.new_project_workspace`, `core.project_root_import`, `core.lightweight_fork*`, `core.io`; preview/confirm/apply lifecycle |
-| Prompt inspection and editing | syntax diagnostics, source/current diffs, batch previews, line editors | `core.parser`, `core.operations`; pure calculations are mixed with rendering and mutation callbacks |
+| Prompt inspection and editing | syntax diagnostics, source/current diffs, batch previews, line editors | `core.parser`, `core.operations`, `core.batch_preview`; rendering and mutation remain coupled to the app |
 | ComfyUI preparation and execution | `build_single_line_workflow`, `_build_focus_line_workflow_preview`, `_run_current_line_comfy_multiple` | Embedded metadata, shared path/settings, Module expansion, `core.comfyui`, execution logs and Candidate ingestion |
 | ComfyUI analysis workspace | workflow inspector, LoRA mapping, generation/negative consistency panels | `core.comfy_workflow`, `core.lora_mapping`, analysis modules, session draft widgets; explicit inspector injection differs from generation binding |
 | Candidate and Gallery Variant lifecycle | candidate normalization, prompt adoption/revert, image swap, Variant and alternative Scene creation | Mutable `PromptLine` fields, lineage, paths, session cache, history/autosave; not merely display data |
@@ -53,6 +53,13 @@ back into a new module would create the wrong dependency direction.
    debug inspection is read-only. File/metadata selection, Module expansion,
    JSON parsing, group mapping, placeholders, settings and submission stay with
    their existing owners. Existing internal function names are retained.
+3. **Batch preview calculations — `core.batch_preview`.** The read-only
+   highlight, token-query, replacement-preview, duplicate-mark, snippet,
+   focus-selection and removed-marker calculations now have an importable
+   owner. They preserve the existing parser, escaping, matching, ordering,
+   falsey/default and direct-exception behavior. Batch preview rendering,
+   Streamlit containers, widget/session state and prompt mutation remain in
+   `app.py`; the module has no UI, persistence or Project ownership.
 
 These boundaries avoid moving widget ownership or Project mutation. App imports
 the extracted functions directly; there are no forwarding wrappers, callbacks
