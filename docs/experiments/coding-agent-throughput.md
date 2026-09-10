@@ -61,6 +61,8 @@ or inferred values.
 | PR #32 Luna phase | Normal Luna landing and delivery phase | 52/8 → 50/8 | -2% | 0% | 8m03s | Auto compact shortly after the initial git/repository check; broader relevant validation 33 passed; full suite 1129 passed / 8 skipped / 552 subtests / 236.30s; empirical observation only |
 | PR #32 combined | Observed end-to-end including handoff-confusion noise | 82/13 → 50/8 | -32% | -5% | 12m20s | includes the separate 54s handoff-confusion interval; do not interpret as a clean combined phase; empirical observation only |
 | Current readonly-clusters Astra phase | Astra; Module scope inspection plus Node selection matching | 50/8 → 30/5 | -20% | -3% | 4m04s | 3 helpers across 2 natural clusters; commits `6a56ffd` and `c3ffebc`; focused 5 and 7 passed; baseline characterization passed; no Auto compact; empirical observation only |
+| Current three-cluster Astra phase | Astra; Graph neighborhood traversal, Focus token/node projection, and Route snapshot inspection/comparison | 100/100 → 78/97 | -22% | -3% | 3m52s | 3 natural clusters; 9 functions total; commits `2920761`, `d0a16d0`, and `1a7c187`; focused 4, 5, and 7 passed; baseline characterization passed; no Auto compact; empirical observation only |
+| [PR #33](https://github.com/prompt-graph-lab/promptgraph/pull/33) Luna | Luna landing and delivery phase | 30/5 → 27/5 | -3% | 0% | 10m06s | empirical observation only |
 
 ## Canonical run notes
 
@@ -196,6 +198,25 @@ Focused validation passed with 5 and 7 tests respectively, baseline
 characterization passed, and no Auto compact was observed. This is an
 empirical observation from the implementation-only handoff, not evidence of
 stable accounting behavior or a model-wide efficiency improvement.
+
+### Current three-cluster Astra implementation phase
+
+Astra completed three independently committed natural read-only clusters in
+one implementation phase: `core.graph_neighborhood`,
+`core.focus_token_node_projection`, and `core.route_snapshot_inspection`.
+The observed UI quota changed from 100/100 to 78/97 over 3m52s, an observed 5h
+delta of -22% and a weekly delta of -3%. Focused validation passed with 4, 5,
+and 7 tests respectively, baseline characterization passed, and no Auto
+compact was observed. This is an empirical observation from the
+implementation-only handoff, not evidence of stable accounting behavior or a
+model-wide efficiency improvement.
+
+### PR #33 Luna landing phase
+
+The PR #33 Luna landing and delivery phase moved from 30/5 to 27/5 over
+10m06s, an observed 5h delta of -3% and a weekly delta of 0%. This is an
+empirical observation from that landing phase only; it does not establish
+stable quota accounting behavior or generalize to other runs.
 
 ## Findings
 
