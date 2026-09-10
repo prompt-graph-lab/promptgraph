@@ -936,3 +936,62 @@ malformed-input behavior, and integer/non-integer ordering. Snapshot creation
 (including UUIDs and timestamps), append/apply/save operations, history and
 session state, image/file handling, and Streamlit storyboard/compare rendering
 remain in `app.py`. No route-snapshot schema or persistence behavior changes.
+
+### ComfyUI workflow metadata shape inspection
+
+`core.comfy_workflow_metadata` owns the pure JSON parsing and executable-shape
+inspection helpers `_load_json_from_text` and
+`_is_executable_comfy_workflow`. The owner preserves the distinction between
+non-string/blank/invalid JSON and valid JSON scalars or containers, and treats a
+workflow as executable when any dictionary node has dictionary `inputs`. It
+performs no metadata selection, filesystem access, workflow mutation, or
+generation orchestration.
+
+`_workflow_text_from_line_metadata`, metadata-source precedence, debug status,
+session-state fallback, workflow preview/rendering, path resolution, and
+submission remain in `app.py` or the existing ComfyUI owners. Direct exception
+and short-circuit behavior remain part of the characterization boundary; no
+workflow schema or persistence behavior changes.
+
+### LoRA mapping presentation calculations
+
+`core.lora_mapping_presentation` owns the nine read-only LoRA candidate and
+mapping presentation helpers: candidate/reference labels, reference grouping,
+numeric strength defaults, reference signatures, mapped-option labels, and key
+fragment formatting. The owner preserves required-field failures, falsey
+fallbacks, case-sensitive grouping with case-insensitive ordering, first
+non-empty weights, duplicate signature entries, numeric fallback behavior, and
+the existing key-fragment limit.
+
+LoRA directory scanning and reference extraction/matching remain in their
+existing owners. `_lora_mapping_file_options` remains in `app.py` because it
+owns session-state and filesystem-dependent options; widgets, draft/session
+state, workflow injection, and export rendering also remain there. This is a
+presentation/calculation owner only and does not change LoRA or workflow
+persistence semantics.
+
+### Comma-tag text conversion
+
+`core.comma_tag_text` owns the two pure text-conversion helpers
+`_format_comma_tags` and `_parse_comma_tags` used by metadata editing. It
+preserves list-only formatting, string conversion and trimming, literal comma
+splitting, case-sensitive first-occurrence deduplication, falsey handling, and
+direct conversion exceptions without mutating the supplied values.
+
+Metadata editor widgets, session-state synchronization, save/load, schema
+interpretation, and Streamlit rendering remain in `app.py`. The module does
+not own tag persistence or introduce a tag model.
+
+### ComfyUI candidate presentation
+
+`core.comfy_candidate_presentation` owns the two read-only helpers
+`_comfy_candidate_label` and `_candidate_default_index` for labeling and
+selecting among text-node candidates found in a ComfyUI workflow. It preserves
+required-field failures, falsey preview handling, first role-match precedence,
+and the uncoerced fallback index behavior.
+
+Workflow candidate discovery, parser/shape analysis, widget defaults and
+session state, workflow editing/injection, and rendering remain in `app.py` or
+the existing ComfyUI owners. This is separate from
+`core.candidate_inspection`: it presents ComfyUI workflow candidates and does
+not inspect or mutate generated Candidate/Gallery records.
