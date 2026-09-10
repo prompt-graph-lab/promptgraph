@@ -1,3 +1,16 @@
+from core.generation_duration import (
+    _format_duration,
+)
+from core.consistency_presentation import (
+    _format_percent,
+    _compact_label_list,
+)
+from core.nearby_line_selection import (
+    _get_nearby_lines,
+)
+from core.agraph_selection import (
+    normalize_agraph_selection,
+)
 from core.comfy_candidate_presentation import (
     _comfy_candidate_label,
     _candidate_default_index,
@@ -425,31 +438,6 @@ def default_new_project_dir(project_name: str = "MyProject") -> str:
     return os.path.abspath(os.path.join(default_projects_dir(), expanded_name))
 
 # --- State Management ---
-def normalize_agraph_selection(return_value, project):
-    if not return_value:
-        return []
-
-    raw_items = return_value if isinstance(return_value, list) else [return_value]
-    ids = []
-
-    for item in raw_items:
-        if isinstance(item, str):
-            ids.append(item)
-        elif isinstance(item, dict):
-            if "id" in item:
-                ids.append(item["id"])
-            elif "node" in item:
-                ids.append(item["node"])
-        else:
-            if hasattr(item, "id"):
-                ids.append(item.id)
-
-    valid_ids = []
-    for nid in ids:
-        if nid in project.nodes and nid not in valid_ids:
-            valid_ids.append(nid)
-
-    return valid_ids
 
 def sanitize_selected_node_ids(project=None):
     project = project or st.session_state.get("project")
@@ -3521,15 +3509,8 @@ def render_lora_loader_injection_export(raw_text: str, source_label: str, contai
     )
 
 
-def _format_percent(value: float) -> str:
-    return f"{float(value or 0.0) * 100:.1f}%"
 
 
-def _compact_label_list(labels: list[str], limit: int = 4) -> str:
-    labels = [str(label) for label in labels if str(label)]
-    if len(labels) <= limit:
-        return ", ".join(labels)
-    return ", ".join(labels[:limit]) + f", +{len(labels) - limit} more"
 
 
 
@@ -5357,33 +5338,6 @@ def _set_candidate_pinned(line, candidate_path, pinned):
     _sync_line_generated_candidates_to_session(line, candidates)
 
 
-def _get_nearby_lines(project, line, radius=1):
-    if not project or not line:
-        return []
-    visible_lines = [
-        candidate_line
-        for candidate_line in getattr(project, "prompt_lines", [])
-        if not getattr(candidate_line, "deleted", False)
-    ]
-    visible_lines.sort(
-        key=lambda candidate_line: (
-            getattr(candidate_line, "current_index", None) is None,
-            getattr(candidate_line, "current_index", 0) or 0,
-        )
-    )
-    line_ids = [getattr(candidate_line, "id", None) for candidate_line in visible_lines]
-    line_id = getattr(line, "id", None)
-    if line_id not in line_ids:
-        return []
-
-    index = line_ids.index(line_id)
-    start = max(0, index - radius)
-    end = min(len(visible_lines), index + radius + 1)
-    return [
-        candidate_line
-        for candidate_line in visible_lines[start:end]
-        if getattr(candidate_line, "id", None) != line_id
-    ]
 
 
 def _collect_nearby_candidates(project, line, radius=1):
@@ -9731,17 +9685,6 @@ def render_sequence_preview_panel(project, preview: dict) -> None:
             st.rerun()
 
 
-def _format_duration(seconds: float) -> str:
-    if seconds <= 0:
-        return "不明"
-    seconds = int(round(seconds))
-    minutes, secs = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"約{hours}時間{minutes}分"
-    if minutes:
-        return f"約{minutes}分{secs:02d}秒"
-    return f"約{secs}秒"
 
 def _gallery_generation_average_seconds() -> float | None:
     durations = [

@@ -65,6 +65,8 @@ or inferred values.
 | [PR #33](https://github.com/prompt-graph-lab/promptgraph/pull/33) Luna | Luna landing and delivery phase | 30/5 → 27/5 | -3% | 0% | 10m06s | empirical observation only |
 | Current four-cluster Astra phase | Astra; ComfyUI workflow metadata, LoRA mapping, comma-tag text, and ComfyUI candidate presentation | 76/96 → 55/93 | -21% | -3% | 3m54s | 4 natural clusters; 15 helpers total; commits `faffeef`, `f12534f`, `524b5db`, and `7da4585`; focused 10, 6, 4, and 4 passed; baseline characterization passed; no Auto compact; empirical observation only |
 | [PR #34](https://github.com/prompt-graph-lab/promptgraph/pull/34) Luna | Luna landing and delivery phase | 78/97 → 76/96 | -2% | -1% | 7m22s | no Auto compact; empirical observation only |
+| Current readonly-projections Astra phase | Astra; AGraph selection normalization, nearby line selection, consistency presentation, and generation duration formatting | 52/92 → 29/89 | -23% | -3% | 3m23s | asked for up to 5 clusters; intentionally stopped at 4 because the fifth Core/Optional classification boundary was not cleanly separable from the shared label set; 5 helpers total; commits `306fdee`, `cdef4f8`, `0098f2d`, and `15c820c`; focused 3, 4, 3, and 2 passed; baseline characterization passed; no Auto compact; empirical observation only |
+| [PR #35](https://github.com/prompt-graph-lab/promptgraph/pull/35) Luna | Luna landing and delivery phase | 55/93 → 54/93 | -1% | 0% | 6m04s | no Auto compact; empirical observation only |
 
 ## Canonical run notes
 
@@ -236,6 +238,28 @@ stable accounting behavior or a model-wide efficiency improvement.
 
 The PR #34 Luna landing and delivery phase moved from 78/97 to 76/96 over
 7m22s, an observed 5h delta of -2% and a weekly delta of -1%. No Auto compact
+was observed. This is an empirical observation from that landing phase only; it
+does not establish stable quota accounting behavior or generalize to other
+runs.
+
+### Current readonly-projections Astra implementation phase
+
+Astra was asked for up to five clusters and completed four natural,
+independently committed read-only clusters: `core.agraph_selection`,
+`core.nearby_line_selection`, `core.consistency_presentation`, and
+`core.generation_duration`. Astra intentionally stopped at four because the
+fifth Core/Optional classification boundary could not be cleanly separated from
+the shared label set. The observed UI quota changed from 52/92 to 29/89 over
+3m23s, an observed 5h delta of -23% and a weekly delta of -3%. Focused
+validation passed with 3, 4, 3, and 2 tests respectively, baseline
+characterization passed, and no Auto compact was observed. This is an empirical
+observation from the implementation-only handoff, not evidence of stable
+accounting behavior or a model-wide efficiency improvement.
+
+### PR #35 Luna landing phase
+
+The PR #35 Luna landing and delivery phase moved from 55/93 to 54/93 over
+6m04s, an observed 5h delta of -1% and a weekly delta of 0%. No Auto compact
 was observed. This is an empirical observation from that landing phase only; it
 does not establish stable quota accounting behavior or generalize to other
 runs.
