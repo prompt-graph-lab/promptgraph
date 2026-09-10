@@ -1,3 +1,14 @@
+from core.route_snapshot_inspection import (
+    _short_preview,
+    _route_snapshot_label,
+    _ensure_route_snapshot_metadata,
+    _route_snapshot_image_path,
+    _route_compare_line_label,
+    _compare_route_snapshots,
+    _sorted_route_snapshot_items,
+)
+from core.focus_token_node_projection import get_focus_token_node_pairs
+from core.graph_neighborhood import get_neighborhood_node_ids
 from core.node_selection_matching import get_node_match_terms, remap_selected_nodes_for_line
 from core.module_scope_inspection import preview_module_scope
 from core.promptcloud_calculations import (
@@ -1723,11 +1734,6 @@ def validate_node_input(text: str) -> bool:
         return False
     return True
 
-def _short_preview(value: str, limit: int = 120) -> str:
-    value = " ".join(value.split())
-    if len(value) <= limit:
-        return value
-    return value[: limit - 3].rstrip() + "..."
 
 def render_module_match_prompt_preview(prompt_text: str, matched_tokens, core_tokens=None):
     matched_keys = _prompt_token_match_key_set(matched_tokens)
@@ -14557,32 +14563,8 @@ def _apply_route_snapshot(project, snapshot):
     return {"applied": applied, "skipped": skipped}
 
 
-def _route_snapshot_label(index, snapshot):
-    name = snapshot.get("name", "Untitled sequence") if isinstance(snapshot, dict) else "Untitled sequence"
-    created_at = snapshot.get("created_at", "") if isinstance(snapshot, dict) else ""
-    favorite_prefix = "★ " if isinstance(snapshot, dict) and snapshot.get("favorite") else ""
-    return f"{index + 1}. {favorite_prefix}{name} {created_at}".strip()
 
 
-def _ensure_route_snapshot_metadata(snapshot):
-    if not isinstance(snapshot, dict):
-        return {}
-    metadata = {
-        "favorite": bool(snapshot.get("favorite", False)),
-        "notes": snapshot.get("notes") if isinstance(snapshot.get("notes"), str) else "",
-        "tags": snapshot.get("tags") if isinstance(snapshot.get("tags"), str) else "",
-    }
-    score = snapshot.get("score")
-    if score in ("", None):
-        metadata["score"] = None
-    elif isinstance(score, (int, float)):
-        metadata["score"] = max(0.0, min(10.0, float(score)))
-    else:
-        try:
-            metadata["score"] = max(0.0, min(10.0, float(score)))
-        except (TypeError, ValueError):
-            metadata["score"] = None
-    return metadata
 
 
 def _save_route_snapshot_metadata(snapshot, favorite, use_score, score, notes, tags):
@@ -14592,48 +14574,10 @@ def _save_route_snapshot_metadata(snapshot, favorite, use_score, score, notes, t
     snapshot["tags"] = tags or ""
 
 
-def _route_snapshot_image_path(item):
-    if not isinstance(item, dict):
-        return ""
-    return item.get("selected_candidate_path") or item.get("generated_image_path") or ""
 
 
-def _route_compare_line_label(item):
-    line_index = item.get("line_index") if isinstance(item, dict) else None
-    prompt_text = item.get("prompt_text", "") if isinstance(item, dict) else ""
-    prompt_preview = _short_preview(prompt_text, 80) if prompt_text else "Untitled illustration"
-    if not isinstance(line_index, int):
-        return prompt_preview
-    return f"Illustration {line_index + 1}: {prompt_preview}"
 
 
-def _compare_route_snapshots(snapshot_a, snapshot_b):
-    items_a = {
-        item.get("line_id"): item
-        for item in snapshot_a.get("items", []) if isinstance(item, dict) and item.get("line_id")
-    } if isinstance(snapshot_a, dict) else {}
-    items_b = {
-        item.get("line_id"): item
-        for item in snapshot_b.get("items", []) if isinstance(item, dict) and item.get("line_id")
-    } if isinstance(snapshot_b, dict) else {}
-
-    rows = []
-    for line_id in items_a:
-        if line_id not in items_b:
-            continue
-        item_a = items_a[line_id]
-        item_b = items_b[line_id]
-        path_a = _route_snapshot_image_path(item_a)
-        path_b = _route_snapshot_image_path(item_b)
-        if path_a == path_b:
-            continue
-        rows.append({
-            "line_id": line_id,
-            "label": _route_compare_line_label(item_a),
-            "path_a": path_a,
-            "path_b": path_b,
-        })
-    return rows
 
 
 def _render_route_compare_image(label, image_path):
@@ -14651,22 +14595,6 @@ def _render_route_compare_image(label, image_path):
         st.caption("Could not show image.")
 
 
-def _sorted_route_snapshot_items(snapshot):
-    if not isinstance(snapshot, dict):
-        return []
-    indexed_items = [
-        (index, item)
-        for index, item in enumerate(snapshot.get("items", []) or [])
-        if isinstance(item, dict)
-    ]
-    indexed_items.sort(
-        key=lambda indexed_item: (
-            not isinstance(indexed_item[1].get("line_index"), int),
-            indexed_item[1].get("line_index") if isinstance(indexed_item[1].get("line_index"), int) else indexed_item[0],
-            indexed_item[0],
-        )
-    )
-    return [item for _index, item in indexed_items]
 
 
 def _render_route_storyboard(snapshot):
@@ -16005,24 +15933,6 @@ def initialize_batch_edit_defaults():
         if key not in st.session_state:
             st.session_state[key] = value
 
-def get_focus_token_node_pairs(project, target_line):
-    pairs = []
-    node_path = list(getattr(target_line, "node_path", []) or [])
-    for index, token in enumerate(getattr(target_line, "tokens", []) or []):
-        node_id = node_path[index] if index < len(node_path) else None
-        selectable = (
-            bool(node_id)
-            and node_id in getattr(project, "nodes", {})
-            and not token.startswith("<mod:")
-            and not token.startswith("</mod:")
-        )
-        pairs.append({
-            "index": index,
-            "token": token,
-            "node_id": node_id,
-            "selectable": selectable,
-        })
-    return pairs
 
 def render_focus_edit_token_picker(project, target_line, label="Raw Prompt Tokens"):
     token_pairs = get_focus_token_node_pairs(project, target_line)
@@ -21592,40 +21502,6 @@ def render_scope_status_bar(project):
         f"Illustration: {line_label} | Module: {module_label}"
     )
 
-def get_neighborhood_node_ids(project, selected_node_ids, steps):
-    if not project or not selected_node_ids or steps is None:
-        return None
-
-    valid_selected = [
-        nid for nid in selected_node_ids
-        if nid in getattr(project, "nodes", {})
-    ]
-
-    if not valid_selected:
-        return set()
-
-    forward = {}
-    backward = {}
-
-    for source, target in getattr(project, "edges", []):
-        forward.setdefault(source, set()).add(target)
-        backward.setdefault(target, set()).add(source)
-
-    result = set(valid_selected)
-    frontier = set(valid_selected)
-
-    for _ in range(steps):
-        next_frontier = set()
-        for nid in frontier:
-            next_frontier.update(forward.get(nid, set()))
-            next_frontier.update(backward.get(nid, set()))
-        next_frontier -= result
-        result.update(next_frontier)
-        frontier = next_frontier
-        if not frontier:
-            break
-
-    return result
 
 def clear_selected_nodes():
     st.session_state.selected_node_ids = []

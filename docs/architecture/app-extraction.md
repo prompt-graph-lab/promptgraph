@@ -892,3 +892,47 @@ session-state update ordering and the existing selected-node sanitization seam.
 Graph rendering, Focus navigation, widget/session ownership, history,
 persistence, and prompt mutation remain outside this owner. No schema,
 save/load, or navigation behavior is changed by the extraction.
+
+### Graph neighborhood traversal
+
+`core.graph_neighborhood` owns the read-only `get_neighborhood_node_ids`
+traversal used to expand a Graph selection around existing edges. It validates
+selected node IDs against the existing node map, walks both directions for the
+requested number of steps, and returns the same set-or-None results without
+mutating the Project, nodes, edges, or selection input.
+
+The owner preserves the existing early returns, eager edge traversal, duplicate
+and cycle handling, inclusion of external edge endpoints, step-type behavior,
+and direct malformed-edge exceptions. Graph controls, neighborhood-step
+session state, selection synchronization, rendering, navigation, and graph
+mutation remain in `app.py`. This is a traversal calculation only; it does not
+extend `core.graph_display` or change graph persistence.
+
+### Focus token/node projection
+
+`core.focus_token_node_projection` owns the read-only
+`get_focus_token_node_pairs` projection used by the Focus token picker and
+preview. It preserves token order and identity, positional `node_path`
+alignment, marker-prefix exclusions, falsey-ID handling, and membership checks
+against the existing Project node map without mutating either input.
+
+Focus widgets, selected-node/session state, navigation, prompt editing, graph
+mutation, and rendering remain in `app.py`. This owner supplies a token/node
+projection only; selected-node remapping remains in
+`core.node_selection_matching`.
+
+### Route snapshot inspection and comparison
+
+`core.route_snapshot_inspection` owns the seven read-only route-snapshot
+helpers, including the shared `_short_preview` formatter: snapshot labels,
+metadata normalization, image-path fallback, comparison labels, snapshot
+comparison, and stable item ordering. These helpers inspect existing snapshot
+dictionaries and return display or comparison data without creating, mutating,
+persisting, or rendering snapshots.
+
+The extraction preserves score coercion and clamping, falsey path precedence,
+duplicate-line replacement and insertion order, equal-path suppression,
+malformed-input behavior, and integer/non-integer ordering. Snapshot creation
+(including UUIDs and timestamps), append/apply/save operations, history and
+session state, image/file handling, and Streamlit storyboard/compare rendering
+remain in `app.py`. No route-snapshot schema or persistence behavior changes.
