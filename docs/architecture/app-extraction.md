@@ -995,3 +995,55 @@ session state, workflow editing/injection, and rendering remain in `app.py` or
 the existing ComfyUI owners. This is separate from
 `core.candidate_inspection`: it presents ComfyUI workflow candidates and does
 not inspect or mutate generated Candidate/Gallery records.
+
+### Graph component selection normalization
+
+`core.agraph_selection` owns the read-only `normalize_agraph_selection`
+adapter for converting AGraph return values into valid existing Project node
+IDs. It preserves string, dictionary, and object-shaped inputs, `id`-before-
+`node` precedence, first-occurrence deduplication, falsey short-circuiting,
+node-map filtering, and direct malformed-input behavior without mutating the
+Project or returned objects.
+
+`sanitize_selected_node_ids`, graph widget/callback handling, session-state
+selection ownership, rendering, navigation, and graph mutation remain in
+`app.py`. This is an input-shape adapter, separate from graph display
+calculations and selected-node matching.
+
+### Nearby line selection
+
+`core.nearby_line_selection` owns the read-only `_get_nearby_lines` helper for
+selecting visible PromptLine neighbors around a target line. It filters deleted
+lines, preserves the existing current-index ordering and stable ties, applies
+the radius slice, and returns the existing line objects without changing the
+Project or PromptLines.
+
+Candidate aggregation, pinning and adoption, session state, nearby-candidate
+rendering, navigation, and all PromptLine/Project mutation remain in `app.py`
+or their existing owners. The owner does not broaden the Candidate/Gallery
+inspection boundary.
+
+### Consistency presentation
+
+`core.consistency_presentation` owns the two read-only formatting helpers
+`_format_percent` and `_compact_label_list` used by consistency analysis. It
+preserves falsey percentage defaults, numeric conversion and one-decimal
+formatting, label stringification/filtering, duplicate labels, limit behavior,
+and direct conversion exceptions.
+
+Consistency analysis, negative-prompt inspection, session state, table/metric
+rendering, and any persistence or mutation remain in `app.py` or their
+existing owners. This module formats already-computed values and does not own
+the analysis data or schema.
+
+### Generation duration formatting
+
+`core.generation_duration` owns the read-only `_format_duration` helper for
+displaying positive generation-time estimates. It preserves the unknown-value
+fallback, rounding, Japanese seconds/minutes/hours labels, hour-level seconds
+suppression, and direct invalid-value exceptions.
+
+Duration sampling, session history, ETA/average calculations, progress
+updates, generation execution, and Streamlit rendering remain in `app.py`.
+The owner formats supplied timing values only and does not own timing state or
+generation orchestration.
