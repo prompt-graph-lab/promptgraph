@@ -63,6 +63,8 @@ or inferred values.
 | Current readonly-clusters Astra phase | Astra; Module scope inspection plus Node selection matching | 50/8 → 30/5 | -20% | -3% | 4m04s | 3 helpers across 2 natural clusters; commits `6a56ffd` and `c3ffebc`; focused 5 and 7 passed; baseline characterization passed; no Auto compact; empirical observation only |
 | Current three-cluster Astra phase | Astra; Graph neighborhood traversal, Focus token/node projection, and Route snapshot inspection/comparison | 100/100 → 78/97 | -22% | -3% | 3m52s | 3 natural clusters; 9 functions total; commits `2920761`, `d0a16d0`, and `1a7c187`; focused 4, 5, and 7 passed; baseline characterization passed; no Auto compact; empirical observation only |
 | [PR #33](https://github.com/prompt-graph-lab/promptgraph/pull/33) Luna | Luna landing and delivery phase | 30/5 → 27/5 | -3% | 0% | 10m06s | empirical observation only |
+| Current four-cluster Astra phase | Astra; ComfyUI workflow metadata, LoRA mapping, comma-tag text, and ComfyUI candidate presentation | 76/96 → 55/93 | -21% | -3% | 3m54s | 4 natural clusters; 15 helpers total; commits `faffeef`, `f12534f`, `524b5db`, and `7da4585`; focused 10, 6, 4, and 4 passed; baseline characterization passed; no Auto compact; empirical observation only |
+| [PR #34](https://github.com/prompt-graph-lab/promptgraph/pull/34) Luna | Luna landing and delivery phase | 78/97 → 76/96 | -2% | -1% | 7m22s | no Auto compact; empirical observation only |
 
 ## Canonical run notes
 
@@ -217,6 +219,26 @@ The PR #33 Luna landing and delivery phase moved from 30/5 to 27/5 over
 10m06s, an observed 5h delta of -3% and a weekly delta of 0%. This is an
 empirical observation from that landing phase only; it does not establish
 stable quota accounting behavior or generalize to other runs.
+
+### Current four-cluster Astra implementation phase
+
+Astra completed four independently committed natural read-only clusters in one
+implementation phase: `core.comfy_workflow_metadata`,
+`core.lora_mapping_presentation`, `core.comma_tag_text`, and
+`core.comfy_candidate_presentation`. The observed UI quota changed from 76/96
+to 55/93 over 3m54s, an observed 5h delta of -21% and a weekly delta of -3%.
+Focused validation passed with 10, 6, 4, and 4 tests respectively, baseline
+characterization passed, and no Auto compact was observed. This is an
+empirical observation from the implementation-only handoff, not evidence of
+stable accounting behavior or a model-wide efficiency improvement.
+
+### PR #34 Luna landing phase
+
+The PR #34 Luna landing and delivery phase moved from 78/97 to 76/96 over
+7m22s, an observed 5h delta of -2% and a weekly delta of -1%. No Auto compact
+was observed. This is an empirical observation from that landing phase only; it
+does not establish stable quota accounting behavior or generalize to other
+runs.
 
 ## Findings
 
