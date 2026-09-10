@@ -1,3 +1,4 @@
+from core.focus_token_node_projection import get_focus_token_node_pairs
 from core.graph_neighborhood import get_neighborhood_node_ids
 from core.node_selection_matching import get_node_match_terms, remap_selected_nodes_for_line
 from core.module_scope_inspection import preview_module_scope
@@ -16006,24 +16007,6 @@ def initialize_batch_edit_defaults():
         if key not in st.session_state:
             st.session_state[key] = value
 
-def get_focus_token_node_pairs(project, target_line):
-    pairs = []
-    node_path = list(getattr(target_line, "node_path", []) or [])
-    for index, token in enumerate(getattr(target_line, "tokens", []) or []):
-        node_id = node_path[index] if index < len(node_path) else None
-        selectable = (
-            bool(node_id)
-            and node_id in getattr(project, "nodes", {})
-            and not token.startswith("<mod:")
-            and not token.startswith("</mod:")
-        )
-        pairs.append({
-            "index": index,
-            "token": token,
-            "node_id": node_id,
-            "selectable": selectable,
-        })
-    return pairs
 
 def render_focus_edit_token_picker(project, target_line, label="Raw Prompt Tokens"):
     token_pairs = get_focus_token_node_pairs(project, target_line)
