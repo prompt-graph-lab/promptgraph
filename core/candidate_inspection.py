@@ -125,3 +125,20 @@ def _prompt_original_status_label(line) -> str:
     if is_line_prompt_changed_from_original(line):
         return "Prompt: edited"
     return "Prompt: original"
+
+
+def _candidate_metadata_caption(candidate):
+    parts = []
+    created_at = candidate.get("created_at") if isinstance(candidate, dict) else None
+    source = candidate.get("source") if isinstance(candidate, dict) else None
+    run_index = candidate.get("run_index") if isinstance(candidate, dict) else None
+    origin_line_index = candidate.get("origin_line_index") if isinstance(candidate, dict) else None
+    if created_at:
+        parts.append(str(created_at))
+    if source:
+        parts.append(str(source))
+    if run_index is not None:
+        parts.append(f"run {run_index}")
+    if origin_line_index is not None:
+        parts.append(f"line {origin_line_index}")
+    return " / ".join(parts)

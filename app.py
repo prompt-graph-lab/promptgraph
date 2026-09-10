@@ -1,3 +1,4 @@
+from core.candidate_inspection import _candidate_metadata_caption
 from core.candidate_inspection import get_original_prompt_text, normalize_prompt_for_revert_compare, is_line_prompt_changed_from_original, _prompt_original_status_label
 from core.candidate_inspection import _looks_like_workflow_json_prompt, _candidate_nested_value, get_candidate_prompt_text
 from core.candidate_inspection import _candidate_prompt_metadata
@@ -4331,23 +4332,6 @@ def _render_candidate_gallery_compare_image(label, image_path, missing_caption):
         st.image(display_path, width="stretch")
     except Exception:
         st.caption("Could not show image.")
-
-
-def _candidate_metadata_caption(candidate):
-    parts = []
-    created_at = candidate.get("created_at") if isinstance(candidate, dict) else None
-    source = candidate.get("source") if isinstance(candidate, dict) else None
-    run_index = candidate.get("run_index") if isinstance(candidate, dict) else None
-    origin_line_index = candidate.get("origin_line_index") if isinstance(candidate, dict) else None
-    if created_at:
-        parts.append(str(created_at))
-    if source:
-        parts.append(str(source))
-    if run_index is not None:
-        parts.append(f"run {run_index}")
-    if origin_line_index is not None:
-        parts.append(f"line {origin_line_index}")
-    return " / ".join(parts)
 
 
 def _candidate_is_pinned(candidate):

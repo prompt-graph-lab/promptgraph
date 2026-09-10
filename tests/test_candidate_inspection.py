@@ -44,3 +44,8 @@ class CandidateInspectionTests(unittest.TestCase):
         with patch.object(c,'parse_prompt',side_effect=ValueError('legacy')):
             self.assertEqual(c.normalize_prompt_for_revert_compare(' a ,, b '),['a','b'])
         self.assertEqual(c.normalize_prompt_for_revert_compare(None),[])
+
+    def test_caption_retains_falsey_index_values(self):
+        self.assertEqual(c._candidate_metadata_caption({'created_at':'t','source':'s','run_index':0,'origin_line_index':False}),'t / s / run 0 / line False')
+        self.assertEqual(c._candidate_metadata_caption(None),'')
+        self.assertEqual(c._candidate_metadata_caption({'created_at':0,'source':'','run_index':None}),'')
