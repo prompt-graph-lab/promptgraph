@@ -1,3 +1,4 @@
+from core.candidate_inspection import _is_appended_gallery_variant_record
 from core.candidate_inspection import _candidate_image_swap_lineage_info
 from core.candidate_inspection import _candidate_prompt_value, _candidate_route_candidate_workflow, _candidate_route_candidate_seed
 from core.candidate_inspection import _sort_candidates_for_display
@@ -4648,16 +4649,6 @@ def _get_line_gallery_variants(line):
         seen.add(key)
     line.gallery_variants = normalized
     return normalized
-
-
-def _is_appended_gallery_variant_record(variant):
-    if not isinstance(variant, dict):
-        return False
-    return (
-        variant.get("kind") == "gallery_variant"
-        or variant.get("source") == "batch_candidate_adoption"
-        or str(variant.get("id") or "").startswith("variant_")
-    )
 
 
 def _variant_path_exists(line, candidate_path):

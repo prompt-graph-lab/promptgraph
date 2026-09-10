@@ -209,3 +209,13 @@ def _candidate_image_swap_lineage_info(candidate, candidate_path, previous_main,
         if candidate_workflow:
             swap_info["candidate_workflow"] = str(candidate_workflow)
     return swap_info
+
+
+def _is_appended_gallery_variant_record(variant):
+    if not isinstance(variant, dict):
+        return False
+    return (
+        variant.get("kind") == "gallery_variant"
+        or variant.get("source") == "batch_candidate_adoption"
+        or str(variant.get("id") or "").startswith("variant_")
+    )

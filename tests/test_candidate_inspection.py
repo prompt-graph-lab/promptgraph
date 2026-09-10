@@ -83,3 +83,9 @@ class CandidateInspectionTests(unittest.TestCase):
         self.assertIs(c._candidate_image_swap_lineage_info(candidate,'new',previous,'time')['candidate_seed'],seed)
         self.assertEqual(previous,{'path':None,'field':'image_path'})
         with self.assertRaises(AttributeError): c._candidate_image_swap_lineage_info({},'x',None,'t')
+
+    def test_appended_variant_classification_keeps_legacy_alternatives(self):
+        for record in [{'kind':'gallery_variant'},{'source':'batch_candidate_adoption'},{'id':'variant_x'}]:
+            self.assertTrue(c._is_appended_gallery_variant_record(record))
+        for record in [None,{}, {'id':'Variant_x'},{'kind':'candidate'}]:
+            self.assertFalse(c._is_appended_gallery_variant_record(record))
