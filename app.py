@@ -1,3 +1,11 @@
+from core.prompt_line_selection import (
+    WORKBENCH_LINE_TYPE,
+    get_visible_prompt_lines,
+    get_adjacent_focus_line_ids,
+    is_route_separator,
+    is_workbench_line,
+    is_gallery_operation_prompt_line,
+)
 from core.animadex_record_inspection import (
     _animadex_record_identity,
     _animadex_record_search_text,
@@ -235,7 +243,7 @@ GALLERY_THUMBNAIL_JPEG_QUALITY = 92
 GALLERY_THUMBNAIL_CACHE_VERSION = "v3"
 CANDIDATE_PAGE_SIZE = 8
 ORIGINAL_IMAGE_SET_ROUTE_LABEL = "元イラスト集"
-WORKBENCH_LINE_TYPE = "workbench"
+
 SELECTED_ROUTE_WIDGET_PREFIX = "pro_gallery_route_selected_"
 UI_PROFILE_ENABLED_KEY = "ui_profiling_enabled"
 UI_PROFILE_TIMINGS_KEY = "ui_profile_timings"
@@ -8283,32 +8291,7 @@ def render_graph_sidebar_controls(project, focus_edit_active: bool) -> None:
     st.session_state[GRAPH_PATH_FILTER_STATE_KEY] = path_filter_enabled
 
 
-def get_visible_prompt_lines(project):
-    if not project:
-        return []
-    visible_lines = [
-        line
-        for line in project.prompt_lines
-        if not getattr(line, "deleted", False)
-    ]
-    return sorted(
-        visible_lines,
-        key=lambda line: (
-            getattr(line, "current_index", None) is None,
-            getattr(line, "current_index", 0) or 0,
-        )
-    )
 
-def get_adjacent_focus_line_ids(project, focused_line_id):
-    visible_lines = get_visible_prompt_lines(project)
-    visible_line_ids = [line.id for line in visible_lines]
-    if focused_line_id not in visible_line_ids:
-        return None, None
-
-    index = visible_line_ids.index(focused_line_id)
-    previous_line_id = visible_line_ids[index - 1] if index > 0 else None
-    next_line_id = visible_line_ids[index + 1] if index < len(visible_line_ids) - 1 else None
-    return previous_line_id, next_line_id
 
 def move_prompt_line(project, line_id, direction):
     visible_lines = get_visible_prompt_lines(project)
@@ -8358,19 +8341,8 @@ def add_prompt_line_from_text(project, prompt_text):
     project.prompt_lines.append(line)
     return line
 
-def is_route_separator(line) -> bool:
-    return getattr(line, "line_type", None) == "separator"
 
-def is_workbench_line(line) -> bool:
-    return getattr(line, "line_type", None) == WORKBENCH_LINE_TYPE
 
-def is_gallery_operation_prompt_line(line) -> bool:
-    return (
-        line is not None
-        and not getattr(line, "deleted", False)
-        and not is_route_separator(line)
-        and not is_workbench_line(line)
-    )
 
 ROUTE_COLOR_OPTIONS = {
     "blue": ("青", "🔵"),
