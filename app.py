@@ -1,3 +1,4 @@
+from core.candidate_inspection import _candidate_path, _selected_candidate_path
 from core.module_token_rules import (
     _parse_module_rule_text,
     _format_module_rule_text,
@@ -3835,12 +3836,6 @@ def _line_candidate_key(line):
     return str(getattr(line, "id", ""))
 
 
-def _candidate_path(candidate):
-    if isinstance(candidate, dict):
-        return str(candidate.get("path") or "")
-    return str(candidate) if candidate else ""
-
-
 def _runtime_asset_path(path):
     with profile_block("Image path resolution"):
         return resolve_project_asset_path(path, st.session_state.get("current_project_path"))
@@ -4558,10 +4553,6 @@ def _candidate_display_image_path(path):
     if not resolved_path or not profiled_path_exists(resolved_path):
         return ""
     return _gallery_thumbnail_display_path(resolved_path)
-
-
-def _selected_candidate_path(line):
-    return getattr(line, "selected_candidate_path", None) or getattr(line, "generated_image_path", None)
 
 
 def _line_main_image_reference(line):
