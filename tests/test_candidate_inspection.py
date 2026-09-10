@@ -59,3 +59,10 @@ class CandidateInspectionTests(unittest.TestCase):
         self.assertEqual(c._trashed_candidates(records),[trash,trash])
         self.assertIs(c._trashed_candidates(records)[0],trash)
         self.assertEqual(c._active_candidates(None),[])
+
+    def test_display_sort_is_stable_and_keeps_records(self):
+        a={}; b={'pinned':True}; d={'pinned':1}; records=[a,b,None,d]
+        result=c._sort_candidates_for_display(records)
+        self.assertEqual(result,[b,d,a,None]); self.assertIs(result[0],b)
+        self.assertEqual(records,[a,b,None,d])
+        with self.assertRaises(TypeError): c._sort_candidates_for_display(None)

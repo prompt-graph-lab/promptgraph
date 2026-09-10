@@ -158,3 +158,13 @@ def _active_candidates(candidates):
 
 def _trashed_candidates(candidates):
     return [candidate for candidate in candidates or [] if _candidate_is_trashed(candidate)]
+
+
+def _sort_candidates_for_display(candidates):
+    return [
+        candidate
+        for _idx, candidate in sorted(
+            enumerate(candidates),
+            key=lambda item: (not _candidate_is_pinned(item[1]), item[0]),
+        )
+    ]

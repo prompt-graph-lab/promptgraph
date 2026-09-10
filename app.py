@@ -1,3 +1,4 @@
+from core.candidate_inspection import _sort_candidates_for_display
 from core.candidate_inspection import _candidate_is_pinned, _candidate_is_trashed, _active_candidates, _trashed_candidates
 from core.candidate_inspection import _candidate_metadata_caption
 from core.candidate_inspection import get_original_prompt_text, normalize_prompt_for_revert_compare, is_line_prompt_changed_from_original, _prompt_original_status_label
@@ -5412,16 +5413,6 @@ def apply_candidate_route_creation(project, scope: str, selected_line_ids=None) 
         "no_candidate_count": no_candidate_count,
         "first_separator_id": first_separator_id,
     }
-
-
-def _sort_candidates_for_display(candidates):
-    return [
-        candidate
-        for _idx, candidate in sorted(
-            enumerate(candidates),
-            key=lambda item: (not _candidate_is_pinned(item[1]), item[0]),
-        )
-    ]
 
 
 def _set_candidate_pinned(line, candidate_path, pinned):
