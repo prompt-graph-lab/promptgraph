@@ -25,8 +25,8 @@ with their own results.
 ## GitHub record
 
 On 2026-09-10, GitHub metadata was checked for the listed PRs. PRs #17 through
-#25 and #27 through #30 were reported as merged into `main`; the local
-`origin/main` was fetched through the PR #30 merge commit. GitHub PR metadata
+#25 and #27 through #31 were reported as merged into `main`; the local
+`origin/main` was fetched through the PR #31 merge commit. GitHub PR metadata
 does not contain the interactive quota observations, so the values below are
 retained from the development-session record rather than replaced with empty
 or inferred values.
@@ -54,6 +54,9 @@ or inferred values.
 | [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) Luna | Luna Max Fast; landing and delivery phase | 20/18 → 17/18 | -3% | 0% | 6m02s | broader Graph tests 49; 1115 passed / 8 skipped / 552 subtests / 236.42s full suite; AST and diff checks |
 | [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) combined | Astra implementation plus Luna landing | 42/22 → 17/18 | -25% | -4% | 9m58s | sequential total; **noise: interrupted suite startup** |
 | PR #31 Astra phase | Astra Low; AnimaDex record-inspection cluster | 100/16 → 85/14 | -15% | -2% | 2m24s | clean implementation-only run; 6 helpers; focused 7 passed; empirical observation only |
+| [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) Luna | Luna landing and delivery phase | 85/14 → 82/13 | -3% | -1% | 6m21s | full suite 1122 passed / 8 skipped / 552 subtests / 236.52s; empirical observation only |
+| [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) combined | Astra implementation plus Luna landing | 100/16 → 82/13 | -18% | -3% | 8m45s | sequential total; empirical observation only |
+| PR #32 Astra phase | Astra Low; two-cluster prompt-line selection and PromptCloud calculations | 82/13 → 53/9 | -29% | -4% | 3m23s | Cluster A: 5 helpers; Cluster B: 4 helpers; 9 helpers total; independent checkpoint commits; focused 4 passed and 3 passed; no Auto compact; empirical observation only |
 
 ## Canonical run notes
 
@@ -137,6 +140,28 @@ delta of -15% and a weekly delta of -2%. This is an empirical observation from
 this implementation-only run, not evidence of a stable accounting change or a
 model-wide efficiency improvement.
 
+### PR #31: Luna landing and combined measurement
+
+Luna Max Fast completed the AnimaDex landing phase after Astra's implementation
+checkpoint. The observed UI quota changed from 85/14 to 82/13 over 6m21s, a 5h
+delta of -3% and a weekly delta of -1%. The full suite passed with 1122 passed,
+8 skipped, 552 subtests, in 236.52 seconds. The combined Astra-plus-Luna run
+changed from 100/16 to 82/13 over 8m45s, a 5h delta of -18% and a weekly delta
+of -3%. These are empirical observations only.
+
+### PR #32: two-cluster Astra implementation phase
+
+Astra Low completed two independently committed natural clusters in one
+implementation phase: five Illustration-selection helpers in
+`core.prompt_line_selection` and four PromptCloud-calculation helpers in
+`core.promptcloud_calculations`. The observed UI quota changed from 82/13 to
+53/9 over 3m23s, a 5h delta of -29% and a weekly delta of -4%. Focused tests
+passed 4 and 3 respectively. No Auto compact occurred. No intermediate quota or
+wall-time measurement was recorded at the Cluster A checkpoint, so the data
+does not support inferring the marginal cost or benefit of Cluster B. This is an
+empirical observation and hypothesis about this run, not evidence of stable
+accounting behavior or a model-wide efficiency improvement.
+
 ## Findings
 
 ### Strong empirical observations
@@ -146,7 +171,7 @@ model-wide efficiency improvement.
    separately.
 2. Full-suite validation repeatedly took around four minutes, making it a
    substantial fixed component of short refactor runs.
-3. In PRs #27–#29, Luna Max Fast used very little observed 5h quota while
+3. In PRs #27–#29 and #31, Luna Max Fast used very little observed 5h quota while
    performing broader or full validation, documentation, final review, push,
    and PR delivery.
 4. The Astra/Luna split therefore appears useful for this repository: Astra

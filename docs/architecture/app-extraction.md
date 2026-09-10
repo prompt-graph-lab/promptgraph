@@ -832,3 +832,33 @@ exception behavior. AnimaDex discovery and file access, settings and path
 ownership, module-name/preview conversion, mutation and session state, and all
 Streamlit rendering remain in their existing owners. This boundary introduces
 no new record schema or persistence behavior.
+
+### Prompt-line selection calculations
+
+`core.prompt_line_selection` owns the read-only calculations for selecting and
+classifying visible prompt lines: visible ordering, adjacent focus IDs, route
+separator detection, workbench detection, and Gallery-operation eligibility.
+These helpers consume existing project or line values and return the same lists,
+IDs, and boolean classifications without importing `app.py` or mutating their
+inputs. Their direct imports preserve the existing app-level helper names and
+test seams.
+
+PromptLine and Project mutation, route or workbench editing, session and widget
+ownership, Focus navigation state, persistence/history, and Streamlit rendering
+remain outside this owner. The module does not select files, change line
+ordering in the Project, or introduce a schema or new navigation behavior.
+
+### PromptCloud calculations
+
+`core.promptcloud_calculations` owns the deterministic PromptCloud calculations
+for word/frequency sanitization, eligible line-ID lookup, and token-frequency
+aggregation. It reuses the prompt-line eligibility predicate directly and
+returns the existing strings, mappings, and lists with their original ordering,
+deduplication, falsey defaults, and parser behavior. The module has no Streamlit
+or `app.py` dependency and does not mutate the project, lines, or prompt text.
+
+PromptCloud rendering, selected-word and widget/session state, graph or Gallery
+highlighting, PromptLine/Project mutation, save/load and history, and any other
+UI ownership remain in `app.py` or their existing owners. This boundary is a
+calculation owner only; it does not change the PromptCloud data model or project
+persistence semantics.
