@@ -1,3 +1,4 @@
+from core.candidate_inspection import _candidate_is_pinned, _candidate_is_trashed, _active_candidates, _trashed_candidates
 from core.candidate_inspection import _candidate_metadata_caption
 from core.candidate_inspection import get_original_prompt_text, normalize_prompt_for_revert_compare, is_line_prompt_changed_from_original, _prompt_original_status_label
 from core.candidate_inspection import _looks_like_workflow_json_prompt, _candidate_nested_value, get_candidate_prompt_text
@@ -4332,22 +4333,6 @@ def _render_candidate_gallery_compare_image(label, image_path, missing_caption):
         st.image(display_path, width="stretch")
     except Exception:
         st.caption("Could not show image.")
-
-
-def _candidate_is_pinned(candidate):
-    return bool(candidate.get("pinned")) if isinstance(candidate, dict) else False
-
-
-def _candidate_is_trashed(candidate):
-    return bool(candidate.get("trashed")) if isinstance(candidate, dict) else False
-
-
-def _active_candidates(candidates):
-    return [candidate for candidate in candidates or [] if not _candidate_is_trashed(candidate)]
-
-
-def _trashed_candidates(candidates):
-    return [candidate for candidate in candidates or [] if _candidate_is_trashed(candidate)]
 
 
 def _line_active_generated_candidates(line):

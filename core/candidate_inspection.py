@@ -142,3 +142,19 @@ def _candidate_metadata_caption(candidate):
     if origin_line_index is not None:
         parts.append(f"line {origin_line_index}")
     return " / ".join(parts)
+
+
+def _candidate_is_pinned(candidate):
+    return bool(candidate.get("pinned")) if isinstance(candidate, dict) else False
+
+
+def _candidate_is_trashed(candidate):
+    return bool(candidate.get("trashed")) if isinstance(candidate, dict) else False
+
+
+def _active_candidates(candidates):
+    return [candidate for candidate in candidates or [] if not _candidate_is_trashed(candidate)]
+
+
+def _trashed_candidates(candidates):
+    return [candidate for candidate in candidates or [] if _candidate_is_trashed(candidate)]

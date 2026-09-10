@@ -49,3 +49,13 @@ class CandidateInspectionTests(unittest.TestCase):
         self.assertEqual(c._candidate_metadata_caption({'created_at':'t','source':'s','run_index':0,'origin_line_index':False}),'t / s / run 0 / line False')
         self.assertEqual(c._candidate_metadata_caption(None),'')
         self.assertEqual(c._candidate_metadata_caption({'created_at':0,'source':'','run_index':None}),'')
+
+    def test_flags_and_partition_preserve_order_and_record_identity(self):
+        active={'pinned':'false'}; trash={'trashed':1}; records=[active,trash,None,trash]
+        self.assertTrue(c._candidate_is_pinned(active))
+        self.assertFalse(c._candidate_is_trashed(None))
+        result=c._active_candidates(records)
+        self.assertEqual(result,[active,None]); self.assertIs(result[0],active)
+        self.assertEqual(c._trashed_candidates(records),[trash,trash])
+        self.assertIs(c._trashed_candidates(records)[0],trash)
+        self.assertEqual(c._active_candidates(None),[])
