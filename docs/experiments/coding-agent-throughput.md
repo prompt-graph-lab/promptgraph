@@ -57,8 +57,9 @@ or inferred values.
 | [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) Luna | Luna landing and delivery phase | 85/14 → 82/13 | -3% | -1% | 6m21s | full suite 1122 passed / 8 skipped / 552 subtests / 236.52s; empirical observation only |
 | [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) combined | Astra implementation plus Luna landing | 100/16 → 82/13 | -18% | -3% | 8m45s | sequential total; empirical observation only |
 | PR #32 Astra phase | Astra Low; two-cluster prompt-line selection and PromptCloud calculations | 82/13 → 53/9 | -29% | -4% | 3m23s | Cluster A: 5 helpers; Cluster B: 4 helpers; 9 helpers total; independent checkpoint commits; focused 4 passed and 3 passed; no Auto compact; empirical observation only |
-| PR #32 Luna phase | Luna landing and delivery phase | 53/9 → 50/8 | -3% | -1% | not recorded | previous PR32 landing endpoint; full-suite/delivery timing was not retained in this log; empirical observation only |
-| PR #32 combined | Astra implementation plus Luna landing | 82/13 → 50/8 | -32% | -5% | not recorded | sequential total endpoint from the PR32 Astra and Luna phases; wall time was not retained in this log; empirical observation only |
+| PR #32 handoff-confusion noise | Luna mistakenly treated the Astra handoff as remaining work | 53/9 → 52/8 | -1% | -1% | 54s | explicit workflow noise; not part of normal Luna landing; empirical observation only |
+| PR #32 Luna phase | Normal Luna landing and delivery phase | 52/8 → 50/8 | -2% | 0% | 8m03s | Auto compact shortly after the initial git/repository check; broader relevant validation 33 passed; full suite 1129 passed / 8 skipped / 552 subtests / 236.30s; empirical observation only |
+| PR #32 combined | Observed end-to-end including handoff-confusion noise | 82/13 → 50/8 | -32% | -5% | 12m20s | includes the separate 54s handoff-confusion interval; do not interpret as a clean combined phase; empirical observation only |
 | Current readonly-clusters Astra phase | Astra; Module scope inspection plus Node selection matching | 50/8 → 30/5 | -20% | -3% | 4m04s | 3 helpers across 2 natural clusters; commits `6a56ffd` and `c3ffebc`; focused 5 and 7 passed; baseline characterization passed; no Auto compact; empirical observation only |
 
 ## Canonical run notes
@@ -165,15 +166,25 @@ does not support inferring the marginal cost or benefit of Cluster B. This is an
 empirical observation and hypothesis about this run, not evidence of stable
 accounting behavior or a model-wide efficiency improvement.
 
-### PR #32: Luna landing and combined measurement
+### PR #32: handoff noise, Luna landing, and combined measurement
 
-The PR32 Luna landing phase continued from the Astra checkpoint at 53/9 and
-ended at 50/8, an observed 5h delta of -3% and a weekly delta of -1%. The
-landing-phase wall time and full-suite result were not retained in the
-available handoff record. The combined sequential endpoint was 82/13 to 50/8,
-an observed 5h delta of -32% and a weekly delta of -5%; its wall time was also
-not retained. These are empirical observations only, and the 50/8 endpoint is
-used as the starting pair for the next readonly-clusters Astra phase.
+After the PR32 Astra phase ended at 53/9, a separate 54-second interval moved
+from 53/9 to 52/8, an observed 5h delta of -1% and a weekly delta of -1%.
+Luna mistakenly treated the Astra handoff as work remaining. This is explicit
+workflow noise, not part of the normal Luna landing phase.
+
+The normal PR32 Luna landing then moved from 52/8 to 50/8 over 8m03s, an
+observed 5h delta of -2% and a weekly delta of 0%. Auto compact occurred
+shortly after the initial git/repository check. Broader relevant validation
+passed 33 tests, and the full suite passed with 1129 passed, 8 skipped, 552
+subtests, in 236.30 seconds.
+
+The observed end-to-end run, including the handoff-confusion noise, moved from
+82/13 to 50/8 over 12m20s, an observed 5h delta of -32% and a weekly delta of
+-5%. The clean Astra plus normal Luna wall-time sum is 11m26s, but no clean
+combined quota delta is presented because the intervening handoff noise
+consumed 1%/1%. All of these are empirical observations only; they do not
+establish stable accounting behavior.
 
 ### Readonly-clusters Astra implementation phase
 
