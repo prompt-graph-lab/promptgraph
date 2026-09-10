@@ -1,3 +1,7 @@
+from core.comfy_candidate_presentation import (
+    _comfy_candidate_label,
+    _candidate_default_index,
+)
 from core.comma_tag_text import (
     _format_comma_tags,
     _parse_comma_tags,
@@ -2942,17 +2946,8 @@ def _render_comfy_workflow_inspection(raw_text: str, source_label: str, containe
             container.caption("No known editable fields were detected.")
 
 
-def _comfy_candidate_label(candidate: dict) -> str:
-    preview = candidate.get("text_preview") or ""
-    preview_text = f" - {preview}" if preview else ""
-    return f"{candidate['node_id']} - {candidate['class_type']} - {candidate['role']}{preview_text}"
 
 
-def _candidate_default_index(candidates: list[dict], role: str, fallback_index: int = 0) -> int:
-    for index, candidate in enumerate(candidates):
-        if candidate.get("role") == role:
-            return index
-    return fallback_index if candidates else 0
 
 
 def _line_export_prompt_text(line) -> str:
