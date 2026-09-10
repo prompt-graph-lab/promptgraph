@@ -23,3 +23,13 @@ class CandidateInspectionTests(unittest.TestCase):
         self.assertEqual(record,before)
         self.assertEqual(c._candidate_prompt_metadata({'prompt_text':' ','positive_prompt':'fallback'}),{})
         self.assertEqual(c._candidate_prompt_metadata({'negative_prompt':7}),{'positive_prompt':'','negative_prompt':'7'})
+
+    def test_prompt_text_priority_nested_fallback_and_json_rejection(self):
+        record={'source_prompt':' {} ', 'prompt_text':9,'metadata':{'prompt':' chosen '},'source_raw_metadata':{'prompt':'later'}}
+        self.assertEqual(c.get_candidate_prompt_text(record),'chosen')
+        self.assertEqual(c.get_candidate_prompt_text({'prompt':'{broken'}),'{broken')
+        self.assertEqual(c.get_candidate_prompt_text({'source_prompt':'first','prompt_text':'second'}),'first')
+        self.assertEqual(c.get_candidate_prompt_text({'prompt':'[]'}),'')
+        self.assertFalse(c._looks_like_workflow_json_prompt('"text"'))
+        self.assertIsNone(c._candidate_nested_value({'x':[]},'x','key'))
+        self.assertEqual(c.get_candidate_prompt_text(None),'')

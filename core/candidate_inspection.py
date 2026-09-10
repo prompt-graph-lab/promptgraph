@@ -40,3 +40,58 @@ def _candidate_prompt_metadata(candidate) -> dict:
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
     }
+
+
+def _looks_like_workflow_json_prompt(text: str) -> bool:
+    clean_text = str(text or "").strip()
+    if not clean_text or clean_text[0] not in "{[":
+        return False
+    try:
+        parsed = json.loads(clean_text)
+    except Exception:
+        return False
+    return isinstance(parsed, (dict, list))
+
+
+def _candidate_nested_value(candidate: dict, section_key: str, value_key: str):
+    section = candidate.get(section_key)
+    if isinstance(section, dict):
+        return section.get(value_key)
+    return None
+
+
+def get_candidate_prompt_text(candidate) -> str:
+    if not isinstance(candidate, dict):
+        return ""
+    top_level_keys = (
+        "source_prompt",
+        "prompt_text",
+        "prompt",
+        "positive_prompt",
+        "positive",
+    )
+    nested_sections = (
+        "source_generation_info",
+        "metadata",
+        "source_raw_metadata",
+    )
+    nested_keys = (
+        "source_prompt",
+        "prompt_text",
+        "prompt",
+        "positive_prompt",
+        "positive",
+    )
+    values = [candidate.get(key) for key in top_level_keys]
+    values.extend(
+        _candidate_nested_value(candidate, section_key, value_key)
+        for section_key in nested_sections
+        for value_key in nested_keys
+    )
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        prompt_text = value.strip()
+        if prompt_text and not _looks_like_workflow_json_prompt(prompt_text):
+            return prompt_text
+    return ""
