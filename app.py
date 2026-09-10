@@ -1,3 +1,13 @@
+from core.candidate_inspection import _is_appended_gallery_variant_record
+from core.candidate_inspection import _candidate_image_swap_lineage_info
+from core.candidate_inspection import _candidate_prompt_value, _candidate_route_candidate_workflow, _candidate_route_candidate_seed
+from core.candidate_inspection import _sort_candidates_for_display
+from core.candidate_inspection import _candidate_is_pinned, _candidate_is_trashed, _active_candidates, _trashed_candidates
+from core.candidate_inspection import _candidate_metadata_caption
+from core.candidate_inspection import get_original_prompt_text, normalize_prompt_for_revert_compare, is_line_prompt_changed_from_original, _prompt_original_status_label
+from core.candidate_inspection import _looks_like_workflow_json_prompt, _candidate_nested_value, get_candidate_prompt_text
+from core.candidate_inspection import _candidate_prompt_metadata
+from core.candidate_inspection import _candidate_path, _selected_candidate_path
 from core.module_token_rules import (
     _parse_module_rule_text,
     _format_module_rule_text,
@@ -3835,12 +3845,6 @@ def _line_candidate_key(line):
     return str(getattr(line, "id", ""))
 
 
-def _candidate_path(candidate):
-    if isinstance(candidate, dict):
-        return str(candidate.get("path") or "")
-    return str(candidate) if candidate else ""
-
-
 def _runtime_asset_path(path):
     with profile_block("Image path resolution"):
         return resolve_project_asset_path(path, st.session_state.get("current_project_path"))
@@ -4064,33 +4068,6 @@ def _make_imported_candidate_record(path, line):
     return _copy_candidate_image_metadata_fields(record, image_metadata)
 
 
-def _candidate_prompt_metadata(candidate) -> dict:
-    if not isinstance(candidate, dict):
-        return {}
-
-    if candidate.get("source") == "manual_import" and candidate.get("candidate_prompt_source") != "imported_image_metadata":
-        return {}
-
-    positive_prompt = str(
-        candidate.get("prompt_text")
-        or candidate.get("positive_prompt")
-        or candidate.get("source_prompt")
-        or ""
-    ).strip()
-    negative_prompt = str(
-        candidate.get("negative_prompt")
-        or candidate.get("source_negative_prompt")
-        or candidate.get("negative")
-        or ""
-    ).strip()
-    if not positive_prompt and not negative_prompt:
-        return {}
-    return {
-        "positive_prompt": positive_prompt,
-        "negative_prompt": negative_prompt,
-    }
-
-
 def _apply_candidate_prompt_to_line(line, candidate) -> bool:
     prompt_metadata = _candidate_prompt_metadata(candidate)
     if not prompt_metadata:
@@ -4111,28 +4088,6 @@ def _apply_candidate_prompt_to_line(line, candidate) -> bool:
     if changed:
         line.edited = True
     return changed
-
-
-def get_original_prompt_text(line) -> str:
-    return str(getattr(line, "original_text", "") or "").strip()
-
-
-def normalize_prompt_for_revert_compare(text: str) -> list[str]:
-    text = str(text or "")
-    if not text.strip():
-        return []
-    try:
-        return [str(token).strip() for token in parse_prompt(text) if str(token).strip()]
-    except Exception:
-        return [part.strip() for part in re.split(r"\s*,\s*", text.strip()) if part.strip()]
-
-
-def is_line_prompt_changed_from_original(line) -> bool:
-    original_text = get_original_prompt_text(line)
-    if not original_text:
-        return False
-    current_text = str(getattr(line, "current_text", "") or "").strip()
-    return normalize_prompt_for_revert_compare(current_text) != normalize_prompt_for_revert_compare(original_text)
 
 
 def _set_line_current_prompt(line, prompt_text: str) -> bool:
@@ -4158,61 +4113,6 @@ def revert_line_prompt_to_original(line) -> dict:
         "changed": changed,
         "message": "元画像Promptに戻しました。" if changed else "すでに元画像Promptです。",
     }
-
-
-def _looks_like_workflow_json_prompt(text: str) -> bool:
-    clean_text = str(text or "").strip()
-    if not clean_text or clean_text[0] not in "{[":
-        return False
-    try:
-        parsed = json.loads(clean_text)
-    except Exception:
-        return False
-    return isinstance(parsed, (dict, list))
-
-
-def _candidate_nested_value(candidate: dict, section_key: str, value_key: str):
-    section = candidate.get(section_key)
-    if isinstance(section, dict):
-        return section.get(value_key)
-    return None
-
-
-def get_candidate_prompt_text(candidate) -> str:
-    if not isinstance(candidate, dict):
-        return ""
-    top_level_keys = (
-        "source_prompt",
-        "prompt_text",
-        "prompt",
-        "positive_prompt",
-        "positive",
-    )
-    nested_sections = (
-        "source_generation_info",
-        "metadata",
-        "source_raw_metadata",
-    )
-    nested_keys = (
-        "source_prompt",
-        "prompt_text",
-        "prompt",
-        "positive_prompt",
-        "positive",
-    )
-    values = [candidate.get(key) for key in top_level_keys]
-    values.extend(
-        _candidate_nested_value(candidate, section_key, value_key)
-        for section_key in nested_sections
-        for value_key in nested_keys
-    )
-    for value in values:
-        if not isinstance(value, str):
-            continue
-        prompt_text = value.strip()
-        if prompt_text and not _looks_like_workflow_json_prompt(prompt_text):
-            return prompt_text
-    return ""
 
 
 def apply_candidate_prompt_to_current_text(line, candidate) -> dict:
@@ -4301,14 +4201,6 @@ def _consume_gallery_prompt_widget_sync(line):
     st.session_state.gallery_prompt_widget_sync_pending = [
         line_id for line_id in pending if line_id != getattr(line, "id", "")
     ]
-
-
-def _prompt_original_status_label(line) -> str:
-    if not get_original_prompt_text(line):
-        return "Prompt: no original"
-    if is_line_prompt_changed_from_original(line):
-        return "Prompt: edited"
-    return "Prompt: original"
 
 
 def _get_persistent_line_candidates(line):
@@ -4447,39 +4339,6 @@ def _render_candidate_gallery_compare_image(label, image_path, missing_caption):
         st.caption("Could not show image.")
 
 
-def _candidate_metadata_caption(candidate):
-    parts = []
-    created_at = candidate.get("created_at") if isinstance(candidate, dict) else None
-    source = candidate.get("source") if isinstance(candidate, dict) else None
-    run_index = candidate.get("run_index") if isinstance(candidate, dict) else None
-    origin_line_index = candidate.get("origin_line_index") if isinstance(candidate, dict) else None
-    if created_at:
-        parts.append(str(created_at))
-    if source:
-        parts.append(str(source))
-    if run_index is not None:
-        parts.append(f"run {run_index}")
-    if origin_line_index is not None:
-        parts.append(f"line {origin_line_index}")
-    return " / ".join(parts)
-
-
-def _candidate_is_pinned(candidate):
-    return bool(candidate.get("pinned")) if isinstance(candidate, dict) else False
-
-
-def _candidate_is_trashed(candidate):
-    return bool(candidate.get("trashed")) if isinstance(candidate, dict) else False
-
-
-def _active_candidates(candidates):
-    return [candidate for candidate in candidates or [] if not _candidate_is_trashed(candidate)]
-
-
-def _trashed_candidates(candidates):
-    return [candidate for candidate in candidates or [] if _candidate_is_trashed(candidate)]
-
-
 def _line_active_generated_candidates(line):
     return _active_candidates(_get_line_generated_candidates(line))
 
@@ -4560,10 +4419,6 @@ def _candidate_display_image_path(path):
     return _gallery_thumbnail_display_path(resolved_path)
 
 
-def _selected_candidate_path(line):
-    return getattr(line, "selected_candidate_path", None) or getattr(line, "generated_image_path", None)
-
-
 def _line_main_image_reference(line):
     for attr_name in ("selected_candidate_path", "generated_image_path", "image_path"):
         image_path = getattr(line, attr_name, None)
@@ -4588,16 +4443,6 @@ def _resolved_line_main_image_path(line):
 
 def _line_has_representative_image(line):
     return bool(_resolved_line_main_image_path(line))
-
-
-def _candidate_prompt_value(candidate, *keys):
-    if not isinstance(candidate, dict):
-        return ""
-    for key in keys:
-        value = candidate.get(key)
-        if value:
-            return value
-    return ""
 
 
 def _candidate_path_matches(path_a, path_b):
@@ -4637,27 +4482,6 @@ def _mark_candidate_record_swapped_to_main(line, candidate_path, swap_info):
     if matched:
         line.generated_candidates = _normalize_candidate_records(updated)
         _sync_line_generated_candidates_to_session(line, line.generated_candidates)
-
-
-def _candidate_image_swap_lineage_info(candidate, candidate_path, previous_main, swapped_at):
-    swap_info = {
-        "mode": "swap_main_image_with_candidate",
-        "new_main_image_path": candidate_path,
-        "previous_main_image_path": previous_main.get("path") or "",
-        "previous_main_image_field": previous_main.get("field") or "",
-        "swapped_at": swapped_at,
-    }
-    if isinstance(candidate, dict):
-        candidate_source = candidate.get("source")
-        if candidate_source:
-            swap_info["candidate_source"] = str(candidate_source)
-        candidate_seed = candidate.get("seed")
-        if candidate_seed is not None:
-            swap_info["candidate_seed"] = candidate_seed
-        candidate_workflow = _candidate_prompt_value(candidate, "workflow", "workflow_path", "workflow_name")
-        if candidate_workflow:
-            swap_info["candidate_workflow"] = str(candidate_workflow)
-    return swap_info
 
 
 def set_candidate_as_empty_line_image(project, line, candidate):
@@ -4825,16 +4649,6 @@ def _get_line_gallery_variants(line):
         seen.add(key)
     line.gallery_variants = normalized
     return normalized
-
-
-def _is_appended_gallery_variant_record(variant):
-    if not isinstance(variant, dict):
-        return False
-    return (
-        variant.get("kind") == "gallery_variant"
-        or variant.get("source") == "batch_candidate_adoption"
-        or str(variant.get("id") or "").startswith("variant_")
-    )
 
 
 def _variant_path_exists(line, candidate_path):
@@ -5258,16 +5072,6 @@ def _candidate_route_duplicate_exists(project, parent_line_id: str, candidate_pa
     return False
 
 
-def _candidate_route_candidate_workflow(candidate) -> str:
-    return str(_candidate_prompt_value(candidate, "workflow", "workflow_path", "workflow_name") or "")
-
-
-def _candidate_route_candidate_seed(candidate):
-    if isinstance(candidate, dict):
-        return candidate.get("seed")
-    return None
-
-
 def _candidate_route_target_lines(project, scope: str, selected_line_ids: list[str] | None = None) -> dict:
     active_lines = [
         line
@@ -5561,16 +5365,6 @@ def apply_candidate_route_creation(project, scope: str, selected_line_ids=None) 
         "no_candidate_count": no_candidate_count,
         "first_separator_id": first_separator_id,
     }
-
-
-def _sort_candidates_for_display(candidates):
-    return [
-        candidate
-        for _idx, candidate in sorted(
-            enumerate(candidates),
-            key=lambda item: (not _candidate_is_pinned(item[1]), item[0]),
-        )
-    ]
 
 
 def _set_candidate_pinned(line, candidate_path, pinned):

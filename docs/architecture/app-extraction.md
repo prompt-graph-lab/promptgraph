@@ -762,3 +762,30 @@ signature, generator/yield/close ownership, app.py and persistence/UI remain
 unchanged. No wrappers, callback parameters or new result schemas are added.
 Remaining orchestration should stay inline; no next extraction is justified
 solely to continue this series.
+
+### Candidate/Gallery inspection boundary
+
+The Candidate/Gallery read-only calculations are now owned by
+`core.candidate_inspection`. This is one coherent cluster of small projections
+that can be reused without importing `app.py`; the app keeps the existing names
+through imports so current callers and test seams remain stable.
+
+The owner contains candidate path selection, prompt metadata/text projection,
+original-prompt comparison/status labels, metadata captions, pinned/trashed
+partitioning, display ordering, provenance value lookup, swap-lineage metadata
+projection, and appended Gallery Variant classification. These helpers retain
+their existing field precedence, falsey/default behavior, parser fallback,
+stable ordering, container identity and direct exception behavior. The
+`_candidate_image_swap_lineage_info` helper only constructs the existing
+metadata mapping; it does not perform the swap.
+
+Candidate records, PromptLines, Project mutation, Candidate adoption/swap,
+Gallery Variant mutation, session-state synchronization, history/autosave,
+filesystem/path resolution, widget ownership and rendering remain in `app.py`
+or their existing owners. The new module performs no Streamlit or persistence
+work and introduces no semantic Module/Attribute matching or new schema. The
+focused tests cover the moved calculations; the app import and relevant
+Candidate/Gallery integration tests cover the retained call sites. The next
+Candidate/Gallery boundary should be considered only when a similarly pure,
+non-mutating owner is evident; no mutation or UI extraction follows from this
+cluster alone.
