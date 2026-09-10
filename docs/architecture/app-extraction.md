@@ -817,3 +817,18 @@ Focus navigation and the neighboring status/navigation controls remain in
 `app.py` or their existing owners. Module inspection was not selected because
 its library lookup can normalize Project state; Gallery scope resolution also
 crosses session-dependent selection. Neither belongs in this read-only owner.
+
+### AnimaDex record inspection
+
+`core.animadex_record_inspection` owns the six read-only projections used by the
+AnimaDex browser: stable record identity, searchable text, multi-term filtering,
+record labels, summary rows, and metadata preview rows. They consume in-memory
+record dictionaries and return strings or display rows without importing
+`app.py`, touching Project state, or changing the records they inspect.
+
+The app keeps the existing helper names through direct imports, preserving field
+precedence, case-folded search, ordering, falsey fallbacks, aliasing and direct
+exception behavior. AnimaDex discovery and file access, settings and path
+ownership, module-name/preview conversion, mutation and session state, and all
+Streamlit rendering remain in their existing owners. This boundary introduces
+no new record schema or persistence behavior.
