@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import core.settings as settings_module
+from ui import animadex_path_controller as controller
 from core.settings import (
     get_animadex_local_path,
     load_settings,
@@ -131,8 +132,15 @@ class AnimaDexDefaultAppTests(unittest.TestCase):
             for node in cls.tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
+        cls.controller_source = (cls.root / "ui" / "animadex_path_controller.py").read_text(encoding="utf-8")
+        cls.controller_functions = {
+            node.name: node for node in ast.parse(cls.controller_source).body
+            if isinstance(node, ast.FunctionDef)
+        }
 
     def _function_source(self, name):
+        if name in self.controller_functions:
+            return ast.get_source_segment(self.controller_source, self.controller_functions[name])
         return ast.get_source_segment(self.app_source, self.functions[name])
 
     def _load_functions(self, *names, namespace):
@@ -145,13 +153,8 @@ class AnimaDexDefaultAppTests(unittest.TestCase):
         return namespace
 
     def _callback_namespace(self, session_state, saved):
-        return self._load_functions(
-            "initialize_animadex_browser_path",
-            "sync_animadex_browser_path_draft",
-            "_animadex_local_path_is_available",
-            "save_animadex_local_path_default",
-            "clear_animadex_local_path_default",
-            namespace={
+        patcher = mock.patch.dict(
+            controller.__dict__, {
                 "os": os,
                 "st": types.SimpleNamespace(session_state=session_state),
                 "get_animadex_local_path": get_animadex_local_path,
@@ -159,6 +162,20 @@ class AnimaDexDefaultAppTests(unittest.TestCase):
                 "save_settings": lambda settings: saved.append(dict(settings)) or True,
             },
         )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return controller.__dict__
+
+    def test_app_imports_controller_callbacks_directly(self):
+        imports = [node for node in self.tree.body if isinstance(node, ast.ImportFrom)
+                   and node.module == "ui.animadex_path_controller"]
+        self.assertEqual(1, len(imports))
+        namespace = {}
+        exec(compile(ast.Module(body=imports, type_ignores=[]), "app.py", "exec"), namespace)
+        self.assertEqual(set(self.controller_functions), {alias.name for alias in imports[0].names})
+        for name in self.controller_functions:
+            self.assertNotIn(name, self.functions)
+            self.assertIs(namespace[name], getattr(controller, name))
 
     def test_initialization_uses_saved_default_only_when_widget_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -328,6 +345,77 @@ class AnimaDexDefaultAppTests(unittest.TestCase):
         self.assertEqual("existing-default", session_state.settings["animadex_local_path"])
         self.assertEqual("current-session-path", session_state.animadex_browser_path)
         self.assertEqual("error", session_state.animadex_local_path_feedback[0])
+
+    def test_initialization_preserves_present_falsey_widget_and_draft_values(self):
+        for value in (None, "", False, 0):
+            with self.subTest(value=value):
+                state = _SessionState(animadex_browser_path=value, settings={})
+                ns = self._callback_namespace(state, [])
+                ns["get_animadex_local_path"] = lambda _: "saved"
+                self.assertIs(value, ns["initialize_animadex_browser_path"]())
+                self.assertEqual("saved" if value is None else "", state.animadex_browser_path_draft)
+                state.pop("animadex_browser_path")
+                state.animadex_browser_path_draft = value
+                self.assertIs(value, ns["initialize_animadex_browser_path"]())
+
+    def test_persistence_observes_same_settings_before_widget_update_and_path_probe(self):
+        state = _SessionState(settings={}, animadex_browser_path="input",
+                              animadex_browser_path_draft="draft")
+        ns = self._callback_namespace(state, [])
+        events = []
+        ns["normalize_animadex_local_path"] = lambda _: "normalized"
+
+        def save(settings):
+            self.assertIs(settings, state.settings)
+            self.assertEqual("normalized", settings["animadex_local_path"])
+            self.assertEqual("input", state.animadex_browser_path)
+            self.assertEqual("draft", state.animadex_browser_path_draft)
+            events.append("save")
+            return True
+
+        def available(path):
+            self.assertEqual("normalized", state.animadex_browser_path)
+            self.assertEqual("normalized", state.animadex_browser_path_draft)
+            events.append("probe")
+            return True
+
+        ns["save_settings"] = save
+        ns["_animadex_local_path_is_available"] = available
+        self.assertTrue(ns["save_animadex_local_path_default"]())
+        self.assertEqual(["save", "probe"], events)
+
+    def test_failed_save_materializes_missing_default_but_exception_keeps_mutation(self):
+        for callback in ("save_animadex_local_path_default", "clear_animadex_local_path_default"):
+            for raises in (False, True):
+                with self.subTest(callback=callback, raises=raises):
+                    state = _SessionState(settings={}, animadex_browser_path="input",
+                                          animadex_local_path_feedback=("old", "keep"))
+                    ns = self._callback_namespace(state, [])
+                    ns["normalize_animadex_local_path"] = lambda _: "normalized"
+                    def save(settings):
+                        if raises:
+                            raise RuntimeError("write failed")
+                        return False
+                    ns["save_settings"] = save
+                    if raises:
+                        with self.assertRaisesRegex(RuntimeError, "write failed"):
+                            ns[callback]()
+                        self.assertEqual(("old", "keep"), state.animadex_local_path_feedback)
+                    else:
+                        self.assertFalse(ns[callback]())
+                    expected = "normalized" if raises and callback.startswith("save_") else ""
+                    self.assertEqual(expected, state.settings["animadex_local_path"])
+                    self.assertEqual("input", state.animadex_browser_path)
+                    self.assertNotIn("animadex_browser_path_draft", state)
+
+    def test_availability_catches_only_existing_exception_types(self):
+        ns = self._callback_namespace(_SessionState(), [])
+        for error in (OSError, TypeError, ValueError):
+            with mock.patch.object(os.path, "exists", side_effect=error):
+                self.assertFalse(ns["_animadex_local_path_is_available"]("path"))
+        with mock.patch.object(os.path, "exists", side_effect=RuntimeError):
+            with self.assertRaises(RuntimeError):
+                ns["_animadex_local_path_is_available"]("path")
 
     def test_renderer_has_one_owner_and_default_controls_are_authoring_only(self):
         renderer = self._function_source("render_animadex_browser_section")
