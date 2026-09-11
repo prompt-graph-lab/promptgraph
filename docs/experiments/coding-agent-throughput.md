@@ -74,7 +74,7 @@ or inferred values.
 | Current autonomous-boundary orchestration | Luna Max non-Fast immediate dispatch → Astra Low autonomous boundary discovery → one boundary implementation → Luna landing; AnimaDex local-path lifecycle | 81/67 → 66/65 | -15% | -2% | 13m22s | one Astra invocation; Astra implemented one boundary rather than stopping; no manual human handoff; no Luna correction; no test-failure retry; no Auto compact; focused 24 passed, broader 58 passed / 19 subtests, full suite 1221 passed / 8 skipped / 603 subtests / 239.21s; whole-run quota and timing are externally observed; empirical observation only |
 | Current autonomous-boundary experiment #5 | Luna Max non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | 66/65 → 51/63 | -15% | -2% | 12m50s | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
 | Current multi-boundary cruise experiment #6 | Luna Max non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | 51/63 → 26/59 | -25% | -4% | 15m51s | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
-| Current end-of-window bounded cruise experiment #7 | Luna Max non-Fast → one Astra Low invocation → FIRST-SAFE-BOUNDARY selection → Luna landing; Project Module Inspector draft/widget synchronization | not recorded | not calculated | not calculated | not recorded | one boundary implemented in `ui.project_module_inspector_session`; commit `8b443c8`; optional second boundary not attempted because no independently safe boundary was immediately apparent; Astra focused 12 passed; no quota or timing recorded for this experiment; empirical workflow observation only |
+| Current end-of-window bounded cruise experiment #7 | Luna Max non-Fast → one Astra Low invocation → FIRST-SAFE-BOUNDARY selection → Luna landing; Project Module Inspector draft/widget synchronization | 26/59 → Astra handoff at 14% 5h → 5h window reset to 100% → 99/57 | 13% phase-wise (12% before reset + 1% after reset) | -2% | 13m42s | one boundary implemented in `ui.project_module_inspector_session`; commit `8b443c8`; optional second boundary not attempted because no independently safe boundary was immediately apparent; Astra focused 12 passed; Auto compact before Astra invocation; empirical observation only |
 
 ## Canonical run notes
 
@@ -470,12 +470,19 @@ the small test-harness correction to import and patch the new owner; the
 affected caller test then passed 5 tests. The one full-suite run passed 1248
 tests, skipped 8, covered 607 subtests, and reported 259.11 seconds in pytest.
 No Astra re-invocation or full-suite retry occurred. No manual human
-Astra-to-Luna handoff was required, and no Auto compact was observed.
+Astra-to-Luna handoff was required.
 
-No quota endpoints, quota deltas, or wall-time measurement were recorded for
-this experiment. This is an empirical workflow record only; it does not infer
-per-model quota use, token accounting, Fast-mode propagation, internal
-scheduler behavior, causal efficiency, or stable orchestration cost.
+The externally observed quota sequence was:
+`26/59 → Astra handoff at 14% 5h → 5h window reset to 100% → final 99/57`.
+The pre-reset phase consumed 12 percentage points of the old 5h window, and
+the post-reset Luna landing phase consumed 1 percentage point of the new 5h
+window, for an effective phase-wise observed 5h consumption of 13 points.
+The weekly quota changed from 59 to 57, an observed change of -2 points, and
+the wall time was 13m42s. Auto compact occurred before the Astra Low
+invocation. This is an empirical phase-wise observation; it must not be read
+as a simple `26 → 99` 5h delta. No per-model token counts, internal quota
+accounting, Fast-mode propagation, causal compact effect, or stable
+orchestration cost is inferred.
 
 ## Findings
 
