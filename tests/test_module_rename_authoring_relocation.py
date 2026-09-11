@@ -27,6 +27,9 @@ class ModuleRenameAuthoringRelocationTests(unittest.TestCase):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         cls.workspace = cls._source("render_module_attribute_authoring_workspace")
+        owner_tree = ast.parse((cls.root / "ui/module_rename_session.py").read_text(encoding="utf-8"))
+        cls.functions.update({node.name: node for node in owner_tree.body
+                              if isinstance(node, ast.FunctionDef)})
         cls.wrapper = cls._source("render_module_rename_authoring_section")
         cls.controls = cls._source("render_module_rename_controls")
         cls.sidebar = cls._source("render_module_inspector_edit_scope_section")
