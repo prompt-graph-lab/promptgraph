@@ -73,7 +73,7 @@ or inferred values.
 | Current Global Module Library orchestration | Luna Max non-Fast immediate dispatch → Astra Low boundary+implementation → Luna landing; Global Module Library authoritative session lifecycle | 100/70 → 81/67 | -19% | -3% | 15m00s | parent Fast mode off; one Astra invocation; no manual human handoff; no parent-side detailed boundary discovery; no Auto compact; Astra reported two unsuccessful navigation/path checks corrected; no Luna correction after handoff and no test-failure retry; PR #39 comparison is suggestive only, not causal; no per-model or token inference; empirical observation only |
 | Current autonomous-boundary orchestration | Luna Max non-Fast immediate dispatch → Astra Low autonomous boundary discovery → one boundary implementation → Luna landing; AnimaDex local-path lifecycle | 81/67 → 66/65 | -15% | -2% | 13m22s | one Astra invocation; Astra implemented one boundary rather than stopping; no manual human handoff; no Luna correction; no test-failure retry; no Auto compact; focused 24 passed, broader 58 passed / 19 subtests, full suite 1221 passed / 8 skipped / 603 subtests / 239.21s; whole-run quota and timing are externally observed; empirical observation only |
 | Current autonomous-boundary experiment #5 | Luna Max non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | 66/65 → 51/63 | -15% | -2% | 12m50s | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
-| Current multi-boundary cruise experiment #6 | Luna Max non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | not recorded → not recorded | not calculated | not calculated | not recorded | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact observed; no quota values supplied; empirical observation only |
+| Current multi-boundary cruise experiment #6 | Luna Max non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | 51/63 → 26/59 | -25% | -4% | 15m51s | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
 
 ## Canonical run notes
 
@@ -437,10 +437,11 @@ subtests, and reported 281.33 seconds in pytest (306.47 seconds measured by
 the local command wrapper). No Luna correction or retry occurred, and no
 manual human Astra-to-Luna handoff was required. No Auto compact was observed.
 
-No quota values are recorded for this experiment until the external start/end
-values are supplied. This remains an empirical workflow record only. It does
-not infer per-model quota use, token accounting, Fast-mode propagation,
-internal scheduler behavior, causal efficiency, or stable cost per boundary.
+The externally observed quota changed from 51/63 to 26/59 over 15m51s, an
+observed whole-run delta of -25% and -4%. No Auto compact occurred. This
+remains an empirical workflow record only. It does not infer per-model quota
+use, token accounting, Fast-mode propagation, internal scheduler behavior,
+causal efficiency, or stable cost per boundary.
 
 ## Findings
 
