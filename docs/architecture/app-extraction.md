@@ -17,7 +17,7 @@ proposed new package hierarchy.
 | Startup and UI composition | top-level state initialization, page configuration, Sidebar and main workspace dispatch | `core.settings`, `core.startup`, `core.version`, Streamlit; executes on every rerun |
 | Editing context and navigation | `open_management_workspace`, `reset_*_session_state`, graph selection, Focus navigation | Shared session keys, widget mirrors, pending resets, Project switching |
 | Undo and persistence orchestration | `push_history`, `undo`, `load_project_json_into_session`, Save As confirmation helpers | `Project.clone`, `core.io`, settings, filesystem snapshots, rerun/reset ordering |
-| Project management and assets | `render_project_management_workspace`, discovery, import, fork and asset panels | `core.project_discovery`, `core.new_project_workspace`, `core.project_root_import`, `core.lightweight_fork*`, `core.io`; preview/confirm/apply lifecycle |
+| Project management and assets | `render_project_management_workspace`, discovery, import, fork and asset panels | `core.project_discovery`, `core.new_project_workspace`, `core.project_root_import`, `ui.project_root_import_session`, `core.lightweight_fork*`, `core.io`; preview/confirm/apply lifecycle |
 | Prompt inspection and editing | syntax diagnostics, source/current diffs, batch previews, line editors | `core.parser`, `core.operations`, `core.batch_preview`; rendering and mutation remain coupled to the app |
 | ComfyUI preparation and execution | `build_single_line_workflow`, `_build_focus_line_workflow_preview`, `_run_current_line_comfy_multiple` | Embedded metadata, shared path/settings, Module expansion, `core.comfyui`, execution logs and Candidate ingestion |
 | ComfyUI analysis workspace | workflow inspector, LoRA mapping, generation/negative consistency panels | `core.comfy_workflow`, `core.lora_mapping`, analysis modules, `ui.comfyui_analysis_drafts` session draft controller; explicit inspector injection differs from generation binding |
@@ -1236,6 +1236,35 @@ filesystem/network/generator orchestration, and Module/Attribute semantics
 remain in `app.py` or their existing owners. The extracted controller only
 keeps the Inspector's draft/widget state synchronized; it does not own the
 authoring workflow or change Project persistence.
+
+### Project Import session lifecycle
+
+`ui.project_root_import_session` owns the Existing Project Import feature's
+session-only input invalidation and deferred confirmation-reset lifecycle. Its
+boundary contains `reset_project_root_import_operation_state`,
+`_reset_project_root_import_confirmation`,
+`_invalidate_project_root_import_preview`,
+`_select_project_root_import_source`,
+`consume_project_root_import_confirmation_reset`, and
+`initialize_project_root_import_name`, together with the exact preview,
+result, source, destination-name, confirmation, phrase, and pending-reset
+session keys.
+
+The owner preserves conditional result retention, preview invalidation,
+deferred widget clearing, falsey pending-reset consumption, missing-only and
+lazy destination-name initialization, source normalization before assignment,
+parent-directory name derivation, empty-name preservation, callback ordering,
+result/preview identity, partial source assignment, and direct exception
+propagation. It is a Project Import-specific controller, not a generic
+session-state or confirmation abstraction.
+
+`app.py` retains the Existing Project Import renderer and widget composition,
+recent-source and external-path resolution, preview construction and display,
+copy/apply execution, result finalization, filesystem and persistence work,
+Project transitions, error handling, and rerun orchestration. `core.project_root_import`
+remains the owner of import-path normalization, name sanitization, preview,
+and apply primitives. Project/PromptLine mutation, schema, save/load, and
+unrelated Project Assets or navigation lifecycles remain outside this owner.
 
 ### Project Directory Browser session lifecycle
 

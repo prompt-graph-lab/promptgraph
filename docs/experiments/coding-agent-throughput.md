@@ -75,6 +75,7 @@ or inferred values.
 | Current autonomous-boundary experiment #5 | Luna Max non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | 66/65 → 51/63 | -15% | -2% | 12m50s | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
 | Current multi-boundary cruise experiment #6 | Luna Max non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | 51/63 → 26/59 | -25% | -4% | 15m51s | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
 | Current end-of-window bounded cruise experiment #7 | Luna Max non-Fast → one Astra Low invocation → FIRST-SAFE-BOUNDARY selection → Luna landing; Project Module Inspector draft/widget synchronization | 26/59 → Astra handoff at 14% 5h → 5h window reset to 100% → 99/57 | 13% phase-wise (12% before reset + 1% after reset) | -2% | 13m42s | one boundary implemented in `ui.project_module_inspector_session`; commit `8b443c8`; optional second boundary not attempted because no independently safe boundary was immediately apparent; Astra focused 12 passed; Auto compact before Astra invocation; empirical observation only |
+| Current fresh-window multi-boundary cruise experiment #8 | Luna Max non-Fast → one Astra Low invocation → sequential FIRST-SAFE multi-boundary cruise → Luna landing; Project Import session lifecycle | not recorded | not calculated | not calculated | not recorded | one boundary completed in `ui.project_root_import_session`; commit `402e787`; target 3 not reached; optional #4 not attempted; Astra focused 14 passed plus 7 baseline characterizations; broader 47 passed / 2 skipped / 2 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 257.53s; no Luna correction or retry; no manual human handoff; Auto compact not observed; empirical workflow observation only |
 
 ## Canonical run notes
 
@@ -483,6 +484,37 @@ invocation. This is an empirical phase-wise observation; it must not be read
 as a simple `26 → 99` 5h delta. No per-model token counts, internal quota
 accounting, Fast-mode propagation, causal compact effect, or stable
 orchestration cost is inferred.
+
+### Orchestration experiment #8: fresh-window multi-boundary cruise
+
+This run used Luna Max with Fast mode off and a fresh-window multi-boundary
+cruise shape. Luna confirmed latest `main`, the root `AGENTS.md`, and a clean
+feature worktree, then dispatched immediately without performing competing
+boundary discovery or candidate design. Astra Low was invoked exactly once and
+was asked to use sequential FIRST-SAFE discovery: target three independent
+safe boundaries, allow an optional fourth only when immediately apparent, and
+stop whenever the next boundary would require broad new investigation.
+
+Astra selected one coherent Existing Project Import session boundary and
+extracted `ui.project_root_import_session`. The owner contains the six
+session/reset helpers for input invalidation, deferred confirmation reset,
+source selection, and destination-name initialization. Astra committed the
+implementation as `402e78778523d7a13772397b2ada47fd01e91132` and reported 14
+focused tests passed across the session and UI tests, plus 7 baseline
+characterizations. Target 3 was not reached; optional boundary #4 was not
+attempted. Astra stopped after the first boundary because nearby Project
+Assets reset helpers did not form a complete independent lifecycle and the
+remaining candidates required wider investigation. No Luna correction was
+needed and no retry occurred.
+
+Luna's broader Project Import validation passed with 47 tests, 2 skipped tests,
+and 2 subtests. The one full-suite run passed 1255 tests, skipped 8, covered
+607 subtests, and reported 257.53 seconds in pytest. No manual human
+Astra-to-Luna handoff was required, and Auto compact was not observed. No
+quota endpoints or timing observations were recorded for this experiment.
+This is an empirical workflow record only; it does not infer per-model token
+counts, internal quota accounting, Fast-mode propagation, scheduler behavior,
+causal efficiency, causal compact effects, or stable orchestration cost.
 
 ## Findings
 
