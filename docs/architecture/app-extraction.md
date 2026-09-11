@@ -25,7 +25,7 @@ proposed new package hierarchy.
 | Gallery and Scene operations | `render_pro_gallery_mode`, cards, pagination, route actions, generation/adoption/promotion panels | `core.route_operations`, selected-route operation modules, shared scope selection, pending widget resets |
 | Import, sequence preview and final export | metadata import, `render_sequence_preview_panel`, `render_gallery_final_image_export` | `core.io`, image paths, explicit export scope and destination; source files must remain intact |
 | Graph and Focus editing | graph browser, Focus panels, batch editing, selected-token actions | `core.graph_builder`, `core.graph_edit_illustration_browser`, `ui.graph_edit_browser_controller`, `core.operations`, graph/PromptCloud components, unsaved editor state |
-| Module and Attribute management | Authoring/Apply workspaces, library manager, candidate scanner, Inspector, Attribute Group panels | `core.modules`, `core.operations`, `core.module_library_search`, AnimaDex modules, authoritative Global Library cache and Project-local metadata |
+| Module and Attribute management | Authoring/Apply workspaces, library manager, candidate scanner, Inspector, Attribute Group panels | `core.modules`, `core.operations`, `core.module_library_search`, `ui.global_module_library_session`, AnimaDex modules, authoritative Global Library cache and Project-local metadata |
 | UI infrastructure | profiling, thumbnails, keyboard shortcuts, HTML compatibility wrapper | timing/session state, disk cache/Pillow, iframe JavaScript; context and lifecycle must remain explicit |
 
 `core.project` owns the persisted domain objects; `core.io` owns Project
@@ -1115,3 +1115,31 @@ controller does not own Project or PromptLine mutation, history, persistence,
 schema, prompt-editing semantics, or filesystem/network/generation work. It
 is a Graph Edit Browser controller, not a generic session wrapper or navigation
 framework.
+
+### Global Module Library authoritative session lifecycle
+
+`ui.global_module_library_session` owns the authoritative session lifecycle for
+the Global Module Library. Its three functions,
+`get_session_global_module_library`, `cache_global_module_library_for_session`,
+and `save_and_cache_global_module_library`, own the path-keyed
+`global_module_library_session_cache` session entry. A cache hit requires the
+same resolved library path and a dictionary-valued library; a miss or path
+transition performs the existing authoritative load and replaces the cache.
+
+The explicit write owner preserves the existing sequence: load the latest
+authoritative library, deep-copy it for the modifier, validate the modifier's
+dictionary result, save through the existing `core.io` file writer, reload the
+persisted representation, and cache that reloaded object. It preserves cache
+identity and replacement behavior, same-path reuse, path transitions,
+falsey/default settings handling, modifier/save/reload/path failures,
+exception propagation, partial side effects, and the exact ordering of
+filesystem and session-cache operations. It is specific to this library's
+authoritative session lifecycle, not a generic cache or persistence layer.
+
+`core.io` remains the owner of Global Module Library path resolution, JSON
+loading, saving, and filesystem/atomic-write behavior. Conflict detection,
+search filtering, manager and authoring UI, AnimaDex transfer, Project-local
+Module metadata, Module/Attribute semantics, Project persistence/schema,
+history, and all Streamlit composition remain in `app.py` or their existing
+owners. The extracted controller does not redesign the Global Module JSON
+schema or broaden the library search and authoring boundaries.
