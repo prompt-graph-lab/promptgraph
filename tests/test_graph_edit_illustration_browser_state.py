@@ -21,6 +21,8 @@ class GraphEditIllustrationBrowserStateTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app_path = Path(__file__).resolve().parents[1] / "app.py"
         cls.source = cls.app_path.read_text(encoding="utf-8")
+        controller_path = Path(__file__).resolve().parents[1] / "ui" / "graph_edit_browser_controller.py"
+        cls.source += "\n" + controller_path.read_text(encoding="utf-8")
         cls.tree = ast.parse(cls.source)
         cls.functions = {
             node.name: node
