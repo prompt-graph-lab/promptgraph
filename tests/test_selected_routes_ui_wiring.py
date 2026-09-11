@@ -6,17 +6,18 @@ class SelectedRoutesUiWiringTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+        cls.session_source = (Path(__file__).resolve().parents[1] / "ui" / "gallery_selected_routes_session.py").read_text(encoding="utf-8")
 
     def test_selected_routes_session_state_and_controls_are_present(self):
         self.assertIn('"gallery_selected_route_ids"', self.app_source)
-        self.assertIn("def _sanitize_gallery_selected_route_session_state", self.app_source)
+        self.assertIn("def _sanitize_gallery_selected_route_session_state", self.session_source)
         self.assertIn("def render_gallery_selected_routes_controls", self.app_source)
         self.assertIn('"すべてのシーンを選択"', self.app_source)
         self.assertIn('"選択をクリア"', self.app_source)
         self.assertIn('"選択を反転"', self.app_source)
         self.assertIn('**Operation Scope / 操作対象**', self.app_source)
-        self.assertIn('SELECTED_ROUTE_WIDGET_PREFIX = "pro_gallery_route_selected_"', self.app_source)
-        self.assertIn("def _initialize_gallery_selected_route_widget", self.app_source)
+        self.assertIn('SELECTED_ROUTE_WIDGET_PREFIX = "pro_gallery_route_selected_"', self.session_source)
+        self.assertIn("def _initialize_gallery_selected_route_widget", self.session_source)
 
     def test_selection_controls_render_before_separator_cards(self):
         mode_start = self.app_source.index("def render_pro_gallery_mode")
@@ -41,7 +42,7 @@ class SelectedRoutesUiWiringTests(unittest.TestCase):
         self.assertIn("widget_key = _initialize_gallery_selected_route_widget(line.id)", header_source)
         self.assertIn("key=widget_key", header_source)
         self.assertIn("on_change=_on_gallery_route_selection_changed", header_source)
-        self.assertIn(SELECTED_ROUTE_WIDGET_PREFIX_LITERAL, self.app_source)
+        self.assertIn(SELECTED_ROUTE_WIDGET_PREFIX_LITERAL, self.session_source)
 
     def test_project_switches_reset_selection_and_structure_changes_sanitize(self):
         self.assertGreaterEqual(
@@ -50,7 +51,7 @@ class SelectedRoutesUiWiringTests(unittest.TestCase):
         )
         self.assertIn("_set_gallery_selected_route_ids_after_structure_change", self.app_source)
         self.assertIn("removed_route_handles=(separator_id,)", self.app_source)
-        self.assertIn("gallery_selected_route_widget_pending_reset", self.app_source)
+        self.assertIn("gallery_selected_route_widget_pending_reset", self.session_source)
 
     def test_existing_single_route_selectors_remain_separate(self):
         for key in (

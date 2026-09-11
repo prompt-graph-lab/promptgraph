@@ -1,3 +1,14 @@
+from ui.gallery_selected_routes_session import (
+    SELECTED_ROUTE_WIDGET_PREFIX,
+    _gallery_selected_route_widget_key,
+    _initialize_gallery_selected_route_widget,
+    _clear_gallery_selected_route_widget_keys,
+    reset_gallery_selected_route_session_state,
+    _apply_pending_gallery_selected_route_widget_reset,
+    _sanitize_gallery_selected_route_session_state,
+    _on_gallery_route_selection_changed,
+    _set_gallery_selected_route_ids_after_structure_change,
+)
 from ui.animadex_path_controller import (
     initialize_animadex_browser_path,
     sync_animadex_browser_path_draft,
@@ -288,11 +299,9 @@ from core.route_operations import (
     get_route_remove_ui_state,
     get_route_duplicate_ui_state,
     sanitize_selected_route_ids,
-    toggle_selected_route,
     select_all_routes,
     clear_selected_routes,
     invert_selected_routes,
-    initialize_selected_route_widget_state,
     resolve_selected_route_export_lines,
     get_route_action_dispatch_updates,
     get_route_action_pending_updates,
@@ -344,7 +353,6 @@ GALLERY_THUMBNAIL_CACHE_VERSION = "v3"
 CANDIDATE_PAGE_SIZE = 8
 ORIGINAL_IMAGE_SET_ROUTE_LABEL = "元イラスト集"
 
-SELECTED_ROUTE_WIDGET_PREFIX = "pro_gallery_route_selected_"
 UI_PROFILE_ENABLED_KEY = "ui_profiling_enabled"
 UI_PROFILE_TIMINGS_KEY = "ui_profile_timings"
 UI_PROFILE_FULL_RECORDED_KEY = "ui_profile_full_recorded"
@@ -1148,123 +1156,6 @@ def reset_gallery_route_action_session_state() -> None:
     ):
         st.session_state.pop(key, None)
     st.session_state.gallery_selected_route_separator_id = ""
-
-
-def _gallery_selected_route_widget_key(route_handle: str) -> str:
-    return f"{SELECTED_ROUTE_WIDGET_PREFIX}{str(route_handle or '').strip()}"
-
-
-def _initialize_gallery_selected_route_widget(route_handle: str) -> str:
-    return initialize_selected_route_widget_state(
-        st.session_state,
-        SELECTED_ROUTE_WIDGET_PREFIX,
-        route_handle,
-        st.session_state.get("gallery_selected_route_ids", []),
-    )
-
-
-def _clear_gallery_selected_route_widget_keys(route_handles=None) -> None:
-    allowed_handles = None
-    if route_handles is not None:
-        if isinstance(route_handles, str):
-            route_handles = [route_handles]
-        allowed_handles = {
-            str(route_handle or "").strip()
-            for route_handle in route_handles
-            if str(route_handle or "").strip()
-        }
-    for key in list(st.session_state.keys()):
-        key_text = str(key)
-        if not key_text.startswith(SELECTED_ROUTE_WIDGET_PREFIX):
-            continue
-        route_handle = key_text[len(SELECTED_ROUTE_WIDGET_PREFIX):]
-        if allowed_handles is None or route_handle in allowed_handles:
-            st.session_state.pop(key, None)
-
-
-def reset_gallery_selected_route_session_state() -> None:
-    """Reset session-only Selected Routes state during a Project switch."""
-
-    st.session_state.gallery_selected_route_ids = []
-    st.session_state.pop("gallery_selected_route_widget_pending_reset", None)
-    st.session_state.pop("module_swap_preview", None)
-    st.session_state.pop("module_swap_selected_routes_confirm", None)
-    st.session_state.pop("gallery_attribute_group_swap_preview", None)
-    st.session_state.pop("gallery_attribute_group_swap_selected_routes_confirm", None)
-    st.session_state.pop("attribute_group_swap_preview", None)
-    st.session_state.pop("attribute_group_swap_selected_routes_confirm", None)
-    _clear_gallery_selected_route_widget_keys()
-
-
-def _apply_pending_gallery_selected_route_widget_reset() -> None:
-    pending = st.session_state.pop("gallery_selected_route_widget_pending_reset", None)
-    if not isinstance(pending, dict):
-        return
-    _clear_gallery_selected_route_widget_keys(pending.get("route_handles"))
-
-
-def _sanitize_gallery_selected_route_session_state(
-    project,
-    *,
-    sync_widgets: bool = True,
-    cleanup_widgets: bool = True,
-) -> dict:
-    state = sanitize_selected_route_ids(
-        project,
-        st.session_state.get("gallery_selected_route_ids", []),
-    )
-    st.session_state.gallery_selected_route_ids = list(state["selected_route_ids"])
-    if cleanup_widgets:
-        selectable_ids = set(state["selectable_route_ids"])
-        selected_ids = set(state["selected_route_ids"])
-        for key in list(st.session_state.keys()):
-            key_text = str(key)
-            if not key_text.startswith(SELECTED_ROUTE_WIDGET_PREFIX):
-                continue
-            route_handle = key_text[len(SELECTED_ROUTE_WIDGET_PREFIX):]
-            if route_handle not in selectable_ids:
-                st.session_state.pop(key, None)
-            elif sync_widgets:
-                st.session_state[key] = route_handle in selected_ids
-    return state
-
-
-def _on_gallery_route_selection_changed(route_handle: str) -> None:
-    project = st.session_state.get("project")
-    widget_key = _gallery_selected_route_widget_key(route_handle)
-    st.session_state.gallery_selected_route_ids = toggle_selected_route(
-        project,
-        st.session_state.get("gallery_selected_route_ids", []),
-        route_handle,
-        selected=bool(st.session_state.get(widget_key, False)),
-    )
-
-
-def _set_gallery_selected_route_ids_after_structure_change(project, *, removed_route_handles=()):
-    state = _sanitize_gallery_selected_route_session_state(
-        project,
-        sync_widgets=False,
-        cleanup_widgets=False,
-    )
-    removed_handles = {
-        str(route_handle or "").strip()
-        for route_handle in removed_route_handles
-        if str(route_handle or "").strip()
-    }
-    if removed_handles:
-        state = sanitize_selected_route_ids(
-            project,
-            [
-                route_id
-                for route_id in state["selected_route_ids"]
-                if route_id not in removed_handles
-            ],
-        )
-        st.session_state.gallery_selected_route_ids = list(state["selected_route_ids"])
-        st.session_state.gallery_selected_route_widget_pending_reset = {
-            "route_handles": sorted(removed_handles),
-        }
-    return state
 
 
 def reset_gallery_route_move_preview_state() -> None:

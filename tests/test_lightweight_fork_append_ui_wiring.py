@@ -83,7 +83,7 @@ class LightweightForkAppendUiWiringTests(unittest.TestCase):
         ):
             self.assertIn(key, reset_source)
         route_reset_start = self.app_source.index("def reset_gallery_route_action_session_state")
-        route_reset_end = self.app_source.index("def _gallery_selected_route_widget_key", route_reset_start)
+        route_reset_end = self.app_source.index("def reset_gallery_route_move_preview_state", route_reset_start)
         route_reset_source = self.app_source[route_reset_start:route_reset_end]
         self.assertIn('"lightweight_fork_scope"', route_reset_source)
         self.assertIn("request_lightweight_fork_single_route_state_reset(st.session_state)", route_reset_source)

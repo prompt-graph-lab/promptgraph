@@ -90,7 +90,7 @@ class GalleryVariantPromotionRoutesUiWiringTests(unittest.TestCase):
 
     def test_session_reset_and_gallery_region_order_are_preserved(self):
         reset_start = self.app_source.index("def reset_gallery_route_action_session_state")
-        reset_end = self.app_source.index("def _gallery_selected_route_widget_key", reset_start)
+        reset_end = self.app_source.index("def reset_gallery_route_move_preview_state", reset_start)
         reset_source = self.app_source[reset_start:reset_end]
         for key in (
             "gallery_variant_promotion_preview",
