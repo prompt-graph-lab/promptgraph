@@ -33,6 +33,8 @@ serialization, metadata and asset/export I/O; `core.operations` owns most token,
 Module and Attribute transformations. Existing focused operation modules already
 provide preview/apply boundaries. The remaining app-level coupling is chiefly
 session state, history/save ordering, filesystem resolution and UI rendering.
+For the post-extraction orchestration and historical specialist handoff model,
+see [agent-orchestration-handoff.md](agent-orchestration-handoff.md).
 Importing `app.py` executes the UI, so extracting functions by importing the app
 back into a new module would create the wrong dependency direction.
 
