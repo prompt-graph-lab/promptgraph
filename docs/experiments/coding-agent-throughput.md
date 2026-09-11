@@ -72,7 +72,7 @@ or inferred values.
 | Current Graph Edit Browser orchestration | Luna immediate dispatch → Astra Low boundary+implementation → Luna landing; Graph Edit Browser navigation controller | 53/78 → 2/70 | -51% | -8% | 11m03s | one Astra invocation; no manual human handoff; no Auto compact; Luna did not perform detailed pre-delegation boundary discovery; whole-run delta was larger than PR #38's observed delta, but no cause is inferred; different potentially more complex stateful work, not a controlled equal-work comparison; no per-model or token inference; empirical observation only |
 | Current Global Module Library orchestration | Luna Max non-Fast immediate dispatch → Astra Low boundary+implementation → Luna landing; Global Module Library authoritative session lifecycle | 100/70 → 81/67 | -19% | -3% | 15m00s | parent Fast mode off; one Astra invocation; no manual human handoff; no parent-side detailed boundary discovery; no Auto compact; Astra reported two unsuccessful navigation/path checks corrected; no Luna correction after handoff and no test-failure retry; PR #39 comparison is suggestive only, not causal; no per-model or token inference; empirical observation only |
 | Current autonomous-boundary orchestration | Luna Max non-Fast immediate dispatch → Astra Low autonomous boundary discovery → one boundary implementation → Luna landing; AnimaDex local-path lifecycle | 81/67 → 66/65 | -15% | -2% | 13m22s | one Astra invocation; Astra implemented one boundary rather than stopping; no manual human handoff; no Luna correction; no test-failure retry; no Auto compact; focused 24 passed, broader 58 passed / 19 subtests, full suite 1221 passed / 8 skipped / 603 subtests / 239.21s; whole-run quota and timing are externally observed; empirical observation only |
-| Current autonomous-boundary experiment #5 | Luna Max non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | not recorded → not recorded | not calculated | not calculated | not recorded | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact observed; no quota values supplied; empirical observation only |
+| Current autonomous-boundary experiment #5 | Luna Max non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | 66/65 → 51/63 | -15% | -2% | 12m50s | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
 
 ## Canonical run notes
 
@@ -405,10 +405,11 @@ and produced no failure cache, but the command wrapper did not retain its
 final count or runtime; the full suite was not rerun. This limitation is
 recorded explicitly rather than replaced with an inferred result.
 
-No quota values are recorded for this experiment until the external start/end
-values are supplied. This remains an empirical workflow record only. It does
-not infer per-model quota use, token accounting, Fast-mode propagation,
-internal scheduler behavior, causal effects, or stable orchestration cost.
+The externally observed quota changed from 66/65 to 51/63 over 12m50s, an
+observed whole-run delta of -15% and -2%. No Auto compact occurred. This
+remains an empirical workflow record only. It does not infer per-model quota
+use, token accounting, Fast-mode propagation, internal scheduler behavior,
+causal effects, or stable orchestration cost.
 
 ## Findings
 
