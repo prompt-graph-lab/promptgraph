@@ -2,6 +2,9 @@ import ast
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from ui import global_module_library_session as session
 
 
 class _SessionState(dict):
@@ -37,6 +40,12 @@ class GlobalModuleLibrarySearchUiWiringTests(unittest.TestCase):
     def _load_functions(self, *names, namespace):
         loaded = dict(namespace)
         for name in names:
+            if name == "get_session_global_module_library":
+                patcher = mock.patch.dict(session.__dict__, namespace)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+                loaded[name] = session.get_session_global_module_library
+                continue
             exec(
                 compile(
                     ast.Module(
