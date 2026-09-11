@@ -1179,6 +1179,55 @@ of path normalization and settings serialization; this extraction preserves
 the existing explicit settings-save sequencing without introducing a new
 schema or persistence layer.
 
+### Module Rename session lifecycle
+
+`ui.module_rename_session` owns the Module Rename workspace's selection,
+name-draft widget mirror, and preview invalidation lifecycle through
+`clear_module_rename_preview`, `initialize_module_rename_selection`,
+`sync_module_rename_selected_widget`,
+`initialize_module_rename_new_name_draft`, and
+`sync_module_rename_new_name_widget`. Its exact session keys are
+`module_rename_selected`, `_module_rename_selected_widget`,
+`module_rename_new_name`, `_module_rename_new_name_widget`, and
+`module_rename_preview`.
+
+The owner preserves eager option consumption and first-valid selection
+fallback, durable-selection precedence, existing name-widget preservation,
+trimming and falsey behavior, direct exception propagation, and preview
+identity/removal semantics. It only synchronizes session/widget state; the
+rename renderer, confirmation controls, Project transition reset, mutation,
+history, save, and rerun ordering remain in `app.py`.
+
+The controller does not own Module semantics, Project or PromptLine mutation,
+Project persistence/schema, generic session abstractions, or unrelated Module
+Inspector and Attribute workspace state. It is a Module Rename-specific
+session owner and does not broaden the existing authoring boundaries.
+
+### Project Directory Browser session lifecycle
+
+`ui.project_directory_browser_session` owns the Project Directory Browser's
+refresh generation, discovery-cache publication, and root-scoped selection
+helpers: `request_project_directory_discovery_refresh`,
+`_get_project_directory_discovery_snapshot`, and
+`_normalize_project_directory_browser_selection`. The owned session keys are
+`project_directory_discovery_refresh_generation`,
+`project_directory_discovery_cache`, `project_directory_selection_root`, and
+`project_directory_selected_path`.
+
+The lifecycle preserves falsey and integer refresh-generation coercion, cache
+identity and success-only replacement, raw discovery-context forwarding,
+root-change selection clearing before entry evaluation, first non-empty entry
+ordering, duplicate evaluation behavior, empty-selection removal, and direct
+exception propagation. `core.project_discovery` remains the owner of
+filesystem discovery and path normalization; the session owner publishes a
+resolved cache entry only after the existing resolver succeeds.
+
+`app.py` retains the sidebar renderer, refresh/open controls, Project loading
+and opening, Project creation/fork/duplicate refresh sequencing, and all
+filesystem, persistence, Project/schema, and UI composition behavior. This
+controller does not own Project mutation or persistence, a generic cache or
+repository abstraction, or unrelated navigation/session lifecycle.
+
 ### Gallery Selected Routes session lifecycle
 
 `ui.gallery_selected_routes_session` owns the multi-route Gallery selection
