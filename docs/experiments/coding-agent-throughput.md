@@ -69,7 +69,7 @@ or inferred values.
 | [PR #35](https://github.com/prompt-graph-lab/promptgraph/pull/35) Luna | Luna landing and delivery phase | 55/93 → 54/93 | -1% | 0% | 6m04s | no Auto compact; empirical observation only |
 | [PR #37](https://github.com/prompt-graph-lab/promptgraph/pull/37) Luna | Luna-only Codex review-rule governance task | not recorded → 93/84 | not calculated | not calculated | 2m45s | ending quota was user-observed; start quota was not recorded; empirical observation only |
 | Current draft-lifecycle orchestration | Luna parent → Astra Low subagent → Luna landing; ComfyUI analysis draft lifecycle | 93/84 → 53/78 | -40% | -6% | 13m56s | one end-to-end observed run; one Astra invocation; no manual human handoff; Auto compact occurred near the beginning and is a confounder; no phase/model attribution or token inference; first stateful-controller extraction, not directly equivalent to prior pure/read-only cluster runs; empirical observation only |
-| Current Graph Edit Browser orchestration | Luna immediate dispatch → Astra Low boundary+implementation → Luna landing; Graph Edit Browser navigation controller | 53/78 → not recorded | not calculated | not calculated | not recorded | one Astra invocation; no manual human handoff; Auto compact and correction status not recorded; no per-model or token inference; empirical observation only |
+| Current Graph Edit Browser orchestration | Luna immediate dispatch → Astra Low boundary+implementation → Luna landing; Graph Edit Browser navigation controller | 53/78 → 2/70 | -51% | -8% | 11m03s | one Astra invocation; no manual human handoff; no Auto compact; Luna did not perform detailed pre-delegation boundary discovery; whole-run delta was larger than PR #38's observed delta, but no cause is inferred; different potentially more complex stateful work, not a controlled equal-work comparison; no per-model or token inference; empirical observation only |
 
 ## Canonical run notes
 
@@ -303,12 +303,18 @@ navigation-controller boundary. Luna then reviewed the commit, ran broader
 Graph Edit validation and one full-suite run, updated documentation, and
 prepared delivery.
 
-The externally observed starting quota was 53/78. The ending quota and total
-wall time were not recorded here, so no delta or accounting interpretation is
-made. Auto compact timing/status, and whether Luna made a correction after the
-Astra handoff, were also not recorded. No per-model quota use, token
-accounting, Fast-mode effect, or stable orchestration cost is inferred. No
-manual human handoff was required between Astra and Luna.
+The externally observed quota changed from 53/78 to 2/70 over 11m03s, an
+observed whole-run delta of -51% and -8%. Unlike PR #38, this run had no Auto
+compact, and Luna intentionally did not perform detailed boundary discovery
+before delegation. The observed whole-run delta was nevertheless larger than
+PR #38's observed delta; this record does not conclude why and does not
+attribute quota use to Luna or Astra separately.
+
+The Graph Edit Browser controller was a different, potentially more complex
+stateful extraction, so this is not a controlled equal-work comparison with
+PR #38. No per-model quota use, token accounting, Fast-mode inheritance, or
+stable orchestration cost is inferred. Astra was invoked once, no correction
+was made after its handoff, and no manual human handoff was required.
 
 ## Findings
 
