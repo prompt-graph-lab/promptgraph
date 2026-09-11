@@ -70,7 +70,7 @@ or inferred values.
 | [PR #37](https://github.com/prompt-graph-lab/promptgraph/pull/37) Luna | Luna-only Codex review-rule governance task | not recorded → 93/84 | not calculated | not calculated | 2m45s | ending quota was user-observed; start quota was not recorded; empirical observation only |
 | Current draft-lifecycle orchestration | Luna parent → Astra Low subagent → Luna landing; ComfyUI analysis draft lifecycle | 93/84 → 53/78 | -40% | -6% | 13m56s | one end-to-end observed run; one Astra invocation; no manual human handoff; Auto compact occurred near the beginning and is a confounder; no phase/model attribution or token inference; first stateful-controller extraction, not directly equivalent to prior pure/read-only cluster runs; empirical observation only |
 | Current Graph Edit Browser orchestration | Luna immediate dispatch → Astra Low boundary+implementation → Luna landing; Graph Edit Browser navigation controller | 53/78 → 2/70 | -51% | -8% | 11m03s | one Astra invocation; no manual human handoff; no Auto compact; Luna did not perform detailed pre-delegation boundary discovery; whole-run delta was larger than PR #38's observed delta, but no cause is inferred; different potentially more complex stateful work, not a controlled equal-work comparison; no per-model or token inference; empirical observation only |
-| Current Global Module Library orchestration | Luna Max non-Fast immediate dispatch → Astra Low boundary+implementation → Luna landing; Global Module Library authoritative session lifecycle | not recorded → not recorded | not calculated | not calculated | not recorded | parent Fast mode off; one Astra invocation; no manual human handoff; no parent-side detailed boundary discovery; Astra reported two unsuccessful navigation/path checks corrected; no Luna correction after handoff and no test-failure retry; Auto compact not recorded; no per-model or token inference; empirical observation only |
+| Current Global Module Library orchestration | Luna Max non-Fast immediate dispatch → Astra Low boundary+implementation → Luna landing; Global Module Library authoritative session lifecycle | 100/70 → 81/67 | -19% | -3% | 15m00s | parent Fast mode off; one Astra invocation; no manual human handoff; no parent-side detailed boundary discovery; no Auto compact; Astra reported two unsuccessful navigation/path checks corrected; no Luna correction after handoff and no test-failure retry; PR #39 comparison is suggestive only, not causal; no per-model or token inference; empirical observation only |
 
 ## Canonical run notes
 
@@ -328,13 +328,25 @@ implementation, ran broader Module Library validation and one full-suite run,
 updated documentation, and prepared delivery. No manual Astra-to-Luna human
 handoff was required.
 
-No externally observed starting or ending quota, total wall time, or Auto
-compact status was supplied for this run, so no delta or accounting
-interpretation is recorded. Astra reported two unsuccessful navigation/path
-checks that were corrected during its implementation; Luna made no correction
-after the handoff, and no test-failure retry occurred. No per-model quota use,
-token accounting, Fast-mode inheritance, internal scheduler behavior, or stable
-orchestration cost is inferred. This is an empirical workflow record only.
+The externally observed quota changed from 100/70 to 81/67 over 15m00s, an
+observed whole-run delta of -19% and -3%. This was Luna Max with Fast mode off;
+the rest of the orchestration shape matched the PR #39 immediate-dispatch
+pattern. Luna did not perform detailed pre-delegation boundary discovery,
+Astra was invoked exactly once, no Auto compact occurred, no manual handoff
+was required, no Luna correction was needed after Astra returned, and no
+test-failure retry occurred.
+
+For empirical context, PR #39 used Luna Max Fast with 53/78 → 2/70, an
+observed delta of -51% and -8% over 11m03s, also without Auto compact. The
+observed PR #40 whole-run delta was materially lower than PR #39's. This
+comparison is suggestive only and does not establish that Fast mode caused the
+difference. The two PRs extracted different stateful responsibilities, so
+they are not a controlled equal-work comparison. No per-model quota use,
+token accounting, Fast-mode propagation to Astra, internal scheduler behavior,
+or stable orchestration cost is inferred.
+
+Astra reported two unsuccessful navigation/path checks that were corrected
+during its implementation. This remains an empirical workflow record only.
 
 ## Findings
 
