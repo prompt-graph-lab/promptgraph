@@ -76,7 +76,8 @@ or inferred values.
 | Current multi-boundary cruise experiment #6 | Luna Max non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | 51/63 → 26/59 | -25% | -4% | 15m51s | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
 | Current end-of-window bounded cruise experiment #7 | Luna Max non-Fast → one Astra Low invocation → FIRST-SAFE-BOUNDARY selection → Luna landing; Project Module Inspector draft/widget synchronization | 26/59 → Astra handoff at 14% 5h → 5h window reset to 100% → 99/57 | 13% phase-wise (12% before reset + 1% after reset) | -2% | 13m42s | one boundary implemented in `ui.project_module_inspector_session`; commit `8b443c8`; optional second boundary not attempted because no independently safe boundary was immediately apparent; Astra focused 12 passed; Auto compact before Astra invocation; empirical observation only |
 | Current fresh-window multi-boundary cruise experiment #8 | Luna Max non-Fast → one Astra Low invocation → sequential FIRST-SAFE multi-boundary cruise → Luna landing; Project Import session lifecycle | 99/57 → 88/55 | -11% | -2% | 11m46s | one boundary completed in `ui.project_root_import_session`; commit `402e787`; target 3 not reached; optional #4 not attempted; Astra focused 14 passed plus 7 baseline characterizations; broader 47 passed / 2 skipped / 2 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 257.53s; no Luna correction or retry; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
-| Current residual responsibility audit experiment #10 | Luna Max non-Fast → one Astra Low audit → Luna documentation landing; residual `app.py` classification and extraction-phase exit criteria | not recorded | not calculated | not calculated | not recorded | audit-only; one Astra invocation; no implementation, tests, or runtime changes; A/B/C/D clusters 3/5/2/3; terminal judgment MOSTLY YES; exact Category C candidates are Module Candidate Selection and Apply-workspace Attribute Group Swap draft/widget synchronization; no Auto compact observed; empirical workflow observation only |
+| Current repeat bounded autonomous cruise experiment #9 | Luna Max non-Fast → one Astra Low invocation → fresh-context repeated bounded autonomous cruise | 86/55 → 77/53 | -9% | -2% | 1m54s | zero boundaries; target 3, maximum 4; no implementation, docs, runtime, or test changes; no PR from the run; focused/broader/full tests not run; stopped because no independently coherent sufficiently safe boundary was apparent without broader investigation; no Luna correction or retry; no manual human handoff; no Auto compact; clean worktree and `git diff --check` passed; zero-boundary result informed the move to residual-responsibility audit; empirical observation only |
+| Current residual responsibility audit experiment #10 | Luna Max non-Fast → one Astra Low audit → Luna documentation landing; residual `app.py` classification and extraction-phase exit criteria | 77/53 → 64/51 | -13% | -2% | 5m23s | audit-only; one Astra invocation; no implementation, tests, or runtime changes; A/B/C/D clusters 3/5/2/3; terminal judgment MOSTLY YES; exact Category C candidates are Module Candidate Selection and Apply-workspace Attribute Group Swap draft/widget synchronization; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
 
 ## Canonical run notes
 
@@ -519,6 +520,27 @@ points. This is an empirical workflow record only; it does not infer
 per-model token counts, internal quota accounting, Fast-mode propagation,
 scheduler behavior, causal efficiency, or stable orchestration cost.
 
+### Orchestration experiment #9: repeat bounded autonomous cruise
+
+This was a real no-implementation run using Luna Max with Fast mode off and
+exactly one Astra Low invocation from a fresh context. The protocol repeated
+the bounded autonomous cruise with a target of three boundaries and a maximum
+of four. Astra completed zero boundaries and made no implementation, docs,
+runtime, or test changes; no PR was created from the run itself.
+
+Astra stopped because no independently coherent, sufficiently safe boundary
+was apparent without broader investigation. Focused, broader, and full-suite
+tests were not run. The worktree was clean and `git diff --check` passed; no
+Luna correction, retry, or manual human handoff occurred, and no Auto compact
+was observed.
+
+The externally observed quota changed from 86/55 to 77/53 over 1m54s, an
+observed 5h change of -9 percentage points and weekly change of -2 percentage
+points. This zero-boundary result was one empirical reason for moving from
+repeated extraction discovery to the residual-responsibility audit in
+experiment #10. It does not establish stable discovery cost or infer internal
+token usage or quota accounting.
+
 ### Orchestration experiment #10: residual `app.py` responsibility audit
 
 This was an audit-only run using Luna Max with Fast mode off and exactly one
@@ -565,10 +587,12 @@ source reads across `app.py`, `ui/`, architecture docs, and relevant tests,
 plus status and diff checks. No tests or full suite were run. No manual human
 Astra-to-Luna handoff was required, and Auto compact was not observed.
 
-No quota or timing observations were recorded for this audit. All statements
-are empirical observations from this run; they do not infer per-model token
-counts, internal accounting, scheduler behavior, causal efficiency, or stable
-orchestration cost.
+The externally observed quota changed from 77/53 to 64/51 over 5m23s, an
+observed 5h change of -13 percentage points and weekly change of -2 percentage
+points. Auto compact was not observed. All statements are empirical
+observations from this run; they do not infer per-model token counts, internal
+accounting, stable audit/discovery cost, scheduler behavior, causal efficiency,
+or stable orchestration cost.
 
 ## Findings
 
