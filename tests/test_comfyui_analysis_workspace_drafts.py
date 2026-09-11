@@ -3,6 +3,9 @@ import copy
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from ui import comfyui_analysis_drafts
 
 
 class _SessionState(dict):
@@ -130,17 +133,74 @@ class ComfyUiAnalysisWorkspaceDraftTests(unittest.TestCase):
         }
 
     def _load(self, names=(), *, state=None, namespace=None):
-        ordered_names = list(dict.fromkeys([*self.HELPER_NAMES, *names]))
+        ordered_names = list(dict.fromkeys(names))
         module = ast.Module(
-            body=[self.functions[name] for name in ordered_names],
+            body=[
+                node for node in ast.parse(self.source).body
+                if isinstance(node, ast.ImportFrom)
+                and node.module == "ui.comfyui_analysis_drafts"
+            ] + [self.functions[name] for name in ordered_names],
             type_ignores=[],
         )
         ast.fix_missing_locations(module)
         state = state if state is not None else _SessionState()
         loaded = {"st": types.SimpleNamespace(session_state=state)}
+        patcher = patch.object(comfyui_analysis_drafts, "st", loaded["st"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
         loaded.update(namespace or {})
         exec(compile(module, "app.py", "exec"), loaded)
         return loaded, state
+
+    def test_scalar_defaults_exceptions_and_snapshot_leave_widget_untouched(self):
+        loaded, state = self._load()
+        normalize = loaded["_normalize_comfyui_draft_scalar"]
+        for value, default, expected in (
+            (1, False, False), (False, True, False),
+            (True, 1.5, 1.5), ("0", 1.5, 0.0),
+            (None, 1.5, 1.5), ("bad", 1.5, 1.5),
+            (0, "fallback", "fallback"), ("", "fallback", ""),
+            (2, 1, 1),
+        ):
+            with self.subTest(value=value, default=default):
+                self.assertEqual(expected, normalize(value, default))
+
+        class OverflowFloat:
+            def __float__(self):
+                raise OverflowError("legacy propagation")
+
+        with self.assertRaisesRegex(OverflowError, "legacy propagation"):
+            normalize(OverflowFloat(), 1.0)
+        state.widget = "current"
+        self.assertEqual("", loaded["_snapshot_comfyui_draft_widget"](
+            "inspector", "text", "widget", None, ""
+        ))
+        self.assertEqual("current", state.widget)
+
+    def test_option_reorder_invalid_widget_and_lazy_empty_options(self):
+        loaded, state = self._load()
+        prepare = loaded["_prepare_comfyui_draft_option"]
+        drafts = loaded["_get_comfyui_analysis_workspace_drafts"]()
+        drafts["prompt_injection"]["node"] = "b"
+        options = [{"node_id": "a"}, {"node_id": "b"}]
+
+        def select(rows, default_index=0):
+            return prepare("prompt_injection", "node", "widget", rows,
+                           identity_key="node_id", default_index=default_index)
+
+        self.assertIs(options[1], select(options))
+        reordered = [{"node_id": "b"}, {"node_id": "a"}]
+        self.assertIs(reordered[0], select(reordered))
+        state.widget = {"node_id": None}
+        self.assertIs(reordered[1], select(reordered, 1))
+        self.assertIs(reordered[0], select(reordered[:1]))
+        # Empty options skip converting the index; populated options do not,
+        # even when the current selection already matches.
+        with self.assertRaises(ValueError):
+            select(reordered, "invalid")
+        self.assertIsNone(select([], "invalid"))
+        self.assertNotIn("widget", state)
+        self.assertEqual("", drafts["prompt_injection"]["node"])
 
     def test_back_reopen_restores_representative_scalar_and_option_drafts(self):
         loaded, state = self._load()
@@ -671,7 +731,7 @@ class ComfyUiAnalysisWorkspaceDraftTests(unittest.TestCase):
     def test_draft_wiring_stays_session_only_and_sidebar_remains_passive(self):
         app_source = self.source
         self.assertEqual(
-            1,
+            0,
             app_source.count('"comfyui_analysis_workspace_drafts"'),
         )
         for widget_key in (
@@ -703,10 +763,14 @@ class ComfyUiAnalysisWorkspaceDraftTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, daily)
 
-        helper_source = "\n".join(
-            ast.get_source_segment(app_source, self.functions[name])
-            for name in self.HELPER_NAMES
+        helper_source = (self.root / "ui" / "comfyui_analysis_drafts.py").read_text(
+            encoding="utf-8"
         )
+        self.assertEqual(1, helper_source.count('"comfyui_analysis_workspace_drafts"'))
+        loaded, _state = self._load()
+        for name in self.HELPER_NAMES:
+            self.assertNotIn(name, self.functions)
+            self.assertIs(loaded[name], getattr(comfyui_analysis_drafts, name))
         for forbidden in (
             "save_settings",
             "save_project",

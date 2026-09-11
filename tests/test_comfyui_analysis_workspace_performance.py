@@ -2,6 +2,9 @@ import ast
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from ui import comfyui_analysis_drafts
 
 
 class _SessionState(dict):
@@ -120,23 +123,18 @@ class ComfyUiAnalysisWorkspacePerformanceTests(unittest.TestCase):
         }
 
     def _load(self, names, namespace):
-        helper_names = (
-            "_get_comfyui_analysis_workspace_drafts",
-            "_normalize_comfyui_draft_scalar",
-            "_prepare_comfyui_draft_widget",
-            "_snapshot_comfyui_draft_widget",
-            "_comfyui_draft_option_id",
-            "_prepare_comfyui_draft_option",
-            "_normalize_comfyui_draft_option",
-            "_snapshot_comfyui_draft_option",
-            "_clear_comfy_workflow_inspector_state",
-        )
-        names = [*helper_names, *names]
         module = ast.Module(
-            body=[self.functions[name] for name in names],
+            body=[
+                node for node in ast.parse(self.source).body
+                if isinstance(node, ast.ImportFrom)
+                and node.module == "ui.comfyui_analysis_drafts"
+            ] + [self.functions[name] for name in names],
             type_ignores=[],
         )
         ast.fix_missing_locations(module)
+        patcher = patch.object(comfyui_analysis_drafts, "st", namespace["st"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
         exec(compile(module, "app.py", "exec"), namespace)
         return namespace
 

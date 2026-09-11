@@ -67,6 +67,8 @@ or inferred values.
 | [PR #34](https://github.com/prompt-graph-lab/promptgraph/pull/34) Luna | Luna landing and delivery phase | 78/97 → 76/96 | -2% | -1% | 7m22s | no Auto compact; empirical observation only |
 | Current readonly-projections Astra phase | Astra; AGraph selection normalization, nearby line selection, consistency presentation, and generation duration formatting | 52/92 → 29/89 | -23% | -3% | 3m23s | asked for up to 5 clusters; intentionally stopped at 4 because the fifth Core/Optional classification boundary was not cleanly separable from the shared label set; 5 helpers total; commits `306fdee`, `cdef4f8`, `0098f2d`, and `15c820c`; focused 3, 4, 3, and 2 passed; baseline characterization passed; no Auto compact; empirical observation only |
 | [PR #35](https://github.com/prompt-graph-lab/promptgraph/pull/35) Luna | Luna landing and delivery phase | 55/93 → 54/93 | -1% | 0% | 6m04s | no Auto compact; empirical observation only |
+| [PR #37](https://github.com/prompt-graph-lab/promptgraph/pull/37) Luna | Luna-only Codex review-rule governance task | not recorded → 93/84 | not calculated | not calculated | 2m45s | ending quota was user-observed; start quota was not recorded; empirical observation only |
+| Current draft-lifecycle orchestration | Luna parent → Astra Low subagent → Luna landing; ComfyUI analysis draft lifecycle | 93/84 → 53/78 | -40% | -6% | 13m56s | one end-to-end observed run; one Astra invocation; no manual human handoff; Auto compact occurred near the beginning and is a confounder; no phase/model attribution or token inference; first stateful-controller extraction, not directly equivalent to prior pure/read-only cluster runs; empirical observation only |
 
 ## Canonical run notes
 
@@ -263,6 +265,32 @@ The PR #35 Luna landing and delivery phase moved from 55/93 to 54/93 over
 was observed. This is an empirical observation from that landing phase only; it
 does not establish stable quota accounting behavior or generalize to other
 runs.
+
+### PR #37 Luna-only governance task
+
+The immediately preceding PR #37 Luna-only Codex review-rule task took 2m45s.
+The ending user-observed quota was 93/84, while the starting quota was not
+recorded. No quota delta or token accounting is inferred from this partial
+observation.
+
+### Current ComfyUI analysis draft-lifecycle orchestration experiment
+
+This is one end-to-end observed orchestration run: Luna parent inspection and
+task framing, exactly one Astra Low implementation subagent, then Luna review,
+broader validation, one full-suite run, documentation, and delivery. The
+observed quota changed from 93/84 to 53/78 over 13m56s, an observed delta of
+-40% and -6%. These are whole-run observations only; the delta is not
+attributed to Luna or Astra separately, and no phase-level quota values,
+per-model split, token usage, or stable accounting behavior is inferred.
+
+Auto compact occurred near the very beginning of the run and is an explicit
+confounder. This was also the first stateful-controller extraction, so the
+run is not directly equivalent work to the prior pure/read-only cluster runs.
+
+The Astra-to-Luna transition required no manual human handoff; the parent
+received the subagent's committed implementation directly and continued the
+landing workflow. This is an empirical workflow observation only, not a claim
+about stable orchestration or accounting behavior.
 
 ## Findings
 
