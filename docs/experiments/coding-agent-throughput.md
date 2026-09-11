@@ -79,6 +79,7 @@ or inferred values.
 | Current repeat bounded autonomous cruise experiment #9 | Luna Max non-Fast → one Astra Low invocation → fresh-context repeated bounded autonomous cruise | 86/55 → 77/53 | -9% | -2% | 1m54s | zero boundaries; target 3, maximum 4; no implementation, docs, runtime, or test changes; no PR from the run; focused/broader/full tests not run; stopped because no independently coherent sufficiently safe boundary was apparent without broader investigation; no Luna correction or retry; no manual human handoff; no Auto compact; clean worktree and `git diff --check` passed; zero-boundary result informed the move to residual-responsibility audit; empirical observation only |
 | Current residual responsibility audit experiment #10 | Luna Max non-Fast → one Astra Low audit → Luna documentation landing; residual `app.py` classification and extraction-phase exit criteria | 77/53 → 64/51 | -13% | -2% | 5m23s | audit-only; one Astra invocation; no implementation, tests, or runtime changes; A/B/C/D clusters 3/5/2/3; terminal judgment MOSTLY YES; exact Category C candidates are Module Candidate Selection and Apply-workspace Attribute Group Swap draft/widget synchronization; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
 | Current explicit residual Category-C extraction #1 experiment #11 | Luna Max non-Fast → exactly one Astra Low → explicit audited Category-C boundary → Luna landing; Module Candidate Selection session lifecycle | 64/51 → 54/50 | -10% | -1% | 10m24s | one boundary; no autonomous discovery; owner `ui.module_candidate_selection_session`; commit `15a94e8`; focused 17 passed / 4 subtests before and after extraction; broader 72 passed / 16 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 281.74s; no Luna correction or retry; no manual human handoff; no Auto compact; remaining Category C is Apply-workspace Attribute Group Swap draft/widget synchronization; externally observed measurement; empirical workflow observation only |
+| Current explicit residual Category-C extraction #2 experiment #12 | Luna Max non-Fast → exactly one Astra Low → explicit audited Category-C boundary → Luna landing; Apply-workspace Attribute Group Swap session lifecycle | not recorded | not recorded | not recorded | not recorded | one boundary; no autonomous discovery; owner `ui.attribute_group_swap_session`; commit `6e04f8d`; focused 16 passed / 8 subtests before and 19 passed / 53 subtests after extraction; broader 46 passed; full suite 1258 passed / 8 skipped / 255.98s pytest (277.09s wrapper); no Luna correction; no retry; no manual human handoff; Auto compact not observed; residual Category C count zero; extraction-phase terminal judgment YES — current stateful extraction phase should end; quota/timing not recorded; empirical workflow observation only |
 
 ## Canonical run notes
 
@@ -619,6 +620,29 @@ of -1 percentage point. Auto compact was not observed. This is an empirical
 workflow record only; it does not infer internal token usage, stable
 implementation cost, discovery-versus-implementation causal cost, scheduler
 behavior, or Fast-mode propagation.
+
+### Orchestration experiment #12: explicit residual Category-C extraction #2
+
+This run used Luna Max with Fast mode off and exactly one Astra Low invocation.
+There was no autonomous boundary discovery: the final audited Category-C
+boundary was specified directly. Astra moved the ten audited Apply-workspace
+Attribute Group Swap draft/widget synchronization helpers into
+`ui.attribute_group_swap_session` and committed the implementation as
+`6e04f8dd63d4e676b9ccdd404ab4b6db0f416f22`.
+
+Astra's focused result was 16 passed with 8 subtests before the extraction and
+19 passed with 53 subtests afterward. Luna's broader Attribute Group Swap
+validation passed 46 tests. The one full-suite run passed 1258 tests, skipped 8,
+and reported 255.98 seconds in pytest; the wrapper runtime was 277.09 seconds.
+No Luna correction or retry occurred, and no manual human Astra-to-Luna handoff
+was required. Auto compact was not observed during the run.
+
+The residual audit's two Category-C candidates are now both extracted, so the
+residual Category-C count is zero and the extraction-phase terminal judgment is
+**YES — current stateful extraction phase should end**. Quota and wall-time
+measurements for this run were not recorded. This is an empirical workflow
+record only; it does not infer internal token usage, stable implementation or
+discovery cost, scheduler behavior, causal efficiency, or Fast-mode propagation.
 
 ## Findings
 
