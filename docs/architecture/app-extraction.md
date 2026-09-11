@@ -24,7 +24,7 @@ proposed new package hierarchy.
 | Candidate and Gallery Variant lifecycle | candidate normalization, prompt adoption/revert, image swap, Variant and alternative Scene creation | Mutable `PromptLine` fields, lineage, paths, session cache, history/autosave; not merely display data |
 | Gallery and Scene operations | `render_pro_gallery_mode`, cards, pagination, route actions, generation/adoption/promotion panels | `core.route_operations`, selected-route operation modules, shared scope selection, pending widget resets |
 | Import, sequence preview and final export | metadata import, `render_sequence_preview_panel`, `render_gallery_final_image_export` | `core.io`, image paths, explicit export scope and destination; source files must remain intact |
-| Graph and Focus editing | graph browser, Focus panels, batch editing, selected-token actions | `core.graph_builder`, `core.graph_edit_illustration_browser`, `core.operations`, graph/PromptCloud components, unsaved editor state |
+| Graph and Focus editing | graph browser, Focus panels, batch editing, selected-token actions | `core.graph_builder`, `core.graph_edit_illustration_browser`, `ui.graph_edit_browser_controller`, `core.operations`, graph/PromptCloud components, unsaved editor state |
 | Module and Attribute management | Authoring/Apply workspaces, library manager, candidate scanner, Inspector, Attribute Group panels | `core.modules`, `core.operations`, `core.module_library_search`, AnimaDex modules, authoritative Global Library cache and Project-local metadata |
 | UI infrastructure | profiling, thumbnails, keyboard shortcuts, HTML compatibility wrapper | timing/session state, disk cache/Pillow, iframe JavaScript; context and lifecycle must remain explicit |
 
@@ -1079,3 +1079,39 @@ filesystem/network/generator orchestration are explicitly outside this owner.
 also remain outside it. This first stateful extraction stops at the durable
 draft/widget-mirror lifecycle so those neighboring application and production
 boundaries stay explicit.
+
+### Graph Edit Browser navigation controller
+
+`ui.graph_edit_browser_controller` owns the Graph Edit Illustration Browser's
+stateful navigation guard and session-mirror lifecycle. The extracted boundary
+covers `reset_graph_edit_illustration_browser_state`,
+`get_graph_edit_browser_unsaved_line_ids`,
+`block_graph_edit_browser_navigation_if_unsaved`,
+`discard_graph_edit_browser_current_page_drafts`, and the browser-specific
+page/filter/page-size/input/collapse/reveal callbacks and setters:
+`_reset_graph_edit_browser_page`, `_on_graph_edit_browser_filter_changed`,
+`_on_graph_edit_browser_page_size_changed`,
+`_on_graph_edit_browser_page_input_changed`, `_set_graph_edit_browser_page`,
+`_set_graph_edit_browser_collapsed_group_keys`, and
+`_reveal_graph_edit_browser_current`. It also owns the browser constants and
+the local `get_line_by_id` lookup used by this controller; the existing app
+lookup remains for the app's other callers.
+
+The owner controls only the browser's session keys: filter, page, page size,
+collapsed group keys, notice, current-page line IDs, and the filter/page-size/
+page-top widget mirrors. It preserves detection of unsaved current-page text
+and negative-prompt widget drafts, stable ordered/deduplicated IDs, missing or
+deleted-line handling, navigation rejection without applying the transition,
+widget-mirror rollback, explicit discard without Project mutation, page and
+filter/page-size reset ordering, reveal/jump behavior, falsey/default and
+exception behavior, and Project-replacement reset behavior. Browser-only
+navigation remains separate from Focus/Gallery selection and shared Project
+editing state.
+
+The browser renderer, page planner/reconciliation, page registration, display
+filters, editor widgets and Save Changes actions remain in `app.py`. Project
+loading and reset orchestration remains in the app's shared lifecycle; the
+controller does not own Project or PromptLine mutation, history, persistence,
+schema, prompt-editing semantics, or filesystem/network/generation work. It
+is a Graph Edit Browser controller, not a generic session wrapper or navigation
+framework.
