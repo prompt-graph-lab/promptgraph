@@ -1178,3 +1178,42 @@ workflow/generation/network orchestration. `core.settings` remains the owner
 of path normalization and settings serialization; this extraction preserves
 the existing explicit settings-save sequencing without introducing a new
 schema or persistence layer.
+
+### Gallery Selected Routes session lifecycle
+
+`ui.gallery_selected_routes_session` owns the multi-route Gallery selection
+session lifecycle: `_gallery_selected_route_widget_key`,
+`_initialize_gallery_selected_route_widget`,
+`_clear_gallery_selected_route_widget_keys`,
+`reset_gallery_selected_route_session_state`,
+`_apply_pending_gallery_selected_route_widget_reset`,
+`_sanitize_gallery_selected_route_session_state`,
+`_on_gallery_route_selection_changed`, and
+`_set_gallery_selected_route_ids_after_structure_change`, together with the
+`SELECTED_ROUTE_WIDGET_PREFIX` constant. The owner controls the session-owned
+`gallery_selected_route_ids` list, its
+`pro_gallery_route_selected_` widget mirrors, the deferred
+`gallery_selected_route_widget_pending_reset` payload, and the dependent
+selected-route swap/preview cleanup performed when Project state is reset.
+It is specific to the Gallery Selected Routes feature rather than a generic
+session-state abstraction.
+
+The lifecycle preserves existing-widget precedence during widget
+initialization, durable-selection reconciliation, Project-order and
+deduplication behavior, list-copying and falsey semantics, route-keyed widget
+callbacks, stale-widget cleanup, deferred sorted/deduplicated resets after
+route structure changes, and the exact partial-update and exception behavior.
+Project replacement clears the selected-route IDs, pending reset, widget
+mirrors, and dependent selected-route preview state in the same order as
+before; Undo-style structure changes retain an existing pending reset until
+the renderer applies it.
+
+`app.py` retains Gallery rendering and composition, select-all/clear/invert
+actions, route cards and separator controls, and all selected-route consumers
+for generation, export, adoption, promotion, Module/Attribute swaps, and
+lightweight forks. Single-route selectors remain separate from this
+multi-route lifecycle. `core.route_operations` remains the owner of the
+underlying selection sanitization and toggle operations. The controller does
+not own Project or PromptLine mutation, history, persistence/schema,
+generation or filesystem/network orchestration, or the feature-specific
+operation plans and writes.
