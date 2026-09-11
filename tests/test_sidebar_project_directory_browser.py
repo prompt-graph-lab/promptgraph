@@ -37,8 +37,14 @@ class SidebarProjectDirectoryBrowserTests(unittest.TestCase):
         cls.project_open_source = cls.app_source[
             cls.project_open_start:cls.advanced_start
         ]
+        cls.owner_source = (cls.app_path.parent / "ui/project_directory_browser_session.py").read_text(encoding="utf-8")
+        cls.owner_functions = {node.name: node for node in ast.parse(cls.owner_source).body
+                               if isinstance(node, ast.FunctionDef)}
+        cls.functions.update(cls.owner_functions)
 
     def _source(self, name):
+        if name in self.owner_functions:
+            return ast.get_source_segment(self.owner_source, self.owner_functions[name])
         return ast.get_source_segment(self.app_source, self.functions[name])
 
     def _load(self, *names, namespace):
