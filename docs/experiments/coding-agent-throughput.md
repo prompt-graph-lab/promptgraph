@@ -78,6 +78,7 @@ or inferred values.
 | Current fresh-window multi-boundary cruise experiment #8 | Luna Max non-Fast → one Astra Low invocation → sequential FIRST-SAFE multi-boundary cruise → Luna landing; Project Import session lifecycle | 99/57 → 88/55 | -11% | -2% | 11m46s | one boundary completed in `ui.project_root_import_session`; commit `402e787`; target 3 not reached; optional #4 not attempted; Astra focused 14 passed plus 7 baseline characterizations; broader 47 passed / 2 skipped / 2 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 257.53s; no Luna correction or retry; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
 | Current repeat bounded autonomous cruise experiment #9 | Luna Max non-Fast → one Astra Low invocation → fresh-context repeated bounded autonomous cruise | 86/55 → 77/53 | -9% | -2% | 1m54s | zero boundaries; target 3, maximum 4; no implementation, docs, runtime, or test changes; no PR from the run; focused/broader/full tests not run; stopped because no independently coherent sufficiently safe boundary was apparent without broader investigation; no Luna correction or retry; no manual human handoff; no Auto compact; clean worktree and `git diff --check` passed; zero-boundary result informed the move to residual-responsibility audit; empirical observation only |
 | Current residual responsibility audit experiment #10 | Luna Max non-Fast → one Astra Low audit → Luna documentation landing; residual `app.py` classification and extraction-phase exit criteria | 77/53 → 64/51 | -13% | -2% | 5m23s | audit-only; one Astra invocation; no implementation, tests, or runtime changes; A/B/C/D clusters 3/5/2/3; terminal judgment MOSTLY YES; exact Category C candidates are Module Candidate Selection and Apply-workspace Attribute Group Swap draft/widget synchronization; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
+| Current explicit residual Category-C extraction #1 experiment #11 | Luna Max non-Fast → exactly one Astra Low → explicit audited Category-C boundary → Luna landing; Module Candidate Selection session lifecycle | not recorded | not calculated | not calculated | not recorded | one boundary; no autonomous discovery; owner `ui.module_candidate_selection_session`; commit `15a94e8`; focused 17 passed / 4 subtests before and after extraction; broader 72 passed / 16 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 281.74s; no Luna correction or retry; no manual human handoff; no Auto compact observed; remaining Category C is Apply-workspace Attribute Group Swap draft/widget synchronization; empirical workflow observation only |
 
 ## Canonical run notes
 
@@ -593,6 +594,29 @@ points. Auto compact was not observed. All statements are empirical
 observations from this run; they do not infer per-model token counts, internal
 accounting, stable audit/discovery cost, scheduler behavior, causal efficiency,
 or stable orchestration cost.
+
+### Orchestration experiment #11: explicit residual Category-C extraction #1
+
+This run used Luna Max with Fast mode off and exactly one Astra Low invocation.
+There was no autonomous boundary discovery: the already-audited Module
+Candidate Selection draft/widget synchronization boundary was specified
+directly. Astra moved exactly the six audited helpers into
+`ui.module_candidate_selection_session` and committed the implementation as
+`15a94e813830e7f955b78089fb016efd87eee7c7`.
+
+Astra's focused result was 17 passed with 4 subtests both before and after the
+extraction. Luna's broader Module Candidate/Attribute validation passed 72
+tests with 16 subtests. The one full-suite run passed 1255 tests, skipped 8,
+covered 607 subtests, and reported 281.74 seconds in pytest. No Luna
+correction or retry occurred, no manual human Astra-to-Luna handoff was
+required, and Auto compact was not observed.
+
+After this extraction, the residual audit has one explicit Category-C
+candidate remaining: Apply-workspace Attribute Group Swap draft/widget
+synchronization. No quota or timing observations were recorded for this run.
+This is an empirical workflow record only; it does not infer internal token
+usage, stable implementation cost, discovery-versus-implementation causal
+cost, scheduler behavior, or Fast-mode propagation.
 
 ## Findings
 
