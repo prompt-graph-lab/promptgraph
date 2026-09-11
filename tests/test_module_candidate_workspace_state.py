@@ -3,6 +3,9 @@ import copy
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from ui import module_candidate_selection_session
 
 from core.operations import (
     apply_module_candidates,
@@ -215,7 +218,14 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
     @classmethod
     def _load_functions(cls, *names, namespace):
         module = ast.Module(
-            body=[cls.functions[name] for name in names],
+            body=[
+                *[
+                    node for node in cls.tree.body
+                    if isinstance(node, ast.ImportFrom)
+                    and node.module == "ui.module_candidate_selection_session"
+                ],
+                *[cls.functions[name] for name in names if name in cls.functions],
+            ],
             type_ignores=[],
         )
         ast.fix_missing_locations(module)
@@ -278,6 +288,9 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
             widget_values=widget_values,
             button_clicks=button_clicks,
         )
+        patcher = patch.object(module_candidate_selection_session, "st", st)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         calls = {
             "history": 0,
             "set_rules": [],

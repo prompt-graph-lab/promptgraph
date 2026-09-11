@@ -1237,6 +1237,33 @@ remain in `app.py` or their existing owners. The extracted controller only
 keeps the Inspector's draft/widget state synchronized; it does not own the
 authoring workflow or change Project persistence.
 
+### Module Candidate Selection session lifecycle
+
+`ui.module_candidate_selection_session` owns the Module Candidate Selection
+workspace's durable/widget draft synchronization through exactly six helpers:
+`prepare_module_candidate_selection_widget_state`,
+`sync_module_candidate_selection_widget_state`,
+`prepare_module_candidate_core_tokens_widget_state`,
+`sync_module_candidate_core_tokens_widget_state`,
+`prepare_module_candidate_min_match_widget_state`, and
+`sync_module_candidate_min_match_widget_state`. The owner controls the exact
+selection, per-Module core-token, and per-Module minimum-match durable keys and
+their temporary widget mirrors.
+
+The lifecycle preserves durable/widget precedence, hydration and invalid-value
+repair, module ordering, list copying and aliasing, falsey/default behavior,
+callbacks, per-Module draft independence, token filtering, normalization and
+clamping, evaluation and exception/write ordering, and legacy partial state
+writes. Existing preview freshness and pending-created-Module handoff behavior
+remain at the caller.
+
+`app.py` retains the Module Candidate Selection renderer, candidate preview,
+pending-created-Module handoff, rule writes, Module application, Project
+mutation, history, persistence, focus restoration, rerun orchestration, and
+unrelated reset behavior. This owner is feature-specific and does not combine
+with the Project Module Inspector controller or introduce a generic
+session/widget abstraction.
+
 ### Project Import session lifecycle
 
 `ui.project_root_import_session` owns the Existing Project Import feature's
@@ -1372,33 +1399,24 @@ small behavior-preserving extraction PRs:
 Moving these areas requires explicit ownership, persistence, dependency, or
 product decisions. They should not be disguised as generic controllers.
 
-### C — Still-safe extraction candidates (2 clusters)
+### C — Still-safe extraction candidate (1 cluster remains)
 
-Two bounded, feature-specific draft/widget lifecycles remain candidates for a
-separate reviewable extraction:
+The Module Candidate Selection draft/widget synchronization candidate from this
+audit is now implemented as `ui.module_candidate_selection_session` and is no
+longer a residual candidate. One bounded, feature-specific candidate remains:
 
-1. **Module Candidate Selection draft/widget synchronization** — exactly
-   `prepare_module_candidate_selection_widget_state`,
-   `sync_module_candidate_selection_widget_state`,
-   `prepare_module_candidate_core_tokens_widget_state`,
-   `sync_module_candidate_core_tokens_widget_state`,
-   `prepare_module_candidate_min_match_widget_state`, and
-   `sync_module_candidate_min_match_widget_state`. Existing tests cover
-   hydration, repair, normalization, independent drafts, handoff, preview
-   freshness, apply, and transition ownership. Pending-created-Module handoff,
-   previews, rule writes, application, resets, and rendering remain outside it.
-2. **Apply-workspace Attribute Group Swap draft/widget synchronization** — the
-   prepare/sync pairs for `from_widget_state`, `to_widget_state`,
-   `scope_widget_state`, `selected_route_widget_state`, and
-   `require_full_match_widget_state`. Existing tests cover defaults, callbacks,
-   valid equal groups, invalid-value repair, selected-route retention, and
-   hidden-widget reconstruction. Preview, confirmation/reset, target resolution,
-   apply/history/save, and Gallery swap ownership remain outside it.
+- **Apply-workspace Attribute Group Swap draft/widget synchronization** — the
+  prepare/sync pairs for `from_widget_state`, `to_widget_state`,
+  `scope_widget_state`, `selected_route_widget_state`, and
+  `require_full_match_widget_state`. Existing tests cover defaults, callbacks,
+  valid equal groups, invalid-value repair, selected-route retention, and
+  hidden-widget reconstruction. Preview, confirmation/reset, target resolution,
+  apply/history/save, and Gallery swap ownership remain outside it.
 
-These are candidates because their helpers are feature-specific, call no other
-app-defined functions, have existing characterization coverage, and can leave
-their renderers and mutation orchestration in `app.py`. They are not a proposal
-for a shared widget abstraction.
+This remaining candidate is bounded because its helpers are feature-specific,
+call no other app-defined functions, have existing characterization coverage,
+and can leave rendering and mutation orchestration in `app.py`. It is not a
+proposal for a shared widget abstraction.
 
 ### D — Legacy / mixed / low-value to extract (3 clusters)
 
@@ -1411,10 +1429,10 @@ fragments would mostly distribute glue and legacy sequencing. Leaving these in
 
 ### Terminal-shell judgment and exit criteria
 
-The audit judgment is **MOSTLY YES — one or two clearly safe extractions
-remain**. The exact remaining Category C boundaries are the two draft/widget
-lifecycles above. This is an exit point for open-ended residual discovery:
-future extraction work should choose at most one of these bounded candidates
+The audit judgment remains **MOSTLY YES — one clearly safe extraction remains**.
+The exact remaining Category C boundary is the Apply-workspace Attribute Group
+Swap draft/widget lifecycle above. This is an exit point for open-ended residual
+discovery: future extraction work should choose this bounded candidate only
 under an explicit request, then reassess. Project/persistence workflows,
 Candidate/Route mutation, generation, filesystem production, shared authoring,
 generic session/draft/cache/navigation frameworks, tiny formatters, and
@@ -1422,7 +1440,9 @@ recombined existing owners should not be extracted next.
 
 At the audit snapshot, `app.py` was approximately 22,685 lines with 475
 top-level functions, compared with the documented initial 24,900 lines and
-634 functions. The two Category C candidates span approximately 190 source
-lines and 16 helpers in total. The net difference includes intervening product
-development and is not an extraction-only measurement; coherent ownership and
-behavior preservation remain the objective rather than line-count reduction.
+634 functions. One audited Category C boundary is now extracted; 10 helper
+functions remain in the single Apply-workspace candidate. The remaining source
+span was not remeasured in this landing. The net difference includes
+intervening product development and is not an extraction-only measurement;
+coherent ownership and behavior preservation remain the objective rather than
+line-count reduction.
