@@ -1329,3 +1329,100 @@ underlying selection sanitization and toggle operations. The controller does
 not own Project or PromptLine mutation, history, persistence/schema,
 generation or filesystem/network orchestration, or the feature-specific
 operation plans and writes.
+
+## Residual responsibility audit / extraction phase exit criteria
+
+The experiment #10 audit reviewed the residual `app.py` responsibility map
+after the stateful and read-only extraction series. The audit classified
+responsibility clusters rather than individual functions and found that the
+remaining file is mostly intentional application composition or work that
+needs a broader design decision.
+
+### A — Terminal shell / wiring (3 clusters)
+
+The following are valid terminal responsibilities for `app.py`:
+
+- Streamlit startup, page configuration, workspace launchers, and top-level
+  workspace composition.
+- Integration and transition ordering across existing owners, including
+  Project loading, Undo, and cross-feature reset publication.
+- Rendering and explicit action dispatch that connects existing owners to
+  visible controls, including Gallery and Module/Attribute workspace
+  composition.
+
+These clusters are application-level composition, not failed extractions.
+
+### B — Broad-design required (5 clusters)
+
+These areas might move in a later product or architecture phase, but are not
+small behavior-preserving extraction PRs:
+
+- Project lifecycle and persistence, including Save As, load, Undo, settings,
+  asset resets, and discovery refresh.
+- Candidate, Variant, and Route mutation, adoption, promotion, and save/history
+  sequencing.
+- Generation execution, including workflow preparation, progress, output paths,
+  Candidate registration, execution logs, and save behavior.
+- Filesystem production workflows such as assets, fork materialization, and
+  final export, where previews, validation, writes, and publication interleave.
+- Shared editing and Module/Attribute authoring, where Global Library authority,
+  Project-local replacement, history, graph rebuilding, and Focus restoration
+  cross feature boundaries.
+
+Moving these areas requires explicit ownership, persistence, dependency, or
+product decisions. They should not be disguised as generic controllers.
+
+### C — Still-safe extraction candidates (2 clusters)
+
+Two bounded, feature-specific draft/widget lifecycles remain candidates for a
+separate reviewable extraction:
+
+1. **Module Candidate Selection draft/widget synchronization** — exactly
+   `prepare_module_candidate_selection_widget_state`,
+   `sync_module_candidate_selection_widget_state`,
+   `prepare_module_candidate_core_tokens_widget_state`,
+   `sync_module_candidate_core_tokens_widget_state`,
+   `prepare_module_candidate_min_match_widget_state`, and
+   `sync_module_candidate_min_match_widget_state`. Existing tests cover
+   hydration, repair, normalization, independent drafts, handoff, preview
+   freshness, apply, and transition ownership. Pending-created-Module handoff,
+   previews, rule writes, application, resets, and rendering remain outside it.
+2. **Apply-workspace Attribute Group Swap draft/widget synchronization** — the
+   prepare/sync pairs for `from_widget_state`, `to_widget_state`,
+   `scope_widget_state`, `selected_route_widget_state`, and
+   `require_full_match_widget_state`. Existing tests cover defaults, callbacks,
+   valid equal groups, invalid-value repair, selected-route retention, and
+   hidden-widget reconstruction. Preview, confirmation/reset, target resolution,
+   apply/history/save, and Gallery swap ownership remain outside it.
+
+These are candidates because their helpers are feature-specific, call no other
+app-defined functions, have existing characterization coverage, and can leave
+their renderers and mutation orchestration in `app.py`. They are not a proposal
+for a shared widget abstraction.
+
+### D — Legacy / mixed / low-value to extract (3 clusters)
+
+Presentation microhelpers, residual pagination/collapse plumbing, and snapshot
+mutation/compatibility fragments remain mixed with their renderers or are too
+small to establish a useful independent lifecycle. Earlier pure/read-only
+owners already cover the substantial calculations, while the remaining
+fragments would mostly distribute glue and legacy sequencing. Leaving these in
+`app.py` is reasonable.
+
+### Terminal-shell judgment and exit criteria
+
+The audit judgment is **MOSTLY YES — one or two clearly safe extractions
+remain**. The exact remaining Category C boundaries are the two draft/widget
+lifecycles above. This is an exit point for open-ended residual discovery:
+future extraction work should choose at most one of these bounded candidates
+under an explicit request, then reassess. Project/persistence workflows,
+Candidate/Route mutation, generation, filesystem production, shared authoring,
+generic session/draft/cache/navigation frameworks, tiny formatters, and
+recombined existing owners should not be extracted next.
+
+At the audit snapshot, `app.py` was approximately 22,685 lines with 475
+top-level functions, compared with the documented initial 24,900 lines and
+634 functions. The two Category C candidates span approximately 190 source
+lines and 16 helpers in total. The net difference includes intervening product
+development and is not an extraction-only measurement; coherent ownership and
+behavior preservation remain the objective rather than line-count reduction.
