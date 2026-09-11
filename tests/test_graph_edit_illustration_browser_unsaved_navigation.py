@@ -30,6 +30,8 @@ class GraphEditIllustrationBrowserUnsavedNavigationTests(unittest.TestCase):
     def setUpClass(cls):
         app_path = Path(__file__).resolve().parents[1] / "app.py"
         cls.source = app_path.read_text(encoding="utf-8")
+        controller_path = Path(__file__).resolve().parents[1] / "ui" / "graph_edit_browser_controller.py"
+        cls.source += "\n" + controller_path.read_text(encoding="utf-8")
         tree = ast.parse(cls.source)
         cls.functions = {
             node.name: node
