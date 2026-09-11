@@ -1,3 +1,8 @@
+from ui.global_module_library_session import (
+    cache_global_module_library_for_session,
+    get_session_global_module_library,
+    save_and_cache_global_module_library,
+)
 from ui.graph_edit_browser_controller import (
     GRAPH_EDIT_BROWSER_FILTER_KEY,
     GRAPH_EDIT_BROWSER_PAGE_KEY,
@@ -159,7 +164,7 @@ from core.animadex_discovery import (
     search_animadex_records,
 )
 from core.animadex_modules import build_global_module_preview_from_animadex_record
-from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, load_project_from_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, ensure_project_folder_layout, copy_candidates_to_project_and_save_atomically, preview_copy_candidates_to_project, preview_verified_project_asset_duplicate_cleanup, delete_verified_project_asset_source_duplicates, ProjectAssetsPreviewStaleError, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, save_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
+from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, load_project_from_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, ensure_project_folder_layout, copy_candidates_to_project_and_save_atomically, preview_copy_candidates_to_project, preview_verified_project_asset_duplicate_cleanup, delete_verified_project_asset_source_duplicates, ProjectAssetsPreviewStaleError, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
 from core.graph_builder import build_graph
 from core.graph_edit_illustration_browser import (
     DEFAULT_PAGE_SIZE as GRAPH_EDIT_BROWSER_DEFAULT_PAGE_SIZE,
@@ -17453,61 +17458,8 @@ def clear_global_module_library_search_query() -> None:
     st.session_state[GLOBAL_MODULE_LIBRARY_SEARCH_WIDGET_KEY] = ""
 
 
-def get_session_global_module_library() -> dict:
-    """Load the Global Library once per path and reuse it during the session."""
-
-    library_path = get_global_module_library_path(
-        st.session_state.get("settings", {})
-    )
-    cache = st.session_state.get("global_module_library_session_cache")
-    if (
-        isinstance(cache, dict)
-        and cache.get("path") == library_path
-        and isinstance(cache.get("library"), dict)
-    ):
-        return cache["library"]
-
-    library = load_global_module_library(
-        st.session_state.get("settings", {})
-    )
-    st.session_state.global_module_library_session_cache = {
-        "path": library_path,
-        "library": library,
-    }
-    return library
-
-
-def cache_global_module_library_for_session(library: dict) -> None:
-    """Refresh the session cache after an explicit library write."""
-
-    library_path = get_global_module_library_path(
-        st.session_state.get("settings", {})
-    )
-    st.session_state.global_module_library_session_cache = {
-        "path": library_path,
-        "library": library if isinstance(library, dict) else {},
-    }
-
-
 class GlobalModuleLibraryWriteConflict(RuntimeError):
     """Raised when an explicit mutation is stale against the latest JSON."""
-
-
-def save_and_cache_global_module_library(update_library):
-    """Rebase one explicit mutation and cache the persisted representation."""
-
-    settings = st.session_state.get("settings", {})
-    authoritative_library = load_global_module_library(settings)
-    updated_library = update_library(
-        copy.deepcopy(authoritative_library)
-    )
-    if not isinstance(updated_library, dict):
-        raise TypeError("Global Module Library update must return a dict.")
-
-    saved_path = save_global_module_library(updated_library, settings)
-    persisted_library = load_global_module_library(settings)
-    cache_global_module_library_for_session(persisted_library)
-    return saved_path, persisted_library
 
 
 def prepare_global_module_search_selection_state(

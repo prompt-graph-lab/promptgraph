@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from ui import global_module_library_session as session
+
 from core.io import (
     get_global_module_library_path,
     load_global_module_library,
@@ -45,26 +47,19 @@ class GlobalModuleLibraryAuthoritativeCacheTests(unittest.TestCase):
         }
 
     def _function_source(self, name):
+        if name == "save_and_cache_global_module_library":
+            import inspect
+            return inspect.getsource(session.save_and_cache_global_module_library)
         return ast.get_source_segment(
             self.app_source,
             self.functions[name],
         )
 
     def _load_functions(self, *names, namespace):
-        loaded = dict(namespace)
-        for name in names:
-            exec(
-                compile(
-                    ast.Module(
-                        body=[self.functions[name]],
-                        type_ignores=[],
-                    ),
-                    filename="app.py",
-                    mode="exec",
-                ),
-                loaded,
-            )
-        return loaded
+        patcher = mock.patch.dict(session.__dict__, namespace)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return session.__dict__
 
     def _real_io_namespace(self, state):
         return self._load_functions(
@@ -183,6 +178,7 @@ class GlobalModuleLibraryAuthoritativeCacheTests(unittest.TestCase):
             }
             save_global_module_library(concurrent_library, settings)
             self.assertNotIn("concurrent", stale_library)
+            self.assertIs(namespace["get_session_global_module_library"](), stale_library)
 
             def update_cached_module(authoritative_library):
                 authoritative_library["cached"] = {
@@ -212,6 +208,48 @@ class GlobalModuleLibraryAuthoritativeCacheTests(unittest.TestCase):
                 "my update",
             )
             self.assertEqual(cached_after_save, persisted_library)
+
+    def test_missing_file_read_does_not_create_directory_and_same_path_stays_cached(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir) / "missing"
+            settings = {"global_module_library_dir": str(directory)}
+            state = _SessionState(settings=settings)
+            namespace = self._real_io_namespace(state)
+            initial = namespace["get_session_global_module_library"]()
+            self.assertEqual(initial, {})
+            self.assertFalse(directory.exists())
+            save_global_module_library({"external": {"body": "new"}}, settings)
+            self.assertIs(namespace["get_session_global_module_library"](), initial)
+            state.pop("global_module_library_session_cache")
+            reloaded = namespace["get_session_global_module_library"]()
+            self.assertIn("external", reloaded)
+            self.assertIsNot(reloaded, initial)
+
+    def test_suppressed_reload_read_failure_caches_empty_after_successful_disk_write(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = {"global_module_library_dir": temp_dir}
+            save_global_module_library({"old": {"body": "old"}}, settings)
+            state = _SessionState(settings=settings)
+            namespace = self._real_io_namespace(state)
+            original = namespace["get_session_global_module_library"]()
+            real_load = load_global_module_library
+            calls = []
+
+            def load(settings):
+                calls.append(True)
+                if len(calls) == 2:
+                    with mock.patch("core.io.json.load", side_effect=OSError("read failed")):
+                        return real_load(settings)
+                return real_load(settings)
+
+            namespace["load_global_module_library"] = load
+            _, result = namespace["save_and_cache_global_module_library"](
+                lambda library: {"new": {"body": "saved"}}
+            )
+            self.assertEqual(result, {})
+            self.assertIs(state.global_module_library_session_cache["library"], result)
+            self.assertIsNot(result, original)
+            self.assertIn("new", real_load(settings))
 
     def test_failed_save_preserves_cache_project_and_history(self):
         old_library = {"cached": {"body": "keep"}}
@@ -357,13 +395,13 @@ class GlobalModuleLibraryAuthoritativeCacheTests(unittest.TestCase):
         )
         self.assertEqual(
             self.app_source.count("save_global_module_library("),
-            1,
+            0,
         )
         self.assertEqual(
             self.app_source.count(
                 "cache_global_module_library_for_session("
             ),
-            2,
+            0,
         )
         self.assertEqual(helper.count("load_global_module_library("), 2)
         self.assertEqual(helper.count("save_global_module_library("), 1)
