@@ -3,6 +3,9 @@ import copy
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from ui import attribute_group_swap_session
 
 
 DURABLE_KEYS = (
@@ -175,11 +178,17 @@ class AttributeGroupSwapWorkspaceStateTests(unittest.TestCase):
     def _source(cls, name):
         return ast.get_source_segment(cls.app_source, cls.functions[name])
 
-    @classmethod
-    def _load_functions(cls, *names, namespace):
+    def _load_functions(self, *names, namespace):
         nodes = []
+        if any(name in self.prepare_names + self.sync_names for name in names):
+            self.enterContext(
+                patch.object(attribute_group_swap_session, "st", namespace["st"])
+            )
         for name in names:
-            node = copy.deepcopy(cls.functions[name])
+            if name in self.prepare_names + self.sync_names:
+                namespace[name] = getattr(attribute_group_swap_session, name)
+                continue
+            node = copy.deepcopy(self.functions[name])
             node.decorator_list = []
             nodes.append(node)
         module = ast.Module(body=nodes, type_ignores=[])
@@ -356,6 +365,74 @@ class AttributeGroupSwapWorkspaceStateTests(unittest.TestCase):
                 "selected_preview_render"
             ].append((args, kwargs))
         return namespace, st, calls, project
+
+    def test_session_owner_exports_exact_boundary_and_app_imports_it(self):
+        owner_tree = ast.parse(Path(attribute_group_swap_session.__file__).read_text())
+        expected = set(self.prepare_names + self.sync_names)
+        self.assertEqual(
+            {node.name for node in owner_tree.body if isinstance(node, ast.FunctionDef)},
+            expected,
+        )
+        self.assertTrue(expected.isdisjoint(self.functions))
+        imports = [node for node in self.tree.body if isinstance(node, ast.ImportFrom)
+                   and node.module == "ui.attribute_group_swap_session"]
+        self.assertEqual(len(imports), 1)
+        self.assertEqual({alias.name for alias in imports[0].names}, expected)
+
+    def test_prepare_write_order_partial_failure_and_identity(self):
+        for name, durable, widget, args in zip(
+            self.prepare_names, DURABLE_KEYS, TEMPORARY_KEYS,
+            (([],), ([], "from"), ([],), ([],), ()),
+        ):
+            with self.subTest(name=name):
+                events = []
+
+                class FailingWidgetState(_SessionState):
+                    def __setitem__(self, key, value):
+                        events.append(key)
+                        if key == widget:
+                            raise RuntimeError("widget write")
+                        super().__setitem__(key, value)
+
+                namespace, st, _, _ = self._runtime()
+                st.session_state = FailingWidgetState()
+                with self.assertRaisesRegex(RuntimeError, "widget write"):
+                    namespace[name](*args)
+                self.assertEqual(events, [durable, widget])
+                self.assertIn(durable, st.session_state)
+                self.assertNotIn(widget, st.session_state)
+
+        namespace, st, _, _ = self._runtime()
+        value = ["mutable"]
+        st.session_state[DURABLE_KEYS[0]] = value
+        result = namespace[self.prepare_names[0]](iter([value]))
+        self.assertIs(result, value)
+        self.assertIs(st.session_state[TEMPORARY_KEYS[0]], value)
+
+        def broken_options():
+            yield "first"
+            raise ValueError("options failed")
+
+        before = dict(st.session_state)
+        with self.assertRaisesRegex(ValueError, "options failed"):
+            namespace[self.prepare_names[0]](broken_options())
+        self.assertEqual(st.session_state, before)
+
+    def test_sync_missing_falsey_and_unvalidated_values(self):
+        namespace, st, _, _ = self._runtime()
+        for index, (sync, durable, widget) in enumerate(zip(
+            self.sync_names, DURABLE_KEYS, TEMPORARY_KEYS,
+        )):
+            st.session_state.pop(widget, None)
+            namespace[sync]()
+            self.assertEqual(st.session_state[durable],
+                             False if index == 4 else "all_lines" if index == 2 else "")
+            for value in (None, "", 0, 1, [], "False", False, True):
+                with self.subTest(sync=sync, value=value):
+                    st.session_state[widget] = value
+                    namespace[sync]()
+                    expected = value if index != 4 or isinstance(value, bool) else False
+                    self.assertIs(st.session_state[durable], expected)
 
     def test_renderer_uses_temporary_keys_and_explicit_sync_callbacks(self):
         renderer = self._source(self.renderer_name)

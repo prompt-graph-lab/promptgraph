@@ -1264,6 +1264,37 @@ unrelated reset behavior. This owner is feature-specific and does not combine
 with the Project Module Inspector controller or introduce a generic
 session/widget abstraction.
 
+### Apply-workspace Attribute Group Swap session lifecycle
+
+`ui.attribute_group_swap_session` owns the Apply-workspace Attribute Group
+Swap draft/widget synchronization lifecycle through exactly ten helpers:
+`prepare_attribute_group_swap_from_widget_state`,
+`sync_attribute_group_swap_from_widget_state`,
+`prepare_attribute_group_swap_to_widget_state`,
+`sync_attribute_group_swap_to_widget_state`,
+`prepare_attribute_group_swap_scope_widget_state`,
+`sync_attribute_group_swap_scope_widget_state`,
+`prepare_attribute_group_swap_selected_route_widget_state`,
+`sync_attribute_group_swap_selected_route_widget_state`,
+`prepare_attribute_group_swap_require_full_match_widget_state`, and
+`sync_attribute_group_swap_require_full_match_widget_state`.
+
+The owner preserves the exact durable and temporary widget key names,
+durable-before-widget preparation, missing and invalid-value repair, default
+From/To selection, equal From/To preservation, scope fallback, selected-route
+retention and repair, boolean falsey behavior, hidden-widget reconstruction,
+callback and evaluation ordering, copying/aliasing, exception propagation, and
+partial writes. These are feature-specific draft contracts, not a generic
+session/widget abstraction.
+
+`app.py` retains the Attribute Group Swap renderer, option and label
+construction, route-option construction and selected-route target resolution,
+preview and confirmation state, selected-routes plan/signature and preview
+rendering, apply operations, Project mutation, history, persistence/save,
+focus restoration, Gallery-owned swap behavior, rerun orchestration, and
+unrelated reset behavior. The owner does not change Module/Attribute or Swap
+semantics, Project schema/persistence, or workflow/generator orchestration.
+
 ### Project Import session lifecycle
 
 `ui.project_root_import_session` owns the Existing Project Import feature's
@@ -1399,24 +1430,15 @@ small behavior-preserving extraction PRs:
 Moving these areas requires explicit ownership, persistence, dependency, or
 product decisions. They should not be disguised as generic controllers.
 
-### C — Still-safe extraction candidate (1 cluster remains)
+### C — Still-safe extraction candidate (0 clusters remain)
 
 The Module Candidate Selection draft/widget synchronization candidate from this
-audit is now implemented as `ui.module_candidate_selection_session` and is no
-longer a residual candidate. One bounded, feature-specific candidate remains:
-
-- **Apply-workspace Attribute Group Swap draft/widget synchronization** — the
-  prepare/sync pairs for `from_widget_state`, `to_widget_state`,
-  `scope_widget_state`, `selected_route_widget_state`, and
-  `require_full_match_widget_state`. Existing tests cover defaults, callbacks,
-  valid equal groups, invalid-value repair, selected-route retention, and
-  hidden-widget reconstruction. Preview, confirmation/reset, target resolution,
-  apply/history/save, and Gallery swap ownership remain outside it.
-
-This remaining candidate is bounded because its helpers are feature-specific,
-call no other app-defined functions, have existing characterization coverage,
-and can leave rendering and mutation orchestration in `app.py`. It is not a
-proposal for a shared widget abstraction.
+audit is implemented as `ui.module_candidate_selection_session`. The
+Apply-workspace Attribute Group Swap draft/widget synchronization candidate is
+now implemented as `ui.attribute_group_swap_session`. The two audited
+Category-C boundaries are therefore no longer residual candidates. Their
+rendering, confirmation/reset, target resolution, apply/history/save, Project
+mutation, and Gallery swap orchestration remain outside the owners.
 
 ### D — Legacy / mixed / low-value to extract (3 clusters)
 
@@ -1429,20 +1451,21 @@ fragments would mostly distribute glue and legacy sequencing. Leaving these in
 
 ### Terminal-shell judgment and exit criteria
 
-The audit judgment remains **MOSTLY YES — one clearly safe extraction remains**.
-The exact remaining Category C boundary is the Apply-workspace Attribute Group
-Swap draft/widget lifecycle above. This is an exit point for open-ended residual
-discovery: future extraction work should choose this bounded candidate only
-under an explicit request, then reassess. Project/persistence workflows,
-Candidate/Route mutation, generation, filesystem production, shared authoring,
-generic session/draft/cache/navigation frameworks, tiny formatters, and
-recombined existing owners should not be extracted next.
+The audit judgment is now **YES — current stateful extraction phase should
+end**. Both audited Category-C boundaries are extracted. No further open-ended
+residual discovery should be performed in this behavior-preserving phase.
+Remaining `app.py` responsibilities are Category A terminal shell/wiring,
+Category B broad-design work, or Category D mixed/legacy/low-value glue.
+Future Category-B refactoring requires an explicit architectural/product design
+decision rather than another small extraction cruise. This is the exit
+condition for this phase, not a claim that `app.py` can never change again.
+Generic session/draft/cache/navigation frameworks, tiny formatters, and
+recombined existing owners remain out of scope.
 
 At the audit snapshot, `app.py` was approximately 22,685 lines with 475
 top-level functions, compared with the documented initial 24,900 lines and
-634 functions. One audited Category C boundary is now extracted; 10 helper
-functions remain in the single Apply-workspace candidate. The remaining source
-span was not remeasured in this landing. The net difference includes
+634 functions. Both audited Category C boundaries are now extracted; no
+Category C candidate remains from that audit. The net difference includes
 intervening product development and is not an extraction-only measurement;
 coherent ownership and behavior preservation remain the objective rather than
 line-count reduction.
