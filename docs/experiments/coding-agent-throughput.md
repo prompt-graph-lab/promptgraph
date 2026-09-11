@@ -76,6 +76,7 @@ or inferred values.
 | Current multi-boundary cruise experiment #6 | Luna Max non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | 51/63 → 26/59 | -25% | -4% | 15m51s | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
 | Current end-of-window bounded cruise experiment #7 | Luna Max non-Fast → one Astra Low invocation → FIRST-SAFE-BOUNDARY selection → Luna landing; Project Module Inspector draft/widget synchronization | 26/59 → Astra handoff at 14% 5h → 5h window reset to 100% → 99/57 | 13% phase-wise (12% before reset + 1% after reset) | -2% | 13m42s | one boundary implemented in `ui.project_module_inspector_session`; commit `8b443c8`; optional second boundary not attempted because no independently safe boundary was immediately apparent; Astra focused 12 passed; Auto compact before Astra invocation; empirical observation only |
 | Current fresh-window multi-boundary cruise experiment #8 | Luna Max non-Fast → one Astra Low invocation → sequential FIRST-SAFE multi-boundary cruise → Luna landing; Project Import session lifecycle | 99/57 → 88/55 | -11% | -2% | 11m46s | one boundary completed in `ui.project_root_import_session`; commit `402e787`; target 3 not reached; optional #4 not attempted; Astra focused 14 passed plus 7 baseline characterizations; broader 47 passed / 2 skipped / 2 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 257.53s; no Luna correction or retry; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
+| Current residual responsibility audit experiment #10 | Luna Max non-Fast → one Astra Low audit → Luna documentation landing; residual `app.py` classification and extraction-phase exit criteria | not recorded | not calculated | not calculated | not recorded | audit-only; one Astra invocation; no implementation, tests, or runtime changes; A/B/C/D clusters 3/5/2/3; terminal judgment MOSTLY YES; exact Category C candidates are Module Candidate Selection and Apply-workspace Attribute Group Swap draft/widget synchronization; no Auto compact observed; empirical workflow observation only |
 
 ## Canonical run notes
 
@@ -517,6 +518,57 @@ observed 5h change of -11 percentage points and weekly change of -2 percentage
 points. This is an empirical workflow record only; it does not infer
 per-model token counts, internal quota accounting, Fast-mode propagation,
 scheduler behavior, causal efficiency, or stable orchestration cost.
+
+### Orchestration experiment #10: residual `app.py` responsibility audit
+
+This was an audit-only run using Luna Max with Fast mode off and exactly one
+Astra Low invocation. Luna confirmed latest `main`, the root `AGENTS.md`, and
+a clean worktree, then delegated immediately without pre-selecting candidates
+or performing a competing architecture audit. Astra made no implementation,
+test, runtime, commit, push, or PR changes.
+
+The audit classified the residual architecture into 3 Category A terminal
+shell/wiring clusters, 5 Category B broad-design-required clusters, 2
+Category C still-safe extraction candidates, and 3 Category D legacy/mixed/
+low-value clusters. Category A covers startup/workspace composition,
+existing-owner integration and transition ordering, and rendering/action
+dispatch. Category B covers Project lifecycle/persistence,
+Candidate/Variant/Route mutation, generation execution, filesystem production,
+and shared editing/authoring.
+
+The exact Category C candidates are:
+
+1. Module Candidate Selection draft/widget synchronization: the six
+   `prepare_module_candidate_selection_widget_state`,
+   `sync_module_candidate_selection_widget_state`,
+   `prepare_module_candidate_core_tokens_widget_state`,
+   `sync_module_candidate_core_tokens_widget_state`,
+   `prepare_module_candidate_min_match_widget_state`, and
+   `sync_module_candidate_min_match_widget_state` helpers.
+2. Apply-workspace Attribute Group Swap draft/widget synchronization: the five
+   prepare/sync pairs for `from_widget_state`, `to_widget_state`,
+   `scope_widget_state`, `selected_route_widget_state`, and
+   `require_full_match_widget_state`.
+
+The terminal-shell judgment is **MOSTLY YES — one or two clearly safe
+extractions remain**. These two candidates are bounded decisions, not a reason
+to continue indefinite discovery. Presentation microhelpers,
+pagination/collapse plumbing, snapshot mutation fragments, generic
+session/draft/cache/navigation frameworks, and broad Project/Gallery/
+ComfyUI/Module workflows should remain in their current owners unless a later
+product or architecture decision changes the boundary.
+
+The static audit counted approximately 22,685 lines and 475 top-level
+functions in `app.py`, versus the documented initial 24,900 lines and 634
+functions. The audit used AST parsing, targeted `rg` searches, file inventories,
+source reads across `app.py`, `ui/`, architecture docs, and relevant tests,
+plus status and diff checks. No tests or full suite were run. No manual human
+Astra-to-Luna handoff was required, and Auto compact was not observed.
+
+No quota or timing observations were recorded for this audit. All statements
+are empirical observations from this run; they do not infer per-model token
+counts, internal accounting, scheduler behavior, causal efficiency, or stable
+orchestration cost.
 
 ## Findings
 
