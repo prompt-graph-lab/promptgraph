@@ -2,6 +2,7 @@ import ast
 import copy
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.operations import (
     MODULE_TYPES,
@@ -54,12 +55,26 @@ class ProjectModuleEditorAuthoringRelocationTests(unittest.TestCase):
         return ast.get_source_segment(self.app_source, self.functions[name])
 
     def _load_functions(self, *names, namespace):
+        from ui import project_module_inspector_session as owner
+
+        owner_state = patch.object(owner, "st", namespace["st"])
+        owner_state.start()
+        self.addCleanup(owner_state.stop)
+        owner_imports = [
+            node for node in self.tree.body
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "ui.project_module_inspector_session"
+        ]
+        assert len(owner_imports) == 1
         module = ast.Module(
             body=[
                 node for node in self.tree.body
                 if isinstance(node, ast.ImportFrom)
                 and node.module == "core.module_token_rules"
-            ] + [self.functions[name] for name in names],
+            ] + owner_imports + [
+                self.functions[name] for name in names
+                if name not in self.helper_names
+            ],
             type_ignores=[],
         )
         ast.fix_missing_locations(module)
