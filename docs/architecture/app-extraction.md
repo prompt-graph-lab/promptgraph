@@ -20,7 +20,7 @@ proposed new package hierarchy.
 | Project management and assets | `render_project_management_workspace`, discovery, import, fork and asset panels | `core.project_discovery`, `core.new_project_workspace`, `core.project_root_import`, `core.lightweight_fork*`, `core.io`; preview/confirm/apply lifecycle |
 | Prompt inspection and editing | syntax diagnostics, source/current diffs, batch previews, line editors | `core.parser`, `core.operations`, `core.batch_preview`; rendering and mutation remain coupled to the app |
 | ComfyUI preparation and execution | `build_single_line_workflow`, `_build_focus_line_workflow_preview`, `_run_current_line_comfy_multiple` | Embedded metadata, shared path/settings, Module expansion, `core.comfyui`, execution logs and Candidate ingestion |
-| ComfyUI analysis workspace | workflow inspector, LoRA mapping, generation/negative consistency panels | `core.comfy_workflow`, `core.lora_mapping`, analysis modules, session draft widgets; explicit inspector injection differs from generation binding |
+| ComfyUI analysis workspace | workflow inspector, LoRA mapping, generation/negative consistency panels | `core.comfy_workflow`, `core.lora_mapping`, analysis modules, `ui.comfyui_analysis_drafts` session draft controller; explicit inspector injection differs from generation binding |
 | Candidate and Gallery Variant lifecycle | candidate normalization, prompt adoption/revert, image swap, Variant and alternative Scene creation | Mutable `PromptLine` fields, lineage, paths, session cache, history/autosave; not merely display data |
 | Gallery and Scene operations | `render_pro_gallery_mode`, cards, pagination, route actions, generation/adoption/promotion panels | `core.route_operations`, selected-route operation modules, shared scope selection, pending widget resets |
 | Import, sequence preview and final export | metadata import, `render_sequence_preview_panel`, `render_gallery_final_image_export` | `core.io`, image paths, explicit export scope and destination; source files must remain intact |
@@ -1047,3 +1047,35 @@ Duration sampling, session history, ETA/average calculations, progress
 updates, generation execution, and Streamlit rendering remain in `app.py`.
 The owner formats supplied timing values only and does not own timing state or
 generation orchestration.
+
+### ComfyUI analysis draft lifecycle
+
+`ui.comfyui_analysis_drafts` is the first stateful-controller extraction from
+`app.py`. It owns the durable draft dictionary and the transient Streamlit
+widget mirror for the ComfyUI analysis workspace, across the `inspector`,
+`prompt_injection`, `lora_mapping`, and `lora_injection` sections. The owner
+contains the nine lifecycle helpers `_get_comfyui_analysis_workspace_drafts`,
+`_normalize_comfyui_draft_scalar`, the scalar widget prepare/snapshot helpers,
+`_comfyui_draft_option_id`, the option prepare/normalize/snapshot helpers, and
+`_clear_comfy_workflow_inspector_state`.
+
+This boundary preserves the existing exact session-state keys and section
+shape, durable-versus-widget precedence, prepare-before-widget and
+snapshot-after-widget ordering, scalar type/default and falsey behavior,
+direct exception propagation, candidate identity matching, reorder and
+disappearance fallback, explicit empty IDs, invalid/stale durable fallback,
+LoRA strength drafts, workspace reopen behavior, and inspector clear behavior.
+It also preserves the existing rule that uploaded workflow objects are not
+retained in durable drafts. These are lifecycle contracts, including legacy
+ordering and odd fallback behavior, rather than a generic session-state
+abstraction.
+
+The analysis renderers, widget composition, workflow inspection and display,
+LoRA scanning and presentation, consistency analysis, effective workflow
+resolution, and workspace routing remain in `app.py` or their existing owners.
+Workflow parsing, generation, injection, submission, output handling, and
+filesystem/network/generator orchestration are explicitly outside this owner.
+`Project`/`PromptLine` mutation, history, save/load, schema, and persistence
+also remain outside it. This first stateful extraction stops at the durable
+draft/widget-mirror lifecycle so those neighboring application and production
+boundaries stay explicit.
