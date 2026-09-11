@@ -74,6 +74,7 @@ or inferred values.
 | Current autonomous-boundary orchestration | Luna Max non-Fast immediate dispatch → Astra Low autonomous boundary discovery → one boundary implementation → Luna landing; AnimaDex local-path lifecycle | 81/67 → 66/65 | -15% | -2% | 13m22s | one Astra invocation; Astra implemented one boundary rather than stopping; no manual human handoff; no Luna correction; no test-failure retry; no Auto compact; focused 24 passed, broader 58 passed / 19 subtests, full suite 1221 passed / 8 skipped / 603 subtests / 239.21s; whole-run quota and timing are externally observed; empirical observation only |
 | Current autonomous-boundary experiment #5 | Luna Max non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | 66/65 → 51/63 | -15% | -2% | 12m50s | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
 | Current multi-boundary cruise experiment #6 | Luna Max non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | 51/63 → 26/59 | -25% | -4% | 15m51s | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
+| Current end-of-window bounded cruise experiment #7 | Luna Max non-Fast → one Astra Low invocation → FIRST-SAFE-BOUNDARY selection → Luna landing; Project Module Inspector draft/widget synchronization | not recorded | not calculated | not calculated | not recorded | one boundary implemented in `ui.project_module_inspector_session`; commit `8b443c8`; optional second boundary not attempted because no independently safe boundary was immediately apparent; Astra focused 12 passed; no quota or timing recorded for this experiment; empirical workflow observation only |
 
 ## Canonical run notes
 
@@ -442,6 +443,39 @@ observed whole-run delta of -25% and -4%. No Auto compact occurred. This
 remains an empirical workflow record only. It does not infer per-model quota
 use, token accounting, Fast-mode propagation, internal scheduler behavior,
 causal efficiency, or stable cost per boundary.
+
+### Orchestration experiment #7: end-of-window bounded cruise
+
+This run used Luna Max with Fast mode off and an end-of-window bounded-cruise
+shape. Luna confirmed latest `main`, the root `AGENTS.md`, and a clean feature
+worktree, but did not perform detailed app inspection, boundary discovery,
+candidate ranking, or owner design before delegation. Astra Low was invoked
+exactly once with a FIRST-SAFE-BOUNDARY strategy: target one safe boundary,
+allow at most two only when a second was immediately apparent from the warmed
+context, and stop when no additional safe boundary was evident.
+
+Astra selected one coherent Project Module Inspector draft/widget
+synchronization boundary and extracted `ui.project_module_inspector_session`.
+The owner contains the ten prepare/sync helpers for selection, body, core,
+type, and minimum-match state. Astra committed the implementation as
+`8b443c80c96e3d3b868025f6cf077f1cc23a417c` and reported 12 focused tests
+passing before and after extraction. A second boundary was not attempted:
+none was immediately apparent without meaningful new discovery, so the
+first-safe stopping rule was applied.
+
+Luna's first broader relevant validation found 71 passed and 12 subtests, plus
+one failure in the existing authoring-relocation test loader. The loader still
+expected the ten helpers to be defined in `app.py` after their move. Luna made
+the small test-harness correction to import and patch the new owner; the
+affected caller test then passed 5 tests. The one full-suite run passed 1248
+tests, skipped 8, covered 607 subtests, and reported 259.11 seconds in pytest.
+No Astra re-invocation or full-suite retry occurred. No manual human
+Astra-to-Luna handoff was required, and no Auto compact was observed.
+
+No quota endpoints, quota deltas, or wall-time measurement were recorded for
+this experiment. This is an empirical workflow record only; it does not infer
+per-model quota use, token accounting, Fast-mode propagation, internal
+scheduler behavior, causal efficiency, or stable orchestration cost.
 
 ## Findings
 

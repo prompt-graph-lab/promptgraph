@@ -25,7 +25,7 @@ proposed new package hierarchy.
 | Gallery and Scene operations | `render_pro_gallery_mode`, cards, pagination, route actions, generation/adoption/promotion panels | `core.route_operations`, selected-route operation modules, shared scope selection, pending widget resets |
 | Import, sequence preview and final export | metadata import, `render_sequence_preview_panel`, `render_gallery_final_image_export` | `core.io`, image paths, explicit export scope and destination; source files must remain intact |
 | Graph and Focus editing | graph browser, Focus panels, batch editing, selected-token actions | `core.graph_builder`, `core.graph_edit_illustration_browser`, `ui.graph_edit_browser_controller`, `core.operations`, graph/PromptCloud components, unsaved editor state |
-| Module and Attribute management | Authoring/Apply workspaces, library manager, candidate scanner, Inspector, Attribute Group panels | `core.modules`, `core.operations`, `core.module_library_search`, `ui.global_module_library_session`, AnimaDex modules, authoritative Global Library cache and Project-local metadata |
+| Module and Attribute management | Authoring/Apply workspaces, library manager, candidate scanner, Inspector, Attribute Group panels | `core.modules`, `core.operations`, `core.module_library_search`, `ui.global_module_library_session`, `ui.project_module_inspector_session`, AnimaDex modules, authoritative Global Library cache and Project-local metadata |
 | UI infrastructure | profiling, thumbnails, keyboard shortcuts, HTML compatibility wrapper | timing/session state, disk cache/Pillow, iframe JavaScript; context and lifecycle must remain explicit |
 
 `core.project` owns the persisted domain objects; `core.io` owns Project
@@ -1202,6 +1202,40 @@ The controller does not own Module semantics, Project or PromptLine mutation,
 Project persistence/schema, generic session abstractions, or unrelated Module
 Inspector and Attribute workspace state. It is a Module Rename-specific
 session owner and does not broaden the existing authoring boundaries.
+
+### Project Module Inspector draft/widget synchronization
+
+`ui.project_module_inspector_session` owns the Project Module Inspector's
+durable draft and Streamlit widget-mirror lifecycle through the ten paired
+prepare/sync helpers for selection, body, core text, type, and minimum-match
+values: `prepare_project_module_inspector_selection_widget_state`,
+`sync_project_module_inspector_selection_widget_state`,
+`prepare_project_module_inspector_body_widget_state`,
+`sync_project_module_inspector_body_widget_state`,
+`prepare_project_module_inspector_core_widget_state`,
+`sync_project_module_inspector_core_widget_state`,
+`prepare_project_module_inspector_type_widget_state`,
+`sync_project_module_inspector_type_widget_state`,
+`prepare_project_module_inspector_min_match_widget_state`, and
+`sync_project_module_inspector_min_match_widget_state`.
+
+The owner controls the exact `project_module_inspector_name`, body, core,
+type, and `min_match` durable keys, together with their
+`_project_module_inspector_*_widget` mirrors. It preserves durable-before-widget
+preparation, callback synchronization, selected-module fallback and empty-list
+`IndexError` behavior, falsey body normalization, module-type fallback, minimum
+match clamping and callback conversion, evaluation order, direct exceptions,
+and partial durable writes when a later widget write fails. These are
+feature-specific draft contracts, not a generic session-state abstraction.
+
+`app.py` retains `render_project_module_inspector_section`, all Streamlit
+rendering and widget composition, token-inspector display, reset/load and
+workspace routing, and the save sequence. Project/PromptLine and Module
+mutation, history, graph rebuilding, focus restoration, persistence/schema,
+filesystem/network/generator orchestration, and Module/Attribute semantics
+remain in `app.py` or their existing owners. The extracted controller only
+keeps the Inspector's draft/widget state synchronized; it does not own the
+authoring workflow or change Project persistence.
 
 ### Project Directory Browser session lifecycle
 
