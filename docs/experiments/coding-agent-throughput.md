@@ -72,6 +72,7 @@ or inferred values.
 | Current Graph Edit Browser orchestration | Luna immediate dispatch → Astra Low boundary+implementation → Luna landing; Graph Edit Browser navigation controller | 53/78 → 2/70 | -51% | -8% | 11m03s | one Astra invocation; no manual human handoff; no Auto compact; Luna did not perform detailed pre-delegation boundary discovery; whole-run delta was larger than PR #38's observed delta, but no cause is inferred; different potentially more complex stateful work, not a controlled equal-work comparison; no per-model or token inference; empirical observation only |
 | Current Global Module Library orchestration | Luna Max non-Fast immediate dispatch → Astra Low boundary+implementation → Luna landing; Global Module Library authoritative session lifecycle | 100/70 → 81/67 | -19% | -3% | 15m00s | parent Fast mode off; one Astra invocation; no manual human handoff; no parent-side detailed boundary discovery; no Auto compact; Astra reported two unsuccessful navigation/path checks corrected; no Luna correction after handoff and no test-failure retry; PR #39 comparison is suggestive only, not causal; no per-model or token inference; empirical observation only |
 | Current autonomous-boundary orchestration | Luna Max non-Fast immediate dispatch → Astra Low autonomous boundary discovery → one boundary implementation → Luna landing; AnimaDex local-path lifecycle | 81/67 → 66/65 | -15% | -2% | 13m22s | one Astra invocation; Astra implemented one boundary rather than stopping; no manual human handoff; no Luna correction; no test-failure retry; no Auto compact; focused 24 passed, broader 58 passed / 19 subtests, full suite 1221 passed / 8 skipped / 603 subtests / 239.21s; whole-run quota and timing are externally observed; empirical observation only |
+| Current autonomous-boundary experiment #5 | Luna Max non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | not recorded → not recorded | not calculated | not calculated | not recorded | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact observed; no quota values supplied; empirical observation only |
 
 ## Canonical run notes
 
@@ -379,6 +380,35 @@ use, token accounting, internal scheduler behavior, Fast-mode propagation, or
 stable orchestration cost. Because Astra autonomously selected a different
 stateful responsibility, this run is not a controlled equal-work comparison
 with the preceding stateful extractions.
+
+### Orchestration experiment #5: repeat autonomous first-safe-boundary discovery
+
+This run repeated the autonomous-boundary workflow with Luna Max and Fast mode
+off. Luna confirmed latest main and a safe worktree, then dispatched
+immediately without selecting a candidate list, exact function set, or owner
+module. Astra Low was invoked exactly once and was explicitly instructed to
+use a bounded FIRST-SAFE-BOUNDARY strategy: stop discovery after the first
+boundary that clearly crosses the safety/coherence threshold, rather than
+performing an exhaustive architecture audit.
+
+Astra selected the Gallery Selected Routes session lifecycle and extracted
+`ui.gallery_selected_routes_session`. The boundary owns multi-route selection
+IDs, route-keyed widget mirrors, Project-reset cleanup, and deferred widget
+reset behavior. Discovery stopped after this first sufficiently safe and
+coherent boundary; no additional areas were investigated. Luna found no
+correction necessary after the handoff, no retry occurred, no manual human
+Astra-to-Luna handoff was required, and no Auto compact was observed.
+
+Astra reported 46 focused tests passed. Luna's broader relevant validation
+passed with 198 tests and 91 subtests. The full-suite pytest process completed
+and produced no failure cache, but the command wrapper did not retain its
+final count or runtime; the full suite was not rerun. This limitation is
+recorded explicitly rather than replaced with an inferred result.
+
+No quota values are recorded for this experiment until the external start/end
+values are supplied. This remains an empirical workflow record only. It does
+not infer per-model quota use, token accounting, Fast-mode propagation,
+internal scheduler behavior, causal effects, or stable orchestration cost.
 
 ## Findings
 
