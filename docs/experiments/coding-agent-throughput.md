@@ -71,6 +71,7 @@ or inferred values.
 | Current draft-lifecycle orchestration | Luna parent → Astra Low subagent → Luna landing; ComfyUI analysis draft lifecycle | 93/84 → 53/78 | -40% | -6% | 13m56s | one end-to-end observed run; one Astra invocation; no manual human handoff; Auto compact occurred near the beginning and is a confounder; no phase/model attribution or token inference; first stateful-controller extraction, not directly equivalent to prior pure/read-only cluster runs; empirical observation only |
 | Current Graph Edit Browser orchestration | Luna immediate dispatch → Astra Low boundary+implementation → Luna landing; Graph Edit Browser navigation controller | 53/78 → 2/70 | -51% | -8% | 11m03s | one Astra invocation; no manual human handoff; no Auto compact; Luna did not perform detailed pre-delegation boundary discovery; whole-run delta was larger than PR #38's observed delta, but no cause is inferred; different potentially more complex stateful work, not a controlled equal-work comparison; no per-model or token inference; empirical observation only |
 | Current Global Module Library orchestration | Luna Max non-Fast immediate dispatch → Astra Low boundary+implementation → Luna landing; Global Module Library authoritative session lifecycle | 100/70 → 81/67 | -19% | -3% | 15m00s | parent Fast mode off; one Astra invocation; no manual human handoff; no parent-side detailed boundary discovery; no Auto compact; Astra reported two unsuccessful navigation/path checks corrected; no Luna correction after handoff and no test-failure retry; PR #39 comparison is suggestive only, not causal; no per-model or token inference; empirical observation only |
+| Current autonomous-boundary orchestration | Luna Max non-Fast immediate dispatch → Astra Low autonomous boundary discovery → one boundary implementation → Luna landing; AnimaDex local-path lifecycle | not recorded → not recorded | not calculated | not calculated | not recorded | one Astra invocation; Astra implemented one boundary rather than stopping; no manual human handoff; no Luna correction; no test-failure retry; no Auto compact observed; focused 24 passed, broader 58 passed / 19 subtests, full suite 1221 passed / 8 skipped / 603 subtests / 239.21s; no quota or whole-run wall-time values supplied; empirical observation only |
 
 ## Canonical run notes
 
@@ -348,6 +349,37 @@ or stable orchestration cost is inferred.
 Astra reported two unsuccessful navigation/path checks that were corrected
 during its implementation. This remains an empirical workflow record only.
 
+### Orchestration experiment #4: autonomous boundary discovery
+
+This run used Luna Max with Fast mode off. Luna confirmed the latest main and
+the safe worktree state, then dispatched immediately without selecting a
+candidate list, exact function set, or destination module. Astra Low was
+invoked exactly once and was responsible for inspecting the current app,
+choosing one boundary, characterizing it, implementing it, and committing it.
+
+Astra selected the AnimaDex local-path lifecycle: draft restoration, widget
+synchronization, default save/clear, and saved-path availability feedback. The
+implementation extracted one coherent feature-specific stateful controller,
+`ui.animadex_path_controller`, and did not stop without changes. Luna found no
+correction necessary after the handoff, no test-failure retry occurred, and no
+manual human Astra-to-Luna handoff was required. No Auto compact was observed.
+
+The focused result reported by Astra was 24 passed. Luna's broader relevant
+validation passed with 58 tests and 19 subtests; the one full-suite run passed
+1221 tests, skipped 8, covered 603 subtests, and reported 239.21 seconds in
+pytest (261.38 seconds measured by the local command wrapper). Astra did not
+report additional candidates intentionally left untouched; that absence is
+not evidence that no other boundaries remain.
+
+No externally observed quota values or total end-to-end wall time were
+supplied for this run, so no quota delta or whole-run timing is calculated.
+This is an empirical workflow record only. It does not attribute work to
+Luna or Astra separately and does not infer per-model quota use, token
+accounting, internal scheduler behavior, Fast-mode propagation, or stable
+orchestration cost. Because Astra autonomously selected a different stateful
+responsibility, this run is not a controlled equal-work comparison with the
+preceding stateful extractions.
+
 ## Findings
 
 ### Strong empirical observations
@@ -386,7 +418,7 @@ This is the current experimental workflow:
 8. Commit.
 9. Stop.
 
-**Luna Max Fast**
+**Luna landing agent (mode recorded per run)**
 
 1. Inspect Astra's branch and diff.
 2. Run broader relevant tests.

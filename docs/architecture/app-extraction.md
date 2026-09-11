@@ -1143,3 +1143,38 @@ Module metadata, Module/Attribute semantics, Project persistence/schema,
 history, and all Streamlit composition remain in `app.py` or their existing
 owners. The extracted controller does not redesign the Global Module JSON
 schema or broaden the library search and authoring boundaries.
+
+### AnimaDex local-path lifecycle controller
+
+`ui.animadex_path_controller` owns the AnimaDex Browser's local-path stateful
+lifecycle: `initialize_animadex_browser_path`,
+`sync_animadex_browser_path_draft`, `_animadex_local_path_is_available`,
+`save_animadex_local_path_default`, and
+`clear_animadex_local_path_default`. The owner controls the exact
+`animadex_browser_path`, `animadex_browser_path_draft`, and
+`animadex_local_path_feedback` session keys, together with the
+`settings["animadex_local_path"]` value used for the explicit saved default.
+This is a feature-specific controller, not a generic session-state wrapper.
+
+The lifecycle preserves the existing missing-widget versus durable-default
+precedence, draft initialization and widget-to-draft callback timing, falsey
+path behavior, path normalization, settings-dictionary identity, and the
+save-before-session-update-before-availability-probe ordering. Failed default
+saves restore the prior settings value and retain the existing session path;
+successful saves update the session path and draft and produce the same
+success/warning feedback based on the availability probe. Clearing the saved
+default keeps the current session path unchanged, and failed clears restore
+the prior persisted value. Existing `OSError`, `TypeError`, and `ValueError`
+handling from the availability probe and direct exception behavior remain
+unchanged. Project and workspace reset flows remain in the app's shared
+lifecycle and deliberately preserve this AnimaDex path session state.
+
+`app.py` retains the AnimaDex renderer, text input and buttons, saved-default
+display, feedback consumption, record discovery and file scanning, thumbnail
+preview, record-to-Module preview, and Global Module import/mutation. The
+controller does not own AnimaDex record inspection, Project or PromptLine
+mutation, Global Module Library mutation, Project persistence/schema, or
+workflow/generation/network orchestration. `core.settings` remains the owner
+of path normalization and settings serialization; this extraction preserves
+the existing explicit settings-save sequencing without introducing a new
+schema or persistence layer.
