@@ -68,7 +68,7 @@ or inferred values.
 | Current readonly-projections Astra phase | Astra; AGraph selection normalization, nearby line selection, consistency presentation, and generation duration formatting | 52/92 → 29/89 | -23% | -3% | 3m23s | asked for up to 5 clusters; intentionally stopped at 4 because the fifth Core/Optional classification boundary was not cleanly separable from the shared label set; 5 helpers total; commits `306fdee`, `cdef4f8`, `0098f2d`, and `15c820c`; focused 3, 4, 3, and 2 passed; baseline characterization passed; no Auto compact; empirical observation only |
 | [PR #35](https://github.com/prompt-graph-lab/promptgraph/pull/35) Luna | Luna landing and delivery phase | 55/93 → 54/93 | -1% | 0% | 6m04s | no Auto compact; empirical observation only |
 | [PR #37](https://github.com/prompt-graph-lab/promptgraph/pull/37) Luna | Luna-only Codex review-rule governance task | not recorded → 93/84 | not calculated | not calculated | 2m45s | ending quota was user-observed; start quota was not recorded; empirical observation only |
-| Current draft-lifecycle orchestration | Luna parent → Astra Low subagent → Luna landing; ComfyUI analysis draft lifecycle | 93/84 → not recorded | not calculated | not calculated | not recorded | one end-to-end observed run; one Astra invocation; no manual human handoff; Auto compact not recorded; no per-model or token inference; empirical observation only |
+| Current draft-lifecycle orchestration | Luna parent → Astra Low subagent → Luna landing; ComfyUI analysis draft lifecycle | 93/84 → 53/78 | -40% | -6% | 13m56s | one end-to-end observed run; one Astra invocation; no manual human handoff; Auto compact occurred near the beginning and is a confounder; no phase/model attribution or token inference; first stateful-controller extraction, not directly equivalent to prior pure/read-only cluster runs; empirical observation only |
 
 ## Canonical run notes
 
@@ -277,11 +277,15 @@ observation.
 
 This is one end-to-end observed orchestration run: Luna parent inspection and
 task framing, exactly one Astra Low implementation subagent, then Luna review,
-broader validation, one full-suite run, documentation, and delivery. The only
-quota observation supplied immediately before the whole run was 93/84. The
-ending quota, phase-level quota values, phase timings, and Auto compact status
-were not recorded here, so no delta, per-model split, token usage, or stable
-accounting behavior is claimed.
+broader validation, one full-suite run, documentation, and delivery. The
+observed quota changed from 93/84 to 53/78 over 13m56s, an observed delta of
+-40% and -6%. These are whole-run observations only; the delta is not
+attributed to Luna or Astra separately, and no phase-level quota values,
+per-model split, token usage, or stable accounting behavior is inferred.
+
+Auto compact occurred near the very beginning of the run and is an explicit
+confounder. This was also the first stateful-controller extraction, so the
+run is not directly equivalent work to the prior pure/read-only cluster runs.
 
 The Astra-to-Luna transition required no manual human handoff; the parent
 received the subagent's committed implementation directly and continued the
