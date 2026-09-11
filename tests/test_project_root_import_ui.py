@@ -116,9 +116,10 @@ class ProjectRootImportUiTests(unittest.TestCase):
 
     def test_workspace_reset_preserves_preview_but_clears_confirmation(self):
         reset = self._function_source("reset_management_workspace_session_state")
-        operation_reset = self._function_source(
-            "reset_project_root_import_operation_state"
-        )
+        import inspect
+        from ui.project_root_import_session import reset_project_root_import_operation_state
+
+        operation_reset = inspect.getsource(reset_project_root_import_operation_state)
         self.assertNotIn("project_root_import_preview", reset)
         self.assertIn('pop("project_root_import_confirm"', reset)
         self.assertIn('pop("project_root_import_phrase"', reset)

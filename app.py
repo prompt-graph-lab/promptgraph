@@ -393,14 +393,20 @@ PROJECT_ASSETS_CLEANUP_APPLY_RUNNING_KEY = "project_assets_cleanup_apply_running
 PROJECT_ASSETS_CLEANUP_RESET_PENDING_KEY = (
     "project_assets_cleanup_reset_pending"
 )
-PROJECT_ROOT_IMPORT_PREVIEW_KEY = "project_root_import_preview"
-PROJECT_ROOT_IMPORT_RESULT_KEY = "project_root_import_result"
-PROJECT_ROOT_IMPORT_SOURCE_KEY = "project_root_import_source_path"
-PROJECT_ROOT_IMPORT_NAME_KEY = "project_root_import_destination_name"
-PROJECT_ROOT_IMPORT_CONFIRM_KEY = "project_root_import_confirm"
-PROJECT_ROOT_IMPORT_PHRASE_KEY = "project_root_import_phrase"
-PROJECT_ROOT_IMPORT_CONFIRM_RESET_PENDING_KEY = (
-    "project_root_import_confirm_reset_pending"
+from ui.project_root_import_session import (
+    PROJECT_ROOT_IMPORT_PREVIEW_KEY,
+    PROJECT_ROOT_IMPORT_RESULT_KEY,
+    PROJECT_ROOT_IMPORT_SOURCE_KEY,
+    PROJECT_ROOT_IMPORT_NAME_KEY,
+    PROJECT_ROOT_IMPORT_CONFIRM_KEY,
+    PROJECT_ROOT_IMPORT_PHRASE_KEY,
+    PROJECT_ROOT_IMPORT_CONFIRM_RESET_PENDING_KEY,
+    reset_project_root_import_operation_state,
+    _reset_project_root_import_confirmation,
+    _invalidate_project_root_import_preview,
+    _select_project_root_import_source,
+    consume_project_root_import_confirmation_reset,
+    initialize_project_root_import_name,
 )
 GRAPH_NEIGHBORHOOD_STEPS_STATE_KEY = "graph_neighborhood_steps"
 GRAPH_NEIGHBORHOOD_STEPS_WIDGET_KEY = "_graph_neighborhood_steps_widget"
@@ -639,34 +645,6 @@ def reset_management_workspace_session_state() -> None:
     # source/Preview, but never carry an armed Apply confirmation.
     st.session_state.pop("project_root_import_confirm", None)
     st.session_state.pop("project_root_import_phrase", None)
-
-
-def reset_project_root_import_operation_state(*, keep_result: bool = False) -> None:
-    """Clear the session-only Existing Project Import operation state."""
-
-    st.session_state.pop(PROJECT_ROOT_IMPORT_PREVIEW_KEY, None)
-    if not keep_result:
-        st.session_state.pop(PROJECT_ROOT_IMPORT_RESULT_KEY, None)
-    st.session_state[PROJECT_ROOT_IMPORT_CONFIRM_RESET_PENDING_KEY] = True
-
-
-def _reset_project_root_import_confirmation() -> None:
-    st.session_state[PROJECT_ROOT_IMPORT_CONFIRM_RESET_PENDING_KEY] = True
-
-
-def _invalidate_project_root_import_preview() -> None:
-    reset_project_root_import_operation_state(keep_result=False)
-
-
-def _select_project_root_import_source(source_path: str) -> None:
-    normalized = normalize_project_import_path(source_path)
-    st.session_state[PROJECT_ROOT_IMPORT_SOURCE_KEY] = normalized
-    default_name = sanitize_project_import_name(
-        os.path.basename(os.path.dirname(normalized))
-    )
-    if default_name:
-        st.session_state[PROJECT_ROOT_IMPORT_NAME_KEY] = default_name
-    _invalidate_project_root_import_preview()
 
 
 def reset_project_assets_operation_state() -> None:
@@ -6628,9 +6606,7 @@ def _finalize_project_root_import_success(result: dict) -> dict:
 
 
 def render_existing_project_import_section() -> None:
-    if st.session_state.pop(PROJECT_ROOT_IMPORT_CONFIRM_RESET_PENDING_KEY, False):
-        st.session_state.pop(PROJECT_ROOT_IMPORT_CONFIRM_KEY, None)
-        st.session_state.pop(PROJECT_ROOT_IMPORT_PHRASE_KEY, None)
+    consume_project_root_import_confirmation_reset()
 
     project_root = default_projects_dir()
     current_path = _project_root_import_external_source(
@@ -6686,10 +6662,7 @@ def render_existing_project_import_section() -> None:
                 "現在開いているProjectを取り込みます。取り込み対象は最後に保存されたdisk上の状態です。"
                 "必要な変更は先にQuick Saveしてください。"
             )
-        if PROJECT_ROOT_IMPORT_NAME_KEY not in st.session_state:
-            st.session_state[PROJECT_ROOT_IMPORT_NAME_KEY] = sanitize_project_import_name(
-                os.path.basename(os.path.dirname(source_path))
-            )
+        initialize_project_root_import_name(source_path)
         destination_name = st.text_input(
             "Destination Project name",
             key=PROJECT_ROOT_IMPORT_NAME_KEY,
