@@ -15,6 +15,9 @@ class ModuleInspectorResponsibilitySplitTests(unittest.TestCase):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         cls.outer_name = "render_module_inspector_edit_scope_section"
+        owner_tree = ast.parse((cls.root / "ui/module_rename_session.py").read_text(encoding="utf-8"))
+        cls.functions.update({node.name: node for node in owner_tree.body
+                              if isinstance(node, ast.FunctionDef)})
         cls.usage_name = "render_module_usage_inspection"
         cls.scope_name = "render_module_edit_scope_controls"
         cls.summary_name = "render_active_module_edit_scope_summary"
