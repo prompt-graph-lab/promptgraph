@@ -3,6 +3,7 @@ import copy
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.operations import (
     MODULE_TYPES,
@@ -103,12 +104,26 @@ class ProjectModuleInspectorWorkspaceStateTests(unittest.TestCase):
         return ast.get_source_segment(self.app_source, self.functions[name])
 
     def _load_functions(self, *names, namespace):
+        from ui import project_module_inspector_session as owner
+
+        owner_state = patch.object(owner, "st", namespace["st"])
+        owner_state.start()
+        self.addCleanup(owner_state.stop)
+        owner_imports = [
+            node for node in self.tree.body
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "ui.project_module_inspector_session"
+        ]
+        assert len(owner_imports) == 1
         module = ast.Module(
             body=[
                 node for node in self.tree.body
                 if isinstance(node, ast.ImportFrom)
                 and node.module == "core.module_token_rules"
-            ] + [self.functions[name] for name in names],
+            ] + owner_imports + [
+                self.functions[name] for name in names
+                if name not in self.helper_names
+            ],
             type_ignores=[],
         )
         ast.fix_missing_locations(module)
@@ -234,6 +249,39 @@ class ProjectModuleInspectorWorkspaceStateTests(unittest.TestCase):
             "render_project_module_inspector_section",
             namespace=namespace,
         )
+
+    def test_empty_selection_fails_without_clearing_existing_state(self):
+        state = _SessionState(project_module_inspector_name="old")
+        namespace = self._helper_namespace(state)
+        with self.assertRaises(IndexError):
+            namespace[self.helper_names[0]]([])
+        self.assertEqual(dict(state), {"project_module_inspector_name": "old"})
+
+    def test_falsey_drafts_and_unclamped_callback_values(self):
+        state = _SessionState(project_module_inspector_body_pose=False)
+        namespace = self._helper_namespace(state)
+        self.assertEqual(namespace[self.helper_names[2]]({}, "pose"), "")
+        state._project_module_inspector_min_match_widget_pose = -5
+        namespace[self.helper_names[9]]("pose")
+        self.assertEqual(state.project_module_inspector_min_match_pose, -5)
+        self.assertEqual(namespace[self.helper_names[8]]({}, "pose", []), 1)
+        state._project_module_inspector_min_match_widget_pose = float("inf")
+        with self.assertRaises(OverflowError):
+            namespace[self.helper_names[9]]("pose")
+        self.assertEqual(state.project_module_inspector_min_match_pose, 1)
+
+    def test_durable_write_survives_widget_write_failure(self):
+        class RejectWidget(_SessionState):
+            def __setitem__(self, key, value):
+                if key.startswith("_project_module_inspector_body_widget_"):
+                    raise RuntimeError("widget locked")
+                super().__setitem__(key, value)
+
+        state = RejectWidget(project_module_inspector_body_pose=42)
+        namespace = self._helper_namespace(state)
+        with self.assertRaisesRegex(RuntimeError, "widget locked"):
+            namespace[self.helper_names[2]]({}, "pose")
+        self.assertEqual(state.project_module_inspector_body_pose, "42")
 
     def test_selection_prepare_sync_and_missing_module_normalization(self):
         project = self._project()
