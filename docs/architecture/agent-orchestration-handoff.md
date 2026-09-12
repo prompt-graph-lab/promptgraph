@@ -8,6 +8,8 @@ The provisional routing organization is documented in
 [agent-organization.md](agent-organization.md), with durable assignment
 record fields in
 [agent-assignment-schema.md](../experiments/agent-assignment-schema.md).
+Finite-window continuity and successor identity rules are documented in the
+[agent-succession-policy.md](agent-succession-policy.md).
 
 ## Current architecture phase
 
