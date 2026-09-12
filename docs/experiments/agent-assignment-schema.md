@@ -12,34 +12,34 @@ JSON, or another repository-compatible representation, but the field meanings
 and ordering rules should remain stable.
 
 ```yaml
-experiment_id: "#12"
-expert_name: Goodall
-fresh_or_reused: reused        # fresh | reused
-previous_task_domain: "Attribute Group Swap lifecycle"
-current_task_domain: "Attribute Group Swap lifecycle"
-luna_routing_rationale: "Relevant retained state/widget lifecycle context"
-astra_self_reported_relevant_context: "..."
-context_match: high            # high | medium | low
+experiment_id: example
+expert_name: ExampleSpecialist
+fresh_or_reused: fresh          # fresh | reused
+previous_task_domain: null
+current_task_domain: "bounded design consultation"
+luna_routing_rationale: "Illustrative routing rationale recorded before contact"
+astra_self_reported_relevant_context: null
+context_match: not_applicable   # not_applicable for fresh; high | medium | low for reused
 
-task_type: implementation       # consultation | audit | design | implementation | review
-lab: "Module and Attribute Authoring"
-current_main_sha: "13c3c809e1cc8b8255c907c1399062277ab55f01"
-result_outcome: "..."
-implementation_commit: "..."
-pull_request: "..."
+task_type: consultation         # consultation | audit | design | implementation | review
+lab: "Example Lab"
+current_main_sha: null
+result_outcome: null
+implementation_commit: null
+pull_request: null
 
-wall_time: "14m28s"
-observed_5h_quota_delta: "-12 percentage points"
-observed_weekly_quota_delta: "-1 percentage point"
+wall_time: null
+observed_5h_quota_delta: null
+observed_weekly_quota_delta: null
 auto_compact:
-  occurred: yes               # yes | no | unknown
-  relative_timing: before_astra_invocation
-orchestration_launch_retry_count: 1
+  occurred: unknown           # yes | no | unknown
+  relative_timing: unknown
+orchestration_launch_retry_count: 0
 implementation_retry_count: 0
-luna_correction: none
-manual_human_handoff: no
+luna_correction: null
+manual_human_handoff: unknown
 
-notes: "..."
+notes: null
 protocol_deviations: null
 ```
 
@@ -54,11 +54,14 @@ Every assignment or consultation record must include:
 - `current_task_domain`;
 - `luna_routing_rationale`;
 - `astra_self_reported_relevant_context`;
-- `context_match`, rated `high`, `medium`, or `low` after comparison.
+- `context_match`: `high`, `medium`, or `low` after comparison for a reused
+  expert; `not_applicable` for a fresh expert.
 
-`previous_task_domain` may be `null` for a fresh specialist. A reused expert's
-self-report must be recorded before current repository refresh. The routing
-rationale must be recorded before contacting that expert.
+For a fresh specialist, `previous_task_domain` and
+`astra_self_reported_relevant_context` are `null`, and `context_match` is
+`not_applicable`. A reused expert's self-report must be recorded before the
+current repository refresh. The routing rationale must be recorded before
+contacting either a fresh or reused expert.
 
 ## Operational fields
 
@@ -99,8 +102,10 @@ such as `before_astra_invocation`, `during_astra`, `during_luna`, `after_run`,
 
 ## Context-match rubric
 
-`context_match` is task-relative and is assigned only after comparing the
-self-report with historical evidence and the current repository:
+`context_match` applies only to reused experts. A fresh expert has no previous
+agent history to match, so its value is `not_applicable`. For a reused expert,
+the rating is task-relative and is assigned only after comparing the self-report
+with historical evidence and the current repository:
 
 - **high:** before current-repository inspection, the resumed expert correctly
   identifies the relevant prior responsibility and recalls non-trivial
@@ -118,11 +123,17 @@ historical continuity but low match for an unrelated current task.
 
 The record must preserve this order:
 
-1. Luna routing rationale is recorded before the Astra response.
-2. The reused Astra self-report is captured before current repository refresh.
-3. Current evidence is inspected and compared with the self-report.
-4. `context_match` is assigned after that comparison.
-5. Design or implementation ownership is assigned only after the comparison.
+1. Luna routing rationale is recorded before contacting either a fresh or reused
+   Astra.
+2. For reused Astra only, the pre-refresh retained-context probe and
+   self-report are captured before current repository refresh. A fresh Astra
+   has no prior-context probe: use `null` for its previous task domain and
+   self-report, and `not_applicable` for `context_match`.
+3. For reused Astra only, current evidence is inspected and compared with the
+   self-report.
+4. For reused Astra only, `context_match` is assigned after that comparison.
+5. Design or implementation ownership is assigned only after the applicable
+   comparison.
 
 This ordering prevents retrospective routing explanations and memory-probe
 contamination.
