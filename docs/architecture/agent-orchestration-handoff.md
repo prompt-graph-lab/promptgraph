@@ -4,6 +4,10 @@ This document records the transition from PromptGraph's behavior-preserving
 stateful extraction phase to broader architectural investigation. It is a
 durable handoff for future Luna, GPT, and Astra work; it does not replace the
 current architecture boundaries in [app-extraction.md](app-extraction.md).
+The provisional routing organization is documented in
+[agent-organization.md](agent-organization.md), with durable assignment
+record fields in
+[agent-assignment-schema.md](../experiments/agent-assignment-schema.md).
 
 ## Current architecture phase
 
