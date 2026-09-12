@@ -6,6 +6,10 @@ claim that agents are autonomous employees. Labs describe durable
 responsibility domains; individual specialists may affiliate with more than
 one lab and may change assignment over time.
 
+Continuity across finite context windows is defined separately in the
+[agent succession policy](agent-succession-policy.md), with observable event
+fields in the [succession event schema](../experiments/agent-succession-schema.md).
+
 The organization starts after PR #48 completed the final audited Category-C
 extraction. Category C is zero. The remaining meaningful `app.py` work is
 primarily Category A terminal shell/wiring, Category B broad-design work, and

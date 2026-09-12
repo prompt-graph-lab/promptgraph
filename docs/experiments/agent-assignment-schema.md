@@ -5,6 +5,9 @@ consultation. It is designed for observed orchestration evidence, not internal
 token accounting. Unknown or unobserved fields should remain `null` or
 `unknown`; they should not be reconstructed from elapsed time or quota.
 
+Continuity changes between specialist identities or Luna generations are
+recorded separately in the [agent succession event schema](agent-succession-schema.md).
+
 ## Record shape
 
 The following YAML-like shape is illustrative. A future log may use Markdown,
