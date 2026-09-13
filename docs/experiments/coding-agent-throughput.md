@@ -22,6 +22,125 @@ memory. It records the shape of the work, the validation split, and the
 observed UI deltas so later sessions can compare a concrete repository history
 with their own results.
 
+## Effort terminology
+
+Use these effort labels consistently in this log:
+
+- low = 軽
+- medium = 中
+- high = 高
+- xhigh = 極高
+- max = 最大
+- ultra = ウルトラ
+
+Older experiment notes sometimes used “Luna Max” colloquially for the normal
+long-running coordinator configuration that was actually Luna xHigh. Those
+historical coordinator references are corrected to Luna xHigh below. This
+correction does not rewrite genuine max effort levels, explicit
+thinking=max experiments, or generic descriptions of possible effort levels.
+
+## Unresolved G2 Max/Medium observation
+
+The fresh G2 creation explicitly requested model=gpt-5.6-luna and
+thinking=max. The human UI displayed GPT-5.6 Luna and 中 / Medium. Current
+thread metadata did not expose the effective reasoning effort, normalized
+effort, or fallback/default information.
+
+The repository-local public promptgraph checkout contained no Codex config that
+explained Medium. The applicable user-level Codex config contained
+model_reasoning_effort = "xhigh". This observation remains unresolved. It
+must not be explained away as the historical Luna Max/xHigh terminology
+correction: requested effort, effective effort, and human UI display remain
+separate observations.
+
+## Repository provenance requirement
+
+A task prompt naming a repository or SHA is not sufficient evidence that a
+worker actually inspected that repository. Before an agent experiment or
+architecture/implementation task, record or verify:
+
+- Codex Project identity;
+- authoritative local repository/workspace;
+- branch;
+- HEAD SHA;
+- whether the worker inherited the parent Project/workspace;
+- any remote or GitHub access path used instead; and
+- whether legacy or secondary repositories were inspected.
+
+Current repository/runtime evidence outranks an agent's self-reported
+repository SHA. Internal subagents may inherit the parent environment unless a
+different target is explicitly and verifiably provided.
+
+## Beauvoir pilot status
+
+The first real-task internal Astra run using Beauvoir is an INVALID benchmark
+candidate / pilot:
+
+- internal Astra name: Beauvoir;
+- fresh Astra Low;
+- the architecture task completed;
+- the attached execution environment was promptgraph-pro;
+- inspection of public promptgraph was not verifiable;
+- the reported public SHA appeared only in self-report; and
+- classification: MIXED_OR_CONFOUNDED.
+
+Its substantive result must not be used as evidence of current public
+PromptGraph behavior and must not be compared with the future external
+candidate as the real topology A/B result. Retain operational observations
+only where they are already known, label missing measurements explicitly, and
+do not invent a quota delta for Beauvoir.
+
+## Active coordination baseline
+
+The active/new HQ is Luna研究推進部 本部 G2.
+
+- Codex Project: public promptgraph;
+- primary authoritative repository: prompt-graph-lab/promptgraph;
+- promptgraph-pro and other visible sibling/secondary sources are reference
+  material only; and
+- current-behavior investigations use public promptgraph. Legacy repositories
+  are not used unless historical comparison is explicitly requested.
+
+The G2 bootstrap verified the promptgraph repository, branch main, and
+repository provenance. The working tree had a pre-existing untracked
+.editor_settings.json; that file is not part of these documentation changes
+and must not be touched.
+
+For this documentation update, refreshed origin/main and the feature base at
+the start of editing were 3c7597a75a352416fe31d707e1b08d3c008f72c5.
+
+## Fresh external-thread target capability
+
+The observed create_thread capability supports fresh project-backed threads
+only for exposed or registered Codex Project targets. Observed target
+categories included:
+
+- registered project;
+- projectless; and
+- chatgptWorkCloud.
+
+A fresh external Astra can therefore receive equivalent repository access for
+the future topology A/B once both candidates use the same registered public
+promptgraph Project. The thread API does not expose arbitrary repository
+registration or binding; project registration was performed through the human
+UI.
+
+## Future topology A/B gate
+
+Before the next internal-vs-external Astra comparison begins task execution,
+verify all of the following:
+
+- same Codex Project;
+- same authoritative repository;
+- same branch/base SHA;
+- same task prompt;
+- fresh Astra;
+- same explicit Astra reasoning effort;
+- same Fast condition; and
+- no access to the other candidate's result.
+
+The Beauvoir pilot does not satisfy this gate.
+
 ## GitHub record
 
 On 2026-09-10, GitHub metadata was checked for the listed PRs. PRs #17 through
@@ -45,13 +164,13 @@ or inferred values.
 | [PR #24](https://github.com/prompt-graph-lab/promptgraph/pull/24) | Astra Low; 3 related ComfyUI boundaries | 100/43 → 63/37 | -37% | -6% | 7m26s | 1085 passed / 8 skipped / 552 subtests / ~242.05s full suite |
 | [PR #25](https://github.com/prompt-graph-lab/promptgraph/pull/25) | Astra Low; 5 related ComfyUI utility boundaries | 63/37 → 22/31 | -41% | -6% | 7m55s | 1089 passed / 8 skipped / 552 subtests / 240.79s full suite |
 | [PR #27](https://github.com/prompt-graph-lab/promptgraph/pull/27) Astra | Astra Low; Candidate/Gallery inspection cluster | 100/31 → 68/26 | -32% | -5% | 4m10s | focused tests only; 21 helpers; ~10 old-micro-PR-equivalent boundaries |
-| [PR #27](https://github.com/prompt-graph-lab/promptgraph/pull/27) Luna | Luna Max Fast; landing and delivery phase | 68/26 → 66/25 | -2% | -1% | 5m54s | broader/full validation, docs, review, push, PR; 1099 passed / 8 skipped / 552 subtests / 241.53s |
+| [PR #27](https://github.com/prompt-graph-lab/promptgraph/pull/27) Luna | Luna xHigh Fast; landing and delivery phase | 68/26 → 66/25 | -2% | -1% | 5m54s | broader/full validation, docs, review, push, PR; 1099 passed / 8 skipped / 552 subtests / 241.53s |
 | [PR #27](https://github.com/prompt-graph-lab/promptgraph/pull/27) combined | Astra implementation plus Luna landing | 100/31 → 66/25 | -34% | -6% | 10m04s | sequential total |
 | [PR #28](https://github.com/prompt-graph-lab/promptgraph/pull/28) Astra | Astra Low; batch-edit preview cluster | 66/25 → 43/22 | -23% | -3% | 4m16s | focused validation only; 8 helpers / ~8 mini-boundaries; **noise: Auto compact** |
-| [PR #28](https://github.com/prompt-graph-lab/promptgraph/pull/28) Luna | Luna Max Fast; landing and delivery phase | 43/22 → 42/22 | -1% | 0% | 5m42s | broader/full validation, docs, review, push, PR; 1107 passed / 8 skipped / 552 subtests |
+| [PR #28](https://github.com/prompt-graph-lab/promptgraph/pull/28) Luna | Luna xHigh Fast; landing and delivery phase | 43/22 → 42/22 | -1% | 0% | 5m42s | broader/full validation, docs, review, push, PR; 1107 passed / 8 skipped / 552 subtests |
 | [PR #28](https://github.com/prompt-graph-lab/promptgraph/pull/28) combined | Astra implementation plus Luna landing | 66/25 → 42/22 | -24% | -3% | 9m58s | sequential total; **noise: Auto compact** |
 | [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) Astra | Astra Low; Graph display calculation cluster | 42/22 → 20/18 | -22% | -4% | 3m56s | focused 29 passed; 6 helpers; AST and diff checks; **noise: interrupted suite startup** |
-| [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) Luna | Luna Max Fast; landing and delivery phase | 20/18 → 17/18 | -3% | 0% | 6m02s | broader Graph tests 49; 1115 passed / 8 skipped / 552 subtests / 236.42s full suite; AST and diff checks |
+| [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) Luna | Luna xHigh Fast; landing and delivery phase | 20/18 → 17/18 | -3% | 0% | 6m02s | broader Graph tests 49; 1115 passed / 8 skipped / 552 subtests / 236.42s full suite; AST and diff checks |
 | [PR #29](https://github.com/prompt-graph-lab/promptgraph/pull/29) combined | Astra implementation plus Luna landing | 42/22 → 17/18 | -25% | -4% | 9m58s | sequential total; **noise: interrupted suite startup** |
 | PR #31 Astra phase | Astra Low; AnimaDex record-inspection cluster | 100/16 → 85/14 | -15% | -2% | 2m24s | clean implementation-only run; 6 helpers; focused 7 passed; empirical observation only |
 | [PR #31](https://github.com/prompt-graph-lab/promptgraph/pull/31) Luna | Luna landing and delivery phase | 85/14 → 82/13 | -3% | -1% | 6m21s | full suite 1122 passed / 8 skipped / 552 subtests / 236.52s; empirical observation only |
@@ -70,16 +189,16 @@ or inferred values.
 | [PR #37](https://github.com/prompt-graph-lab/promptgraph/pull/37) Luna | Luna-only Codex review-rule governance task | not recorded → 93/84 | not calculated | not calculated | 2m45s | ending quota was user-observed; start quota was not recorded; empirical observation only |
 | Current draft-lifecycle orchestration | Luna parent → Astra Low subagent → Luna landing; ComfyUI analysis draft lifecycle | 93/84 → 53/78 | -40% | -6% | 13m56s | one end-to-end observed run; one Astra invocation; no manual human handoff; Auto compact occurred near the beginning and is a confounder; no phase/model attribution or token inference; first stateful-controller extraction, not directly equivalent to prior pure/read-only cluster runs; empirical observation only |
 | Current Graph Edit Browser orchestration | Luna immediate dispatch → Astra Low boundary+implementation → Luna landing; Graph Edit Browser navigation controller | 53/78 → 2/70 | -51% | -8% | 11m03s | one Astra invocation; no manual human handoff; no Auto compact; Luna did not perform detailed pre-delegation boundary discovery; whole-run delta was larger than PR #38's observed delta, but no cause is inferred; different potentially more complex stateful work, not a controlled equal-work comparison; no per-model or token inference; empirical observation only |
-| Current Global Module Library orchestration | Luna Max non-Fast immediate dispatch → Astra Low boundary+implementation → Luna landing; Global Module Library authoritative session lifecycle | 100/70 → 81/67 | -19% | -3% | 15m00s | parent Fast mode off; one Astra invocation; no manual human handoff; no parent-side detailed boundary discovery; no Auto compact; Astra reported two unsuccessful navigation/path checks corrected; no Luna correction after handoff and no test-failure retry; PR #39 comparison is suggestive only, not causal; no per-model or token inference; empirical observation only |
-| Current autonomous-boundary orchestration | Luna Max non-Fast immediate dispatch → Astra Low autonomous boundary discovery → one boundary implementation → Luna landing; AnimaDex local-path lifecycle | 81/67 → 66/65 | -15% | -2% | 13m22s | one Astra invocation; Astra implemented one boundary rather than stopping; no manual human handoff; no Luna correction; no test-failure retry; no Auto compact; focused 24 passed, broader 58 passed / 19 subtests, full suite 1221 passed / 8 skipped / 603 subtests / 239.21s; whole-run quota and timing are externally observed; empirical observation only |
-| Current autonomous-boundary experiment #5 | Luna Max non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | 66/65 → 51/63 | -15% | -2% | 12m50s | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
-| Current multi-boundary cruise experiment #6 | Luna Max non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | 51/63 → 26/59 | -25% | -4% | 15m51s | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
-| Current end-of-window bounded cruise experiment #7 | Luna Max non-Fast → one Astra Low invocation → FIRST-SAFE-BOUNDARY selection → Luna landing; Project Module Inspector draft/widget synchronization | 26/59 → Astra handoff at 14% 5h → 5h window reset to 100% → 99/57 | 13% phase-wise (12% before reset + 1% after reset) | -2% | 13m42s | one boundary implemented in `ui.project_module_inspector_session`; commit `8b443c8`; optional second boundary not attempted because no independently safe boundary was immediately apparent; Astra focused 12 passed; Auto compact before Astra invocation; empirical observation only |
-| Current fresh-window multi-boundary cruise experiment #8 | Luna Max non-Fast → one Astra Low invocation → sequential FIRST-SAFE multi-boundary cruise → Luna landing; Project Import session lifecycle | 99/57 → 88/55 | -11% | -2% | 11m46s | one boundary completed in `ui.project_root_import_session`; commit `402e787`; target 3 not reached; optional #4 not attempted; Astra focused 14 passed plus 7 baseline characterizations; broader 47 passed / 2 skipped / 2 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 257.53s; no Luna correction or retry; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
-| Current repeat bounded autonomous cruise experiment #9 | Luna Max non-Fast → one Astra Low invocation → fresh-context repeated bounded autonomous cruise | 86/55 → 77/53 | -9% | -2% | 1m54s | zero boundaries; target 3, maximum 4; no implementation, docs, runtime, or test changes; no PR from the run; focused/broader/full tests not run; stopped because no independently coherent sufficiently safe boundary was apparent without broader investigation; no Luna correction or retry; no manual human handoff; no Auto compact; clean worktree and `git diff --check` passed; zero-boundary result informed the move to residual-responsibility audit; empirical observation only |
-| Current residual responsibility audit experiment #10 | Luna Max non-Fast → one Astra Low audit → Luna documentation landing; residual `app.py` classification and extraction-phase exit criteria | 77/53 → 64/51 | -13% | -2% | 5m23s | audit-only; one Astra invocation; no implementation, tests, or runtime changes; A/B/C/D clusters 3/5/2/3; terminal judgment MOSTLY YES; exact Category C candidates are Module Candidate Selection and Apply-workspace Attribute Group Swap draft/widget synchronization; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
-| Current explicit residual Category-C extraction #1 experiment #11 | Luna Max non-Fast → exactly one Astra Low → explicit audited Category-C boundary → Luna landing; Module Candidate Selection session lifecycle | 64/51 → 54/50 | -10% | -1% | 10m24s | one boundary; no autonomous discovery; owner `ui.module_candidate_selection_session`; commit `15a94e8`; focused 17 passed / 4 subtests before and after extraction; broader 72 passed / 16 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 281.74s; no Luna correction or retry; no manual human handoff; no Auto compact; remaining Category C is Apply-workspace Attribute Group Swap draft/widget synchronization; externally observed measurement; empirical workflow observation only |
-| Current explicit residual Category-C extraction #2 experiment #12 | Luna Max non-Fast → exactly one Astra Low → explicit audited Category-C boundary → Luna landing; Apply-workspace Attribute Group Swap session lifecycle | 53/49 → 41/48 | -12% | -1% | 14m28s | one boundary; no autonomous discovery; owner `ui.attribute_group_swap_session`; commit `6e04f8d`; focused 16 passed / 8 subtests before and 19 passed / 53 subtests after extraction; broader 46 passed; full suite 1258 passed / 8 skipped / 255.98s pytest (277.09s wrapper); first Astra spawn failed at the occupied subagent/thread limit before implementation started; old inactive threads were closed and Goodall then ran exactly one successful Astra Low implementation; orchestration launch retry 1; implementation retry 0; no Luna correction; no manual human handoff; Auto compact occurred before the successful Astra invocation; residual Category C count zero; extraction-phase terminal judgment YES — current stateful extraction phase should end; empirical workflow observation only |
+| Current Global Module Library orchestration | Luna xHigh non-Fast immediate dispatch → Astra Low boundary+implementation → Luna landing; Global Module Library authoritative session lifecycle | 100/70 → 81/67 | -19% | -3% | 15m00s | parent Fast mode off; one Astra invocation; no manual human handoff; no parent-side detailed boundary discovery; no Auto compact; Astra reported two unsuccessful navigation/path checks corrected; no Luna correction after handoff and no test-failure retry; PR #39 comparison is suggestive only, not causal; no per-model or token inference; empirical observation only |
+| Current autonomous-boundary orchestration | Luna xHigh non-Fast immediate dispatch → Astra Low autonomous boundary discovery → one boundary implementation → Luna landing; AnimaDex local-path lifecycle | 81/67 → 66/65 | -15% | -2% | 13m22s | one Astra invocation; Astra implemented one boundary rather than stopping; no manual human handoff; no Luna correction; no test-failure retry; no Auto compact; focused 24 passed, broader 58 passed / 19 subtests, full suite 1221 passed / 8 skipped / 603 subtests / 239.21s; whole-run quota and timing are externally observed; empirical observation only |
+| Current autonomous-boundary experiment #5 | Luna xHigh non-Fast immediate dispatch → Astra Low bounded autonomous FIRST-SAFE-BOUNDARY discovery → one implementation → Luna landing; Gallery Selected Routes session lifecycle | 66/65 → 51/63 | -15% | -2% | 12m50s | one Astra invocation; discovery stopped at the first sufficiently safe/coherent boundary; focused 46 passed; broader 198 passed / 91 subtests; full-suite process completed but final pytest count/runtime was not retained by the command wrapper and was not rerun; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
+| Current multi-boundary cruise experiment #6 | Luna xHigh non-Fast immediate dispatch → one Astra Low invocation → multi-boundary cruise with separate implementation commits → Luna landing | 51/63 → 26/59 | -25% | -4% | 15m51s | target 2 achieved; Module Rename session lifecycle and Project Directory Browser session lifecycle; focused 57 passed / 8 subtests and 44 passed / 1 skipped; Luna broader 100 passed / 1 skipped / 8 subtests; full suite 1245 passed / 8 skipped / 607 subtests / 281.33s pytest (306.47s wrapper); no third boundary attempted; no Luna correction; no retry; no manual human handoff; no Auto compact; externally observed quota and timing; empirical observation only |
+| Current end-of-window bounded cruise experiment #7 | Luna xHigh non-Fast → one Astra Low invocation → FIRST-SAFE-BOUNDARY selection → Luna landing; Project Module Inspector draft/widget synchronization | 26/59 → Astra handoff at 14% 5h → 5h window reset to 100% → 99/57 | 13% phase-wise (12% before reset + 1% after reset) | -2% | 13m42s | one boundary implemented in `ui.project_module_inspector_session`; commit `8b443c8`; optional second boundary not attempted because no independently safe boundary was immediately apparent; Astra focused 12 passed; Auto compact before Astra invocation; empirical observation only |
+| Current fresh-window multi-boundary cruise experiment #8 | Luna xHigh non-Fast → one Astra Low invocation → sequential FIRST-SAFE multi-boundary cruise → Luna landing; Project Import session lifecycle | 99/57 → 88/55 | -11% | -2% | 11m46s | one boundary completed in `ui.project_root_import_session`; commit `402e787`; target 3 not reached; optional #4 not attempted; Astra focused 14 passed plus 7 baseline characterizations; broader 47 passed / 2 skipped / 2 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 257.53s; no Luna correction or retry; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
+| Current repeat bounded autonomous cruise experiment #9 | Luna xHigh non-Fast → one Astra Low invocation → fresh-context repeated bounded autonomous cruise | 86/55 → 77/53 | -9% | -2% | 1m54s | zero boundaries; target 3, maximum 4; no implementation, docs, runtime, or test changes; no PR from the run; focused/broader/full tests not run; stopped because no independently coherent sufficiently safe boundary was apparent without broader investigation; no Luna correction or retry; no manual human handoff; no Auto compact; clean worktree and `git diff --check` passed; zero-boundary result informed the move to residual-responsibility audit; empirical observation only |
+| Current residual responsibility audit experiment #10 | Luna xHigh non-Fast → one Astra Low audit → Luna documentation landing; residual `app.py` classification and extraction-phase exit criteria | 77/53 → 64/51 | -13% | -2% | 5m23s | audit-only; one Astra invocation; no implementation, tests, or runtime changes; A/B/C/D clusters 3/5/2/3; terminal judgment MOSTLY YES; exact Category C candidates are Module Candidate Selection and Apply-workspace Attribute Group Swap draft/widget synchronization; no manual human handoff; no Auto compact; externally observed measurement; empirical workflow observation only |
+| Current explicit residual Category-C extraction #1 experiment #11 | Luna xHigh non-Fast → exactly one Astra Low → explicit audited Category-C boundary → Luna landing; Module Candidate Selection session lifecycle | 64/51 → 54/50 | -10% | -1% | 10m24s | one boundary; no autonomous discovery; owner `ui.module_candidate_selection_session`; commit `15a94e8`; focused 17 passed / 4 subtests before and after extraction; broader 72 passed / 16 subtests; full suite 1255 passed / 8 skipped / 607 subtests / 281.74s; no Luna correction or retry; no manual human handoff; no Auto compact; remaining Category C is Apply-workspace Attribute Group Swap draft/widget synchronization; externally observed measurement; empirical workflow observation only |
+| Current explicit residual Category-C extraction #2 experiment #12 | Luna xHigh non-Fast → exactly one Astra Low → explicit audited Category-C boundary → Luna landing; Apply-workspace Attribute Group Swap session lifecycle | 53/49 → 41/48 | -12% | -1% | 14m28s | one boundary; no autonomous discovery; owner `ui.attribute_group_swap_session`; commit `6e04f8d`; focused 16 passed / 8 subtests before and 19 passed / 53 subtests after extraction; broader 46 passed; full suite 1258 passed / 8 skipped / 255.98s pytest (277.09s wrapper); first Astra spawn failed at the occupied subagent/thread limit before implementation started; old inactive threads were closed and Goodall then ran exactly one successful Astra Low implementation; orchestration launch retry 1; implementation retry 0; no Luna correction; no manual human handoff; Auto compact occurred before the successful Astra invocation; residual Category C count zero; extraction-phase terminal judgment YES — current stateful extraction phase should end; empirical workflow observation only |
 
 ## Canonical run notes
 
@@ -114,7 +233,7 @@ validation and delivery work.
 Astra Low selected and extracted the Candidate/Gallery read-only inspection
 cluster, covering approximately 10 old-micro-PR-equivalent boundaries and 21
 helpers. Astra ran focused tests only and intentionally left the full suite to
-Luna. Luna Max Fast handled broader validation, the full suite, architecture
+Luna. Luna xHigh Fast handled broader validation, the full suite, architecture
 documentation, final review, push, and PR delivery. The full validation result
 was 1099 passed, 8 skipped, and 552 subtests in 241.53 seconds. The combined
 sequential wall time was 10m04s.
@@ -127,7 +246,7 @@ delivery at a much lower observed 5h quota delta.
 
 Astra Low selected the read-only batch-edit preview calculation cluster. It
 naturally contained 8 helpers, or approximately 8 mini-boundaries. Focused
-validation passed and Astra did not run the full suite. Luna Max Fast handled
+validation passed and Astra did not run the full suite. Luna xHigh Fast handled
 broader and full validation, documentation, final review, push, and PR
 delivery. The full validation result was 1107 passed, 8 skipped, and 552
 subtests. Auto compact occurred during the Astra phase; there is not enough
@@ -148,7 +267,7 @@ task, and Astra began full-suite startup before receiving the corrected
 instruction and stopping. The interrupted startup makes this implementation
 measurement slightly noisier than a clean implementation-only run.
 
-Luna Max Fast then ran the broader Graph tests (49 passed), the full suite
+Luna xHigh Fast then ran the broader Graph tests (49 passed), the full suite
 (1115 passed, 8 skipped, 552 subtests, 236.42 seconds), AST equivalence, and
 `git diff --check`, followed by documentation, final review, push, and PR
 delivery. The combined sequential wall time was 9m58s.
@@ -165,7 +284,7 @@ model-wide efficiency improvement.
 
 ### PR #31: Luna landing and combined measurement
 
-Luna Max Fast completed the AnimaDex landing phase after Astra's implementation
+Luna xHigh Fast completed the AnimaDex landing phase after Astra's implementation
 checkpoint. The observed UI quota changed from 85/14 to 82/13 over 6m21s, a 5h
 delta of -3% and a weekly delta of -1%. The full suite passed with 1122 passed,
 8 skipped, 552 subtests, in 236.52 seconds. The combined Astra-plus-Luna run
@@ -328,7 +447,7 @@ was made after its handoff, and no manual human handoff was required.
 
 ### Current Global Module Library non-Fast immediate-dispatch orchestration experiment
 
-This is orchestration experiment #3. The parent remained Luna Max with Fast
+This is orchestration experiment #3. The parent remained Luna xHigh with Fast
 mode off and performed only immediate-dispatch preparation; it did not perform
 detailed implementation-boundary discovery before delegation. Astra Low was
 invoked exactly once to discover, characterize, and implement the Global
@@ -338,14 +457,14 @@ updated documentation, and prepared delivery. No manual Astra-to-Luna human
 handoff was required.
 
 The externally observed quota changed from 100/70 to 81/67 over 15m00s, an
-observed whole-run delta of -19% and -3%. This was Luna Max with Fast mode off;
+observed whole-run delta of -19% and -3%. This was Luna xHigh with Fast mode off;
 the rest of the orchestration shape matched the PR #39 immediate-dispatch
 pattern. Luna did not perform detailed pre-delegation boundary discovery,
 Astra was invoked exactly once, no Auto compact occurred, no manual handoff
 was required, no Luna correction was needed after Astra returned, and no
 test-failure retry occurred.
 
-For empirical context, PR #39 used Luna Max Fast with 53/78 → 2/70, an
+For empirical context, PR #39 used Luna xHigh Fast with 53/78 → 2/70, an
 observed delta of -51% and -8% over 11m03s, also without Auto compact. The
 observed PR #40 whole-run delta was materially lower than PR #39's. This
 comparison is suggestive only and does not establish that Fast mode caused the
@@ -359,7 +478,7 @@ during its implementation. This remains an empirical workflow record only.
 
 ### Orchestration experiment #4: autonomous boundary discovery
 
-This run used Luna Max with Fast mode off. Luna confirmed the latest main and
+This run used Luna xHigh with Fast mode off. Luna confirmed the latest main and
 the safe worktree state, then dispatched immediately without selecting a
 candidate list, exact function set, or destination module. Astra Low was
 invoked exactly once and was responsible for inspecting the current app,
@@ -390,7 +509,7 @@ with the preceding stateful extractions.
 
 ### Orchestration experiment #5: repeat autonomous first-safe-boundary discovery
 
-This run repeated the autonomous-boundary workflow with Luna Max and Fast mode
+This run repeated the autonomous-boundary workflow with Luna xHigh and Fast mode
 off. Luna confirmed latest main and a safe worktree, then dispatched
 immediately without selecting a candidate list, exact function set, or owner
 module. Astra Low was invoked exactly once and was explicitly instructed to
@@ -420,7 +539,7 @@ causal effects, or stable orchestration cost.
 
 ### Orchestration experiment #6: multi-boundary cruise
 
-This run used Luna Max with Fast mode off and the multi-boundary cruise shape:
+This run used Luna xHigh with Fast mode off and the multi-boundary cruise shape:
 one Astra Low invocation followed by Luna landing. Luna confirmed latest main
 and a safe worktree, then dispatched without selecting boundaries or designing
 owner modules. Astra used FIRST-SAFE-BOUNDARY discovery independently for each
@@ -451,7 +570,7 @@ causal efficiency, or stable cost per boundary.
 
 ### Orchestration experiment #7: end-of-window bounded cruise
 
-This run used Luna Max with Fast mode off and an end-of-window bounded-cruise
+This run used Luna xHigh with Fast mode off and an end-of-window bounded-cruise
 shape. Luna confirmed latest `main`, the root `AGENTS.md`, and a clean feature
 worktree, but did not perform detailed app inspection, boundary discovery,
 candidate ranking, or owner design before delegation. Astra Low was invoked
@@ -491,7 +610,7 @@ orchestration cost is inferred.
 
 ### Orchestration experiment #8: fresh-window multi-boundary cruise
 
-This run used Luna Max with Fast mode off and a fresh-window multi-boundary
+This run used Luna xHigh with Fast mode off and a fresh-window multi-boundary
 cruise shape. Luna confirmed latest `main`, the root `AGENTS.md`, and a clean
 feature worktree, then dispatched immediately without performing competing
 boundary discovery or candidate design. Astra Low was invoked exactly once and
@@ -524,7 +643,7 @@ scheduler behavior, causal efficiency, or stable orchestration cost.
 
 ### Orchestration experiment #9: repeat bounded autonomous cruise
 
-This was a real no-implementation run using Luna Max with Fast mode off and
+This was a real no-implementation run using Luna xHigh with Fast mode off and
 exactly one Astra Low invocation from a fresh context. The protocol repeated
 the bounded autonomous cruise with a target of three boundaries and a maximum
 of four. Astra completed zero boundaries and made no implementation, docs,
@@ -545,7 +664,7 @@ token usage or quota accounting.
 
 ### Orchestration experiment #10: residual `app.py` responsibility audit
 
-This was an audit-only run using Luna Max with Fast mode off and exactly one
+This was an audit-only run using Luna xHigh with Fast mode off and exactly one
 Astra Low invocation. Luna confirmed latest `main`, the root `AGENTS.md`, and
 a clean worktree, then delegated immediately without pre-selecting candidates
 or performing a competing architecture audit. Astra made no implementation,
@@ -598,7 +717,7 @@ or stable orchestration cost.
 
 ### Orchestration experiment #11: explicit residual Category-C extraction #1
 
-This run used Luna Max with Fast mode off and exactly one Astra Low invocation.
+This run used Luna xHigh with Fast mode off and exactly one Astra Low invocation.
 There was no autonomous boundary discovery: the already-audited Module
 Candidate Selection draft/widget synchronization boundary was specified
 directly. Astra moved exactly the six audited helpers into
@@ -623,7 +742,7 @@ behavior, or Fast-mode propagation.
 
 ### Orchestration experiment #12: explicit residual Category-C extraction #2
 
-This run used Luna Max with Fast mode off and exactly one successful Astra Low
+This run used Luna xHigh with Fast mode off and exactly one successful Astra Low
 implementation invocation. There was no autonomous boundary discovery: the
 final audited Category-C boundary was specified directly. The first attempt to
 create the Astra subagent failed because the existing subagent/thread limit was
@@ -662,7 +781,7 @@ scheduler behavior, stable orchestration cost, or Fast-mode propagation.
    separately.
 2. Full-suite validation repeatedly took around four minutes, making it a
    substantial fixed component of short refactor runs.
-3. In PRs #27–#29 and #31, Luna Max Fast used very little observed 5h quota while
+3. In PRs #27–#29 and #31, Luna xHigh Fast used very little observed 5h quota while
    performing broader or full validation, documentation, final review, push,
    and PR delivery.
 4. The Astra/Luna split therefore appears useful for this repository: Astra
