@@ -140,7 +140,7 @@ class ManagementWorkspaceShellTests(unittest.TestCase):
             "auto_open_last_project_on_startup",
         )
         self.assertLess(
-            loader.index("project = load_project_from_json(project_path)"),
+            loader.index("project = prepare_project_json_open("),
             loader.index("reset_management_workspace_session_state()"),
         )
         self.assertLess(

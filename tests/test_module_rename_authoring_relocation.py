@@ -307,7 +307,7 @@ class ModuleRenameAuthoringRelocationTests(unittest.TestCase):
             loader.index("return False"),
         )
         self.assertLess(
-            loader.index("project = load_project_from_json(project_path)"),
+            loader.index("project = prepare_project_json_open("),
             loader.index(
                 "reset_module_attribute_authoring_project_session_state()"
             ),
