@@ -80,6 +80,26 @@ def test_preparation_order_identity_and_failure(failure):
     assert events == expected
 
 
+def test_returns_graph_result_without_copy_or_fallback():
+    replacement = Project(source_directory="graph result")
+    with patch.object(
+        project_json_open,
+        "load_project_from_json",
+        return_value=Project(source_directory="loaded"),
+    ), patch.object(
+        project_json_open,
+        "build_graph",
+        return_value=replacement,
+    ):
+        result = project_json_open.prepare_project_json_open(
+            "relative/project.json",
+            complete_routes=lambda project: False,
+            profile_block=lambda label: nullcontext(),
+        )
+
+    assert result is replacement
+
+
 @pytest.mark.parametrize("failure", [None, "load", "routes", "graph"])
 def test_caller_publishes_only_after_preparation(failure):
     source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
