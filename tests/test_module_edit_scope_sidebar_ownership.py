@@ -334,7 +334,7 @@ class ModuleEditScopeSidebarOwnershipTests(unittest.TestCase):
             "st": st,
             "os": os,
             "profile_block": lambda _label: contextlib.nullcontext(),
-            "load_project_from_json": lambda _path: new_project,
+            "prepare_project_json_open": lambda _path, **kwargs: new_project,
             "ensure_original_image_set_route": lambda project: project,
             "build_graph": lambda project: project,
             "reset_lightweight_fork_session_state": lambda: None,
@@ -380,7 +380,7 @@ class ModuleEditScopeSidebarOwnershipTests(unittest.TestCase):
 
     def test_project_transition_reset_runs_only_after_inputs_are_loaded(self):
         loader = self._source("load_project_json_into_session")
-        load = loader.index("project = load_project_from_json(project_path)")
+        load = loader.index("project = prepare_project_json_open(")
         reset = loader.index("reset_module_edit_scope_project_session_state()")
         assign = loader.index("st.session_state.project = project")
         self.assertLess(load, reset)

@@ -1071,12 +1071,12 @@ class AttributeGroupSwapWorkspaceStateTests(unittest.TestCase):
             5,
         )
         self.assertLess(
-            loader.index("project = load_project_from_json(project_path)"),
+            loader.index("project = prepare_project_json_open("),
             loader.index(f"{self.reset_name}()"),
         )
         self.assertNotIn(
             self.reset_name,
-            loader[: loader.index("project = load_project_from_json")],
+            loader[: loader.index("project = prepare_project_json_open(")],
         )
         self.assertNotIn(self.reset_name, back)
         self.assertNotIn(self.reset_name, renderer)

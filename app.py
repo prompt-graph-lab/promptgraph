@@ -214,7 +214,8 @@ from core.animadex_discovery import (
     search_animadex_records,
 )
 from core.animadex_modules import build_global_module_preview_from_animadex_record
-from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, load_project_from_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, ensure_project_folder_layout, copy_candidates_to_project_and_save_atomically, preview_copy_candidates_to_project, preview_verified_project_asset_duplicate_cleanup, delete_verified_project_asset_source_duplicates, ProjectAssetsPreviewStaleError, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
+from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, ensure_project_folder_layout, copy_candidates_to_project_and_save_atomically, preview_copy_candidates_to_project, preview_verified_project_asset_duplicate_cleanup, delete_verified_project_asset_source_duplicates, ProjectAssetsPreviewStaleError, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
+from core.project_json_open import prepare_project_json_open
 from core.graph_builder import build_graph
 from core.graph_edit_illustration_browser import (
     DEFAULT_PAGE_SIZE as GRAPH_EDIT_BROWSER_DEFAULT_PAGE_SIZE,
@@ -6045,11 +6046,11 @@ def load_project_json_into_session(project_path: str) -> bool:
         st.warning(f"Project file not found: {project_path}")
         return False
 
-    with profile_block("Project load: read JSON"):
-        project = load_project_from_json(project_path)
-    ensure_original_image_set_route(project)
-    with profile_block("Project load: build graph"):
-        project = build_graph(project)
+    project = prepare_project_json_open(
+        project_path,
+        complete_routes=ensure_original_image_set_route,
+        profile_block=profile_block,
+    )
     st.session_state.history = []
     reset_lightweight_fork_session_state()
     reset_gallery_route_action_session_state()

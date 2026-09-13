@@ -497,7 +497,7 @@ class ModuleAttributeApplyWorkspaceTests(unittest.TestCase):
         loader = self._function_source("load_project_json_into_session")
         self.assertLess(
             loader.index(
-                "project = load_project_from_json(project_path)"
+                "project = prepare_project_json_open("
             ),
             loader.index("reset_management_workspace_session_state()"),
         )
@@ -506,7 +506,7 @@ class ModuleAttributeApplyWorkspaceTests(unittest.TestCase):
             loader.index("st.session_state.project = project"),
         )
         before_success = loader[
-            : loader.index("project = load_project_from_json(project_path)")
+            : loader.index("project = prepare_project_json_open(")
         ]
         self.assertNotIn(
             "reset_management_workspace_session_state()",

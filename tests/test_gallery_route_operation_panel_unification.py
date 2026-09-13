@@ -253,14 +253,12 @@ class GalleryRouteOperationPanelUnificationTests(unittest.TestCase):
 
     def test_failed_json_project_load_preserves_current_operation_state(self):
         load_source = function_source(self.app_source, "load_project_json_into_session")
-        read_project = load_source.index("project = load_project_from_json(project_path)")
-        build_project = load_source.index("project = build_graph(project)")
+        read_project = load_source.index("project = prepare_project_json_open(")
         clear_history = load_source.index("st.session_state.history = []")
         reset_operations = load_source.index("reset_gallery_route_action_session_state()")
         commit_project = load_source.index("st.session_state.project = project")
 
-        self.assertLess(read_project, build_project)
-        self.assertLess(build_project, clear_history)
+        self.assertLess(read_project, clear_history)
         self.assertLess(clear_history, reset_operations)
         self.assertLess(reset_operations, commit_project)
 
@@ -286,7 +284,8 @@ class GalleryRouteOperationPanelUnificationTests(unittest.TestCase):
             "os": SimpleNamespace(path=SimpleNamespace(exists=lambda _path: True)),
             "st": SimpleNamespace(session_state=initial_state, warning=lambda _message: None),
             "profile_block": profile_block,
-            "load_project_from_json": fail_load,
+            "prepare_project_json_open": lambda path, **kwargs: fail_load(path),
+            "ensure_original_image_set_route": lambda project: False,
         }
         exec(load_source, namespace)
         with self.assertRaisesRegex(ValueError, "invalid synthetic Project"):
