@@ -835,6 +835,7 @@ class InsertModuleReferenceWorkspaceStateTests(unittest.TestCase):
 
     def test_successful_project_transitions_own_all_reset_calls(self):
         loader = self._source("load_project_json_into_session")
+        loader += "\n" + self._source("publish_loaded_project_to_session")
         new_project = self._source("set_new_workspace_project")
         imports = self._source("render_prompt_import_export_panel")
         back = self._source("reset_management_workspace_session_state")

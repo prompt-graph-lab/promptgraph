@@ -302,6 +302,7 @@ class ModuleRenameAuthoringRelocationTests(unittest.TestCase):
 
     def test_successful_project_transitions_use_cleanup_but_failures_do_not(self):
         loader = self._source("load_project_json_into_session")
+        loader += "\n" + self._source("publish_loaded_project_to_session")
         self.assertLess(
             loader.index('if not os.path.exists(project_path):'),
             loader.index("return False"),

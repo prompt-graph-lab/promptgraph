@@ -253,6 +253,9 @@ class GalleryRouteOperationPanelUnificationTests(unittest.TestCase):
 
     def test_failed_json_project_load_preserves_current_operation_state(self):
         load_source = function_source(self.app_source, "load_project_json_into_session")
+        load_source += "\n" + function_source(
+            self.app_source, "publish_loaded_project_to_session"
+        )
         read_project = load_source.index("project = prepare_project_json_open(")
         clear_history = load_source.index("st.session_state.history = []")
         reset_operations = load_source.index("reset_gallery_route_action_session_state()")

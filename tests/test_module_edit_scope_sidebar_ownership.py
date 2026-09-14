@@ -360,6 +360,7 @@ class ModuleEditScopeSidebarOwnershipTests(unittest.TestCase):
         self._load_functions(
             "reset_module_edit_scope_project_session_state",
             "load_project_json_into_session",
+            "publish_loaded_project_to_session",
             namespace=namespace,
         )
 
@@ -380,6 +381,7 @@ class ModuleEditScopeSidebarOwnershipTests(unittest.TestCase):
 
     def test_project_transition_reset_runs_only_after_inputs_are_loaded(self):
         loader = self._source("load_project_json_into_session")
+        loader += "\n" + self._source("publish_loaded_project_to_session")
         load = loader.index("project = prepare_project_json_open(")
         reset = loader.index("reset_module_edit_scope_project_session_state()")
         assign = loader.index("st.session_state.project = project")
