@@ -139,13 +139,16 @@ class ManagementWorkspaceShellTests(unittest.TestCase):
             "load_project_json_into_session",
             "auto_open_last_project_on_startup",
         )
-        self.assertLess(
-            loader.index("project = prepare_project_json_open("),
-            loader.index("reset_management_workspace_session_state()"),
+        publisher = self._function_source(
+            "publish_loaded_project_to_session", "load_project_json_into_session"
         )
         self.assertLess(
-            loader.index("reset_management_workspace_session_state()"),
-            loader.index("st.session_state.project = project"),
+            loader.index("project = prepare_project_json_open("),
+            loader.index("publish_loaded_project_to_session(project, project_path)"),
+        )
+        self.assertLess(
+            publisher.index("reset_management_workspace_session_state()"),
+            publisher.index("st.session_state.project = project"),
         )
 
         startup = self._function_source(

@@ -489,17 +489,16 @@ class ModuleAttributeAuthoringWorkspaceTests(unittest.TestCase):
             self.assertIn(preserved, session_state)
 
         loader = self._function_source("load_project_json_into_session")
+        publisher = self._function_source("publish_loaded_project_to_session")
         self.assertLess(
             loader.index("project = prepare_project_json_open("),
-            loader.index(
-                "reset_module_attribute_authoring_project_session_state()"
-            ),
+            loader.index("publish_loaded_project_to_session(project, project_path)"),
         )
         self.assertLess(
-            loader.index(
+            publisher.index(
                 "reset_module_attribute_authoring_project_session_state()"
             ),
-            loader.index("st.session_state.project = project"),
+            publisher.index("st.session_state.project = project"),
         )
         new_project = self._function_source("set_new_workspace_project")
         self.assertIn(
@@ -513,7 +512,7 @@ class ModuleAttributeAuthoringWorkspaceTests(unittest.TestCase):
             ),
             2,
         )
-        self.assertIn("st.session_state.selected_node_ids = []", loader)
+        self.assertIn("st.session_state.selected_node_ids = []", publisher)
         self.assertIn("st.session_state.selected_node_ids = []", new_project)
 
     def test_unknown_module_metadata_survives_existing_authoring_update(self):

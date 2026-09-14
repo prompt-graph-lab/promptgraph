@@ -1022,12 +1022,13 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
 
     def test_successful_transitions_own_reset_and_back_does_not(self):
         loader = self._source("load_project_json_into_session")
+        publisher = self._source("publish_loaded_project_to_session")
         new_project = self._source("set_new_workspace_project")
         imports = self._source("render_prompt_import_export_panel")
         back = self._source("reset_management_workspace_session_state")
         renderer = self._source(self.renderer_name)
 
-        self.assertEqual(loader.count(f"{self.reset_name}()"), 1)
+        self.assertEqual(publisher.count(f"{self.reset_name}()"), 1)
         self.assertEqual(new_project.count(f"{self.reset_name}()"), 1)
         self.assertEqual(imports.count(f"{self.reset_name}()"), 2)
         self.assertEqual(
@@ -1036,7 +1037,7 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
         )
         self.assertLess(
             loader.index("project = prepare_project_json_open("),
-            loader.index(f"{self.reset_name}()"),
+            loader.index("publish_loaded_project_to_session(project, project_path)"),
         )
         self.assertNotIn(
             self.reset_name,

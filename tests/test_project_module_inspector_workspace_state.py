@@ -609,10 +609,14 @@ class ProjectModuleInspectorWorkspaceStateTests(unittest.TestCase):
         )
 
         loader = self._source("load_project_json_into_session")
+        publisher = self._source("publish_loaded_project_to_session")
         missing_guard = loader.index("if not os.path.exists(project_path):")
         failed_return = loader.index("return False", missing_guard)
+        self.assertIn(
+            "reset_module_attribute_authoring_project_session_state()", publisher
+        )
         reset = loader.index(
-            "reset_module_attribute_authoring_project_session_state()"
+            "publish_loaded_project_to_session(project, project_path)"
         )
         self.assertLess(failed_return, reset)
         self.assertLess(

@@ -627,7 +627,7 @@ class ProjectAssetsUiContractTests(unittest.TestCase):
 
     def test_successful_project_replacements_reset_preview(self):
         for name in (
-            "load_project_json_into_session",
+            "publish_loaded_project_to_session",
             "set_new_workspace_project",
             "render_prompt_import_export_panel",
         ):
@@ -636,7 +636,7 @@ class ProjectAssetsUiContractTests(unittest.TestCase):
                 self._source(name),
             )
         failed_load_prefix = self._source("load_project_json_into_session").split(
-            "reset_project_assets_operation_state()", 1
+            "publish_loaded_project_to_session(project, project_path)", 1
         )[0]
         self.assertIn("return False", failed_load_prefix)
 

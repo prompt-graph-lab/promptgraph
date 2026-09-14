@@ -189,9 +189,9 @@ class GraphEditIllustrationBrowserStateTests(unittest.TestCase):
         load = self._source("load_project_json_into_session")
         self.assertLess(
             load.index("if not os.path.exists(project_path):"),
-            load.index("reset_graph_project_session_state()"),
+            load.index("publish_loaded_project_to_session(project, project_path)"),
         )
-        self.assertEqual(1, load.count("reset_graph_project_session_state()"))
+        self.assertEqual(1, self._source("publish_loaded_project_to_session").count("reset_graph_project_session_state()"))
         for owner in (
             "set_new_workspace_project",
             "render_prompt_import_export_panel",

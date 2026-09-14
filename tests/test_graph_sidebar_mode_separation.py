@@ -345,9 +345,9 @@ class GraphSidebarModeSeparationTests(unittest.TestCase):
 
         load_source = self._function_source("load_project_json_into_session")
         missing_path_guard = load_source.index("if not os.path.exists(project_path):")
-        widget_reset = load_source.index("reset_graph_project_session_state()")
+        widget_reset = load_source.index("publish_loaded_project_to_session(project, project_path)")
         self.assertLess(missing_path_guard, widget_reset)
-        self.assertEqual(load_source.count("reset_graph_project_session_state()"), 1)
+        self.assertEqual(self._function_source("publish_loaded_project_to_session").count("reset_graph_project_session_state()"), 1)
 
         for transition_owner in (
             "set_new_workspace_project",

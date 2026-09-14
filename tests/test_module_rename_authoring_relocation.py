@@ -302,21 +302,20 @@ class ModuleRenameAuthoringRelocationTests(unittest.TestCase):
 
     def test_successful_project_transitions_use_cleanup_but_failures_do_not(self):
         loader = self._source("load_project_json_into_session")
+        publisher = self._source("publish_loaded_project_to_session")
         self.assertLess(
             loader.index('if not os.path.exists(project_path):'),
             loader.index("return False"),
         )
         self.assertLess(
             loader.index("project = prepare_project_json_open("),
-            loader.index(
-                "reset_module_attribute_authoring_project_session_state()"
-            ),
+            loader.index("publish_loaded_project_to_session(project, project_path)"),
         )
         self.assertLess(
-            loader.index(
+            publisher.index(
                 "reset_module_attribute_authoring_project_session_state()"
             ),
-            loader.index("st.session_state.project = project"),
+            publisher.index("st.session_state.project = project"),
         )
 
         new_project = self._source("set_new_workspace_project")

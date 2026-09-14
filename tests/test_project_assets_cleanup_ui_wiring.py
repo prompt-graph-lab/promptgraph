@@ -401,7 +401,7 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
             sidebar,
         )
         for project_transition in (
-            "load_project_json_into_session",
+            "publish_loaded_project_to_session",
             "set_new_workspace_project",
             "render_prompt_import_export_panel",
         ):

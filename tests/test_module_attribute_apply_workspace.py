@@ -495,15 +495,16 @@ class ModuleAttributeApplyWorkspaceTests(unittest.TestCase):
 
     def test_project_transition_and_failed_load_boundaries_are_unchanged(self):
         loader = self._function_source("load_project_json_into_session")
+        publisher = self._function_source("publish_loaded_project_to_session")
         self.assertLess(
             loader.index(
                 "project = prepare_project_json_open("
             ),
-            loader.index("reset_management_workspace_session_state()"),
+            loader.index("publish_loaded_project_to_session(project, project_path)"),
         )
         self.assertLess(
-            loader.index("reset_management_workspace_session_state()"),
-            loader.index("st.session_state.project = project"),
+            publisher.index("reset_management_workspace_session_state()"),
+            publisher.index("st.session_state.project = project"),
         )
         before_success = loader[
             : loader.index("project = prepare_project_json_open(")

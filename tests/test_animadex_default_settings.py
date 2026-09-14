@@ -518,11 +518,12 @@ class AnimaDexDefaultAppTests(unittest.TestCase):
         source = self._function_source("load_project_json_into_session")
         missing_guard = source.index("if not os.path.exists(project_path):")
         failed_return = source.index("return False", missing_guard)
-        first_reset = source.index("reset_lightweight_fork_session_state()")
+        first_reset = source.index("publish_loaded_project_to_session(project, project_path)")
         self.assertLess(missing_guard, failed_return)
         self.assertLess(failed_return, first_reset)
-        self.assertNotIn("animadex_local_path", source)
-        self.assertNotIn("animadex_browser_path", source)
+        publisher = self._function_source("publish_loaded_project_to_session")
+        self.assertNotIn("animadex_local_path", source + publisher)
+        self.assertNotIn("animadex_browser_path", source + publisher)
 
 
 if __name__ == "__main__":
