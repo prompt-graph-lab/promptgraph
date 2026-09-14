@@ -516,6 +516,7 @@ class AnimaDexDefaultAppTests(unittest.TestCase):
 
     def test_failed_project_load_returns_before_project_bound_resets(self):
         source = self._function_source("load_project_json_into_session")
+        source += self._function_source("publish_loaded_project_to_session")
         missing_guard = source.index("if not os.path.exists(project_path):")
         failed_return = source.index("return False", missing_guard)
         first_reset = source.index("reset_lightweight_fork_session_state()")

@@ -139,6 +139,9 @@ class ManagementWorkspaceShellTests(unittest.TestCase):
             "load_project_json_into_session",
             "auto_open_last_project_on_startup",
         )
+        loader += self._function_source(
+            "publish_loaded_project_to_session", "load_project_json_into_session"
+        )
         self.assertLess(
             loader.index("project = prepare_project_json_open("),
             loader.index("reset_management_workspace_session_state()"),

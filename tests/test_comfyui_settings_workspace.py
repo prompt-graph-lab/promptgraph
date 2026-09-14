@@ -300,6 +300,7 @@ class ComfyUiSettingsWorkspaceTests(unittest.TestCase):
             self._function_source(name)
             for name in (
                 "load_project_json_into_session",
+                "publish_loaded_project_to_session",
                 "set_new_workspace_project",
                 "duplicate_current_project_directory",
             )

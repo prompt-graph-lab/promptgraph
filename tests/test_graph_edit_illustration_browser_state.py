@@ -187,6 +187,7 @@ class GraphEditIllustrationBrowserStateTests(unittest.TestCase):
 
     def test_success_paths_use_canonical_owner_and_failed_load_guard_precedes_it(self):
         load = self._source("load_project_json_into_session")
+        load += self._source("publish_loaded_project_to_session")
         self.assertLess(
             load.index("if not os.path.exists(project_path):"),
             load.index("reset_graph_project_session_state()"),

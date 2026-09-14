@@ -489,6 +489,7 @@ class ModuleAttributeAuthoringWorkspaceTests(unittest.TestCase):
             self.assertIn(preserved, session_state)
 
         loader = self._function_source("load_project_json_into_session")
+        loader += self._function_source("publish_loaded_project_to_session")
         self.assertLess(
             loader.index("project = prepare_project_json_open("),
             loader.index(
