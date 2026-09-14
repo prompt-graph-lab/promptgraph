@@ -609,6 +609,7 @@ class ProjectModuleInspectorWorkspaceStateTests(unittest.TestCase):
         )
 
         loader = self._source("load_project_json_into_session")
+        loader += self._source("publish_loaded_project_to_session")
         missing_guard = loader.index("if not os.path.exists(project_path):")
         failed_return = loader.index("return False", missing_guard)
         reset = loader.index(

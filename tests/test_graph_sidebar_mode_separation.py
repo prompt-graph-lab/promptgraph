@@ -344,6 +344,7 @@ class GraphSidebarModeSeparationTests(unittest.TestCase):
             self.assertNotIn(durable_key, reset_source)
 
         load_source = self._function_source("load_project_json_into_session")
+        load_source += self._function_source("publish_loaded_project_to_session")
         missing_path_guard = load_source.index("if not os.path.exists(project_path):")
         widget_reset = load_source.index("reset_graph_project_session_state()")
         self.assertLess(missing_path_guard, widget_reset)

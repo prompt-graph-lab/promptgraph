@@ -627,7 +627,7 @@ class ProjectAssetsUiContractTests(unittest.TestCase):
 
     def test_successful_project_replacements_reset_preview(self):
         for name in (
-            "load_project_json_into_session",
+            "publish_loaded_project_to_session",
             "set_new_workspace_project",
             "render_prompt_import_export_panel",
         ):

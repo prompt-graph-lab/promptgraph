@@ -6041,16 +6041,8 @@ def ensure_current_project_folder_layout(project_path: str) -> bool:
         st.warning(f"Project folders could not be created: {exc}")
         return False
 
-def load_project_json_into_session(project_path: str) -> bool:
-    if not os.path.exists(project_path):
-        st.warning(f"Project file not found: {project_path}")
-        return False
-
-    project = prepare_project_json_open(
-        project_path,
-        complete_routes=ensure_original_image_set_route,
-        profile_block=profile_block,
-    )
+def publish_loaded_project_to_session(project, project_path: str) -> None:
+    """Publish a prepared JSON Project using the existing session/UI order."""
     st.session_state.history = []
     reset_lightweight_fork_session_state()
     reset_gallery_route_action_session_state()
@@ -6078,6 +6070,19 @@ def load_project_json_into_session(project_path: str) -> bool:
     st.session_state.connect_mode = False
     clear_module_rename_preview()
     sync_text_areas()
+
+
+def load_project_json_into_session(project_path: str) -> bool:
+    if not os.path.exists(project_path):
+        st.warning(f"Project file not found: {project_path}")
+        return False
+
+    project = prepare_project_json_open(
+        project_path,
+        complete_routes=ensure_original_image_set_route,
+        profile_block=profile_block,
+    )
+    publish_loaded_project_to_session(project, project_path)
 
     st.session_state.settings = remember_project(
         st.session_state.settings,
