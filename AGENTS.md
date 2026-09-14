@@ -83,3 +83,14 @@ broad redesign suggestions, unsupported input cases, generic requests for more
 validation or tests, tiny abstraction preferences, or differences explicitly
 characterized as legacy behavior. If a concern is not worth changing or
 blocking the current PR, prefer not to emit a finding.
+
+## Chat/Codex coordination
+
+When a task uses Chat/Codex handoff, Luna/Astra escalation, or source-Chat
+reporting, read the canonical guidance in
+[docs/operations/chat-codex-handoff.md](docs/operations/chat-codex-handoff.md).
+Keep current repository and GitHub state authoritative. For a referenced Chat
+task, when the capability is available, return meaningful completion, blocker,
+validation, or PR status to the source Chat with the prefix:
+
+    [from Codex][REPORT]
