@@ -158,7 +158,7 @@ class ManagementWorkspaceShellTests(unittest.TestCase):
         self.assertIn("open_project=load_project_json_into_session", startup)
 
         new_project = self._function_source(
-            "set_new_workspace_project",
+            "publish_new_project_to_session",
             "_sanitize_duplicate_project_dir_name",
         )
         self.assertIn("reset_management_workspace_session_state()", new_project)

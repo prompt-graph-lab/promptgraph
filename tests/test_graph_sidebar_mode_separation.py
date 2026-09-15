@@ -351,7 +351,7 @@ class GraphSidebarModeSeparationTests(unittest.TestCase):
         self.assertEqual(load_source.count("reset_graph_project_session_state()"), 1)
 
         for transition_owner in (
-            "set_new_workspace_project",
+            "publish_new_project_to_session",
             "render_prompt_import_export_panel",
         ):
             self.assertIn(
