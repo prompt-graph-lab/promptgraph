@@ -302,6 +302,7 @@ class ComfyUiSettingsWorkspaceTests(unittest.TestCase):
                 "load_project_json_into_session",
                 "publish_loaded_project_to_session",
                 "set_new_workspace_project",
+                "publish_new_project_to_session",
                 "duplicate_current_project_directory",
             )
         )

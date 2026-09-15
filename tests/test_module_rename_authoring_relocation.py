@@ -320,7 +320,7 @@ class ModuleRenameAuthoringRelocationTests(unittest.TestCase):
             loader.index("st.session_state.project = project"),
         )
 
-        new_project = self._source("set_new_workspace_project")
+        new_project = self._source("publish_new_project_to_session")
         self.assertEqual(
             new_project.count(
                 "reset_module_attribute_authoring_project_session_state()"

@@ -402,7 +402,7 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         )
         for project_transition in (
             "publish_loaded_project_to_session",
-            "set_new_workspace_project",
+            "publish_new_project_to_session",
             "render_prompt_import_export_panel",
         ):
             self.assertIn(

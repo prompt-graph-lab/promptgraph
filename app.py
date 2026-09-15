@@ -6196,8 +6196,8 @@ def ensure_new_workspace_parent_directory() -> str:
     return st.session_state.new_workspace_parent_dir
 
 
-def set_new_workspace_project(project_path: str):
-    project = build_graph(Project(source_directory=""))
+def publish_new_project_to_session(project, project_path: str) -> None:
+    """Publish a prepared new Project using the existing session/UI order."""
     st.session_state.history = []
     reset_lightweight_fork_session_state()
     reset_gallery_route_action_session_state()
@@ -6224,6 +6224,11 @@ def set_new_workspace_project(project_path: str):
     st.session_state.line_generated_candidates = {}
     clear_module_rename_preview()
     sync_text_areas()
+
+
+def set_new_workspace_project(project_path: str):
+    project = build_graph(Project(source_directory=""))
+    publish_new_project_to_session(project, project_path)
 
     st.session_state.settings = remember_project(
         st.session_state.settings,

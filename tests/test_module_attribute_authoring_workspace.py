@@ -502,7 +502,7 @@ class ModuleAttributeAuthoringWorkspaceTests(unittest.TestCase):
             ),
             loader.index("st.session_state.project = project"),
         )
-        new_project = self._function_source("set_new_workspace_project")
+        new_project = self._function_source("publish_new_project_to_session")
         self.assertIn(
             "reset_module_attribute_authoring_project_session_state()",
             new_project,

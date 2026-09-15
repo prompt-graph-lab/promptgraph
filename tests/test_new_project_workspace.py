@@ -315,7 +315,7 @@ class NewProjectWorkspaceUiWiringTests(unittest.TestCase):
 
     def test_legacy_create_wrapper_keeps_relative_and_absolute_resolution(self):
         wrapper_start = self.app_source.index("def create_new_workspace(")
-        wrapper_end = self.app_source.index("def set_new_workspace_project", wrapper_start)
+        wrapper_end = self.app_source.index("def publish_new_project_to_session", wrapper_start)
         wrapper_source = self.app_source[wrapper_start:wrapper_end]
         self.assertIn("clean_project_dir = default_new_project_dir(clean_project_dir_raw)", wrapper_source)
         self.assertIn("return create_new_workspace_files(clean_project_dir, project_file_name)", wrapper_source)
@@ -325,16 +325,19 @@ class NewProjectWorkspaceUiWiringTests(unittest.TestCase):
         setter_start = self.app_source.index("def set_new_workspace_project")
         setter_end = self.app_source.index("def _sanitize_duplicate_project_dir_name", setter_start)
         setter_source = self.app_source[setter_start:setter_end]
+        publication_start = self.app_source.index("def publish_new_project_to_session")
+        publication_source = self.app_source[publication_start:setter_start]
+        self.assertIn("publish_new_project_to_session(project, project_path)", setter_source)
         for expected in (
             "st.session_state.history = []",
             "reset_lightweight_fork_session_state()",
             "reset_gallery_route_action_session_state()",
             "reset_gallery_selected_route_session_state()",
             "st.session_state.current_project_path = os.path.abspath(project_path)",
-            "st.session_state.settings = remember_project(",
-            "save_settings(st.session_state.settings)",
         ):
-            self.assertIn(expected, setter_source)
+            self.assertIn(expected, publication_source)
+        self.assertIn("st.session_state.settings = remember_project(", setter_source)
+        self.assertIn("save_settings(st.session_state.settings)", setter_source)
         self.assertIn('st.session_state.pop("startup_project_auto_open_error", None)', setter_source)
 
     def test_creation_failure_does_not_switch_the_current_session(self):
