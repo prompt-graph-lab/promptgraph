@@ -326,11 +326,7 @@ class NewProjectWorkspaceUiWiringTests(unittest.TestCase):
         setter_end = self.app_source.index("def _sanitize_duplicate_project_dir_name", setter_start)
         setter_source = self.app_source[setter_start:setter_end]
         for expected in (
-            "st.session_state.history = []",
-            "reset_lightweight_fork_session_state()",
-            "reset_gallery_route_action_session_state()",
-            "reset_gallery_selected_route_session_state()",
-            "st.session_state.current_project_path = os.path.abspath(project_path)",
+            "publish_new_project_to_session(project, project_path)",
             "st.session_state.settings = remember_project(",
             "save_settings(st.session_state.settings)",
         ):

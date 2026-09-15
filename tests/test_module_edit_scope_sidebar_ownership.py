@@ -392,7 +392,7 @@ class ModuleEditScopeSidebarOwnershipTests(unittest.TestCase):
             loader[:load],
         )
 
-        new_project = self._source("set_new_workspace_project")
+        new_project = self._source("publish_new_project_to_session")
         self.assertEqual(
             new_project.count(
                 "reset_module_edit_scope_project_session_state()"
