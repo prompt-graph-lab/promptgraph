@@ -194,7 +194,7 @@ class GraphEditIllustrationBrowserStateTests(unittest.TestCase):
         )
         self.assertEqual(1, load.count("reset_graph_project_session_state()"))
         for owner in (
-            "set_new_workspace_project",
+            "publish_new_project_to_session",
             "render_prompt_import_export_panel",
         ):
             self.assertIn("reset_graph_project_session_state()", self._source(owner))
