@@ -125,6 +125,91 @@ promptgraph Project. The thread API does not expose arbitrary repository
 registration or binding; project registration was performed through the human
 UI.
 
+## ASTRA-MSC Round 3 postmortem correction
+
+Round 3 remains **TERMINAL-BLOCKED / PROTOCOL-DEVIATED**. No valid three-way
+blind implementation ranking was completed. The recovered human-visible Codex
+UI evidence corrects the earlier coordinator-facing interpretation of the
+Fresh Minimal and provisioning-sanity resources.
+
+The earlier records accurately described what the coordinator-facing
+list_threads and related inspection APIs exposed during their bounded checks.
+They must not be read as proof that the underlying thread or Worktree did not
+exist. The durable distinction is:
+
+- **not observable through the coordinator-facing API at the time**; versus
+- **directly shown later in the human-visible UI or in the worker's own
+  preflight report**.
+
+### Recovered Fresh-resource evidence
+
+The three resources below were supplied as human-visible postmortem evidence.
+They all used the public PromptGraph repository and
+b62a8db837422d6151c28882e66111d8c406c8f5 as the intended base.
+
+| Resource | Coordinator-facing observation | Recovered human-visible / worker evidence | Result |
+| --- | --- | --- | --- |
+| MSC-R3-M9Q6 / experiment/r3-m9q6 | No matching real thread or Worktree was exposed during the bounded inspection | Thread and Worktree existed; origin and base were correct; Worktree was clean but on detached HEAD, with the expected branch not checked out | Worker stopped at PROVENANCE_GATE_FAILED; no implementation, tests, diff, commit, or push |
+| MSC-R3-T6H3 / experiment/r3-t6h3 | No matching real thread or Worktree was exposed during the bounded inspection | Thread and Worktree existed; origin and base were correct; Worktree was clean but on detached HEAD, with the expected branch not checked out | Worker stopped at the provenance gate; no implementation, tests, diff, commit, or push |
+| sanity-q4m7 / experiment/sanity-q4m7 | No matching real thread or Worktree was exposed during approximately 80 seconds of bounded polling | Neutral-bootstrap sanity thread and Worktree existed; origin and base were correct; Worktree was clean but on detached HEAD | No implementation or file change occurred; readiness was not achieved |
+
+For M9Q6 and T6H3, the expected local branch refs were later observed at
+the correct base SHA, but the corresponding Worktrees remained detached rather
+than attached to those branches. The same branch-ref-versus-detached-Worktree
+shape was observed for sanity-q4m7. These are separate observations of
+repository state; they do not expose the private provisioning mechanism.
+
+The directly observed failure for these Fresh resources is therefore a
+project-local readiness failure: the worker reached a Worktree with the
+correct repository, origin, base, and clean state, but not with the required
+expected branch checked out. A separate observability discrepancy existed
+because the human-visible UI exposed resources that the coordinator-facing
+thread/list APIs did not expose at the time.
+
+### Experimental consequence
+
+The two Fresh Minimal executions reached pre-implementation provenance checks
+and stopped before implementation. Their implementation_retry_count remains
+zero; the orchestration/provisioning history remains recorded separately.
+Fresh Minimal must not be ranked as a third implementation candidate or as a
+quality NO-GO result.
+
+The completed Round 3 results remain preserved:
+
+- Fresh Handoff: experiment/r3-k4n8 at
+  7d2fcef2737f23b6db58d0451e425addd9557b59; implementation completed, with
+  the previously recorded information-condition deviation.
+- Warm Persistent: experiment/r3-p7w2 at
+  da9ef79cdac0290bfb266fb16850b47e6bbbaf25; implementation completed, but
+  the retained-context probe body is unrecoverable, so no clean
+  context_match is assigned.
+
+### Interpretation limits and readiness recommendation
+
+The three resources provide direct evidence of repeated detached-Worktree
+readiness failures and a coordinator-API visibility discrepancy. They do not
+establish a race condition, registry saturation, thread or Worktree limit,
+resource exhaustion, indexing bug, or any other private backend mechanism.
+Accumulated resources, eventual consistency, provisioning degradation, and API
+visibility limitations remain hypotheses.
+
+Before sending implementation work to a newly provisioned Fresh project-local
+Astra, verify the readiness state where observable:
+
+1. a real thread is addressable;
+2. the project-local Worktree exists;
+3. origin is the authoritative public repository;
+4. HEAD is the requested base SHA;
+5. the expected branch is checked out;
+6. HEAD is not detached; and
+7. the Worktree is clean.
+
+If the expected branch attachment or another required readiness condition
+cannot be established, stop before assigning the candidate implementation.
+Do not ask the candidate to repair its own provisioning as part of the
+experimental task. This is an operational recommendation, not a claim about
+platform internals.
+
 ## Future topology A/B gate
 
 Before the next internal-vs-external Astra comparison begins task execution,

@@ -237,6 +237,42 @@ verify the package against current repository evidence before implementation
 ownership begins. Current repository state remains authoritative over the
 package and over retained context.
 
+## Fresh project-local readiness and API visibility
+
+An accepted fresh-thread or client-resource result is not by itself proof that
+the implementation environment is ready. Before sending a real implementation
+task to a newly provisioned project-local Astra, verify the following where the
+available APIs and repository state make them observable:
+
+1. a real thread is addressable;
+2. the project-local Worktree exists;
+3. the Worktree origin is the authoritative repository;
+4. HEAD is the requested base SHA;
+5. the expected branch is actually checked out;
+6. HEAD is not detached; and
+7. the Worktree is clean.
+
+If a required condition is not established, stop before assigning the
+implementation task. Do not make the candidate repair or attach its own
+Worktree as part of the experiment, and do not treat a fixed sleep as proof of
+readiness. A bounded state-based readiness check is safer than assuming that
+thread creation and Worktree branch attachment complete atomically.
+
+Coordinator-facing list_threads or related inspection APIs may fail to expose
+a resource that is later visible in the human Codex UI. Therefore reports must
+distinguish:
+
+- **not observable through the coordinator-facing API during the inspected
+  interval**; from
+- **the resource did not exist**.
+
+Human-visible UI evidence can correct the first statement, but it should be
+recorded as a separate observation with its own timestamp and scope. Neither
+observation establishes the private provisioning, indexing, or scheduling
+mechanism. In particular, a repeated detached-HEAD Worktree is evidence of a
+readiness failure, not proof of a race, capacity limit, registry saturation, or
+backend implementation detail.
+
 ## Evidence categories
 
 Keep the following categories separate in future reports and documentation:
