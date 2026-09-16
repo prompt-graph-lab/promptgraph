@@ -290,8 +290,10 @@ Only after the explicit branch setup, verify:
 4. the Worktree is clean; and
 5. candidate isolation remains intact.
 
-If the selected orchestration path promises named-branch attachment and that
-condition cannot be established, stop before assigning the implementation task.
+If the task or experiment requires a named branch and the explicit
+coordinator-owned branch-setup stage cannot establish it, stop before assigning
+the implementation task. Whether the initial provisioning path itself promises
+named-branch attachment is a separate contract question.
 Do not make the candidate repair or attach its own Worktree as part of the
 experiment unless that repair is an explicitly recorded experimental condition.
 Do not treat a fixed sleep as proof of readiness; use bounded, state-based
@@ -310,9 +312,10 @@ recorded as a separate observation with its own timestamp and scope. Neither
 observation establishes the private provisioning, indexing, or scheduling
 mechanism. In particular, a detached-HEAD Worktree is not by itself proof of a
 race, capacity limit, registry saturation, or backend implementation detail. It
-is a setup failure only after the protocol has established that the selected
-path promises named-branch attachment and the explicit attachment stage has
-failed.
+is a setup failure only when the task or experiment requires named-branch
+attachment and the explicit attachment stage has failed to establish it.
+Whether the initial provisioning path itself promises branch attachment remains
+a separate contract question.
 
 For future Fresh external create attempts, preserve the full observable request
 shape and response where possible, including project/target, environment type,
