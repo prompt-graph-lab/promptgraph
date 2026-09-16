@@ -237,26 +237,65 @@ verify the package against current repository evidence before implementation
 ownership begins. Current repository state remains authoritative over the
 package and over retained context.
 
-## Fresh project-local readiness and API visibility
+## Fresh project-local readiness, branch setup, and API visibility
 
 An accepted fresh-thread or client-resource result is not by itself proof that
-the implementation environment is ready. Before sending a real implementation
-task to a newly provisioned project-local Astra, verify the following where the
-available APIs and repository state make them observable:
+the implementation environment is ready. Also, a new Codex Managed Worktree
+may legitimately begin at a clean detached HEAD. Treat initial Worktree
+provenance and experiment branch setup as separate stages rather than assuming
+that thread creation, Worktree creation, and branch attachment complete
+atomically.
+
+### Stage 1: initial Worktree provenance
+
+After a Fresh resource is created, verify where the available APIs and repository
+state make them observable:
 
 1. a real thread is addressable;
 2. the project-local Worktree exists;
 3. the Worktree origin is the authoritative repository;
 4. HEAD is the requested base SHA;
-5. the expected branch is actually checked out;
-6. HEAD is not detached; and
-7. the Worktree is clean.
+5. the Worktree is clean; and
+6. candidate isolation is intact.
 
-If a required condition is not established, stop before assigning the
-implementation task. Do not make the candidate repair or attach its own
-Worktree as part of the experiment, and do not treat a fixed sleep as proof of
-readiness. A bounded state-based readiness check is safer than assuming that
-thread creation and Worktree branch attachment complete atomically.
+A detached HEAD is permitted at this stage when the selected provisioning path
+legitimately creates Managed Worktrees detached. Detached state alone is not
+proof of a provisioning failure.
+
+### Stage 2: explicit experiment branch setup
+
+If the task or experiment requires a named branch, the coordinator should
+explicitly create and attach the deterministic experiment branch from the exact
+verified base before sending implementation work. Prefer coordinator-owned Git
+setup for Astra comparisons so branch setup skill is not mixed into the
+implementation-quality comparison.
+
+Record where available:
+
+- branch name;
+- base SHA;
+- actor;
+- command or orchestration action; and
+- timestamp.
+
+Do not rely on an implicit backend attachment.
+
+### Stage 3: post-setup provenance gate
+
+Only after the explicit branch setup, verify:
+
+1. the expected branch is actually checked out;
+2. HEAD is not detached;
+3. the branch points to the intended base before candidate edits;
+4. the Worktree is clean; and
+5. candidate isolation remains intact.
+
+If the selected orchestration path promises named-branch attachment and that
+condition cannot be established, stop before assigning the implementation task.
+Do not make the candidate repair or attach its own Worktree as part of the
+experiment unless that repair is an explicitly recorded experimental condition.
+Do not treat a fixed sleep as proof of readiness; use bounded, state-based
+checks instead.
 
 Coordinator-facing list_threads or related inspection APIs may fail to expose
 a resource that is later visible in the human Codex UI. Therefore reports must
@@ -269,9 +308,17 @@ distinguish:
 Human-visible UI evidence can correct the first statement, but it should be
 recorded as a separate observation with its own timestamp and scope. Neither
 observation establishes the private provisioning, indexing, or scheduling
-mechanism. In particular, a repeated detached-HEAD Worktree is evidence of a
-readiness failure, not proof of a race, capacity limit, registry saturation, or
-backend implementation detail.
+mechanism. In particular, a detached-HEAD Worktree is not by itself proof of a
+race, capacity limit, registry saturation, or backend implementation detail. It
+is a setup failure only after the protocol has established that the selected
+path promises named-branch attachment and the explicit attachment stage has
+failed.
+
+For future Fresh external create attempts, preserve the full observable request
+shape and response where possible, including project/target, environment type,
+`startingState`, `branchName`, `onMissing`, model, thinking, title,
+clientThreadId, and the resulting Worktree path and state. Missing request
+bodies materially complicate later incident reconstruction.
 
 ## Evidence categories
 

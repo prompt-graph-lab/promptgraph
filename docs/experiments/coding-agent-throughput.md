@@ -127,6 +127,11 @@ UI.
 
 ## ASTRA-MSC Round 3 postmortem correction
 
+The full chronology and the later branch-semantics audit are recorded in
+[`Astra-MSC Worktree and branch-attachment postmortem`](astra-msc-worktree-branch-postmortem.md).
+The section below preserves the original Round 3 evidence while qualifying its
+initial readiness interpretation.
+
 Round 3 remains **TERMINAL-BLOCKED / PROTOCOL-DEVIATED**. No valid three-way
 blind implementation ranking was completed. The recovered human-visible Codex
 UI evidence corrects the earlier coordinator-facing interpretation of the
@@ -159,12 +164,15 @@ than attached to those branches. The same branch-ref-versus-detached-Worktree
 shape was observed for sanity-q4m7. These are separate observations of
 repository state; they do not expose the private provisioning mechanism.
 
-The directly observed failure for these Fresh resources is therefore a
-project-local readiness failure: the worker reached a Worktree with the
-correct repository, origin, base, and clean state, but not with the required
-expected branch checked out. A separate observability discrepancy existed
-because the human-visible UI exposed resources that the coordinator-facing
-thread/list APIs did not expose at the time.
+The directly observed state for these Fresh resources was a mismatch with the
+then-required project-local readiness protocol: the worker reached a Worktree
+with the correct repository, origin, base, and clean state, but not with the
+required expected branch checked out. A separate observability discrepancy
+existed because the human-visible UI exposed resources that the
+coordinator-facing thread/list APIs did not expose at the time. Later evidence
+showed that detached HEAD can be a normal initial state for at least one
+Codex Managed Worktree path, so this state is not by itself proof of a platform
+provisioning failure.
 
 ### Experimental consequence
 
@@ -187,28 +195,27 @@ The completed Round 3 results remain preserved:
 ### Interpretation limits and readiness recommendation
 
 The three resources provide direct evidence of repeated detached-Worktree
-readiness failures and a coordinator-API visibility discrepancy. They do not
-establish a race condition, registry saturation, thread or Worktree limit,
-resource exhaustion, indexing bug, or any other private backend mechanism.
-Accumulated resources, eventual consistency, provisioning degradation, and API
-visibility limitations remain hypotheses.
+states under the then-used readiness protocol and a coordinator-API visibility
+discrepancy. The later forensic audit classified branch behavior as
+**MIXED SEMANTICS / CONTEXT-DEPENDENT**: detached HEAD is normal for at least
+one Managed Worktree path, while successful Astra-MSC runs also used explicit
+worker-side or coordinator-side branch setup. The evidence does not establish
+a race condition, registry saturation, thread or Worktree limit, resource
+exhaustion, indexing bug, or any other private backend mechanism. Accumulated
+resources, eventual consistency, provisioning degradation, and API visibility
+limitations remain hypotheses.
 
 Before sending implementation work to a newly provisioned Fresh project-local
-Astra, verify the readiness state where observable:
-
-1. a real thread is addressable;
-2. the project-local Worktree exists;
-3. origin is the authoritative public repository;
-4. HEAD is the requested base SHA;
-5. the expected branch is checked out;
-6. HEAD is not detached; and
-7. the Worktree is clean.
-
-If the expected branch attachment or another required readiness condition
-cannot be established, stop before assigning the candidate implementation.
-Do not ask the candidate to repair its own provisioning as part of the
-experimental task. This is an operational recommendation, not a claim about
-platform internals.
+Astra, use the staged protocol in the operations guidance: first verify thread,
+Worktree, origin, exact base, clean state, and isolation; then explicitly create
+and attach the deterministic experiment branch from that verified base when a
+named branch is required; then verify the named branch, non-detached HEAD,
+intended base, clean state, and isolation before task delivery. A detached HEAD
+is permitted during the initial stage when that path creates Managed Worktrees
+detached. Missing named-branch attachment is a setup failure only after the
+explicit branch-setup stage for a protocol that requires it. Do not ask the
+candidate to repair its own provisioning as part of the experimental task.
+This is an operational recommendation, not a claim about platform internals.
 
 ## Future topology A/B gate
 
