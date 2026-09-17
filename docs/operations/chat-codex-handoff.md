@@ -349,12 +349,15 @@ target:
       branchName: main
 ```
 
-The request must keep `projectId` inside `target` only. Do not add a duplicate
-top-level `projectId`, top-level environment or branch fields, `onMissing`,
-explicit null/default values, or other unsupported options. A1 used the
-duplicate top-level field and was rejected with `INVALID_ARGUMENTS`; the raw
-request for the earlier u7n5 attempt was not recoverable, so that historical
-failure is not attributed to the same cause.
+The request must keep `projectId` inside `target` only. The direct forensic
+finding from A1 is that it added a duplicate top-level `projectId` and was
+rejected with `INVALID_ARGUMENTS`; the raw request for the earlier u7n5 attempt
+was not recoverable, so that historical failure is not attributed to the same
+cause. To preserve A2 reproducibility, the provisional Round 4 rule is to keep
+the known-good minimal shape: retain the nested environment and starting-state
+fields, and omit `onMissing`, explicit null/default fields, and additional
+options unless they are specifically required and supported. Their omission
+from A2 does **not** establish that they are universally unsupported.
 
 The A2 reproduction showed the following directly:
 
