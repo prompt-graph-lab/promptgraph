@@ -217,6 +217,24 @@ explicit branch-setup stage for a protocol that requires it. Do not ask the
 candidate to repair its own provisioning as part of the experimental task.
 This is an operational recommendation, not a claim about platform internals.
 
+### Current Fresh thread addressability qualification
+
+A separate A2 reproduction on 2026-09-18 tested Fresh thread identity without
+implementation work. It confirmed a **DIRECT_ADDRESSABLE_DISCOVERY_GAP** for
+that resource: the resolved durable identity was readable and accepted one
+follow-up probe, while a valid `list_threads` result omitted the resource.
+
+This does not change the Round 3 **TERMINAL-BLOCKED / PROTOCOL-DEVIATED**
+classification and does not establish Round 4 success. It adds a provisional
+operational qualification: `list_threads` visibility must be recorded
+separately from direct thread addressability, and a read-only local binding
+fallback may be used only as a compatibility measure when supported discovery
+does not expose the Fresh identity. The fallback is not a stable API contract.
+The detailed staged procedure is maintained in
+[`docs/operations/chat-codex-handoff.md`](../operations/chat-codex-handoff.md),
+and the incident-specific follow-up is recorded in the
+[`Astra-MSC Worktree and branch-attachment postmortem`](astra-msc-worktree-branch-postmortem.md).
+
 ## Future topology A/B gate
 
 Before the next internal-vs-external Astra comparison begins task execution,
