@@ -432,6 +432,56 @@ Until Round 4 provides stronger evidence, the staged flow is:
 This flow is an operational recommendation derived from observed behavior. It
 does not establish the private provisioning, indexing, or scheduling mechanism.
 
+### Persistent Warm lifecycle (PROVISIONAL)
+
+Round 4 exposed a separate lifecycle requirement for a persistent Warm
+experiment. A persistent Warm resource must be treated as two identities that
+need independent verification:
+
+1. the durable conversation/thread identity and its context integrity; and
+2. the execution-environment identity bound to that conversation, including an
+   existing filesystem path, readable repository, registered Git Worktree, and
+   the expected repository/origin/base/branch/clean state for the experiment.
+
+This is a **PROVISIONAL operational rule**, not a claim about private Codex
+implementation. A durable conversation is not by itself a ready Warm resource,
+and a separately preserved historical Worktree is not by itself evidence that
+the conversation is bound to that Worktree.
+
+Before using a persistent Warm resource for an experiment, verify both axes
+read-only and keep them separate in the report:
+
+- **Conversation/context axis:** the durable thread is the intended lineage,
+  the required retained context is observable through an appropriate evidence
+  surface, and no unintended message or turn has contaminated the condition.
+- **Execution-environment axis:** the thread-reported cwd exists, resolves to
+  the intended repository, is registered as the expected Worktree, and passes
+  the repository/origin/base/branch/clean checks required by the experiment.
+
+If either axis fails, stop before implementation delivery. Do not infer that a
+conversation is reusable merely because its UI remains visible, and do not
+infer that a Worktree is reusable merely because its branch or commit remains
+reachable elsewhere. During an active persistent experiment, the bound Worktree
+must be treated as protected from cleanup until the experiment explicitly ends.
+
+The Round 4 evidence supporting this rule was narrow and direct:
+
+- the canonical Warm thread retained a durable conversation and a persisted
+  memory-probe response, although the coordinator projection omitted that
+  response;
+- the same thread reported the missing `6db4` cwd;
+- a historical Warm Worktree remained separately registered and clean at
+  `a2f8`; and
+- no direct evidence established that the conversation had ever been rebound
+  from `6db4` to `a2f8`.
+
+Therefore, a stale or missing cwd is an environment-readiness failure, while an
+unintended persisted message is a context-integrity failure. Neither should be
+silently repaired by editing local Codex state, recreating a path with the same
+name, or treating a separate Worktree as an implicit rebind. Any future rebind
+or Warm replacement requires an explicitly supported operation and a separate
+experimental-design decision.
+
 ## Evidence categories
 
 Keep the following categories separate in future reports and documentation:
