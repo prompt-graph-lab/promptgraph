@@ -257,6 +257,8 @@ from core.gallery_variant_promotion import (
     build_batch_variant_promotion_plan,
     build_batch_variant_promotion_signature,
     normalize_batch_variant_promotion_scope,
+    normalize_candidate_line_for_main_sequence,
+    prepare_gallery_variant_promotion_line,
     resolve_batch_variant_promotion_targets,
     resolve_variant_promotion_insert_index,
 )
@@ -8288,17 +8290,6 @@ def move_gallery_selected_lines_after(project, selected_ids: list[str], target_l
     return True
 
 
-def normalize_candidate_line_for_main_sequence(line):
-    line.line_type = None
-    line.separator_label = None
-    line.separator_color = None
-    line.workbench_source_line_id = None
-    line.workbench_title = None
-    line.workbench_note = None
-    line.workbench_status = None
-    return line
-
-
 def insert_candidate_after_line(
     project,
     line_id: str,
@@ -8406,52 +8397,13 @@ def promote_gallery_variant_to_route(
 
     if manage_state:
         push_history()
-    new_line = copy.deepcopy(source_line)
-    new_line.id = f"line_{uuid.uuid4().hex[:8]}"
-    new_line.original_file_name = os.path.basename(str(variant_path)) or source_line.original_file_name
-    new_line.original_text = source_line.current_text
-    new_line.current_text = source_line.current_text
-    new_line.tokens = parse_prompt(source_line.current_text)
-    new_line.duplicated_from = source_line.id
-    new_line.edited = True
-    new_line.deleted = False
-    new_line.image_path = variant_path
-    new_line.generated_image_path = None
-    new_line.selected_candidate_path = None
-    new_line.generated_candidates = []
-    new_line.gallery_variants = []
-    normalize_candidate_line_for_main_sequence(new_line)
-
-    source_info = variant.get("source_generation_info")
-    if isinstance(source_info, dict):
-        new_line.source_generation_info = dict(source_info)
-    else:
-        new_line.source_generation_info = build_source_generation_info_from_candidate(
-            source_line,
-            variant_path,
-            _variant_record_for_promotion(variant),
-        )
-
-    lineage_info = variant.get("lineage_info")
-    if isinstance(lineage_info, dict):
-        new_line.lineage_info = dict(lineage_info)
-    else:
-        new_line.lineage_info = build_lineage_info_from_candidate(
-            source_line,
-            variant_path,
-            _variant_record_for_promotion(variant),
-        )
-    new_line.lineage_info["lineage_kind"] = "gallery_variant_promote_to_route"
-    new_line.lineage_info["parent_line_id"] = str(getattr(source_line, "id", "") or "")
-    new_line.lineage_info["parent_line_index"] = getattr(source_line, "current_index", None)
-    new_line.lineage_info["parent_line_label"] = str(getattr(source_line, "original_file_name", "") or getattr(source_line, "id", ""))
-    parent_image_path = _selected_candidate_path(source_line) or getattr(source_line, "image_path", None)
-    if parent_image_path:
-        new_line.lineage_info["parent_image_path"] = str(parent_image_path)
-    if variant.get("id"):
-        new_line.lineage_info["promoted_from_variant_id"] = str(variant["id"])
-    new_line.lineage_info["promoted_from_variant_path"] = variant_path
-    new_line.lineage_info["candidate_image_path"] = variant_path
+    new_line = prepare_gallery_variant_promotion_line(
+        source_line,
+        variant,
+        variant_path,
+        lambda: f"line_{uuid.uuid4().hex[:8]}",
+        _variant_record_for_promotion,
+    )
 
     insert_index = _promoted_route_insert_index(project, line_id, placement)
     project.prompt_lines.insert(insert_index, new_line)

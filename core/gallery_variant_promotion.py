@@ -9,7 +9,86 @@ import os
 from collections import Counter
 from typing import Any, Callable, Iterable
 
+from core.candidate_inspection import _selected_candidate_path
+from core.io import build_lineage_info_from_candidate, build_source_generation_info_from_candidate
+from core.parser import parse_prompt
+from core.project import PromptLine
 from core.route_operations import resolve_route_block, sanitize_selected_route_ids
+
+
+def normalize_candidate_line_for_main_sequence(line):
+    line.line_type = None
+    line.separator_label = None
+    line.separator_color = None
+    line.workbench_source_line_id = None
+    line.workbench_title = None
+    line.workbench_note = None
+    line.workbench_status = None
+    return line
+
+
+def prepare_gallery_variant_promotion_line(
+    source_line: PromptLine,
+    variant: dict,
+    variant_path: str,
+    new_line_id: str | Callable[[], str],
+    promotion_metadata: Callable[[dict], dict],
+) -> PromptLine:
+    """Prepare an unpublished promotion without changing its source or variant.
+
+    The caller supplies path-aware metadata preparation lazily: each missing
+    info dictionary requests its own record, in source-generation then lineage
+    order. An ID factory preserves ID allocation after deepcopy in the caller.
+    Existing info dictionaries are shallow-copied, retaining nested aliases.
+    """
+    new_line = copy.deepcopy(source_line)
+    new_line.id = new_line_id() if callable(new_line_id) else new_line_id
+    new_line.original_file_name = os.path.basename(str(variant_path)) or source_line.original_file_name
+    new_line.original_text = source_line.current_text
+    new_line.current_text = source_line.current_text
+    new_line.tokens = parse_prompt(source_line.current_text)
+    new_line.duplicated_from = source_line.id
+    new_line.edited = True
+    new_line.deleted = False
+    new_line.image_path = variant_path
+    new_line.generated_image_path = None
+    new_line.selected_candidate_path = None
+    new_line.generated_candidates = []
+    new_line.gallery_variants = []
+    normalize_candidate_line_for_main_sequence(new_line)
+
+    source_info = variant.get("source_generation_info")
+    if isinstance(source_info, dict):
+        new_line.source_generation_info = dict(source_info)
+    else:
+        new_line.source_generation_info = build_source_generation_info_from_candidate(
+            source_line,
+            variant_path,
+            promotion_metadata(variant),
+        )
+
+    lineage_info = variant.get("lineage_info")
+    if isinstance(lineage_info, dict):
+        new_line.lineage_info = dict(lineage_info)
+    else:
+        new_line.lineage_info = build_lineage_info_from_candidate(
+            source_line,
+            variant_path,
+            promotion_metadata(variant),
+        )
+    new_line.lineage_info["lineage_kind"] = "gallery_variant_promote_to_route"
+    new_line.lineage_info["parent_line_id"] = str(getattr(source_line, "id", "") or "")
+    new_line.lineage_info["parent_line_index"] = getattr(source_line, "current_index", None)
+    new_line.lineage_info["parent_line_label"] = str(getattr(source_line, "original_file_name", "") or getattr(source_line, "id", ""))
+    parent_image_path = _selected_candidate_path(source_line) or getattr(source_line, "image_path", None)
+    if parent_image_path:
+        new_line.lineage_info["parent_image_path"] = str(parent_image_path)
+    if variant.get("id"):
+        new_line.lineage_info["promoted_from_variant_id"] = str(variant["id"])
+    new_line.lineage_info["promoted_from_variant_path"] = variant_path
+    new_line.lineage_info["candidate_image_path"] = variant_path
+
+    return new_line
 
 
 VALID_SCOPES = (
