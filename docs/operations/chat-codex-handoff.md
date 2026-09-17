@@ -409,7 +409,10 @@ compatibility risk.
 
 #### Provisional Fresh Astra flow
 
-Until Round 4 provides stronger evidence, the staged flow is:
+Round 4 provided two observed Fresh successes using this flow. That increases
+confidence in the procedure, but does not establish universal future
+reliability. The staged flow remains the current **PROVISIONAL** operational
+recommendation:
 
 1. **Create:** create exactly one Fresh resource, preserve the request and
    response, and capture the client identifier.
@@ -463,6 +466,15 @@ conversation is reusable merely because its UI remains visible, and do not
 infer that a Worktree is reusable merely because its branch or commit remains
 reachable elsewhere. During an active persistent experiment, the bound Worktree
 must be treated as protected from cleanup until the experiment explicitly ends.
+
+Before removing a Codex-managed Worktree that may belong to a retained
+persistent experiment, check whether any preserved thread currently reports
+that path as its cwd. If a preserved thread references the path, classify the
+resource as `PRESERVE`. If the reference state is uncertain, classify it as
+`HUMAN_DECISION_REQUIRED`. Git-level dispensability alone is insufficient to
+delete a Worktree that may be bound to a retained conversation. Classify it as
+`SAFE_TO_DELETE` only when no preserved thread references the path and no active
+experiment depends on it.
 
 The Round 4 evidence supporting this rule was narrow and direct:
 
