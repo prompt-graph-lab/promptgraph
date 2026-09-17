@@ -235,6 +235,48 @@ The detailed staged procedure is maintained in
 and the incident-specific follow-up is recorded in the
 [`Astra-MSC Worktree and branch-attachment postmortem`](astra-msc-worktree-branch-postmortem.md).
 
+## Astra-MSC Round 4 closeout — incomplete three-arm experiment
+
+Round 4 used the exact frozen base
+`bc9b1d44863ebb36edf9e4ffe4270f4bff5a25a0` and was intended to retry the
+three-arm Round 3 comparison. It is closed as:
+
+**INCOMPLETE / NO_VALID_THREE_ARM_RANKING**
+
+Two Fresh candidates completed valid implementations from the frozen base.
+Their branches, commits, Worktrees, implementation evidence, and focused
+validation results remain preserved for later forensic or qualitative review.
+The candidate-to-condition mapping remains withheld from this public record and
+from blind ranking. The two neutral validation records were:
+
+- one focused run: 30 passed with 40 subtests;
+- one focused run: 32 tests, `OK`.
+
+Those Fresh results are not included in an Astra-MSC quality ranking because the
+Warm arm did not reach implementation.
+
+The Warm arm is recorded on two independent axes:
+
+- **Conversation/context:** `CONTAMINATED`. The retained-context memory-probe
+  response was present in durable rollout persistence but omitted from the
+  coordinator-facing `read_thread` projection. Separately, an unintended human
+  message was persisted, its turn began and was interrupted, and no assistant
+  output from that accidental turn was observed in persistence.
+- **Execution environment:** `ENVIRONMENT_STALE`. The canonical Warm thread
+  pointed to the missing `6db4` Worktree path, while the historical Round 3
+  Warm Worktree remained separately registered and clean at `a2f8` on
+  `experiment/r3-p7w2` at `da9ef79cdac0290bfb266fb16850b47e6bbbaf25`.
+
+Warm implementation quality was **NOT OBSERVED**. The Warm outcome is an
+orchestration and experimental-integrity failure, not a quality failure. The
+canonical Warm conversation and historical Worktree are preserved as forensic
+evidence; this closeout does not repair the stale binding, edit or delete the
+accidental turn, create a successor, or attach a new Worktree.
+
+Round 4 is therefore not added to the Round 1/2 quality averages. The retained
+averages remain based on `n=2`. No three-way ranking, candidate reveal, or
+implementation merge was performed.
+
 ## Future topology A/B gate
 
 Before the next internal-vs-external Astra comparison begins task execution,
