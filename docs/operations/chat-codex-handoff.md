@@ -251,7 +251,8 @@ atomically.
 After a Fresh resource is created, verify where the available APIs and repository
 state make them observable:
 
-1. a real thread is addressable;
+1. a real or durable thread identity is directly addressable through the
+   available thread API;
 2. the project-local Worktree exists;
 3. the Worktree origin is the authoritative repository;
 4. HEAD is the requested base SHA;
@@ -322,6 +323,111 @@ shape and response where possible, including project/target, environment type,
 `startingState`, `branchName`, `onMissing`, model, thinking, title,
 clientThreadId, and the resulting Worktree path and state. Missing request
 bodies materially complicate later incident reconstruction.
+
+### Fresh thread identity and discovery (PROVISIONAL)
+
+The following is a **PROVISIONAL** operating rule based on the single A2
+addressability reproduction completed on 2026-09-18. It is an observed
+compatibility procedure, not a stable Codex/OpenAI API contract, and remains
+subject to end-to-end validation by Round 4.
+
+The known-good structural shape for a Fresh project-local `create_thread`
+request is:
+
+```yaml
+title: <fresh-resource-title>
+prompt: <fresh-resource-prompt>
+model: gpt-6-astra
+thinking: low
+target:
+  type: project
+  projectId: <registered-project-id>
+  environment:
+    type: worktree
+    startingState:
+      type: branch
+      branchName: main
+```
+
+The request must keep `projectId` inside `target` only. Do not add a duplicate
+top-level `projectId`, top-level environment or branch fields, `onMissing`,
+explicit null/default values, or other unsupported options. A1 used the
+duplicate top-level field and was rejected with `INVALID_ARGUMENTS`; the raw
+request for the earlier u7n5 attempt was not recoverable, so that historical
+failure is not attributed to the same cause.
+
+The A2 reproduction showed the following directly:
+
+- `create_thread` returned a client resource identifier;
+- the local Codex state contained a client-to-durable-thread binding;
+- reading the client identifier itself failed as an invalid conversation;
+- reading the resolved durable identifier succeeded;
+- a follow-up message sent to the durable identifier succeeded and produced the
+  expected probe response; and
+- a valid `list_threads` call did not include the directly readable thread.
+
+The public experiment record intentionally omits the concrete client and
+session identifiers. They are evidence for that one run, not durable names to
+copy into future tasks. The observed classification is:
+
+**DIRECT_ADDRESSABLE_DISCOVERY_GAP**
+
+Therefore, in this observed coordinator environment:
+
+> **NOT LISTED != NOT ADDRESSABLE**
+
+`list_threads` must not be treated as authoritative proof that a Fresh resource
+does not exist or cannot receive a follow-up. This qualification is scoped to
+the observed environment and resource; it is not a claim that the discovery
+API is universally broken.
+
+#### Provisional durable-identity fallback
+
+Use this **FALLBACK** only when the normal supported/direct discovery surfaces
+do not expose a usable durable identity:
+
+1. Call `create_thread` with the known-good request shape and preserve the raw
+   request and response.
+2. Preserve the returned client identifier and its timestamp.
+3. Try the normal supported thread-read/discovery surfaces first.
+4. If discovery still fails, inspect the local Codex state read-only for the
+   `client-thread-bindings-v1` mapping.
+5. Verify the resolved durable identifier with `read_thread`.
+6. Use that verified durable identifier for subsequent coordinator messages
+   and reads.
+7. Preserve the mapping source, timestamps, and the separate `list_threads`
+   visibility result.
+
+`client-thread-bindings-v1` is an observed internal/local state surface and is
+**NOT A STABLE API CONTRACT**. Never mutate it or build permanent application
+logic around it. Prefer an official thread-resolution or discovery API if one
+is available, and treat a change in this local representation as an expected
+compatibility risk.
+
+#### Provisional Fresh Astra flow
+
+Until Round 4 provides stronger evidence, the staged flow is:
+
+1. **Create:** create exactly one Fresh resource, preserve the request and
+   response, and capture the client identifier.
+2. **Resolve:** use supported discovery first, then the read-only fallback if
+   necessary; verify a durable identity with `read_thread`.
+3. **Initial provenance:** verify the project, authoritative origin, exact
+   frozen base, clean isolated Worktree, and initial branch state. Detached
+   HEAD is permitted at this stage.
+4. **Branch setup:** when the experiment requires a named branch, the
+   coordinator creates and attaches it from the verified base, recording actor,
+   action, and timestamp.
+5. **Post-setup gate:** verify the expected branch, non-detached HEAD, exact
+   pre-edit base, clean state, and isolation.
+6. **Task delivery:** send the implementation task only through the verified
+   durable identity.
+7. **Later coordination:** read and message the known durable identity
+   directly; do not rediscover an already-known Fresh worker through
+   `list_threads`.
+
+This flow is an operational recommendation derived from observed behavior. It
+does not establish the private provisioning, indexing, or scheduling mechanism.
 
 ## Evidence categories
 

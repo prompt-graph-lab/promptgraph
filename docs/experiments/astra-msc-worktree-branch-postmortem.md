@@ -332,6 +332,47 @@ The corresponding operational guidance is updated in
 `docs/operations/chat-codex-handoff.md`, and the experiment log is updated in
 `docs/experiments/coding-agent-throughput.md`.
 
+## Follow-up: Fresh thread addressability reproduction
+
+Round 4 remained **NOT STARTED** when a separate, implementation-free A2
+addressability reproduction was run on 2026-09-18. This was not another
+implementation candidate and did not change the Round 3 classification.
+
+The A2 resource used the recovered successful `create_thread` request shape.
+It was accepted, received a client identifier, and immediately acquired a
+durable thread identity in the local Codex state. The client identifier itself
+was not accepted by `read_thread`, while the resolved durable identity was
+readable. A single follow-up probe sent through that durable identity succeeded
+and returned the expected `ADDRESSABLE` response. A valid `list_threads` call
+still omitted the resource.
+
+The resulting classification was:
+
+**DIRECT_ADDRESSABLE_DISCOVERY_GAP**
+
+This separates two concerns that had previously been conflated:
+
+- **Git/Worktree readiness:** the Round 4 preflight demonstrated that an
+  initially detached Managed Worktree can pass coordinator-owned branch setup
+  and that the worker can observe the resulting named branch, exact base, and
+  clean state; and
+- **thread discovery:** the A2 resource was directly readable and messageable
+  through its durable identity even though it was absent from `list_threads`.
+
+This is direct evidence for the tested resource and coordinator environment
+only. It does not establish why discovery omits the resource, that the local
+binding representation is stable, or that Round 4 can complete end to end.
+The local client-to-durable binding is therefore documented as a **PROVISIONAL
+FALLBACK**, **NOT A STABLE API CONTRACT**, and must be inspected read-only.
+The concrete client and session identifiers remain in the source experiment
+report rather than this public postmortem.
+
+The provisional operating procedure is maintained in
+[`docs/operations/chat-codex-handoff.md`](../operations/chat-codex-handoff.md):
+preserve the exact create request, resolve and verify a durable identity, keep
+`list_threads` visibility separate from direct addressability, complete staged
+Worktree/branch provenance, and only then deliver implementation work.
+
 ## Remaining uncertainty
 
 ### Directly observed
