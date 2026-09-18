@@ -277,6 +277,53 @@ Round 4 is therefore not added to the Round 1/2 quality averages. The retained
 averages remain based on `n=2`. No three-way ranking, candidate reveal, or
 implementation merge was performed.
 
+### Follow-up: rebind, fork, and manual edit evidence
+
+The post-Round 4 disposable probes further narrowed the available recovery
+paths for the historical Warm lineage. An existing disposable conversation was
+not rebound to an explicitly selected manually created Worktree #2. The
+available supported surfaces established only the following bounded result:
+
+**AMBIGUOUS_SUPPORTED_SURFACE**
+
+`create_thread` creates a new resource, `send_message_to_thread` changes
+conversation activity, and `handoff_thread` did not expose an arbitrary target
+Worktree identity or path for this probe. This does not establish that arbitrary
+rebind is impossible; it establishes only that an explicit supported
+arbitrary-target rebind surface was not demonstrated.
+
+The tested ordinary `fork_thread` surface produced a distinct child conversation
+and Worktree, but exposed no historical fork-point selector. The child inherited
+both pre-fork and post-marker history, so the observed result was:
+
+**LATEST_STATE_FORK_ONLY**
+
+This does not establish that every UI or private surface lacks historical fork
+selection. It records the behavior of the supported surface tested here.
+
+A human UI edit of the accidental Warm message produced a new visible
+conversation branch. The resulting Astra response recalled the required Round 3
+context and reported no memory of the replaced message or later old-branch
+content. However, the forensic audit found no distinct successor durable ID or
+successor-specific client identifier; the edited rollout remained associated
+with the original durable thread and its missing `6db4` cwd. The original
+lineage still retained the accidental message and interrupted turn. The
+classification is therefore:
+
+**MANUAL EDIT-BRANCH ISOLATION: INSUFFICIENT_EVIDENCE**
+
+The UI observation is useful evidence about the model-visible conversational
+path, but it does not establish an independently addressable clean experimental
+resource. The execution classification remains:
+
+**SUCCESSOR_ENVIRONMENT_MISSING**
+
+These findings do not alter the Round 4 closeout or create a valid Warm arm.
+They imply only that a future Warm v2 should be designed as a new seed lineage,
+with its conversation identity and bound execution environment created and
+verified together. It should not be called persistent at creation time, and
+Round 5 design remains outside this record.
+
 ## Future topology A/B gate
 
 Before the next internal-vs-external Astra comparison begins task execution,
