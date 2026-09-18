@@ -46,6 +46,7 @@ class AppExtractedPromptIntegrationTests(unittest.TestCase):
             and node.module in {
                 "core.prompt_inspection", "core.comfy_prompt_binding",
                 "core.comfy_workflow_preparation", "core.comfy_workflow_metadata",
+                "core.comfy_workflow_source_selection",
             }
         ) or (isinstance(node, ast.FunctionDef) and node.name in names)]
         cls.code = compile(ast.Module(body=nodes, type_ignores=[]), str(ROOT / "app.py"), "exec")
@@ -172,6 +173,8 @@ class AppExtractedPromptIntegrationTests(unittest.TestCase):
             force_shared_comfy_workflow=True,
         )
         self.st.session_state = state
+        acquire = Mock(side_effect=AssertionError("Forced preview must bypass metadata acquisition"))
+        self.namespace["find_image_metadata_for_line"] = acquire
         line = SimpleNamespace(id="line-1", tokens=["smile"], current_text="smile")
         workflow = {"p": {"inputs": {"text": "__PROMPT__"}}}
         with tempfile.TemporaryDirectory() as directory:
@@ -185,6 +188,7 @@ class AppExtractedPromptIntegrationTests(unittest.TestCase):
         self.assertEqual(preview["source_kind"], "shared workflow")
         self.assertEqual(preview["workflow_json"]["p"]["inputs"]["text"], "smile")
         self.assertEqual(preview["warning"], "")
+        acquire.assert_not_called()
 
 
 if __name__ == "__main__":
