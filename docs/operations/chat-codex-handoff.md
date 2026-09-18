@@ -494,6 +494,48 @@ name, or treating a separate Worktree as an implicit rebind. Any future rebind
 or Warm replacement requires an explicitly supported operation and a separate
 experimental-design decision.
 
+### UI branches, forks, and durable resource identity (PROVISIONAL)
+
+The tested Worktree-rebind and conversation-branch operations expose several
+different kinds of continuity. They must not be treated as interchangeable:
+
+- `create_thread` creates a new conversation/resource;
+- the tested `fork_thread` surface created a distinct child conversation and
+  Worktree, but exposed no historical turn, message, item, or checkpoint
+  selector; and
+- `handoff_thread` exposed supported movement semantics, but did not expose an
+  explicit arbitrary target Worktree identity or path for the disposable
+  rebind probe.
+
+The resulting experimental classifications are deliberately narrow:
+
+- `AMBIGUOUS_SUPPORTED_SURFACE`: an explicit supported arbitrary-target rebind
+  surface was not established. This does not establish that rebind is
+  impossible;
+- `LATEST_STATE_FORK_ONLY`: the tested ordinary fork inherited both the
+  pre-fork and later marker history, so it did not isolate an earlier
+  historical point; and
+- `MANUAL_EDIT-BRANCH ISOLATION: INSUFFICIENT_EVIDENCE`: the human UI edit
+  produced a visibly different conversational path and the model reported no
+  memory of the replaced message or later old-branch content, but no distinct
+  durable successor identity or independently queryable persistence boundary
+  was exposed.
+
+For experimental use, a UI-visible branch or a model response about remembered
+context is not enough to establish a clean, independently addressable
+successor. Verify the durable identity, persistence boundary,
+execution-environment identity, and valid cwd/Worktree separately. A human UI
+edit branch may still be useful for ordinary conversational recovery, but its
+experimental cleanliness must be reported separately from its model-visible
+behavior.
+
+The original Warm lineage remains forensic evidence rather than a clean
+successor: its conversation/context axis remains contaminated, its binding
+still points at the missing `6db4` path, and the separately preserved `a2f8`
+Worktree is not an implicit rebind. A future Warm replacement should begin as
+a new seed lineage and should not be called persistent until it has earned
+retained prior-round context.
+
 ## Evidence categories
 
 Keep the following categories separate in future reports and documentation:
