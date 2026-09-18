@@ -322,7 +322,174 @@ These findings do not alter the Round 4 closeout or create a valid Warm arm.
 They imply only that a future Warm v2 should be designed as a new seed lineage,
 with its conversation identity and bound execution environment created and
 verified together. It should not be called persistent at creation time, and
-Round 5 design remains outside this record.
+the Round 5 design was outside the scope of this Round 4 recovery record; the
+formal Round 5 closeout is recorded below.
+
+## Astra-MSC Round 5 formal closeout — Warm v2 Seed round
+
+Round 5 was a **WARM_V2_SEED_ROUND**, not a valid three-way Persistent Warm
+comparison. The round was formally closed after the blind Fresh review was
+frozen and the sealed condition mapping was revealed. It remains separate from
+the product-code integration decision described below.
+
+### Authoritative state and execution record
+
+The round used the frozen base
+`361b95d05e243eee6050754fe34263d7f6ce2c27`. The merged PR #62 recovery and
+manual-edit documentation was present in `origin/main` before closeout, and
+the active resource registry was Issue [#63](https://github.com/prompt-graph-lab/promptgraph/issues/63).
+
+Three valid implementations were produced. Each passed the Fresh Worktree
+Stage 1/2/3 gates, used the same frozen base, completed one implementation
+commit, pushed a matching remote branch, and changed only:
+
+- `app.py`;
+- `core/gallery_variant_promotion.py`; and
+- `tests/test_gallery_variant_promotion_preparation.py`.
+
+The neutral execution records were:
+
+| Candidate | Branch | Commit | PR |
+| --- | --- | --- | --- |
+| A | `experiment/r5-k7m4` | `e4f65fb5d541db5aef609d1eaf546cc92403cfd2` | [#66](https://github.com/prompt-graph-lab/promptgraph/pull/66) |
+| B | `experiment/r5-p2x8` | `26c496ff7a4fdbdbc6f3bf2818718020881b11c3` | [#64](https://github.com/prompt-graph-lab/promptgraph/pull/64) |
+| C | `experiment/r5-v9q3` | `04e9ae6edde463a2bade7fb3aa996a84f74011f4` | [#65](https://github.com/prompt-graph-lab/promptgraph/pull/65) |
+
+The different focused-test counts are validation facts, not a quality score.
+All three candidates received a neutral technical review classification of
+`NO_FINDING`; no observed correctness defect was identified. Full-suite and
+live-UI validation were not run in this review.
+
+### Blindness accounting
+
+The correct accounting is:
+
+```text
+THREE_ARM_CONDITION_BLINDNESS: PARTIALLY_COMPROMISED_BY_LIFECYCLE_METADATA
+FRESH_PAIR_CONDITION_BLINDNESS: PRESERVED_THROUGH_FROZEN_COMPARISON
+WORKER_MAPPING_EXPOSURE: NO
+WORKER_CONTAMINATION: NO
+```
+
+The earlier execution report identified Candidate C as the neutral protected
+candidate. Because the Warm v2 Seed was the only resource intended for
+long-lived protection, an informed reviewer could infer Candidate C's
+lifecycle role. This did not expose the Minimal/Handoff identities of
+Candidates A/B, and it is not evidence of worker contamination or an
+implementation-quality effect.
+
+The Fresh-only comparison was finalized before the mapping reveal and must be
+treated as frozen evidence. It used neutral labels and no numeric score:
+
+- **Fresh Candidate X:** the narrower helper extraction, with the existing
+  app-side normalizer retained; 31 focused tests passed and no unresolved
+  correctness defect was identified.
+- **Fresh Candidate Y:** helper extraction plus centralization of the
+  main-sequence normalizer and its existing caller import; 38 focused tests
+  plus 10 candidate-inspection tests passed and no unresolved correctness
+  defect was identified.
+
+The observed difference is normalizer ownership and scope breadth, not a
+demonstrated behavioral failure. No Fresh candidate was ranked as superior.
+
+### Revealed mapping and Fresh observation
+
+After the Fresh-only comparison was frozen, the sealed mapping was revealed:
+
+```text
+Candidate A -> Fresh Minimal
+Candidate B -> Fresh Handoff
+Candidate C -> Warm v2 Seed
+
+Fresh Candidate X -> Candidate B -> Fresh Handoff
+Fresh Candidate Y -> Candidate A -> Fresh Minimal
+```
+
+The resulting Fresh observation is descriptive only:
+
+- **Fresh Minimal / Candidate A** performed the helper extraction and also
+  centralized main-sequence normalizer ownership into core, giving it broader
+  task-adjacent scope.
+- **Fresh Handoff / Candidate B** performed the narrowest helper extraction,
+  retained the existing app-side normalizer, and duplicated equivalent reset
+  semantics in the new helper.
+
+This single Round 5 observation does not establish that either condition
+caused the observed scope difference or that either condition was superior.
+It is not added to the historical three-way ranking averages.
+
+### Warm v2 Seed record
+
+Candidate C is classified only as:
+
+**WARM_V2_SEED_EVIDENCE_ONLY**
+
+It is not a Persistent Warm performance observation. The protected lineage was
+recorded in Issue #63 after the Fresh-only blind comparison had been frozen:
+
+- durable thread: `01a0b28e-6056-7d80-817a-5edd47b21820`;
+- client thread: `client-new-thread:2dba4d1b-db3b-47e1-8940-0e5bf1f0e768`;
+- Worktree: `C:\Users\monid\.codex\worktrees\6268\promptgraph`;
+- branch: `experiment/r5-v9q3`;
+- commit: `04e9ae6edde463a2bade7fb3aa996a84f74011f4`;
+- PR: [#65](https://github.com/prompt-graph-lab/promptgraph/pull/65).
+
+At closeout, the conversation was readable and preserved, the Worktree was
+registered and clean, the recorded branch and commit remained present, and the
+remote branch was preserved. Issue #63 records:
+
+```text
+lineage: WARM_V2
+phase: SEED
+protection: PROTECTED_WARM_V2
+```
+
+Round 6 is the earliest round in which this lineage may become
+`WARM_V2_PERSISTENT`, and only after the retained-context and
+execution-environment gates pass. No rebind, Worktree switch, or repair is
+implied by this record.
+
+### Historical accounting
+
+Historical accounting remains unchanged:
+
+- existing valid three-way quality-average basis: `n=2`;
+- Round 3: `TERMINAL-BLOCKED / PROTOCOL-DEVIATED`;
+- Round 4: `INCOMPLETE / NO_VALID_THREE_ARM_RANKING`;
+- Round 5: `WARM_V2_SEED_ROUND`;
+- `ORDINARY_THREE_WAY_RANKING: NO`;
+- `WARM_V2_PERSISTENT_OBSERVATION: NO`.
+
+Round 5 is not added to the old averages.
+
+### Product-code integration boundary
+
+Product-code selection is separate from experiment-condition interpretation.
+The current technical integration observations are:
+
+- [PR #64](https://github.com/prompt-graph-lab/promptgraph/pull/64) is the
+  narrowest viable extraction, with overlapping normalizer semantics as a
+  follow-up consideration.
+- [PR #65](https://github.com/prompt-graph-lab/promptgraph/pull/65) is viable
+  but retains duplicate normalizer ownership; it also carries the protected
+  Warm v2 Seed artifact and must not be cleaned up as part of product
+  integration.
+- [PR #66](https://github.com/prompt-graph-lab/promptgraph/pull/66) is viable,
+  centralizes normalizer ownership in core, and is broader than the minimum
+  extraction while remaining coherent.
+
+PR #66 is the leading product-code integration candidate because it leaves the
+cleanest single normalizer ownership. This is a product integration preference,
+not an experiment ranking, and no PR was merged by the Round 5 closeout.
+
+### Round 6 boundary
+
+Round 6 did not start. Before it begins, the product-code integration must be
+resolved separately, the next task and base must be frozen, and the Warm v2
+durable identity, retained context, bound cwd, registered Worktree, repository,
+origin, base, branch, and clean state must all be reverified. The same
+protected Worktree must be transitioned safely to the next frozen base only
+after those Persistent Warm readiness gates pass.
 
 ## Future topology A/B gate
 
