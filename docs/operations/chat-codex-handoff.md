@@ -18,6 +18,9 @@ measurements:
   describes finite-window continuity and successor handoffs.
 - [Coding-agent throughput experiments](../experiments/coding-agent-throughput.md)
   records the wider experiment series.
+- [Astra-MSC orchestration protocol](astra-msc-orchestration-protocol.md)
+  is the current operational baseline for staged Fresh/Persistent rounds,
+  blindness, retention, and post-round cleanup gates.
 
 The guidance below records an observation made on 2026-09-14. Platform
 behavior, model configuration, token accounting, and UI details may change;
