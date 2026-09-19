@@ -472,17 +472,17 @@ about topology.
 | 4 | not ranked | not ranked | not ranked | `INCOMPLETE / NO_VALID_THREE_ARM_RANKING` |
 | 5 | seed only | seed only | seed only | `WARM_V2_SEED_ROUND` |
 | 6 | 2 | 3 | 1 | valid three-way ranking |
+| 7 | 2 | 1 | 3 | valid with recorded external interruption |
 
-Across the three valid ranked rounds (`n=3`), the simple average rank is 2.0
-for each condition:
+Across the four valid ranked rounds (`n=4`), the simple average rank is:
 
-- Fresh Minimal: `(3 + 1 + 2) / 3 = 2.0`;
-- Fresh Handoff: `(1 + 2 + 3) / 3 = 2.0`;
-- Warm: `(2 + 3 + 1) / 3 = 2.0`.
+- Fresh Minimal: `(3 + 1 + 2 + 2) / 4 = 2.0`;
+- Fresh Handoff: `(1 + 2 + 3 + 1) / 4 = 1.75`;
+- Warm: `(2 + 3 + 1 + 3) / 4 = 2.25`.
 
 The Warm aggregate spans two persistent lineages: Warm v1 in Rounds 1–2 and
-Warm v2 Persistent in Round 6. It is therefore a descriptive aggregate across
-lineages, not evidence that persistence or lineage caused any rank.
+Warm v2 Persistent in Rounds 6–7. It is therefore a descriptive aggregate
+across lineages, not evidence that persistence or lineage caused any rank.
 
 Round 3, Round 4, and the Round 5 Seed result remain excluded from this ranked
 average. Round 5 remains seed evidence only; it is not a Persistent Warm
@@ -554,6 +554,72 @@ Issue #63 was updated after reveal to record the protected Warm v2 resource as
 `phase: PERSISTENT`, `round: 6`, with the Round 6 branch and commit. Its
 conversation, same Worktree, Round 5 evidence, Round 6 evidence, and remote
 refs remain preserved. The resource is not cleanup-eligible.
+
+### Astra-MSC Round 7 result and post-merge boundary
+
+Round 7 used the frozen base
+`dbba98fd537cc8c399c9a51a6a763c631453dec2` and the bounded Project Save As
+overwrite snapshot/freshness preparation task. The experiment crossed the
+`POST_2026_09_19_CODEX_UPDATE` harness epoch; the directly observed local
+version was `codex-cli 0.155.0-alpha.9.2`, while the app-server version was not
+observable through the supported local surfaces. The harness epoch is metadata
+only and is not interpreted as a quality result or causal explanation.
+
+The three implementation turns were interrupted by the same external weekly
+usage-limit error. The interruption was recorded separately from implementation
+quality, then all three existing resources resumed from their preserved
+working-tree state with one identical resume instruction:
+
+```text
+ROUND_7_RANKING_ELIGIBILITY: VALID_WITH_RECORDED_EXTERNAL_INTERRUPTION
+EXTERNAL_QUOTA_RESUME_COUNT: 1
+IMPLEMENTATION_RETRY_INCREMENT: NO
+REPLACEMENT_WORKER: NO
+SAME_RESOURCE_RESUME: YES
+HARNESS_VERSION_CHANGED_DURING_SUSPENSION: NO
+```
+
+The blind review was frozen before the sealed mapping was revealed. The neutral
+candidate records and final product-PR state were:
+
+| Candidate | Revealed condition | Branch | Commit | PR / final state |
+| --- | --- | --- | --- | --- |
+| A | Warm v2 Persistent | `experiment/r7-q6m4` | `de297ed529d5a754bc669dd44c2bf881cefd6823` | [#74](https://github.com/prompt-graph-lab/promptgraph/pull/74), closed non-selected |
+| B | Fresh Handoff | `experiment/r7-z2p6` | `b9fe316614ba7830f9d1c582fb2dcf6188e24a9b` | [#75](https://github.com/prompt-graph-lab/promptgraph/pull/75), merged |
+| C | Fresh Minimal | `experiment/r7-a8k5` | `64eb8dfbb52e57d5705342bc87aa07a99c87c326` | [#73](https://github.com/prompt-graph-lab/promptgraph/pull/73), closed non-selected |
+
+The frozen blind ranking was:
+
+1. Fresh Handoff (Candidate B);
+2. Fresh Minimal (Candidate C);
+3. Warm v2 Persistent (Candidate A).
+
+The ranking is descriptive only. The quota interruption/resume was not used as
+a ranking criterion, and the result does not establish a causal advantage for
+Handoff, Minimal, or Persistent context.
+
+The Warm v2 Persistent observation remained valid. The retained lineage
+completed the R5 Seed -> R6 Persistent -> R7 Persistent sequence using the
+same durable conversation and the same registered Worktree, with the R5, R6,
+and R7 evidence branches and commits preserved. No rebind, replacement,
+branch reset, cleanup, or metadata repair occurred.
+
+### Round 7 product integration
+
+Product selection was evaluated independently of the revealed condition and
+the experiment ranking. The three implementations preserved the same four
+core safety-preparation function bodies and the same app-owned Save As
+lifecycle boundary. The selected implementation was [PR #75](https://github.com/prompt-graph-lab/promptgraph/pull/75), because its product-side validation provided the strongest balance of actual `app.py` import-boundary coverage, direct SHA-only freshness characterization, and full-suite validation. It merged into `main` at
+`7679e3be9968d032e804be55892d0035f64a78e5`.
+
+PRs #73 and #74 were closed only after #75 merged. Their reviewed commits,
+remote branches, Worktrees, conversations, and experiment evidence remain
+preserved. Closing non-selected PRs did not authorize experiment-resource
+cleanup. Issue [#63](https://github.com/prompt-graph-lab/promptgraph/issues/63)
+retains the post-reveal Warm v2 Round 7 registry entry and the post-merge
+protection note.
+
+Round 7 is complete. Round 8 has not started.
 
 ## Future topology A/B gate
 
