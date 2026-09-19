@@ -38,21 +38,12 @@ class ProjectSaveAsSnapshotTests(unittest.TestCase):
             for node in cls.tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
-        namespace = {
-            "os": os,
-            "hashlib": hashlib,
-            "copy": copy,
-        }
-        for name in (
-            "normalize_project_save_as_path",
-            "inspect_project_save_as_destination",
-            "build_project_save_as_pending_overwrite",
-            "project_save_as_confirmation_is_fresh",
-        ):
-            node = cls.functions[name]
-            module = ast.Module(body=[node], type_ignores=[])
-            ast.fix_missing_locations(module)
-            exec(compile(module, "app.py", "exec"), namespace)
+        namespace = {}
+        imports = [node for node in cls.tree.body
+                   if isinstance(node, ast.ImportFrom)
+                   and node.module == "core.project_save_as_safety"]
+        module = ast.Module(body=imports, type_ignores=[])
+        exec(compile(module, "app.py", "exec"), namespace)
         cls.namespace = namespace
 
     def setUp(self):
