@@ -444,23 +444,76 @@ phase: SEED
 protection: PROTECTED_WARM_V2
 ```
 
-Round 6 is the earliest round in which this lineage may become
-`WARM_V2_PERSISTENT`, and only after the retained-context and
-execution-environment gates pass. No rebind, Worktree switch, or repair is
-implied by this record.
+Round 6 was the first round in which this lineage could become
+`WARM_V2_PERSISTENT`. That classification required, and passed, the retained-
+context and execution-environment gates. No rebind, Worktree switch, or repair
+was implied by this transition.
 
 ### Historical accounting
 
-Historical accounting remains unchanged:
+Round 6 was eligible for the historical three-way ranking: execution validity
+and mapping integrity remained intact through the frozen blind review, and the
+condition mapping was revealed only after the review was finalized. The
+condition ranks are recorded descriptively below; they are not causal evidence
+about topology.
 
-- existing valid three-way quality-average basis: `n=2`;
-- Round 3: `TERMINAL-BLOCKED / PROTOCOL-DEVIATED`;
-- Round 4: `INCOMPLETE / NO_VALID_THREE_ARM_RANKING`;
-- Round 5: `WARM_V2_SEED_ROUND`;
-- `ORDINARY_THREE_WAY_RANKING: NO`;
-- `WARM_V2_PERSISTENT_OBSERVATION: NO`.
+| Round | Fresh Minimal | Fresh Handoff | Warm | Classification |
+| --- | ---: | ---: | ---: | --- |
+| 1 | 3 | 1 | 2 | valid three-way ranking |
+| 2 | 1 | 2 | 3 | valid three-way ranking |
+| 3 | not ranked | not ranked | not ranked | `TERMINAL-BLOCKED / PROTOCOL-DEVIATED` |
+| 4 | not ranked | not ranked | not ranked | `INCOMPLETE / NO_VALID_THREE_ARM_RANKING` |
+| 5 | seed only | seed only | seed only | `WARM_V2_SEED_ROUND` |
+| 6 | 2 | 3 | 1 | valid three-way ranking |
 
-Round 5 is not added to the old averages.
+Across the three valid ranked rounds (`n=3`), the simple average rank is 2.0
+for each condition:
+
+- Fresh Minimal: `(3 + 1 + 2) / 3 = 2.0`;
+- Fresh Handoff: `(1 + 2 + 3) / 3 = 2.0`;
+- Warm: `(2 + 3 + 1) / 3 = 2.0`.
+
+The Warm aggregate spans two persistent lineages: Warm v1 in Rounds 1–2 and
+Warm v2 Persistent in Round 6. It is therefore a descriptive aggregate across
+lineages, not evidence that persistence or lineage caused any rank.
+
+Round 3, Round 4, and the Round 5 Seed result remain excluded from this ranked
+average. Round 5 remains seed evidence only; it is not a Persistent Warm
+performance observation.
+
+### Astra-MSC Round 6 reveal
+
+Round 6 used the frozen base
+`4c355707e35a00c0a5c2ec2eb5ef358a84777c88` and the bounded embedded ComfyUI
+workflow source-selection extraction task. The blind review was frozen before
+the sealed mapping was revealed, and the ranking did not change after reveal:
+
+```text
+Candidate A -> Fresh Handoff
+Candidate B -> Fresh Minimal
+Candidate C -> Warm v2 Persistent
+```
+
+The resulting condition ranking was:
+
+1. Warm v2 Persistent (Candidate C);
+2. Fresh Minimal (Candidate B);
+3. Fresh Handoff (Candidate A).
+
+Candidate C had no observed correctness finding. Candidate B had no observed
+correctness finding; its remaining notes concern pure-core API shape. Candidate
+A had a concrete repository test-integration regression: the unchanged
+`tests/test_app_extracted_prompt_integration.py` AST harness failed `1 failed,
+6 passed` with `NameError: name 'select_embedded_workflow_source' is not
+defined` because its import allowlist did not include the new core module.
+This is classified as `TEST_INTEGRATION_REGRESSION` and
+`VALIDATION_COVERAGE_GAP`, not as an observed application-runtime regression.
+Candidate A's branch was not modified or repaired during the reveal.
+
+The Warm v2 Persistent observation remained valid: retained Round 5 history,
+the same durable conversation identity, the same bound Worktree, and the
+post-transition repository/origin/base/clean-state gates were independently
+verified. No worker received the condition mapping before reveal.
 
 ### Product-code integration boundary
 
@@ -480,16 +533,20 @@ The current technical integration observations are:
 
 PR #66 is the leading product-code integration candidate because it leaves the
 cleanest single normalizer ownership. This is a product integration preference,
-not an experiment ranking, and no PR was merged by the Round 5 closeout.
+not an experiment ranking. PR #66 was subsequently merged separately; the
+Round 6 candidate review does not select product code by experiment rank.
 
-### Round 6 boundary
+### Round 6 product boundary and registry state
 
-Round 6 did not start. Before it begins, the product-code integration must be
-resolved separately, the next task and base must be frozen, and the Warm v2
-durable identity, retained context, bound cwd, registered Worktree, repository,
-origin, base, branch, and clean state must all be reverified. The same
-protected Worktree must be transitioned safely to the next frozen base only
-after those Persistent Warm readiness gates pass.
+Candidate A requires a follow-up correction before product integration because
+of the existing integration-test harness regression. Candidates B and C had no
+currently identified correctness blocker at reveal. No candidate branch was
+modified and no implementation PR was merged during the reveal task.
+
+Issue #63 was updated after reveal to record the protected Warm v2 resource as
+`phase: PERSISTENT`, `round: 6`, with the Round 6 branch and commit. Its
+conversation, same Worktree, Round 5 evidence, Round 6 evidence, and remote
+refs remain preserved. The resource is not cleanup-eligible.
 
 ## Future topology A/B gate
 
