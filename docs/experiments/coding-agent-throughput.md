@@ -22,6 +22,13 @@ memory. It records the shape of the work, the validation split, and the
 observed UI deltas so later sessions can compare a concrete repository history
 with their own results.
 
+The current operational baseline extracted from the successful Round 6 flow is
+maintained separately in the [Astra-MSC orchestration
+protocol](../operations/astra-msc-orchestration-protocol.md). This experiment
+log remains the authority for historical observations and does not replace the
+protocol's distinction between stable operating gates, provisional procedures,
+and historical-only recovery paths.
+
 ## Effort terminology
 
 Use these effort labels consistently in this log:
