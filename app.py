@@ -358,7 +358,6 @@ from core.route_operations import (
     select_all_routes,
     clear_selected_routes,
     invert_selected_routes,
-    resolve_selected_route_export_lines,
     get_route_action_dispatch_updates,
     get_route_action_pending_updates,
     get_route_block_move_availability,
@@ -392,6 +391,7 @@ from core.new_project_workspace import (
     resolve_new_workspace_destination,
     unique_new_workspace_project_dir,
 )
+from core.final_export_scope import prepare_final_export_scope, resolve_final_export_targets
 from core.project import Project, PromptLine
 import sys
 from wordcloud import WordCloud
@@ -8937,75 +8937,23 @@ def resolve_final_export_lines(
     selected_line_ids: list[str] | None = None,
     selected_route_ids: list[str] | None = None,
 ) -> dict:
-    scope = scope if scope in {"all_lines", "current_route", "selected_route", "selected_routes"} else "all_lines"
-    active_lines = [
-        line
-        for line in get_visible_prompt_lines(project)
-        if not getattr(line, "deleted", False)
-    ]
-    active_prompt_lines = [line for line in active_lines if is_gallery_operation_prompt_line(line)]
-    warnings = []
-    route_resolution = {}
-
-    selected_route_resolution = {}
-    if scope == "all_lines":
-        target_lines = active_prompt_lines
-    elif scope == "current_route":
+    scope, active_prompt_lines = prepare_final_export_scope(project, scope)
+    anchor_line_id = ""
+    route_options = ()
+    if scope == "current_route":
         anchor_line_id = _gallery_route_anchor_line_id(project, selected_line_ids or [])
-        route_resolution = resolve_gallery_route_for_line(project, anchor_line_id)
-        warnings.extend(route_resolution.get("warnings", []))
-        route_line_ids = set(route_resolution.get("line_ids", []))
-        target_lines = [line for line in active_prompt_lines if getattr(line, "id", "") in route_line_ids]
     elif scope == "selected_route":
-        selected_route_id = str(route_id or "").strip()
-        route = next(
-            (option for option in _final_export_route_options(project) if option.get("route_id") == selected_route_id),
-            None,
-        )
-        if route:
-            route_line_ids = set(route.get("line_ids", []))
-            target_lines = [line for line in active_prompt_lines if getattr(line, "id", "") in route_line_ids]
-            route_resolution = {
-                "route_id": route.get("route_id", ""),
-                "route_label": route.get("route_label", ""),
-                "line_ids": list(route_line_ids),
-                "line_count": int(route.get("line_count", 0) or 0),
-                "warnings": [],
-            }
-        else:
-            target_lines = []
-            warnings.append("シーンが選択されていません。")
-    else:
-        selected_route_resolution = resolve_selected_route_export_lines(
-            project,
-            selected_route_ids,
-        )
-        target_lines = list(selected_route_resolution["target_lines"])
-        route_resolution = {"line_count": len(target_lines)}
-        warnings.extend(selected_route_resolution.get("diagnostics", []))
-
-    if scope != "all_lines" and not target_lines and not warnings:
-        warnings.append("選択されたシーンには書き出し対象イラストがありません。")
-
-    return {
-        "lines": target_lines,
-        "line_ids": [getattr(line, "id", "") for line in target_lines if getattr(line, "id", "")],
-        "scope": scope,
-        "route_id": route_resolution.get("route_id", ""),
-        "route_label": route_resolution.get("route_label", ""),
-        "route_line_count": route_resolution.get("line_count"),
-        "resolved_route_handles": selected_route_resolution.get("resolved_route_handles", []),
-        "resolved_route_labels": selected_route_resolution.get("resolved_route_labels", []),
-        "selected_route_count": selected_route_resolution.get("selected_route_count", 0),
-        "selected_main_line_count": selected_route_resolution.get("selected_main_line_count", 0),
-        "selected_workbench_count": selected_route_resolution.get("selected_workbench_count", 0),
-        "selected_deleted_member_count": selected_route_resolution.get("selected_deleted_member_count", 0),
-        "selected_candidate_count": selected_route_resolution.get("selected_candidate_count", 0),
-        "selected_gallery_variant_count": selected_route_resolution.get("selected_gallery_variant_count", 0),
-        "route_summaries": selected_route_resolution.get("route_summaries", []),
-        "diagnostics": selected_route_resolution.get("diagnostics", []),
-        "warnings": warnings,
-    }
+        route_id = str(route_id or "").strip()
+        route_options = _final_export_route_options(project)
+    return resolve_final_export_targets(
+        project,
+        scope,
+        active_prompt_lines,
+        anchor_line_id=anchor_line_id,
+        route_id=route_id,
+        route_options=route_options,
+        selected_route_ids=selected_route_ids,
+    )
 
 
 def _final_export_preview_signature(

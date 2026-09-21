@@ -12,7 +12,9 @@ class FinalExportSelectedRoutesUiWiringTests(unittest.TestCase):
         self.assertIn('["all_lines", "current_route", "selected_route", "selected_routes"]', self.app_source)
         self.assertIn('selected_route_ids = st.session_state.get("gallery_selected_route_ids", [])', self.app_source)
         self.assertIn("selected_route_ids=selected_route_ids", self.app_source)
-        self.assertIn("resolve_selected_route_export_lines", self.app_source)
+        self.assertIn("resolve_final_export_targets", self.app_source)
+        core_source = (Path(__file__).resolve().parents[1] / "core" / "final_export_scope.py").read_text(encoding="utf-8")
+        self.assertIn("resolve_selected_route_export_lines", core_source)
         self.assertIn("GALLERY_SCOPE_DISPLAY_LABELS_JA", self.app_source)
         terminology_source = (
             Path(__file__).resolve().parents[1] / "core" / "ui_terminology.py"
