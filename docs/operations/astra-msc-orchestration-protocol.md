@@ -392,7 +392,7 @@ closeout. Before the next scored round can begin, the coordinator still must:
 - transition that same Worktree to the new base while preserving the R5-R8
   evidence lineage;
 - provision two Fresh workers at the same base;
-- create and seal a fresh neutral condition mapping;
+- create, durably write/read back, and seal a fresh neutral condition mapping;
 - complete the launch preflight before delivering any task.
 
 This closeout deliberately performs none of those next-round actions.

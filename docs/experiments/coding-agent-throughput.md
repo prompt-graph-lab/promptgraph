@@ -619,7 +619,7 @@ cleanup. Issue [#63](https://github.com/prompt-graph-lab/promptgraph/issues/63)
 retains the post-reveal Warm v2 Round 7 registry entry and the post-merge
 protection note.
 
-Round 7 is complete. Round 8 has not started.
+Round 7 is complete. The Round 8 closeout follows below.
 
 ### Astra-MSC Round 8 result and closeout
 
