@@ -125,6 +125,7 @@ from core.lora_mapping_presentation import (
     _mapped_lora_option_label,
     _key_fragment,
 )
+from core import comfy_workflow_paths
 from core.comfy_workflow_source_selection import (
     select_embedded_workflow_source,
     inspect_embedded_workflow_sources,
@@ -2267,42 +2268,20 @@ def render_comfy_workflow_debug_preview(project, line):
 
 
 def resolve_comfy_workflow_path(workflow_path):
-    if not workflow_path:
-        return ""
-    expanded_path = os.path.expanduser(workflow_path)
-    if os.path.isabs(expanded_path):
-        return os.path.abspath(expanded_path)
-
-    current_project_path = st.session_state.get("current_project_path")
-    if current_project_path:
-        return os.path.abspath(os.path.join(os.path.dirname(current_project_path), expanded_path))
-    return os.path.abspath(expanded_path)
+    return comfy_workflow_paths.resolve_comfy_workflow_path(
+        workflow_path,
+        get_current_project_path=lambda: st.session_state.get("current_project_path"),
+    )
 
 
 def list_comfy_workflow_presets():
-    if not os.path.isdir(WORKFLOW_PRESET_DIR):
-        return []
-    presets = []
-    for file_name in sorted(os.listdir(WORKFLOW_PRESET_DIR), key=str.casefold):
-        if os.path.splitext(file_name)[1].lower() != ".json":
-            continue
-        preset_path = os.path.join(WORKFLOW_PRESET_DIR, file_name)
-        if os.path.isfile(preset_path):
-            presets.append(file_name)
-    return presets
+    return comfy_workflow_paths.list_comfy_workflow_presets(WORKFLOW_PRESET_DIR)
 
 
 def resolve_comfy_workflow_preset_path(preset_name):
-    clean_name = os.path.basename(str(preset_name or "").strip())
-    if not clean_name:
-        return ""
-    preset_path = os.path.abspath(os.path.join(WORKFLOW_PRESET_DIR, clean_name))
-    preset_root = os.path.abspath(WORKFLOW_PRESET_DIR)
-    if os.path.dirname(preset_path) != preset_root:
-        return ""
-    if os.path.splitext(preset_path)[1].lower() != ".json":
-        return ""
-    return preset_path
+    return comfy_workflow_paths.resolve_comfy_workflow_preset_path(
+        preset_name, WORKFLOW_PRESET_DIR,
+    )
 
 
 def resolve_effective_comfy_workflow_path(workflow_path=None):
@@ -2322,17 +2301,10 @@ def resolve_effective_comfy_workflow_path(workflow_path=None):
             st.session_state.settings.get("force_shared_comfy_workflow", False),
         )
     )
-    if force_shared and preset_path and os.path.exists(preset_path):
-        return preset_path, "preset"
-
-    resolved_project_path = resolve_comfy_workflow_path(configured_workflow_path)
-    if resolved_project_path and os.path.exists(resolved_project_path):
-        return resolved_project_path, "project"
-
-    if preset_path and os.path.exists(preset_path):
-        return preset_path, "preset"
-
-    return resolved_project_path, "fallback"
+    return comfy_workflow_paths.resolve_effective_comfy_workflow_path(
+        configured_workflow_path, preset_path, force_shared,
+        resolve_project_path=resolve_comfy_workflow_path,
+    )
 
 
 def ensure_comfy_settings_session_state():

@@ -950,10 +950,22 @@ performs no metadata selection, filesystem access, workflow mutation, or
 generation orchestration.
 
 `_workflow_text_from_line_metadata`, metadata-source precedence, debug status,
-session-state fallback, workflow preview/rendering, path resolution, and
+session-state fallback, workflow preview/rendering, and
 submission remain in `app.py` or the existing ComfyUI owners. Direct exception
 and short-circuit behavior remain part of the characterization boundary; no
 workflow schema or persistence behavior changes.
+
+### ComfyUI effective workflow paths
+
+`core.comfy_workflow_paths` owns read-only path expansion, preset listing and
+basename/JSON resolution, and effective filesystem source precedence. An existing
+forced preset wins before project path resolution; otherwise the existing project
+path wins, then an existing preset, then the resolved path labeled `fallback`.
+Existence checks retain directory acceptance and their original short-circuit order.
+The app wrappers retain settings lookup and provide lazy current-project context,
+so empty/absolute paths and a winning forced preset do not read project context.
+Settings initialization, explicit persistence, inspection, and generation lifecycle
+remain with their existing app owners; no saved fields or widgets change.
 
 ### LoRA mapping presentation calculations
 
