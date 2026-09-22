@@ -225,6 +225,7 @@ from core.animadex_discovery import (
     search_animadex_records,
 )
 from core.animadex_modules import build_global_module_preview_from_animadex_record
+from core import project_directory_duplication
 from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, ensure_project_folder_layout, copy_candidates_to_project_and_save_atomically, preview_copy_candidates_to_project, preview_verified_project_asset_duplicate_cleanup, delete_verified_project_asset_source_duplicates, ProjectAssetsPreviewStaleError, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
 from core.project_json_open import prepare_project_json_open
 from core.graph_builder import build_graph
@@ -6077,48 +6078,25 @@ def set_new_workspace_project(project_path: str):
 
 
 def _sanitize_duplicate_project_dir_name(name: str) -> str:
-    clean_name = str(name or "").strip()
-    clean_name = clean_name.replace("/", "_").replace("\\", "_")
-    for char in '<>:"|?*':
-        clean_name = clean_name.replace(char, "_")
-    clean_name = clean_name.strip(" .")
-    if clean_name in ("", ".", ".."):
-        return ""
-    return clean_name
+    return project_directory_duplication.sanitize_duplicate_project_dir_name(name)
 
 
 def _source_project_directory() -> tuple[str, str]:
-    project_path = st.session_state.get("current_project_path", "")
-    if not project_path:
-        return "", ""
-    clean_project_path = os.path.abspath(os.path.expanduser(project_path))
-    return clean_project_path, os.path.dirname(clean_project_path)
+    return project_directory_duplication.source_project_directory(
+        st.session_state.get("current_project_path", "")
+    )
 
 
 def _default_duplicate_project_dir_name() -> str:
-    source_project_path, source_project_dir = _source_project_directory()
-    if not source_project_path or not source_project_dir:
-        return "MyProject_copy"
-
-    source_name = os.path.basename(source_project_dir) or "Project"
-    parent_dir = os.path.dirname(source_project_dir)
-    base_name = f"{source_name}_copy"
-    candidate_name = base_name
-    suffix = 1
-    while os.path.exists(os.path.join(parent_dir, candidate_name)):
-        candidate_name = f"{base_name}_{suffix}"
-        suffix += 1
-    return candidate_name
+    return project_directory_duplication.default_duplicate_project_dir_name(
+        st.session_state.get("current_project_path", ""), exists=os.path.exists
+    )
 
 
 def _duplicate_project_destination_dir(destination_name: str) -> str:
-    _, source_project_dir = _source_project_directory()
-    if not source_project_dir:
-        return ""
-    clean_name = _sanitize_duplicate_project_dir_name(destination_name)
-    if not clean_name:
-        return ""
-    return os.path.abspath(os.path.join(os.path.dirname(source_project_dir), clean_name))
+    return project_directory_duplication.duplicate_project_destination_dir(
+        st.session_state.get("current_project_path", ""), destination_name
+    )
 
 
 def _find_copied_project_json(destination_dir: str, source_project_path: str) -> str:
@@ -6134,25 +6112,20 @@ def _find_copied_project_json(destination_dir: str, source_project_path: str) ->
 
 
 def duplicate_current_project_directory(destination_name: str) -> tuple[bool, str]:
-    if not st.session_state.project:
-        return False, "先にプロジェクトを読み込むか作成してください。"
-
-    source_project_path, source_project_dir = _source_project_directory()
-    if not source_project_path:
-        return False, "現在のプロジェクトパスがありません。"
-    if not os.path.isfile(source_project_path):
-        return False, "元のプロジェクトJSONが見つかりません。"
-    if not os.path.isdir(source_project_dir):
-        return False, "元のプロジェクトディレクトリが見つかりません。"
-
-    clean_name = _sanitize_duplicate_project_dir_name(destination_name)
-    if not clean_name:
-        return False, "複製先プロジェクト名が必要です。"
-    destination_dir = _duplicate_project_destination_dir(clean_name)
-    if not destination_dir:
-        return False, "複製先ディレクトリを解決できません。"
-    if os.path.exists(destination_dir):
-        return False, "複製先ディレクトリは既に存在します。"
+    project_available = bool(st.session_state.project)
+    plan = project_directory_duplication.plan_project_directory_duplication(
+        st.session_state.get("current_project_path", "") if project_available else "",
+        destination_name,
+        project_available=project_available,
+        isfile=os.path.isfile,
+        isdir=os.path.isdir,
+        exists=os.path.exists,
+    )
+    if plan.error:
+        return False, plan.error
+    source_project_path = plan.source_project_path
+    source_project_dir = plan.source_project_dir
+    destination_dir = plan.destination_dir
 
     try:
         save_project_to_json(st.session_state.project, source_project_path)
