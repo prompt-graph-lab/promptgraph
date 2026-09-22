@@ -838,7 +838,9 @@ candidate. This is not evidence of universal superiority. At least three
 valid Phase 2 rounds are recommended before an operational default decision,
 with five preferred if task supply and quota permit.
 
-## Future topology A/B gate
+## Historical topology A/B gate
+
+This gate belongs to the earlier internal-vs-external topology experiment; it is not the current `FRESH_CONTEXT_EFFICIENCY` next-round contract.
 
 Before the next internal-vs-external Astra comparison begins task execution,
 verify all of the following:
