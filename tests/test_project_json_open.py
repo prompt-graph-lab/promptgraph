@@ -183,14 +183,13 @@ PUBLICATION_RESETS = [
 
 def publication_harness(failure=None):
     import os
-    from core.candidate_inspection import _candidate_path
+    from core.candidate_record_normalization import _normalize_candidate_records
 
     source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
     names = {
         "load_project_json_into_session", "publish_loaded_project_to_session",
         "ensure_current_project_folder_layout", "_get_persistent_line_candidates",
-        "_normalize_candidate_records", "_normalize_candidate_record",
-        "_normalize_candidate_path", "_line_candidate_key",
+        "_line_candidate_key",
     }
     nodes = [n for n in ast.parse(source).body
              if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -254,7 +253,8 @@ def publication_harness(failure=None):
         "st": SimpleNamespace(session_state=state, warning=lambda message: events.append(("warning", message))),
         "prepare_project_json_open": prepare,
         "ensure_original_image_set_route": object(), "profile_block": nullcontext,
-        "ensure_project_folder_layout": layout, "_candidate_path": _candidate_path,
+        "ensure_project_folder_layout": layout,
+        "_normalize_candidate_records": _normalize_candidate_records,
         "remember_project": remember,
         "save_settings": lambda settings: step("save_settings"),
         "clear_module_rename_preview": lambda: step("clear_module_rename_preview"),

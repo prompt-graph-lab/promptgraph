@@ -198,6 +198,11 @@ from core.candidate_inspection import get_original_prompt_text, normalize_prompt
 from core.candidate_inspection import _looks_like_workflow_json_prompt, _candidate_nested_value, get_candidate_prompt_text
 from core.candidate_inspection import _candidate_prompt_metadata
 from core.candidate_inspection import _candidate_path, _selected_candidate_path
+from core.candidate_record_normalization import (
+    _normalize_candidate_path,
+    _normalize_candidate_record,
+    _normalize_candidate_records,
+)
 from core.module_token_rules import (
     _parse_module_rule_text,
     _format_module_rule_text,
@@ -3565,15 +3570,6 @@ def _project_final_image_export_dir():
     return os.path.join(project_dir, "exports", "final")
 
 
-def _normalize_candidate_path(path):
-    if not path:
-        return ""
-    path = str(path)
-    if os.path.isabs(path):
-        return os.path.abspath(path)
-    return path.replace("\\", "/")
-
-
 def _resolve_generated_output_path(path, output_dir=None):
     if not path:
         return ""
@@ -3591,35 +3587,6 @@ def _resolve_generated_output_path(path, output_dir=None):
         return os.path.abspath(runtime_candidate)
 
     return _normalize_candidate_path(path)
-
-
-def _normalize_candidate_record(candidate):
-    if isinstance(candidate, dict):
-        path = _candidate_path(candidate)
-        if not path:
-            return None
-        record = dict(candidate)
-        record["path"] = _normalize_candidate_path(path)
-        return record
-
-    path = _candidate_path(candidate)
-    if not path:
-        return None
-    return {"path": _normalize_candidate_path(path)}
-
-
-def _normalize_candidate_records(candidates):
-    normalized = []
-    seen = set()
-    for candidate in candidates or []:
-        record = _normalize_candidate_record(candidate)
-        if not record:
-            continue
-        path = record["path"]
-        if path not in seen:
-            normalized.append(record)
-            seen.add(path)
-    return normalized
 
 
 def _make_generated_candidate_record(path, line, source, run_index=None):
