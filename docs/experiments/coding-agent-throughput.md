@@ -838,6 +838,116 @@ candidate. This is not evidence of universal superiority. At least three
 valid Phase 2 rounds are recommended before an operational default decision,
 with five preferred if task supply and quota permit.
 
+### Astra-MSC Phase 2: Round 10 — Bare versus Detailed
+
+Round 10 is the second valid Phase 2 observation. It uses a different pair of
+treatments from Round 9 and must not be pooled with Round 9 into one arithmetic
+treatment mean. The Phase 2 count is a count of valid rounds, not a claim that
+the two treatment definitions are interchangeable.
+
+```text
+ASTRA_MSC_PHASE_2: FRESH_CONTEXT_EFFICIENCY
+PHASE_2_VALID_ROUNDS: 2
+ROUND_9_TREATMENTS: FRESH_MINIMAL vs FRESH_HANDOFF
+ROUND_10_TREATMENTS: FRESH_BARE vs FRESH_DETAILED
+ROUND_10_TASK: ComfyUI effective workflow source/path resolution extraction
+ROUND_10_FROZEN_BASE: fea41449439c13601e413cec07764aa3037a0596
+ROUND_10_MAPPING_EPOCH: 1
+ROUND_10_MAPPING_REVEALED: YES
+```
+
+The authoritative Round 10 mapping was:
+
+- Candidate A, commit `26633dd84aa135d91a72d00ba8c37e388aa8bf55`:
+  `FRESH_BARE`;
+- Candidate B, commit `a5d4a1e47ceff5cfeaee909a7d16d0c39a4db75f`:
+  `FRESH_DETAILED`.
+
+The blind technical review was frozen before mapping and cost reveal:
+
+- blind quality order: Candidate B > Candidate A;
+- Candidate A: acceptable, correctness blocker: none;
+- Candidate B: acceptable, correctness blocker: none;
+- product preference: Candidate B.
+
+The product choice was based on the frozen technical review, the more complete
+workflow-path ownership boundary, behavior-preservation evidence, and common
+validation. Candidate B was merged as PR #85 at
+`20b5dca67f45441291b98974da5c2cffd5266052`; Candidate A's PR #84 was closed
+without merge. Both candidate commits, refs, Worktrees, and experiment
+evidence remain preserved.
+
+Coordinator-owned common validation passed for both candidates:
+
+- Candidate A: focused 46 passed and 53 subtests; full suite 1,907 passed,
+  9 skipped, and 726 subtests in 293.92 seconds;
+- Candidate B: focused 43 passed and 45 subtests; full suite 1,904 passed,
+  9 skipped, and 718 subtests in 280.45 seconds;
+- both frozen-base diff checks passed, and both remote refs remained equal to
+  their recorded commits.
+
+The task-window token evidence used the final cumulative `turn_token_usage`
+record for each single worker task turn:
+
+| Condition | Input | Cached input | Uncached input | Output | Reasoning output | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Fresh Bare | 568,687 | 540,672 | 28,015 | 4,409 | 251 | 573,096 |
+| Fresh Detailed | 671,737 | 610,432 | 61,305 | 5,207 | 191 | 676,944 |
+
+Detailed minus Bare was `+103,848` total tokens, or `1.1812x` / `+18.12%`
+relative to Bare. The directly observed pre-implementation tool-call count
+was 3 for each condition. Pre-implementation wall time was 51.238 seconds
+for Bare and 64.347 seconds for Detailed; total worker wall time was 199.652
+seconds and 229.428 seconds respectively. Directly observed custom tool calls
+were 13 for each condition. Test-command invocations were 1 for Bare and 3
+for Detailed.
+
+The descriptive Round 10 interpretation is:
+
+```text
+ROUND_10_COST_RESULT: BARE_LOWER_TOTAL_COST
+ROUND_10_OBSERVED_ALIGNMENT: QUALITY_COST_TRADEOFF
+ROUND_10_CAUSAL_CLAIM: NOT_ESTABLISHED
+ROUND_10_REPO_CONTEXT_OBSERVATION: BARE_SUFFICIENT_BUT_QUALITY_COST_TRADEOFF
+```
+
+Bare repository access was sufficient to produce an acceptable,
+blocker-free implementation and used fewer total tokens. In this realization,
+Detailed did not reduce the pre-implementation tool-call count, but it
+produced the higher-rated implementation. The main observed quality
+distinction was that Detailed grouped path expansion, preset
+listing/resolution, and effective source precedence into a more complete
+ownership boundary, while Bare extracted the narrower effective-precedence
+seam. It is a hypothesis, not an established mechanism, that the Detailed
+supplement acted as a scope/boundary cue rather than accelerating repository
+navigation.
+
+The common validation sequence was a recorded procedural deviation:
+
+```text
+ROUND_10_COMMON_VALIDATION_SEQUENCE: POST_REVEAL
+ROUND_10_COMMON_VALIDATION_BLINDNESS: NOT_AVAILABLE_AFTER_REVEAL
+ROUND_10_BLIND_QUALITY_REVIEW_VALID: YES
+ROUND_10_COST_COMPARISON_VALID: YES
+```
+
+The blind technical review and product preference were frozen before reveal,
+but mapping and cost were revealed before the planned common/full validation.
+The later identical validation passed for both candidates and did not alter
+the frozen review. The common validation is therefore not described as blind,
+and Round 10 is not retroactively invalidated.
+
+The Phase 2 observations currently support no operational default. Round 9
+and Round 10 use different treatment definitions and are retained as separate
+descriptive observations; no pooled arithmetic treatment mean is reported.
+No Round 11 task or payload is frozen by this closeout. A provisional future
+hypothesis is that a very small explicit ownership-boundary cue might preserve
+some of Detailed's quality benefit with Bare-like cost. A possible future
+comparison is `FRESH_BARE` versus `FRESH_BOUNDARY_CUE`, where the cue names
+the intended extraction symbols or ownership boundary without file navigation,
+edge-case explanation, test names, or architecture-document summary. This is
+only a hypothesis and does not start Round 11.
+
 ## Historical topology A/B gate
 
 This gate belongs to the earlier internal-vs-external topology experiment; it is not the current `FRESH_CONTEXT_EFFICIENCY` next-round contract.
