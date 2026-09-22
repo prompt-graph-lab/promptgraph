@@ -387,6 +387,13 @@ from core.ui_terminology import (
     format_core_message_for_display,
 )
 from core.version import __version__
+from core.project_directory_duplication import (
+    default_duplicate_project_dir_name,
+    duplicate_project_destination_dir,
+    plan_project_directory_duplication,
+    sanitize_duplicate_project_dir_name as _sanitize_duplicate_project_dir_name,
+    source_project_directory,
+)
 from core.new_project_workspace import (
     create_new_workspace_files,
     resolve_new_workspace_destination,
@@ -6076,49 +6083,18 @@ def set_new_workspace_project(project_path: str):
     st.session_state.pop("startup_project_auto_open_error", None)
 
 
-def _sanitize_duplicate_project_dir_name(name: str) -> str:
-    clean_name = str(name or "").strip()
-    clean_name = clean_name.replace("/", "_").replace("\\", "_")
-    for char in '<>:"|?*':
-        clean_name = clean_name.replace(char, "_")
-    clean_name = clean_name.strip(" .")
-    if clean_name in ("", ".", ".."):
-        return ""
-    return clean_name
-
-
 def _source_project_directory() -> tuple[str, str]:
-    project_path = st.session_state.get("current_project_path", "")
-    if not project_path:
-        return "", ""
-    clean_project_path = os.path.abspath(os.path.expanduser(project_path))
-    return clean_project_path, os.path.dirname(clean_project_path)
+    return source_project_directory(st.session_state.get("current_project_path", ""))
 
 
 def _default_duplicate_project_dir_name() -> str:
-    source_project_path, source_project_dir = _source_project_directory()
-    if not source_project_path or not source_project_dir:
-        return "MyProject_copy"
-
-    source_name = os.path.basename(source_project_dir) or "Project"
-    parent_dir = os.path.dirname(source_project_dir)
-    base_name = f"{source_name}_copy"
-    candidate_name = base_name
-    suffix = 1
-    while os.path.exists(os.path.join(parent_dir, candidate_name)):
-        candidate_name = f"{base_name}_{suffix}"
-        suffix += 1
-    return candidate_name
+    return default_duplicate_project_dir_name(st.session_state.get("current_project_path", ""))
 
 
 def _duplicate_project_destination_dir(destination_name: str) -> str:
-    _, source_project_dir = _source_project_directory()
-    if not source_project_dir:
-        return ""
-    clean_name = _sanitize_duplicate_project_dir_name(destination_name)
-    if not clean_name:
-        return ""
-    return os.path.abspath(os.path.join(os.path.dirname(source_project_dir), clean_name))
+    return duplicate_project_destination_dir(
+        st.session_state.get("current_project_path", ""), destination_name,
+    )
 
 
 def _find_copied_project_json(destination_dir: str, source_project_path: str) -> str:
@@ -6137,22 +6113,14 @@ def duplicate_current_project_directory(destination_name: str) -> tuple[bool, st
     if not st.session_state.project:
         return False, "先にプロジェクトを読み込むか作成してください。"
 
-    source_project_path, source_project_dir = _source_project_directory()
-    if not source_project_path:
-        return False, "現在のプロジェクトパスがありません。"
-    if not os.path.isfile(source_project_path):
-        return False, "元のプロジェクトJSONが見つかりません。"
-    if not os.path.isdir(source_project_dir):
-        return False, "元のプロジェクトディレクトリが見つかりません。"
-
-    clean_name = _sanitize_duplicate_project_dir_name(destination_name)
-    if not clean_name:
-        return False, "複製先プロジェクト名が必要です。"
-    destination_dir = _duplicate_project_destination_dir(clean_name)
-    if not destination_dir:
-        return False, "複製先ディレクトリを解決できません。"
-    if os.path.exists(destination_dir):
-        return False, "複製先ディレクトリは既に存在します。"
+    plan = plan_project_directory_duplication(
+        st.session_state.get("current_project_path", ""), destination_name,
+    )
+    if not plan["valid"]:
+        return False, plan["error"]
+    source_project_path = plan["source_project_path"]
+    source_project_dir = plan["source_project_dir"]
+    destination_dir = plan["destination_dir"]
 
     try:
         save_project_to_json(st.session_state.project, source_project_path)

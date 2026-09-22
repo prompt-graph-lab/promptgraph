@@ -323,7 +323,7 @@ class NewProjectWorkspaceUiWiringTests(unittest.TestCase):
 
     def test_successful_session_switch_clears_startup_warning(self):
         setter_start = self.app_source.index("def set_new_workspace_project")
-        setter_end = self.app_source.index("def _sanitize_duplicate_project_dir_name", setter_start)
+        setter_end = self.app_source.index("def _source_project_directory", setter_start)
         setter_source = self.app_source[setter_start:setter_end]
         publication_start = self.app_source.index("def publish_new_project_to_session")
         publication_source = self.app_source[publication_start:setter_start]
