@@ -180,6 +180,26 @@ Mapping durability is a **STABLE** safety gate for scored rounds:
 This is a procedure-level safety rule. It does not describe private platform
 storage semantics.
 
+### Treatment reveal gate
+
+`TREATMENT_REVEAL_GATE` is a **STABLE** procedural gate for scored rounds.
+Before mapping or cost may be revealed, the coordinator must verify and record
+all required pre-reveal freezes. When the round design requires common product
+validation before reveal, the minimum gate is:
+
+```text
+BLIND_QUALITY_REVIEW_FROZEN: YES
+COMMON_PRODUCT_VALIDATION_COMPLETE: YES
+PRODUCT_INTEGRATION_PREFERENCE_FROZEN: YES
+MAPPING_REVEALED: NO
+COST_REVEALED: NO
+```
+
+If any required gate is false, stop and do not reveal the mapping or cost. If
+a round intentionally uses a different sequence, that sequence must be frozen
+in the round design before treatment begins. This is a procedural rule only;
+it does not retroactively invalidate a round whose deviation is recorded.
+
 ### Execution-role binding
 
 Execution-role binding is a **STABLE** orchestration-layer gate. Conversation
@@ -422,13 +442,13 @@ gates are independently satisfied.
 
 ## Next-round readiness boundary
 
-Round 9 is complete, and no subsequent Phase 2 round has started as part of
+Round 10 is complete, and no subsequent Phase 2 round has started as part of
 this closeout. Before the next scored round can begin, the coordinator still
 must:
 
 - choose a new bounded task;
 - freeze its contract and exclusions;
-- fetch and freeze the exact post-Round-9 `origin/main` base;
+- fetch and freeze the exact post-Round-10 `origin/main` base;
 - preserve the protected Warm v2 conversation and Worktree as historical
   evidence; do not use it for Phase 2;
 - provision two Fresh external workers at the same base using the atomic
