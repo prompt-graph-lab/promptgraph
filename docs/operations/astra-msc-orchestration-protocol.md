@@ -380,20 +380,62 @@ there is no preserved-thread reference and no active experiment dependency.
 This protocol does not authorize cleanup by itself; it defines the evidence
 gate for a separately authorized cleanup task.
 
+## External atomic creation rule
+
+For the current supported external worker-creation surface, resource creation
+and the first model turn are atomic. There is no supported zero-turn paused
+stage between managed Worktree creation and the first worker prompt.
+
+Therefore the current valid Fresh-worker workflow is:
+
+- treat the automatically created managed Worktree as the isolation boundary;
+- accept detached HEAD at the exact frozen base as the valid initial state;
+- require the first worker actions to verify repository, origin, frozen base,
+  and clean tracked state;
+- stop before source inspection or implementation when that environment gate
+  fails;
+- forbid worker-side repair, branch switching, reset, clean, rebase, or
+  checkout repair;
+- do not require a local implementation branch;
+- allow the coordinator to pre-create a neutral remote evidence branch at the
+  frozen base;
+- allow the worker to create exactly one detached implementation commit and
+  push it with `HEAD:refs/heads/<neutral-evidence-branch>`;
+- include the identical environment bootstrap in the measured worker cost for
+  every experimental arm.
+
+This rule describes the currently observed supported surface only. It makes no
+claim about future product capability.
+
+## Internal disposable worker limitation
+
+The current internal multi-agent topology is not the default for PromptGraph
+Astra experiments because the supported launch surfaces do not provide:
+
+- a prebound isolated Worktree or cwd; or
+- complete task token, rollout, and Worktree evidence.
+
+This is a current orchestration limitation, not an implementation-quality
+finding and not a claim about future capability. Internal workers must not be
+used for a scored PromptGraph comparison unless those evidence and isolation
+gates are independently satisfied.
+
 ## Next-round readiness boundary
 
-Round 8 is complete, and no subsequent round has started as part of this
-closeout. Before the next scored round can begin, the coordinator still must:
+Round 9 is complete, and no subsequent Phase 2 round has started as part of
+this closeout. Before the next scored round can begin, the coordinator still
+must:
 
 - choose a new bounded task;
 - freeze its contract and exclusions;
-- fetch and freeze the exact post-Round-8 `origin/main` base;
-- reverify the protected Warm v2 conversation and Worktree;
-- transition that same Worktree to the new base while preserving the R5-R8
-  evidence lineage;
-- provision two Fresh workers at the same base;
+- fetch and freeze the exact post-Round-9 `origin/main` base;
+- preserve the protected Warm v2 conversation and Worktree as historical
+  evidence; do not use it for Phase 2;
+- provision two Fresh external workers at the same base using the atomic
+  creation rule above;
 - create, durably write/read back, and seal a fresh neutral condition mapping;
-- complete the launch preflight before delivering any task.
+- verify each managed Worktree's initial environment in the first turn;
+- complete the launch preflight before delivering any further task material.
 
 This closeout deliberately performs none of those next-round actions.
 

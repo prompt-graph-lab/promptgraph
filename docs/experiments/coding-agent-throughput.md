@@ -745,7 +745,102 @@ token-accounting mechanism, and it does not alter the historical ranking.
 Round 8 is complete. The next work starts from post-#79 `main`; no next round
 is started implicitly by this closeout.
 
-## Future topology A/B gate
+### Astra-MSC Phase 2: Fresh Context Efficiency — Round 9
+
+Round 9 begins a separate two-arm observation series. It is not appended to
+the Phase 1 three-arm arithmetic means or to the historical Warm averages.
+
+```text
+ASTRA_MSC_PHASE_2: FRESH_CONTEXT_EFFICIENCY
+PHASE_2_VALID_ROUNDS: 1
+ROUND_9_TASK: Project directory duplication preflight planning
+ROUND_9_FROZEN_BASE: bf1db72d2cca791d6b195de4eac6e32c725c35c2
+ROUND_9_VALID_EXECUTION: ATTEMPT_4
+```
+
+The first three launch attempts were orchestration findings rather than
+implementation failures:
+
+- Attempt 1: `INVALID_PREIMPLEMENTATION_INTERNAL_TOPOLOGY`. The supported
+  internal multi-agent surface could not prebind an isolated Worktree/cwd and
+  did not provide complete task token, rollout, and Worktree evidence.
+- Attempt 2: `INVALID_PREIMPLEMENTATION_OVERCONSTRAINED_PREBIND_GATE`. A
+  correctly isolated external managed Worktree at detached exact-base HEAD was
+  initially rejected by an over-constrained prebind requirement.
+- Attempt 3: `PROVISIONING_CAPABILITY_DISCOVERY_ONLY`. The supported external
+  creation surface atomically creates the resource and first model turn; it
+  does not expose a zero-turn paused setup stage.
+- Attempt 4: `VALID`. The worker performed the identical environment gate in
+  its first turn, used detached exact-base HEAD as the isolation boundary, and
+  pushed its single implementation commit to a pre-created neutral remote
+  evidence ref.
+
+The revealed mapping and frozen technical assessment were:
+
+- Candidate A: `FRESH_HANDOFF`
+- Candidate B: `FRESH_MINIMAL`
+- blind quality: Candidate B > Candidate A
+- correctness blockers: none
+- product preference: Candidate B, frozen before treatment/cost reveal and
+  justified by planner ownership/API boundary and common validation
+
+Coordinator-owned common validation passed for both candidates. Candidate A
+completed with 1,635 passed, 9 skipped, and 2,038 subtests; Candidate B
+completed with 1,899 passed, 9 skipped, and 712 subtests. Both diff checks
+passed. PR #82 was selected for product integration and merged at
+`82af9c339f8c2114d4e2e1dd4548f19538898fd5`; PR #81 was closed without merge.
+The candidate branches, commits, Worktrees, and experiment evidence remain
+preserved.
+
+The task-window token evidence used the final cumulative `turn_token_usage`
+record for each single worker task turn:
+
+| Condition | Input | Cached input | Uncached input | Output | Reasoning output | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Fresh Minimal | 717,376 | 628,608 | 88,768 | 9,374 | 1,142 | 726,750 |
+| Fresh Handoff | 1,174,819 | 1,120,512 | 54,307 | 12,327 | 1,828 | 1,187,146 |
+
+The Handoff-minus-Minimal difference was `+460,396` total tokens, or
+`1.6335x` / `+63.35%` relative to Minimal. Handoff had `34,461` fewer
+uncached input tokens but substantially higher cumulative input and total
+tokens. This is a hypothesis-generating accounting observation; it does not
+establish that handoff context causes higher usage.
+
+Directly observed worker activity was also higher for Handoff in this
+realization:
+
+- rollout-level custom tool calls: Minimal 13, Handoff 19;
+- nested shell/command invocations: Minimal 14, Handoff 21;
+- test commands: Minimal 1, Handoff 2;
+- observed worker wall time: Minimal 399.061 seconds, Handoff 458.892
+  seconds.
+
+Repository-search calls, file-read counts, and distinct-file counts were not
+normalized reliably from the compound shell records and remain unknown. The
+visible common packet was 2,096 bytes (rough heuristic 524 tokens), and the
+additional Handoff layer was 1,485 bytes (rough heuristic 372 tokens). The
+heuristic sizes are not actual model tokenization.
+
+The descriptive Round 9 cost result is:
+
+```text
+ROUND_9_COST_RESULT: MINIMAL_LOWER_TOTAL_COST
+ROUND_9_OBSERVED_ALIGNMENT: QUALITY_AND_COST_FAVOR_SAME_CONDITION
+ROUND_9_CAUSAL_CLAIM: NOT_ESTABLISHED
+PHASE_2_CURRENT_EVIDENCE: ONE_VALID_ROUND
+PHASE_2_OPERATIONAL_DEFAULT: NOT_YET_DECIDED
+PHASE_2_MORE_ROUNDS_REQUIRED: YES
+```
+
+Round 9 therefore provides one observation in which Fresh Minimal was both
+the lower-total-token condition and the condition assigned to the higher-rated
+candidate. This is not evidence of universal superiority. At least three
+valid Phase 2 rounds are recommended before an operational default decision,
+with five preferred if task supply and quota permit.
+
+## Historical topology A/B gate
+
+This gate belongs to the earlier internal-vs-external topology experiment; it is not the current `FRESH_CONTEXT_EFFICIENCY` next-round contract.
 
 Before the next internal-vs-external Astra comparison begins task execution,
 verify all of the following:
