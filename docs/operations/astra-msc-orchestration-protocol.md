@@ -57,9 +57,11 @@ treated as an implementation-quality result.
    branch, transition the existing Persistent Worktree to the exact new base,
    create the new neutral branch, and verify registration, origin, base,
    branch, and clean state. Do not replace or rebind the Worktree.
-8. **Neutral sealed mapping:** assign Fresh Minimal, Fresh Handoff, and
-   Persistent Warm to neutral candidates internally. Keep the mapping out of
-   worker prompts and reviewer-facing pre-reveal reports.
+8. **Neutral sealed mapping:** generate the Fresh Minimal, Fresh Handoff, and
+   Persistent Warm assignment; write it to restricted durable experiment-
+   private storage; read it back successfully; then bind prepared packets and
+   resources from that authoritative record. Keep the mapping out of worker
+   prompts and reviewer-facing pre-reveal reports.
 9. **Task delivery:** after every Stage 1/2/3 and Persistent gate passes,
    send exactly one frozen implementation packet to each valid worker. The
    coordinator must not send the packet to itself.
@@ -105,6 +107,13 @@ These are the normal gates for this repository's Astra-MSC procedure.
 
 - Treat `SELF_REPORTED_STATE != INDEPENDENTLY_OBSERVED_STATE`. A worker or
   coordinator summary is not evidence of an independently running worker.
+- Before coordinator execution, record `ROLE_BINDING: PASS` and establish
+  `CURRENT_EXECUTION_ROLE: LUNA_HQ_G2_COORDINATOR` when the current task is a
+  Luna HQ/G2 coordinator task. In that task context, "Luna", "Luna HQ", "G2",
+  and "coordinator" refer to the current coordinator; a task addressed to
+  that role is executed directly rather than described as something to send
+  to Luna. This is an orchestration-layer safety rule, not a claim about
+  private platform roles.
 - The coordinator must never self-dispatch. Before every thread send, resolve
   the current coordinator identity and target identity; if they are equal,
   stop and classify the attempt as `SELF_DISPATCH_BLOCKED`.
@@ -149,6 +158,95 @@ These are the normal gates for this repository's Astra-MSC procedure.
   and delivery evidence.
 - Closing a PR is independent of deleting its branch, commit, Worktree,
   conversation, or experiment evidence.
+
+### Mapping durability
+
+Mapping durability is a **STABLE** safety gate for scored rounds:
+
+- `MAPPING_DURABLE_WRITE: PASS` is required after randomized mapping
+  generation and before treatment delivery.
+- `MAPPING_DURABLE_READBACK: PASS` is required before packet binding and
+  delivery.
+- The durable record must be restricted experiment-private storage. Its
+  contents must remain unavailable to workers and the reviewer until the
+  frozen review is recorded.
+- If a mapping is lost before treatment and all resources remain
+  treatment-naive, mark that epoch `VOID`, record mapping recovery, independently
+  rerandomize, durably write/read back the replacement epoch, and proceed only
+  with the replacement.
+- If a mapping is lost after any treatment, stop. Do not infer or reconstruct
+  it from worker, branch, resource, or creation-order identity.
+
+This is a procedure-level safety rule. It does not describe private platform
+storage semantics.
+
+### Execution-role binding
+
+Execution-role binding is a **STABLE** orchestration-layer gate. Conversation
+identity, narrative role, and execution role are distinct:
+
+```text
+conversation identity != narrative role != execution role
+```
+
+Coordinator task headers should declare the current execution role explicitly.
+The role binding must be resolved before any coordinator action, and a send to
+the current coordinator itself must be classified `SELF_DISPATCH_BLOCKED`.
+
+### Quiet Test Mode
+
+**QUIET TEST MODE** is a **STABLE** worker-side operating rule for long-running
+test commands:
+
+1. After starting a long-running test, do not emit conversational progress
+   chatter merely because the process is still running.
+2. Do not repeatedly reason or report "still running", "waiting for tests",
+   "checking again", or equivalent non-actionable status.
+3. Do not use short-interval polling solely to determine completion when a
+   longer blocking/wait operation is available.
+4. Prefer the longest practical blocking/wait operation supported by the tool
+   environment.
+5. Re-engage model reasoning when the process completes, fails, reaches a
+   meaningful timeout/error, or requires intervention.
+6. Intermediate test chatter is not evidence of progress or quality.
+
+The rule is an operational efficiency measure supported by Round 8
+observations. It does not claim that conversational output maps one-to-one to
+quota or token cost.
+
+### Heavy-task validation ownership
+
+For **HEAVY** tasks, the following is a **PROVISIONAL / OPERATIONAL**
+recommendation:
+
+- Astra should inspect, implement, run focused/contract validation needed for
+  local correctness, run `git diff --check`, commit, push, and report.
+- Luna HQ should run common cross-candidate regression, broad/full pytest, and
+  product-integration validation.
+
+This avoids redundant full-suite runs across multiple workers and provides a
+neutral shared product gate. Exceptions are allowed when the task contract
+requires worker-local full validation or when coordinator validation cannot
+reproduce the worker environment. This recommendation does not retroactively
+alter prior-round scoring.
+
+### Task complexity guidance
+
+Task complexity is a lightweight **PROVISIONAL / OPERATIONAL** label:
+
+```text
+TASK_COMPLEXITY: LIGHT | MEDIUM | HEAVY
+```
+
+- LIGHT/MEDIUM tasks may use three workers when a scored three-arm comparison
+  is desired.
+- HEAVY product work may use one or two Astra workers when experimental
+  comparison is not the primary goal.
+- A deliberate three-arm HEAVY comparison remains allowed, but its
+  quota/resource cost must be treated as an explicit experiment cost.
+
+Do not add complexity labels to historical ranking mathematics without a
+separate design decision.
 
 ## PROVISIONAL rules and interpretations
 
@@ -282,21 +380,22 @@ there is no preserved-thread reference and no active experiment dependency.
 This protocol does not authorize cleanup by itself; it defines the evidence
 gate for a separately authorized cleanup task.
 
-## Round 7 readiness boundary
+## Next-round readiness boundary
 
-Round 7 has not started as part of this consolidation. Before it can begin,
-the coordinator still must:
+Round 8 is complete, and no subsequent round has started as part of this
+closeout. Before the next scored round can begin, the coordinator still must:
 
 - choose a new bounded task;
 - freeze its contract and exclusions;
-- fetch and freeze the exact post-R6 `origin/main` base;
+- fetch and freeze the exact post-Round-8 `origin/main` base;
 - reverify the protected Warm v2 conversation and Worktree;
-- transition that same Worktree to the new base;
+- transition that same Worktree to the new base while preserving the R5-R8
+  evidence lineage;
 - provision two Fresh workers at the same base;
 - create and seal a fresh neutral condition mapping;
 - complete the launch preflight before delivering any task.
 
-This document deliberately performs none of those actions.
+This closeout deliberately performs none of those next-round actions.
 
 ## Evidence boundary
 

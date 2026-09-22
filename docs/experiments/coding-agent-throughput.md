@@ -621,6 +621,130 @@ protection note.
 
 Round 7 is complete. Round 8 has not started.
 
+### Astra-MSC Round 8 result and closeout
+
+Round 8 used the frozen base
+`349f006953f33c3393d773b3f0d6bcb93243ecc0` and the bounded Final Export
+target-scope resolution planning task. The directly observed harness version
+remained `codex-cli 0.155.0-alpha.9.2`; no app-server version was observable
+through the supported local surfaces. The harness version is experiment
+metadata only and is not interpreted as a quality result.
+
+The pre-treatment Mapping Epoch 1 was created but lost before any packet was
+delivered. All three resources were still treatment-naive, so Epoch 1 was
+classified `CREATED_BUT_LOST_BEFORE_TREATMENT / VOID`. A separately randomized
+Mapping Epoch 2 was durably written and read back before delivery, remained
+sealed through the blind review, and was the only mapping used for treatment.
+The mapping recovery was recorded separately from implementation quality.
+
+The three implementation turns were interrupted by the same external usage
+limit while broader validation was in progress. The same resources resumed
+with one identical short message; no technical packet was resent, no
+implementation retry was counted, and no replacement worker was created:
+
+```text
+ROUND_8_RANKING_ELIGIBILITY: VALID_WITH_RECORDED_ORCHESTRATION_AND_EXTERNAL_INTERRUPTION
+ORCHESTRATION_LAUNCH_RETRY_COUNT: 1
+ORCHESTRATION_MAPPING_RECOVERY_COUNT: 1
+EXTERNAL_QUOTA_RESUME_COUNT: 1
+IMPLEMENTATION_RETRY_INCREMENTED: NO
+REPLACEMENT_WORKERS_CREATED: NO
+SAME_RESOURCE_RESUME: YES
+```
+
+The blind review was frozen before Mapping Epoch 2 was revealed. The final
+candidate records were:
+
+| Candidate | Revealed condition | Branch | Commit | PR / final state |
+| --- | --- | --- | --- | --- |
+| A | Fresh Minimal | `experiment/r8-p4x8` | `67f36960d493023dd3d1deb41cc6495fd4e5a858` | [#78](https://github.com/prompt-graph-lab/promptgraph/pull/78), closed non-selected |
+| B | Fresh Handoff | `experiment/r8-n6q2` | `9cf4ab4dbb672791bbc46e5dc156042b3726ff6d` | [#79](https://github.com/prompt-graph-lab/promptgraph/pull/79), merged |
+| C | Warm v2 Persistent | `experiment/r8-j7k4` | `91196374cf31a487ed0a971ee9fa3c6bb4a8de39` | [#77](https://github.com/prompt-graph-lab/promptgraph/pull/77), closed non-selected |
+
+The frozen blind ranking was:
+
+1. Candidate B;
+2. Candidate A;
+3. Candidate C.
+
+The ranking is descriptive only. It does not establish stable superiority,
+causal advantage, or a universally best condition. The Round 8 result was
+added to the valid ranked-round table:
+
+| Round | Minimal | Handoff | Warm |
+| --- | ---: | ---: | ---: |
+| R1 | 3 | 1 | 2 |
+| R2 | 1 | 2 | 3 |
+| R6 | 2 | 3 | 1 |
+| R7 | 2 | 1 | 3 |
+| R8 | 2 | 1 | 3 |
+| **Mean, n=5** | **2.00** | **1.60** | **2.40** |
+
+Round 3 remains excluded as protocol-deviated, Round 4 as incomplete, and
+Round 5 as Warm v2 Seed evidence rather than a scored Persistent comparison.
+The Warm aggregate spans Warm v1 and Warm v2; R6/R7/R8 are the scored
+observations after the Warm v2 Seed lineage began.
+
+The Warm v2 Persistent observation remained valid through Round 8. The
+retained lineage completed `R5 Seed -> R6 Persistent -> R7 Persistent -> R8
+Persistent` using the same durable conversation and the same registered
+Worktree. No rebind, replacement, branch reset, cleanup, or metadata repair
+occurred. The resource remains protected for possible future continuation.
+
+### Round 8 product integration and validation
+
+Product selection was evaluated independently of the revealed condition and
+the experiment ranking. Luna HQ ran the same common validation sequence
+sequentially in each candidate Worktree:
+
+| Candidate | Focused | `-k final_export` | Full pytest | Diff check |
+| --- | --- | --- | --- | --- |
+| A / [#78](https://github.com/prompt-graph-lab/promptgraph/pull/78) | 31 passed | 169 passed, 1 skipped, 6 subtests | 1470 passed, 9 skipped, 712 subtests | PASS |
+| B / [#79](https://github.com/prompt-graph-lab/promptgraph/pull/79) | 31 passed | 315 passed, 1 skipped, 6 subtests | 1616 passed, 9 skipped, 712 subtests | PASS |
+| C / [#77](https://github.com/prompt-graph-lab/promptgraph/pull/77) | 31 passed | 50 passed, 1 skipped, 300 subtests | 1351 passed, 9 skipped, 1006 subtests | PASS |
+
+All three candidates passed the common product validation without an observed
+correctness blocker. Candidate B was selected for product integration because
+it provided the narrowest prepared-input planner boundary: `app.py` retained
+preparation, session-anchor selection, and export lifecycle ownership, while
+core owned deterministic target planning and reused the existing lower-level
+selected-route resolver. This is a product-code decision, not a consequence
+of Candidate B's revealed experiment condition or blind rank.
+
+PR #79 was merged by the human at
+`1ad221904c8f6f8773ba0bba00c306745d5fed45`. PRs #77 and #78 were closed after
+the selected implementation merged. Their reviewed commits, remote branches,
+Worktrees, conversations, and experiment evidence remain preserved. Closing
+the non-selected PRs did not authorize resource cleanup.
+
+### Round 8 usage observations and limitations
+
+During the three-Astra same-resource resume, the user observed the primary
+five-hour allowance near 98% remaining before resume and approximately 22%
+remaining after the resumed workers completed validation, commit, push, and
+report work. The observed change was approximately 76 percentage points of
+remaining allowance. This is an observation only, not a decomposition of cost.
+It may include model reasoning, context processing, tool activity, test-output
+handling, waiting/status activity, reporting, and other opaque platform
+accounting. No precise component cost is inferred.
+
+For the later Luna-owned common validation, direct observations were:
+
+```text
+before Candidate A: primary 0% used / weekly 34% used
+after Candidate A:  primary 1% used / weekly 34% used
+after Candidate B:  primary 2% used / weekly 34% used
+after Candidate C:  primary 2% used / weekly 34% used
+```
+
+This supports investigating whether long-running Astra turns and repeated
+model/tool interaction are operationally more expensive than coordinator-owned
+test execution. It does not prove an internal billing, quota, context, or
+token-accounting mechanism, and it does not alter the historical ranking.
+
+Round 8 is complete. The next work starts from post-#79 `main`; no next round
+is started implicitly by this closeout.
+
 ## Future topology A/B gate
 
 Before the next internal-vs-external Astra comparison begins task execution,
