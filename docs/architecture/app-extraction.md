@@ -788,16 +788,21 @@ stable ordering, container identity and direct exception behavior. The
 `_candidate_image_swap_lineage_info` helper only constructs the existing
 metadata mapping; it does not perform the swap.
 
-Candidate records, PromptLines, Project mutation, Candidate adoption/swap,
-Gallery Variant mutation, session-state synchronization, history/autosave,
-filesystem/path resolution, widget ownership and rendering remain in `app.py`
-or their existing owners. The new module performs no Streamlit or persistence
-work and introduces no semantic Module/Attribute matching or new schema. The
-focused tests cover the moved calculations; the app import and relevant
-Candidate/Gallery integration tests cover the retained call sites. The next
-Candidate/Gallery boundary should be considered only when a similarly pure,
-non-mutating owner is evident; no mutation or UI extraction follows from this
-cluster alone.
+Runtime Candidate record normalization is separately owned by
+`core.candidate_record_normalization`. Its three helpers preserve the existing
+path normalization, first-occurrence ordering, unknown-field retention, and
+shallow-copy behavior without assigning Project or session state. This owner is
+deliberately separate from `core.io`, whose persisted-record path semantics are
+different.
+
+PromptLines, Project mutation, Candidate adoption/swap, Gallery Variant
+mutation, session-state synchronization, history/autosave, filesystem/path
+resolution, widget ownership and rendering remain in `app.py` or their existing
+owners. These modules perform no Streamlit or persistence work and introduce
+no semantic Module/Attribute matching or new schema. Focused tests cover both
+inspection and normalization; the app import and relevant Candidate/Gallery
+integration tests cover the retained call sites. Stateful Candidate/Gallery
+behavior remains outside these owners.
 
 ### Graph display calculations
 
