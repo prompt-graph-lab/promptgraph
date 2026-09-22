@@ -1,3 +1,4 @@
+from core.comfy_workflow_path_resolution import resolve_effective_workflow_path
 from core.project_save_as_safety import (
     normalize_project_save_as_path,
     inspect_project_save_as_destination,
@@ -2322,17 +2323,13 @@ def resolve_effective_comfy_workflow_path(workflow_path=None):
             st.session_state.settings.get("force_shared_comfy_workflow", False),
         )
     )
-    if force_shared and preset_path and os.path.exists(preset_path):
-        return preset_path, "preset"
-
-    resolved_project_path = resolve_comfy_workflow_path(configured_workflow_path)
-    if resolved_project_path and os.path.exists(resolved_project_path):
-        return resolved_project_path, "project"
-
-    if preset_path and os.path.exists(preset_path):
-        return preset_path, "preset"
-
-    return resolved_project_path, "fallback"
+    return resolve_effective_workflow_path(
+        configured_workflow_path,
+        preset_path,
+        force_shared,
+        resolve_project_path=resolve_comfy_workflow_path,
+        path_exists=os.path.exists,
+    )
 
 
 def ensure_comfy_settings_session_state():

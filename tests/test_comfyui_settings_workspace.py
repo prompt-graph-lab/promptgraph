@@ -5,6 +5,8 @@ import types
 import unittest
 from pathlib import Path
 
+from core.comfy_workflow_path_resolution import resolve_effective_workflow_path
+
 
 class _SessionState(dict):
     def __getattr__(self, name):
@@ -256,6 +258,7 @@ class ComfyUiSettingsWorkspaceTests(unittest.TestCase):
                     "os": os,
                     "st": types.SimpleNamespace(session_state=session_state),
                     "WORKFLOW_PRESET_DIR": str(preset_dir),
+                    "resolve_effective_workflow_path": resolve_effective_workflow_path,
                 },
             )
             resolve = namespace["resolve_effective_comfy_workflow_path"]
