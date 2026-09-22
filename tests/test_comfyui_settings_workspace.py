@@ -5,6 +5,8 @@ import types
 import unittest
 from pathlib import Path
 
+from core import comfy_workflow_paths
+
 
 class _SessionState(dict):
     def __getattr__(self, name):
@@ -256,6 +258,7 @@ class ComfyUiSettingsWorkspaceTests(unittest.TestCase):
                     "os": os,
                     "st": types.SimpleNamespace(session_state=session_state),
                     "WORKFLOW_PRESET_DIR": str(preset_dir),
+                    "comfy_workflow_paths": comfy_workflow_paths,
                 },
             )
             resolve = namespace["resolve_effective_comfy_workflow_path"]
@@ -268,6 +271,38 @@ class ComfyUiSettingsWorkspaceTests(unittest.TestCase):
             self.assertEqual(resolve(), (str(preset_path), "preset"))
             preset_path.unlink()
             self.assertEqual(resolve()[1], "fallback")
+
+    def test_effective_resolution_keeps_settings_defaults_and_explicit_empty_path(self):
+        session_state = _SessionState(
+            settings={
+                "comfyui_workflow_path": "stored.json",
+                "comfyui_workflow_preset": "stored-preset.json",
+                "force_shared_comfy_workflow": True,
+            },
+            comfy_workflow_path="",
+            comfy_workflow_preset="",
+            force_shared_comfy_workflow=False,
+        )
+        calls = []
+        namespace = self._load_functions(
+            "resolve_effective_comfy_workflow_path",
+            namespace={
+                "st": types.SimpleNamespace(session_state=session_state),
+                "comfy_workflow_paths": comfy_workflow_paths,
+                "resolve_comfy_workflow_preset_path": lambda name: calls.append(("preset", name)) or "",
+                "resolve_comfy_workflow_path": lambda name: calls.append(("project", name)) or "",
+            },
+        )
+        resolve = namespace["resolve_effective_comfy_workflow_path"]
+        self.assertEqual(resolve(), ("", "fallback"))
+        self.assertEqual(calls, [("preset", ""), ("project", "stored.json")])
+        calls.clear()
+        self.assertEqual(resolve(""), ("", "fallback"))
+        self.assertEqual(calls, [("preset", ""), ("project", "")])
+        del session_state["comfy_workflow_preset"]
+        calls.clear()
+        resolve()
+        self.assertEqual(calls[0], ("preset", "stored-preset.json"))
 
     def test_focus_and_gallery_generation_keep_existing_session_keys(self):
         gallery_options = self._function_source(
