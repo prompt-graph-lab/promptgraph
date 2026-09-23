@@ -15,6 +15,11 @@ from typing import List, Optional, Tuple
 
 from core.graph_builder import build_graph
 from core.generation_settings_analysis import extract_generation_settings_from_metadata
+from core.image_metadata_line_import_selection import (
+    image_import_prompt_text,
+    should_create_image_metadata_line,
+    summarize_image_metadata_lines,
+)
 from core.negative_prompt_analysis import get_metadata_negative_prompt
 from core.parser import parse_prompt
 from core.project import Project, PromptLine, PromptNode
@@ -784,18 +789,6 @@ def _latest_image_metadata_import(project: Project) -> dict | None:
     return latest_import if isinstance(latest_import, dict) else None
 
 
-def _image_import_prompt_text(image_info: dict) -> str:
-    return str(image_info.get("prompt_text") or "").strip()
-
-
-def _image_import_should_create_line(image_info: dict) -> bool:
-    return bool(
-        _image_import_prompt_text(image_info)
-        or image_info.get("negative_prompt")
-        or image_info.get("has_comfy_workflow")
-    )
-
-
 def build_source_generation_info_from_image_metadata(image_info: dict, prompt_text: str | None = None) -> dict:
     if not isinstance(image_info, dict):
         return {}
@@ -920,21 +913,7 @@ def build_lineage_info_from_candidate(
 
 def summarize_image_metadata_line_import(project: Project) -> dict:
     latest_import = _latest_image_metadata_import(project)
-    images = latest_import.get("images", []) if latest_import else []
-    prompt_count = 0
-    skipped_count = 0
-    for image_info in images:
-        if not isinstance(image_info, dict):
-            skipped_count += 1
-        elif _image_import_should_create_line(image_info):
-            prompt_count += 1
-        else:
-            skipped_count += 1
-    return {
-        "has_import": latest_import is not None,
-        "line_count": prompt_count,
-        "skipped_count": skipped_count,
-    }
+    return summarize_image_metadata_lines(latest_import)
 
 
 def _next_image_metadata_line_id(existing_ids: set[str], sequence: int) -> tuple[str, int]:
@@ -968,10 +947,10 @@ def create_prompt_lines_from_latest_image_import(project: Project, replace: bool
             skipped_count += 1
             continue
 
-        if not _image_import_should_create_line(image_info):
+        if not should_create_image_metadata_line(image_info):
             skipped_count += 1
             continue
-        prompt_text = _image_import_prompt_text(image_info)
+        prompt_text = image_import_prompt_text(image_info)
         negative_prompt = get_metadata_negative_prompt(image_info)
 
         line_index = start_index + created_count
