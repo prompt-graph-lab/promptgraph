@@ -960,6 +960,21 @@ submission remain in `app.py` or the existing ComfyUI owners. Direct exception
 and short-circuit behavior remain part of the characterization boundary; no
 workflow schema or persistence behavior changes.
 
+### A1111 metadata parameter interpretation
+
+`core.a1111_metadata` owns the pure interpretation of the A1111 parameters
+dialect used by image metadata imports: section splitting, quoted/escaped
+parameter chunks, generation-parameter mapping, and positive/negative prompt
+field extraction. It preserves raw input, newline normalization, recognized
+parameter-start markers, duplicate-key last-value behavior, unknown keys,
+continuation chunks, and empty/non-string handling.
+
+`core.io` retains image acquisition, metadata-source precedence, Project
+mutation, import summaries, line creation, and persistence. It imports the
+same helper names for its existing callers; no image metadata schema or source
+file behavior changes. The new owner performs no filesystem access, Project
+mutation, or UI work.
+
 ### ComfyUI effective workflow paths
 
 `core.comfy_workflow_paths` owns read-only path expansion, preset listing and
