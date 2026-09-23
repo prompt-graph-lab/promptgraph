@@ -93,6 +93,7 @@ from ui.comfyui_analysis_drafts import (
     _snapshot_comfyui_draft_option,
     _clear_comfy_workflow_inspector_state,
 )
+from ui.comfy_single_line_execution import collect_single_line_comfy_outputs
 from core.generation_duration import (
     _format_duration,
 )
@@ -5464,21 +5465,16 @@ def render_single_line_comfy_execution(project, line):
                 st.warning(warning)
 
             output_dir = _project_generation_output_dir(project)
-            progress_bar = st.progress(0.0)
-            status_text = st.empty()
-            generated_paths = []
-            for status in generate_image_with_progress(
-                workflow_json,
-                comfy_url,
+            generated_paths = collect_single_line_comfy_outputs(
+                lambda: generate_image_with_progress(
+                    workflow_json,
+                    comfy_url,
+                    output_dir,
+                    f"single_{line.id}",
+                ),
                 output_dir,
-                f"single_{line.id}",
-            ):
-                if "value" in status:
-                    progress_bar.progress(status["value"])
-                if "text" in status:
-                    status_text.markdown(f"**Status:** {status['text']}")
-                if status.get("type") == "done":
-                    generated_paths.extend(_status_output_paths(status, output_dir=output_dir))
+                _status_output_paths,
+            )
 
             if generated_paths:
                 line.generated_image_path = generated_paths[-1]
@@ -21992,22 +21988,16 @@ with col2:
                         
                         output_dir = _project_generation_output_dir(st.session_state.project)
                         
-                        progress_bar = st.progress(0.0)
-                        status_text = st.empty()
-                        
-                        generated_paths = []
-                        for status in generate_image_with_progress(
-                            workflow_json,
-                            st.session_state.comfy_url,
-                            output_dir, 
-                            f"gen_{target_line.id}"
-                        ):
-                            if "value" in status:
-                                progress_bar.progress(status["value"])
-                            if "text" in status:
-                                status_text.markdown(f"**Status:** {status['text']}")
-                            if status.get("type") == "done":
-                                generated_paths.extend(_status_output_paths(status, output_dir=output_dir))
+                        generated_paths = collect_single_line_comfy_outputs(
+                            lambda: generate_image_with_progress(
+                                workflow_json,
+                                st.session_state.comfy_url,
+                                output_dir,
+                                f"gen_{target_line.id}",
+                            ),
+                            output_dir,
+                            _status_output_paths,
+                        )
 
                         if generated_paths:
                             target_line.generated_image_path = generated_paths[-1]
