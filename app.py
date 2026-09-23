@@ -273,7 +273,6 @@ from core.gallery_generation import (
 )
 from core.gallery_variant_promotion import (
     VALID_SCOPES as VARIANT_PROMOTION_SCOPES,
-    apply_batch_variant_promotion_plan,
     build_batch_variant_promotion_plan,
     build_batch_variant_promotion_signature,
     normalize_batch_variant_promotion_scope,
@@ -282,6 +281,7 @@ from core.gallery_variant_promotion import (
     resolve_batch_variant_promotion_targets,
     resolve_variant_promotion_insert_index,
 )
+from ui.gallery_variant_promotion_lifecycle import apply_and_publish_batch_gallery_variant_promotion
 from core.gallery_operation_scope_presentation import (
     get_gallery_operation_scope_presentation,
     iter_gallery_operation_scope_presentations,
@@ -8148,42 +8148,6 @@ def preview_batch_promote_gallery_variants(project, target_line_ids=None, source
     }
 
 
-def apply_batch_promote_gallery_variants(
-    project,
-    *,
-    stored_plan,
-    scope,
-    source="latest",
-    placement="end",
-    current_anchor_line_id="",
-    selected_route_id="",
-    selected_route_ids=None,
-    selected_line_ids=None,
-    project_path="",
-):
-    return apply_batch_variant_promotion_plan(
-        project,
-        stored_plan,
-        promote_line=lambda working_project, parent_line_id, variant, target_placement: (
-            promote_gallery_variant_to_route(
-                working_project,
-                parent_line_id,
-                variant,
-                manage_state=False,
-                placement=target_placement,
-            )
-        ),
-        scope=scope,
-        source=source,
-        placement=placement,
-        current_anchor_line_id=current_anchor_line_id,
-        selected_route_id=selected_route_id,
-        selected_route_ids=selected_route_ids,
-        selected_line_ids=selected_line_ids,
-        project_path=project_path,
-        resolve_path=_runtime_asset_path,
-    )
-
 def _gallery_collapsed_routes_state() -> dict:
     collapsed_routes = st.session_state.get("gallery_collapsed_routes", {})
     if not isinstance(collapsed_routes, dict):
@@ -10173,17 +10137,17 @@ def render_gallery_batch_variant_promotion(project, active_lines, selected_line_
             ),
             key="gallery_variant_promotion_apply_btn",
         ):
-            result = apply_batch_promote_gallery_variants(
+            result = apply_and_publish_batch_gallery_variant_promotion(
                 st.session_state.project,
                 stored_plan=stored_plan,
-                scope=scope,
-                source=source,
-                placement=placement,
-                current_anchor_line_id=current_anchor_line_id,
-                selected_route_id=selected_route_id,
-                selected_route_ids=selected_route_ids,
-                selected_line_ids=selected_line_ids,
-                project_path=project_path,
+                plan_kwargs=plan_kwargs,
+                promote_gallery_variant_to_route=promote_gallery_variant_to_route,
+                session_state=st.session_state,
+                push_history=push_history,
+                build_graph=build_graph,
+                restore_focus_after_graph_update=restore_focus_after_graph_update,
+                synchronize_selected_routes=_set_gallery_selected_route_ids_after_structure_change,
+                save_current_project_if_possible=save_current_project_if_possible,
             )
             if result["stale_preview"]:
                 st.warning("Apply前に状態が変わりました。Fresh Previewを再実行してください。")
@@ -10193,16 +10157,6 @@ def render_gallery_batch_variant_promotion(project, active_lines, selected_line_
                     or "Variantsを本編列へ昇格できませんでした。"
                 )
             else:
-                previous_focused_line_id = st.session_state.get("focused_line_id")
-                push_history()
-                st.session_state.project = build_graph(result["updated_project"])
-                restore_focus_after_graph_update(previous_focused_line_id)
-                _set_gallery_selected_route_ids_after_structure_change(st.session_state.project)
-                if result["new_line_ids"]:
-                    st.session_state.highlighted_line_id = result["new_line_ids"][-1]
-                    st.session_state.gallery_expanded_line_id = result["new_line_ids"][-1]
-                save_current_project_if_possible("gallery variants batch promoted to main lines")
-                st.session_state.pop("gallery_variant_promotion_preview", None)
                 if scope == "selected_routes":
                     message = (
                         f"Selected Scenes {result['selected_route_count']}件から、"

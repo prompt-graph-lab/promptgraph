@@ -8,6 +8,9 @@ class GalleryVariantPromotionRoutesUiWiringTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         cls.app_source = (root / "app.py").read_text(encoding="utf-8")
         cls.core_source = (root / "core" / "gallery_variant_promotion.py").read_text(encoding="utf-8")
+        cls.lifecycle_source = (
+            root / "ui" / "gallery_variant_promotion_lifecycle.py"
+        ).read_text(encoding="utf-8")
         start = cls.app_source.index("def render_gallery_batch_variant_promotion")
         end = cls.app_source.index("\ndef render_candidate_route_creation_section", start)
         cls.ui_source = cls.app_source[start:end]
@@ -79,14 +82,15 @@ class GalleryVariantPromotionRoutesUiWiringTests(unittest.TestCase):
         )
 
     def test_apply_revalidates_and_commits_once(self):
-        apply_start = self.ui_source.index("result = apply_batch_promote_gallery_variants")
+        apply_start = self.ui_source.index("result = apply_and_publish_batch_gallery_variant_promotion")
         apply_source = self.ui_source[apply_start:]
         self.assertIn("stored_plan=stored_plan", apply_source)
-        self.assertEqual(1, apply_source.count("push_history()"))
-        self.assertEqual(1, apply_source.count("build_graph("))
-        self.assertEqual(1, apply_source.count("save_current_project_if_possible("))
+        self.assertIn("plan_kwargs=plan_kwargs", apply_source)
+        self.assertEqual(1, self.lifecycle_source.count("push_history()"))
+        self.assertEqual(1, self.lifecycle_source.count("build_graph("))
+        self.assertEqual(1, self.lifecycle_source.count("save_current_project_if_possible("))
         self.assertNotIn("sync_text_areas()", apply_source)
-        self.assertIn("apply_batch_variant_promotion_plan(", self.app_source)
+        self.assertIn("apply_batch_variant_promotion_plan(", self.lifecycle_source)
 
     def test_session_reset_and_gallery_region_order_are_preserved(self):
         reset_start = self.app_source.index("def reset_gallery_route_action_session_state")
