@@ -190,6 +190,7 @@ from core.batch_preview import (
 )
 from core.candidate_inspection import _is_appended_gallery_variant_record
 from core.candidate_inspection import _candidate_image_swap_lineage_info
+from core.candidate_route_creation_preview import build_candidate_route_creation_preview
 from core.candidate_inspection import _candidate_prompt_value, _candidate_route_candidate_workflow, _candidate_route_candidate_seed
 from core.candidate_inspection import _sort_candidates_for_display
 from core.candidate_inspection import _candidate_is_pinned, _candidate_is_trashed, _active_candidates, _trashed_candidates
@@ -4700,72 +4701,16 @@ def _candidate_route_target_lines(project, scope: str, selected_line_ids: list[s
 
 def preview_candidate_route_creation(project, scope: str, selected_line_ids=None, example_limit=8) -> dict:
     target_resolution = _candidate_route_target_lines(project, scope, selected_line_ids)
-    target_lines = target_resolution["target_lines"]
-    examples = []
-    candidate_line_count = 0
-    route_count = 0
-    add_line_count = 0
-    skip_count = 0
-    missing_count = 0
-    duplicate_count = 0
-    no_candidate_count = 0
-    reserved_labels = set()
-
-    for line in target_lines:
-        candidates = list(_line_active_generated_candidates(line))
-        route_candidates = []
-        if not candidates:
-            no_candidate_count += 1
-            skip_count += 1
-            continue
-        for candidate_index, candidate in enumerate(candidates):
-            candidate_path = _normalize_candidate_path(_candidate_path(candidate))
-            resolved_candidate_path = _runtime_asset_path(candidate_path)
-            if not candidate_path or not resolved_candidate_path or not profiled_path_exists(resolved_candidate_path):
-                missing_count += 1
-                skip_count += 1
-                continue
-            if _candidate_route_duplicate_exists(project, getattr(line, "id", ""), candidate_path):
-                duplicate_count += 1
-                skip_count += 1
-                continue
-            route_candidates.append({
-                "candidate_index": candidate_index,
-                "candidate_path": candidate_path,
-                "candidate_metadata": _candidate_metadata_caption(candidate),
-            })
-
-        if not route_candidates:
-            continue
-
-        candidate_line_count += 1
-        route_count += 1
-        add_line_count += len(route_candidates)
-        route_label = _candidate_route_label(project, line, reserved_labels)
-        if len(examples) < example_limit:
-            examples.append({
-                "line_id": getattr(line, "id", ""),
-                "display_id": _candidate_route_line_base_label(line),
-                "line_index": getattr(line, "current_index", getattr(line, "original_index", 0)),
-                "route_label": route_label,
-                "candidate_count": len(route_candidates),
-                "candidate_paths": [item["candidate_path"] for item in route_candidates[:4]],
-            })
-
-    return {
-        "scope": scope,
-        "target_line_count": len(target_lines),
-        "candidate_line_count": candidate_line_count,
-        "route_count": route_count,
-        "add_line_count": add_line_count,
-        "skip_count": skip_count,
-        "missing_count": missing_count,
-        "duplicate_count": duplicate_count,
-        "no_candidate_count": no_candidate_count,
-        "warnings": target_resolution["warnings"],
-        "route_resolution": target_resolution.get("route_resolution"),
-        "examples": examples,
-    }
+    return build_candidate_route_creation_preview(
+        project, scope, target_resolution,
+        active_candidates=_line_active_generated_candidates,
+        resolve_asset_path=_runtime_asset_path,
+        path_exists=profiled_path_exists,
+        duplicate_exists=_candidate_route_duplicate_exists,
+        build_route_label=_candidate_route_label,
+        line_base_label=_candidate_route_line_base_label,
+        example_limit=example_limit,
+    )
 
 
 def _build_candidate_route_line(source_line, candidate, candidate_path: str, candidate_index: int, route_id: str, parent_route_id: str, created_at: str):
