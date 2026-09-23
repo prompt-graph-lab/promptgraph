@@ -1422,6 +1422,39 @@ not own Project or PromptLine mutation, history, persistence/schema,
 generation or filesystem/network orchestration, or the feature-specific
 operation plans and writes.
 
+### Batch Promote Variants publication lifecycle
+
+`ui.gallery_variant_promotion_lifecycle` owns the application-side publication
+lifecycle for the Gallery Batch Promote Variants operation through
+`apply_and_publish_batch_gallery_variant_promotion`.
+
+The owner receives an established preview and delegates target resolution,
+physical-order planning, placement resolution, preview signatures, stale
+validation, clone-based apply, and Variant-to-Line materialization to
+`core.gallery_variant_promotion`. On a successful result it preserves the
+existing publication sequence: history snapshot, graph rebuild, focus
+restoration, selected-route synchronization, highlight and expansion of the
+last promoted line, Project save, and operation-preview cleanup. Stale,
+failed, rejected, and no-op results do not publish Project or session state.
+
+The lifecycle preserves Fresh Preview requirements, stale-plan rejection,
+scope and Project-order semantics, unchanged source PromptLine and Variant
+records, normal Gallery line materialization without a new Route separator,
+prompt, negative, image, lineage, and source-generation metadata,
+unknown-field and aliasing behavior, `end` versus `after_parent` placement,
+deleted, duplicate, ambiguous, and missing-file handling, no-op behavior,
+atomic apply, existing result and error shapes, and the exact callback,
+evaluation, and publication ordering.
+
+`app.py` retains Streamlit widget and radio construction, route and selected
+line target UI, Fresh Preview rendering, confirmation controls, user-facing
+messages, rerun, and cross-feature workspace wiring. `core.gallery_variant_promotion`
+remains the owner of promotion planning, validation, clone-based apply, and
+line materialization. Candidate adoption, image and Variant swap semantics,
+generic Project lifecycle and persistence, and unrelated Route operations
+remain outside this owner. This is a feature-specific publication controller,
+not a generic Candidate/Variant/Route transaction or persistence framework.
+
 ## Residual responsibility audit / extraction phase exit criteria
 
 The experiment #10 audit reviewed the residual `app.py` responsibility map
