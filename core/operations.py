@@ -8,6 +8,7 @@ from core.modules import (
     normalize_module_graph,
     validate_module_graph,
 )
+from core.module_token_rules import _parse_module_rule_text
 import re
 import logging
 import copy
@@ -449,6 +450,33 @@ def create_attribute_group(
         "negative_notes": "",
     }
     return group_key
+
+def create_attribute_group_from_tokens(
+    project: Project,
+    group_name: str,
+    slot: str,
+    tokens: List[str],
+) -> Optional[str]:
+    """Create the sidebar-authored Project group from parsed token text."""
+    group_key = normalize_attribute_group_name(group_name)
+    normalized_slot = normalize_attribute_slot(slot)
+    normalized_tokens = _parse_module_rule_text("\n".join(tokens or []))
+    if not group_key or not normalized_slot or not normalized_tokens:
+        return None
+    groups = get_project_attribute_groups(project)
+    if group_key in groups:
+        return None
+    groups[group_key] = {
+        "name": str(group_name or "").strip(),
+        "slot": normalized_slot,
+        "tokens": normalized_tokens,
+        "created_from": "sidebar_manager",
+        "negative_tags": [],
+        "negative_when_disabled": [],
+        "negative_notes": "",
+    }
+    return group_key
+
 
 def rename_attribute_group(project: Project, old_group_key: str, new_group_name: str) -> Optional[str]:
     group_key = normalize_attribute_group_name(old_group_key)
