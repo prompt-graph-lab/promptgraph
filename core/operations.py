@@ -1,4 +1,5 @@
 from typing import List, Set, Dict, Any, Optional
+from core.module_token_rules import _parse_module_rule_text
 from core.project import Project
 from core.graph_builder import build_graph
 from core.parser import parse_prompt, extract_node_metadata, is_module_marker, is_structural_mod_marker, extract_mod_info
@@ -415,6 +416,32 @@ def _normalize_attribute_group_tag_list(value: Any) -> List[str]:
         seen.add(tag)
         tags.append(tag)
     return tags
+
+def create_attribute_group_from_tokens(project, group_name: str, slot: str, tokens: list[str]) -> str | None:
+    """Create a text-authored Project group; callers own history and persistence.
+
+    Keep literal token spellings until the next group read normalizes them.
+    Invalid input returns before that read; duplicate names return after it.
+    """
+    group_key = normalize_attribute_group_name(group_name)
+    normalized_slot = normalize_attribute_slot(slot)
+    normalized_tokens = _parse_module_rule_text("\n".join(tokens or []))
+    if not group_key or not normalized_slot or not normalized_tokens:
+        return None
+    groups = get_project_attribute_groups(project)
+    if group_key in groups:
+        return None
+    groups[group_key] = {
+        "name": str(group_name or "").strip(),
+        "slot": normalized_slot,
+        "tokens": normalized_tokens,
+        "created_from": "sidebar_manager",
+        "negative_tags": [],
+        "negative_when_disabled": [],
+        "negative_notes": "",
+    }
+    return group_key
+
 
 def create_attribute_group(
     project: Project,
