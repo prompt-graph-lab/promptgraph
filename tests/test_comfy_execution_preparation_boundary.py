@@ -14,6 +14,9 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from core.comfy_generation_prompt import prepare_generation_injection_line
 
 
 class _SessionState(dict):
@@ -97,12 +100,14 @@ class ComfyExecutionPreparationBoundaryTests(unittest.TestCase):
         }
 
     def _load(self, name, namespace):
+        namespace["prepare_generation_injection_line"] = prepare_generation_injection_line
         module = ast.Module(body=[self.functions[name]], type_ignores=[])
         ast.fix_missing_locations(module)
         exec(compile(module, "app.py", "exec"), namespace)
         return namespace[name]
 
-    def test_focus_generation_keeps_source_fallback_and_copy_contract(self):
+    @patch("core.comfy_generation_prompt.get_active_tokens")
+    def test_focus_generation_keeps_source_fallback_and_copy_contract(self, expand):
         project = SimpleNamespace(module_library={"character": {"body": "blue hair"}})
         line = SimpleNamespace(id="line-1", current_text="original")
         settings = {
@@ -123,6 +128,8 @@ class ComfyExecutionPreparationBoundaryTests(unittest.TestCase):
         def get_active_tokens(value, disabled_modules, fallback_prompt=None, module_library=None):
             active_calls.append((value, disabled_modules, fallback_prompt, module_library))
             return ["expanded", "prompt"]
+
+        expand.side_effect = get_active_tokens
 
         def build_line_workflow(workflow_text, injection_line, passed_settings, **kwargs):
             build_calls.append((workflow_text, injection_line, passed_settings, kwargs))
@@ -184,7 +191,8 @@ class ComfyExecutionPreparationBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(FileNotFoundError, r"^Workflow JSON not found at missing\.json$"):
             self._load("_build_focus_line_generation_workflow", namespace)(project, line)
 
-    def test_single_line_preparation_keeps_force_shared_and_active_token_contract(self):
+    @patch("core.comfy_generation_prompt.get_active_tokens")
+    def test_single_line_preparation_keeps_force_shared_and_active_token_contract(self, expand):
         project = SimpleNamespace(module_library={"module": {"body": "smile"}})
         line = SimpleNamespace(id="line-1", current_text="original")
         settings = {"force_shared_comfy_workflow": True, "fallback_prompt": "fallback"}
@@ -195,6 +203,8 @@ class ComfyExecutionPreparationBoundaryTests(unittest.TestCase):
         def get_active_tokens(value, disabled_modules, fallback_prompt=None, module_library=None):
             active_calls.append((value, disabled_modules, fallback_prompt, module_library))
             return ["active"]
+
+        expand.side_effect = get_active_tokens
 
         def build_line_workflow(workflow_text, injection_line, passed_settings, **kwargs):
             build_calls.append((workflow_text, injection_line, passed_settings, kwargs))
@@ -294,6 +304,47 @@ class ComfyExecutionPreparationBoundaryTests(unittest.TestCase):
         self.assertEqual(execution_logs[0]["success_count"], 0)
         self.assertEqual(execution_logs[0]["failure_count"], 2)
         self.assertEqual(execution_logs[0]["generated_paths"], [])
+
+    def test_projectless_preparation_passes_original_line_without_expansion(self):
+        line = SimpleNamespace(current_text="stored")
+        calls = []
+        namespace = {
+            "resolve_effective_comfy_workflow_path": lambda path: (path, "shared"),
+            "_build_line_workflow_from_text": lambda text, value, settings, **kwargs:
+                calls.append((text, value, kwargs)) or ({}, ""),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "workflow.json"
+            path.write_text("{}", encoding="utf-8")
+            with patch("core.comfy_generation_prompt.get_active_tokens") as expand:
+                self._load("build_single_line_workflow", namespace)(str(path), line, {})
+                expand.assert_not_called()
+        self.assertIs(calls[0][1], line)
+        self.assertIsNone(calls[0][2]["disabled_modules"])
+
+    def test_focus_preview_binds_expanded_copy_and_retains_source_details(self):
+        line = SimpleNamespace(current_text="stored", tokens=["smile", "smile"])
+        metadata = {"negative_prompt": "blur"}
+        settings = {}
+        state = _SessionState(settings=settings, disabled_modules=set())
+        calls = []
+        namespace = {
+            "st": SimpleNamespace(session_state=state),
+            "_workflow_text_from_line_metadata": lambda *_args: ("{}", "embedded", metadata),
+            "resolve_effective_comfy_workflow_path": lambda path: ("unused.json", "shared"),
+            "_build_line_workflow_from_text": lambda text, value, passed_settings, **kwargs:
+                calls.append((value, kwargs)) or ({"prepared": True}, "binding warning"),
+        }
+        result = self._load("_build_focus_line_workflow_preview", namespace)(SimpleNamespace(), line)
+        self.assertEqual(result, {
+            "source_kind": "line metadata", "source_label": "embedded",
+            "resolved_workflow_path": "unused.json", "workflow_json": {"prepared": True},
+            "warning": "binding warning",
+        })
+        self.assertIsNot(calls[0][0], line)
+        self.assertEqual(calls[0][0].current_text, "smile, smile")
+        self.assertIs(calls[0][1]["image_metadata"], metadata)
+        self.assertEqual(line.current_text, "stored")
 
 
 if __name__ == "__main__":

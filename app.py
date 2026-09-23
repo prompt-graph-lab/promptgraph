@@ -223,6 +223,7 @@ from core.comfy_prompt_binding import (
     _replace_clip_text_prompts,
     _workflow_submitted_prompt_debug,
 )
+from core.comfy_generation_prompt import prepare_generation_injection_line
 from core.comfy_workflow_preparation import _build_line_workflow_from_text
 import streamlit as st
 from streamlit_agraph import agraph, Node, Edge, Config
@@ -2138,14 +2139,12 @@ def build_single_line_workflow(workflow_path, line, settings, project=None, disa
     if project is not None:
         disabled_modules = disabled_modules if disabled_modules is not None else st.session_state.get("disabled_modules", set())
         fallback_prompt = settings.get("fallback_prompt", "(masterpiece:1.0)")
-        active_tokens = get_active_tokens(
+        injection_line = prepare_generation_injection_line(
             line,
             disabled_modules,
             fallback_prompt=fallback_prompt,
             module_library=getattr(project, "module_library", {}),
         )
-        injection_line = copy.deepcopy(line)
-        injection_line.current_text = ", ".join(active_tokens)
 
     return _build_line_workflow_from_text(
         workflow_text,
@@ -2189,14 +2188,12 @@ def _build_focus_line_workflow_preview(project, line):
             source_kind = "workflow preset"
 
     fallback_prompt = st.session_state.settings.get("fallback_prompt", "(masterpiece:1.0)")
-    active_tokens = get_active_tokens(
+    injection_line = prepare_generation_injection_line(
         line,
         st.session_state.disabled_modules,
         fallback_prompt=fallback_prompt,
         module_library=getattr(project, "module_library", {}),
     )
-    injection_line = copy.deepcopy(line)
-    injection_line.current_text = ", ".join(active_tokens)
     workflow_json, warning = _build_line_workflow_from_text(
         workflow_text,
         injection_line,
@@ -5255,14 +5252,12 @@ def _build_focus_line_generation_workflow(project, line):
             workflow_text = f.read()
 
     fallback_prompt = st.session_state.settings.get("fallback_prompt", "(masterpiece:1.0)")
-    active_tokens = get_active_tokens(
+    injection_line = prepare_generation_injection_line(
         line,
         st.session_state.disabled_modules,
         fallback_prompt=fallback_prompt,
         module_library=getattr(project, "module_library", {}),
     )
-    injection_line = copy.deepcopy(line)
-    injection_line.current_text = ", ".join(active_tokens)
     return _build_line_workflow_from_text(
         workflow_text,
         injection_line,
