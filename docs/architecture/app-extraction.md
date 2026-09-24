@@ -1455,6 +1455,35 @@ generic Project lifecycle and persistence, and unrelated Route operations
 remain outside this owner. This is a feature-specific publication controller,
 not a generic Candidate/Variant/Route transaction or persistence framework.
 
+### Selected Scenes Candidate Adoption publication lifecycle
+
+`ui.selected_routes_candidate_adoption_lifecycle` owns the application-side
+publication lifecycle for Selected Scenes Candidate Adoption in the existing
+`selected_routes` scope through
+`apply_and_publish_selected_routes_candidate_adoption`.
+
+The owner receives selected-route IDs and an established Fresh Preview
+signature, then delegates stale-preview revalidation, source resolution
+(`latest`, `first`, and latest appended Gallery Variant), clone-based atomic
+apply, and adoption metadata to `core.route_batch_candidate_adoption`. On a
+successful result it preserves the existing publication sequence: history
+snapshot, active Project replacement, graph rebuild, generated-candidate
+session synchronization for applied lines, focus restoration, text-area
+synchronization, Project save, preview cleanup, and result publication. Stale,
+failed, rejected, and no-op results do not publish Project changes; operation
+preview cleanup and result publication remain as before. Callback exceptions
+propagate in their existing order, including any partial publication already
+performed.
+
+`app.py` retains the Streamlit controls, scope and selected-route wiring, Fresh
+Preview rendering, confirmation, user messages, rerun orchestration, and other
+Candidate Adoption scopes. `core.route_batch_candidate_adoption` remains
+responsible for selected-route target resolution, plan and signature
+construction, stale validation, candidate/variant source planning,
+retreat/provenance metadata, and clone-based atomic apply. This does not
+generalize Candidate Adoption, Variant promotion, swaps, or Project persistence
+into a shared publication framework.
+
 ## Residual responsibility audit / extraction phase exit criteria
 
 The experiment #10 audit reviewed the residual `app.py` responsibility map
