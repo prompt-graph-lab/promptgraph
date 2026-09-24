@@ -38,6 +38,7 @@ class SidebarProjectDirectoryBrowserTests(unittest.TestCase):
             cls.project_open_start:cls.advanced_start
         ]
         cls.owner_source = (cls.app_path.parent / "ui/project_directory_browser_session.py").read_text(encoding="utf-8")
+        cls.save_as_source = (cls.app_path.parent / "ui/project_save_as_lifecycle.py").read_text(encoding="utf-8")
         cls.owner_functions = {node.name: node for node in ast.parse(cls.owner_source).body
                                if isinstance(node, ast.FunctionDef)}
         cls.functions.update(cls.owner_functions)
@@ -223,14 +224,14 @@ class SidebarProjectDirectoryBrowserTests(unittest.TestCase):
         self.assertGreater(request, success_branch)
 
     def test_save_as_requests_refresh_only_for_new_file_inside_effective_root(self):
-        commit_start = self.app_source.index(
+        commit_start = self.save_as_source.index(
             "def _commit_project_save_as("
         )
-        commit_end = self.app_source.index(
-            "def confirm_project_save_as_overwrite(",
+        commit_end = self.save_as_source.index(
+            "def save_project_as_requested(",
             commit_start,
         )
-        commit = self.app_source[commit_start:commit_end]
+        commit = self.save_as_source[commit_start:commit_end]
         self.assertIn("not target_existed", commit)
         self.assertIn("project_discovery_path_is_within", commit)
         self.assertIn("default_projects_dir()", commit)

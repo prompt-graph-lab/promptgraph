@@ -6,6 +6,9 @@ class SidebarProjectOpenUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+        cls.save_as_source = (
+            Path(__file__).resolve().parents[1] / "ui/project_save_as_lifecycle.py"
+        ).read_text(encoding="utf-8")
         cls.project_open_start = cls.app_source.index(
             'with st.sidebar.expander("プロジェクトを開く", expanded=False):'
         )
@@ -82,12 +85,12 @@ class SidebarProjectOpenUiTests(unittest.TestCase):
         )
 
     def test_save_as_state_contract_is_preserved(self):
-        commit_start = self.app_source.index("def _commit_project_save_as(")
-        commit_end = self.app_source.index(
+        commit_start = self.save_as_source.index("def _commit_project_save_as(")
+        commit_end = self.save_as_source.index(
             "def confirm_project_save_as_overwrite(",
             commit_start,
         )
-        save_as_source = self.app_source[commit_start:commit_end]
+        save_as_source = self.save_as_source[commit_start:commit_end]
         for expected in (
             "save_project_to_json(st.session_state.project, normalized_path)",
             "st.session_state.current_project_path = normalized_path",
