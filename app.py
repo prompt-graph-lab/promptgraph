@@ -4907,16 +4907,13 @@ def apply_candidate_route_creation(project, scope: str, selected_line_ids=None, 
             "first_separator_id": "",
         }
 
-    push_history()
-    # Preserve the existing fresh-Apply registration of session Candidates on
-    # source Lines. Derived Lines still use only the frozen records below.
+    # Legacy Apply merged and synchronized every target before its undo snapshot.
+    # Do this only after the final stale gate; the returned live records never
+    # feed the derived Lines, which use the frozen plan below.
     for target in stored_plan["targets"]:
         source = next(line for line in project.prompt_lines if getattr(line, "id", "") == target["line_id"])
-        persistent = getattr(source, "generated_candidates", None)
-        persistent = persistent if isinstance(persistent, list) else []
-        source.generated_candidates = _normalize_candidate_records([
-            *persistent, *target["active_candidates"],
-        ])
+        _get_line_generated_candidates(source)
+    push_history()
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     created_route_count = 0
     created_line_count = 0

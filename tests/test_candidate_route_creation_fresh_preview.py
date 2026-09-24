@@ -15,7 +15,9 @@ from core.candidate_inspection import (
     _active_candidates, _candidate_path, _candidate_prompt_metadata,
     _candidate_route_candidate_seed, _candidate_route_candidate_workflow,
 )
-from core.candidate_record_normalization import _normalize_candidate_path, _normalize_candidate_records
+from core.candidate_record_normalization import (
+    _normalize_candidate_path, _normalize_candidate_record, _normalize_candidate_records,
+)
 from core.candidate_route_creation_preview import build_candidate_route_creation_preview
 from core.gallery_variant_promotion import normalize_candidate_line_for_main_sequence
 from core.io import (
@@ -53,17 +55,32 @@ def setup(tmp_path):
         "_candidate_route_target_lines", "preview_candidate_route_creation",
         "_apply_candidate_prompt_to_line", "_build_candidate_route_line",
         "apply_candidate_route_creation", "_reindex_project_lines",
+        "_line_candidate_key", "_get_persistent_line_candidates",
+        "_append_persistent_line_candidates", "_get_session_line_generated_candidates",
+        "_sync_line_generated_candidates_to_session", "_get_line_generated_candidates",
     }
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     events = []
+    history_snapshots = []
+    holder = {}
     session = Session(current_project_path=str(tmp_path / "project.json"),
                       line_generated_candidates={}, focused_line_id="a")
+
+    def record_history():
+        events.append("history")
+        parent = holder["parent"]
+        history_snapshots.append({
+            "persistent": copy.deepcopy(parent.generated_candidates),
+            "session": copy.deepcopy(session.line_generated_candidates.get(parent.id)),
+        })
+
     namespace = dict(
         st=SimpleNamespace(session_state=session), os=os, stat=stat, json=json,
         hashlib=hashlib, copy=copy, uuid=__import__("uuid"),
         datetime=__import__("datetime").datetime, timezone=__import__("datetime").timezone,
         PromptLine=PromptLine, parse_prompt=parse_prompt,
         _candidate_path=_candidate_path, _normalize_candidate_path=_normalize_candidate_path,
+        _normalize_candidate_record=_normalize_candidate_record,
         _normalize_candidate_records=_normalize_candidate_records,
         _active_candidates=_active_candidates,
         _candidate_prompt_metadata=_candidate_prompt_metadata,
@@ -82,7 +99,7 @@ def setup(tmp_path):
         route_separator_label=lambda item: item.separator_label or item.current_text or item.original_file_name,
         get_line_by_id=lambda project, line_id: next((item for item in project.prompt_lines if item.id == line_id), None),
         _gallery_route_anchor_line_id=lambda project, selected: session.get("focused_line_id") or (selected or [""])[0],
-        push_history=lambda: events.append("history"),
+        push_history=record_history,
         build_graph=lambda project: events.append("graph") or project,
         save_current_project_if_possible=lambda reason: events.append("save"),
         restore_focus_after_graph_update=lambda previous: events.append("focus"),
@@ -94,8 +111,10 @@ def setup(tmp_path):
     separator = line("route", 0, line_type="separator", separator_label="Parent")
     other = line("b", 2, [])
     project = Project(prompt_lines=[separator, parent, other])
+    holder["parent"] = parent
     session.project = project
     return SimpleNamespace(ns=namespace, session=session, events=events,
+                           history_snapshots=history_snapshots,
                            project=project, image=image, parent=parent, other=other,
                            preview=lambda scope="selected_lines", selected=None, limit=8:
                            namespace["preview_candidate_route_creation"](
@@ -107,10 +126,13 @@ def setup(tmp_path):
 
 def assert_stale_without_effects(setup, preview):
     before = copy.deepcopy(setup.project)
+    before_session_candidates = copy.deepcopy(setup.session.line_generated_candidates)
     result = setup.apply(preview)
     assert result["stale_preview"] is True
     assert setup.events == []
     assert setup.project == before
+    assert setup.session.line_generated_candidates == before_session_candidates
+    assert setup.history_snapshots == []
     assert setup.session.project is setup.project
 
 
@@ -220,10 +242,13 @@ def test_relevant_change_rejects_apply_without_effects(setup, tmp_path, change):
 
 def assert_stale_without_effects_for_call(setup, preview, **kwargs):
     before = copy.deepcopy(setup.project)
+    before_session_candidates = copy.deepcopy(setup.session.line_generated_candidates)
     result = setup.apply(preview, **kwargs)
     assert result["stale_preview"] is True
     assert setup.events == []
     assert setup.project == before
+    assert setup.session.line_generated_candidates == before_session_candidates
+    assert setup.history_snapshots == []
     assert setup.session.project is setup.project
 
 
@@ -269,6 +294,53 @@ def test_session_only_candidate_record_is_materialized(setup, tmp_path):
 
 def test_apply_without_preview_has_no_effects(setup):
     assert_stale_without_effects(setup, None)
+
+
+def test_stale_apply_does_not_normalize_or_sync_candidate_records(setup):
+    setup.parent.generated_candidates.append({"path": r"folder\inactive.png", "trashed": True})
+    setup.session.line_generated_candidates["a"] = [
+        {"path": r"folder\session-inactive.png", "trashed": True},
+    ]
+    preview = setup.preview()
+    setup.parent.generated_candidates[0]["unknown"] = "changed"
+    assert_stale_without_effects(setup, preview)
+    assert setup.parent.generated_candidates[1]["path"] == r"folder\inactive.png"
+    assert setup.session.line_generated_candidates["a"][0]["path"] == r"folder\session-inactive.png"
+
+
+def test_fresh_apply_syncs_active_and_current_inactive_before_history(setup, tmp_path):
+    (tmp_path / "session-active.png").write_bytes(b"image")
+    setup.parent.generated_candidates.append({
+        "path": "persistent-inactive.png", "trashed": True, "note": "persisted",
+    })
+    setup.session.line_generated_candidates["a"] = [
+        {"path": "session-active.png", "unknown_session": "reviewed"},
+        {"path": "session-inactive.png", "trashed": True, "note": "old"},
+    ]
+    preview = setup.preview()
+    setup.session.line_generated_candidates["a"][1]["note"] = "current"
+    assert setup.preview(limit=0)["fingerprint"] == preview["fingerprint"]
+
+    original_preview = setup.ns["preview_candidate_route_creation"]
+
+    def change_live_active_after_check(*args, **kwargs):
+        current = original_preview(*args, **kwargs)
+        setup.session.line_generated_candidates["a"][0]["unknown_session"] = "later"
+        return current
+
+    setup.ns["preview_candidate_route_creation"] = change_live_active_after_check
+    assert setup.apply(preview)["applied"] is True
+
+    snapshot = setup.history_snapshots[0]
+    paths = [item["path"] for item in snapshot["persistent"]]
+    assert paths == ["a.png", "persistent-inactive.png", "session-active.png", "session-inactive.png"]
+    assert snapshot["session"] == snapshot["persistent"]
+    assert snapshot["persistent"][3]["note"] == "current"
+    assert snapshot["persistent"][2]["unknown_session"] == "later"
+    derived = next(item for item in setup.project.prompt_lines
+                   if item.duplicated_from == "a" and item.image_path == "session-active.png")
+    assert derived.source_generation_info["source_raw_metadata"]["unknown_session"] == "reviewed"
+    assert setup.events == ["history", "graph", "save"]
 
 
 def test_unrelated_state_and_overwritten_source_fields_remain_fresh(setup):
