@@ -23,6 +23,7 @@ def build_candidate_route_creation_preview(
     duplicate_count = 0
     no_candidate_count = 0
     reserved_labels = set()
+    route_plans = []
 
     for line in target_lines:
         candidates = list(active_candidates(line))
@@ -46,6 +47,7 @@ def build_candidate_route_creation_preview(
                 "candidate_index": candidate_index,
                 "candidate_path": candidate_path,
                 "candidate_metadata": _candidate_metadata_caption(candidate),
+                "candidate": candidate,
             })
 
         if not route_candidates:
@@ -55,6 +57,7 @@ def build_candidate_route_creation_preview(
         route_count += 1
         add_line_count += len(route_candidates)
         route_label = build_route_label(project, line, reserved_labels)
+        route_plans.append({"line": line, "route_label": route_label, "candidates": route_candidates})
         if len(examples) < example_limit:
             examples.append({
                 "line_id": getattr(line, "id", ""),
@@ -78,4 +81,5 @@ def build_candidate_route_creation_preview(
         "warnings": target_resolution["warnings"],
         "route_resolution": target_resolution.get("route_resolution"),
         "examples": examples,
+        "route_plans": route_plans,
     }

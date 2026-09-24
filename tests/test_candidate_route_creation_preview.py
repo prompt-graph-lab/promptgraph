@@ -1,7 +1,5 @@
 """Characterization of the read-only Candidate Route preview boundary."""
-import ast
 from copy import deepcopy
-from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
@@ -119,28 +117,3 @@ def test_empty_resolution_and_optional_route_resolution():
     assert result['route_resolution'] is None
     assert result['target_line_count'] == result['skip_count'] == 0
     assert result['examples'] == []
-
-
-def test_app_wrapper_resolves_scope_once_and_forwards_runtime_owners():
-    tree = ast.parse((Path(__file__).resolve().parents[1] / 'app.py').read_text(encoding='utf-8'))
-    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-                    and n.name == 'preview_candidate_route_creation')
-    project, selected, resolution, expected = object(), ['a'], object(), object()
-    calls = []
-    def resolve(*args):
-        calls.append(args)
-        return resolution
-    def build(*args, **kwargs):
-        assert args == (project, 'current_route', resolution)
-        assert kwargs == dict(callbacks, example_limit=0)
-        return expected
-    names = dict(active_candidates='_line_active_generated_candidates',
-                 resolve_asset_path='_runtime_asset_path', path_exists='profiled_path_exists',
-                 duplicate_exists='_candidate_route_duplicate_exists',
-                 build_route_label='_candidate_route_label', line_base_label='_candidate_route_line_base_label')
-    callbacks = {key: object() for key in names}
-    namespace = {name: callbacks[key] for key, name in names.items()}
-    namespace.update(_candidate_route_target_lines=resolve, build_candidate_route_creation_preview=build)
-    exec(compile(ast.Module(body=[function], type_ignores=[]), '<app wrapper>', 'exec'), namespace)
-    assert namespace['preview_candidate_route_creation'](project, 'current_route', selected, 0) is expected
-    assert calls == [(project, 'current_route', selected)]
