@@ -242,7 +242,7 @@ from core.animadex_discovery import (
 )
 from core.animadex_modules import build_global_module_preview_from_animadex_record
 from core import project_directory_duplication
-from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, ensure_project_folder_layout, copy_candidates_to_project_and_save_atomically, preview_copy_candidates_to_project, preview_verified_project_asset_duplicate_cleanup, delete_verified_project_asset_source_duplicates, ProjectAssetsPreviewStaleError, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
+from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, _json_safe_source_value, ensure_project_folder_layout, copy_candidates_to_project_and_save_atomically, preview_copy_candidates_to_project, preview_verified_project_asset_duplicate_cleanup, delete_verified_project_asset_source_duplicates, ProjectAssetsPreviewStaleError, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
 from core.project_json_open import prepare_project_json_open
 from core.graph_builder import build_graph
 from core.graph_edit_illustration_browser import (
@@ -266,6 +266,7 @@ import json
 import html
 import time
 import hashlib
+import stat
 import re
 import logging
 from contextlib import contextmanager
@@ -4697,17 +4698,134 @@ def _candidate_route_target_lines(project, scope: str, selected_line_ids: list[s
 
 
 def preview_candidate_route_creation(project, scope: str, selected_line_ids=None, example_limit=8) -> dict:
+    """Freeze the complete reviewed materialization and its relevant live inputs."""
     target_resolution = _candidate_route_target_lines(project, scope, selected_line_ids)
-    return build_candidate_route_creation_preview(
+    target_lines = target_resolution["target_lines"]
+    project_path = st.session_state.get("current_project_path")
+
+    def resolve_path(path):
+        return resolve_project_asset_path(path, project_path)
+
+    def path_state(path):
+        resolved = resolve_path(path)
+        real_target = os.path.realpath(resolved) if resolved else ""
+        state = {"path": path, "resolved": resolved, "real_target": real_target,
+                 "exists": False, "type": "missing", "size": None, "mtime_ns": None}
+        if resolved:
+            try:
+                info = os.stat(resolved)
+            except (OSError, ValueError):
+                pass
+            else:
+                state.update(exists=True, type=("file" if stat.S_ISREG(info.st_mode) else
+                    "directory" if stat.S_ISDIR(info.st_mode) else "other"),
+                    size=info.st_size, mtime_ns=info.st_mtime_ns)
+        return state
+
+    def duplicate_exists(_project, parent_line_id, candidate_path):
+        if not parent_line_id or not candidate_path:
+            return False
+        for line in getattr(_project, "prompt_lines", []):
+            if getattr(line, "deleted", False):
+                continue
+            lineage = getattr(line, "lineage_info", None)
+            if not isinstance(lineage, dict) or lineage.get("source") != "candidate_route_creation":
+                continue
+            if str(lineage.get("parent_line_id") or "") != str(parent_line_id):
+                continue
+            previous_path = lineage.get("candidate_path") or lineage.get("candidate_image_path") or ""
+            previous_path = _normalize_candidate_path(previous_path)
+            if previous_path == candidate_path:
+                return True
+            if previous_path:
+                try:
+                    previous_resolved = os.path.normcase(os.path.abspath(resolve_path(previous_path)))
+                    candidate_resolved = os.path.normcase(os.path.abspath(resolve_path(candidate_path)))
+                    if previous_resolved == candidate_resolved:
+                        return True
+                except (OSError, ValueError):
+                    pass
+        return False
+
+    def source_state(line):
+        # Copied fields plus image references used to derive parent lineage.
+        return {name: _json_safe_source_value(getattr(line, name)) for name in (
+            "id", "original_file_name", "original_index", "current_index",
+            "current_text", "negative_prompt", "node_path", "image_path",
+            "generated_image_path", "selected_candidate_path",
+        )}
+
+    active_by_object = {}
+    candidate_states = []
+    file_states = {}
+    for line in target_lines:
+        persistent = getattr(line, "generated_candidates", None)
+        persistent = persistent if isinstance(persistent, list) else []
+        session = st.session_state.get("line_generated_candidates", {}).get(str(getattr(line, "id", "")), [])
+        active = _active_candidates(_normalize_candidate_records([*persistent, *(session or [])]))
+        active_by_object[id(line)] = active
+        entries = []
+        for candidate in active:
+            candidate_path = _normalize_candidate_path(_candidate_path(candidate))
+            file_state = path_state(candidate_path)
+            file_states[file_state["resolved"]] = file_state
+            entries.append({
+                "record": _json_safe_source_value(candidate),
+                "file": file_state,
+                "duplicate": duplicate_exists(project, getattr(line, "id", ""), candidate_path),
+            })
+        candidate_states.append(entries)
+
+    summary = build_candidate_route_creation_preview(
         project, scope, target_resolution,
-        active_candidates=_line_active_generated_candidates,
-        resolve_asset_path=_runtime_asset_path,
-        path_exists=profiled_path_exists,
-        duplicate_exists=_candidate_route_duplicate_exists,
+        active_candidates=lambda line: active_by_object[id(line)],
+        resolve_asset_path=resolve_path,
+        path_exists=lambda path: file_states[path]["exists"],
+        duplicate_exists=duplicate_exists,
         build_route_label=_candidate_route_label,
         line_base_label=_candidate_route_line_base_label,
         example_limit=example_limit,
     )
+    route_contexts = {
+        id(line): resolve_gallery_route_for_line(project, getattr(line, "id", ""))
+        for line in target_lines
+    }
+    planned_routes = [{
+        "source": source_state(item["line"]),
+        "route_label": item["route_label"],
+        "parent_route_id": str(route_contexts[id(item["line"])].get("route_id") or ""),
+        "candidates": [{
+            "index": candidate["candidate_index"],
+            "path": candidate["candidate_path"],
+            "record": _json_safe_source_value(candidate["candidate"]),
+        } for candidate in item["candidates"]],
+    } for item in summary.pop("route_plans")]
+    plan = {
+        "placement": "after_source",
+        "targets": [{
+            "line_id": getattr(line, "id", ""),
+            "active_candidates": [_json_safe_source_value(candidate)
+                                  for candidate in active_by_object[id(line)]],
+        } for line in target_lines],
+        "routes": planned_routes,
+    }
+    plan_json = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    relevant_state = {
+        "scope": scope,
+        "target_line_ids": [getattr(line, "id", "") for line in target_lines],
+        "project_order": [(getattr(line, "id", ""), bool(getattr(line, "deleted", False)),
+                           is_route_separator(line)) for line in getattr(project, "prompt_lines", [])],
+        "sources": [source_state(line) for line in target_lines],
+        "candidates": candidate_states,
+        "parent_routes": [{key: route_contexts[id(line)].get(key) for key in
+                           ("route_id", "route_label", "line_ids")}
+                          for line in target_lines],
+        "plan": plan,
+    }
+    canonical_state = json.dumps(relevant_state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    summary["apply_plan"] = plan_json  # Immutable JSON text, including all routes beyond example_limit.
+    summary["fingerprint"] = hashlib.sha256(canonical_state.encode("utf-8")).hexdigest()
+    return summary
 
 
 def _build_candidate_route_line(source_line, candidate, candidate_path: str, candidate_index: int, route_id: str, parent_route_id: str, created_at: str):
@@ -4760,50 +4878,26 @@ def _build_candidate_route_line(source_line, candidate, candidate_path: str, can
     return new_line
 
 
-def apply_candidate_route_creation(project, scope: str, selected_line_ids=None) -> dict:
-    target_resolution = _candidate_route_target_lines(project, scope, selected_line_ids)
-    target_lines = target_resolution["target_lines"]
-    line_lookup = {getattr(line, "id", ""): line for line in getattr(project, "prompt_lines", [])}
-    reserved_labels = set()
-    route_plans = []
-    skipped_count = 0
-    missing_count = 0
-    duplicate_count = 0
-    no_candidate_count = 0
+def apply_candidate_route_creation(project, scope: str, selected_line_ids=None, *, preview=None) -> dict:
+    stale = {"applied": False, "stale_preview": True,
+             "error": "Previewが古くなりました。Fresh Previewを再実行してください。"}
+    if not isinstance(preview, dict) or not preview.get("apply_plan") or not preview.get("fingerprint"):
+        return stale
+    # This read-only recomputation is the final gate before history or any Project mutation.
+    current = preview_candidate_route_creation(project, scope, selected_line_ids, example_limit=0)
+    if (preview["fingerprint"] != current["fingerprint"]
+            or preview["apply_plan"] != current["apply_plan"]):
+        return stale
 
-    for line in target_lines:
-        source_line = line_lookup.get(getattr(line, "id", ""))
-        if not source_line:
-            skipped_count += 1
-            continue
-        candidates = list(_line_active_generated_candidates(source_line))
-        if not candidates:
-            no_candidate_count += 1
-            skipped_count += 1
-            continue
-        valid_candidates = []
-        for candidate_index, candidate in enumerate(candidates):
-            candidate_path = _normalize_candidate_path(_candidate_path(candidate))
-            resolved_candidate_path = _runtime_asset_path(candidate_path)
-            if not candidate_path or not resolved_candidate_path or not profiled_path_exists(resolved_candidate_path):
-                missing_count += 1
-                skipped_count += 1
-                continue
-            if _candidate_route_duplicate_exists(project, getattr(source_line, "id", ""), candidate_path):
-                duplicate_count += 1
-                skipped_count += 1
-                continue
-            valid_candidates.append((candidate_index, candidate, candidate_path))
-        if not valid_candidates:
-            continue
-        route_plans.append({
-            "line": source_line,
-            "route_label": _candidate_route_label(project, source_line, reserved_labels),
-            "candidates": valid_candidates,
-        })
-
+    stored_plan = json.loads(preview["apply_plan"])
+    route_plans = stored_plan["routes"]
+    skipped_count = preview["skip_count"]
+    missing_count = preview["missing_count"]
+    duplicate_count = preview["duplicate_count"]
+    no_candidate_count = preview["no_candidate_count"]
     if not route_plans:
         return {
+            "applied": False,
             "route_count": 0,
             "line_count": 0,
             "skipped_count": skipped_count,
@@ -4813,20 +4907,28 @@ def apply_candidate_route_creation(project, scope: str, selected_line_ids=None) 
             "first_separator_id": "",
         }
 
+    # Legacy Apply merged and synchronized every target before its undo snapshot.
+    # Do this only after the final stale gate; the returned live records never
+    # feed the derived Lines, which use the frozen plan below.
+    for target in stored_plan["targets"]:
+        source = next(line for line in project.prompt_lines if getattr(line, "id", "") == target["line_id"])
+        _get_line_generated_candidates(source)
     push_history()
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     created_route_count = 0
     created_line_count = 0
     first_separator_id = ""
-    parent_route_cache = {}
-
     for plan in reversed(route_plans):
-        source_line = plan["line"]
+        source = plan["source"]
+        source_line = PromptLine(
+            id=source["id"], original_file_name=source["original_file_name"],
+            original_index=source["original_index"], current_index=source["current_index"],
+            original_text=source["current_text"], current_text=source["current_text"],
+            tokens=[], negative_prompt=source["negative_prompt"], node_path=source["node_path"],
+            image_path=source["image_path"], generated_image_path=source["generated_image_path"],
+            selected_candidate_path=source["selected_candidate_path"],
+        )
         source_line_id = getattr(source_line, "id", "")
-        parent_route = parent_route_cache.get(source_line_id)
-        if parent_route is None:
-            parent_route = resolve_gallery_route_for_line(project, source_line_id)
-            parent_route_cache[source_line_id] = parent_route
         route_id = f"separator_{uuid.uuid4().hex[:8]}"
         route_label = plan["route_label"]
         separator = PromptLine(
@@ -4855,14 +4957,14 @@ def apply_candidate_route_creation(project, scope: str, selected_line_ids=None) 
             *[
                 _build_candidate_route_line(
                     source_line,
-                    candidate,
-                    candidate_path,
-                    candidate_index,
+                    candidate["record"],
+                    candidate["path"],
+                    candidate["index"],
                     route_id,
-                    str((parent_route or {}).get("route_id") or ""),
+                    plan["parent_route_id"],
                     created_at,
                 )
-                for candidate_index, candidate, candidate_path in plan["candidates"]
+                for candidate in plan["candidates"]
             ],
         ]
         insert_index = next(
@@ -4885,6 +4987,7 @@ def apply_candidate_route_creation(project, scope: str, selected_line_ids=None) 
         restore_focus_after_graph_update(previous_focused_line_id)
     save_current_project_if_possible("candidate routes created")
     return {
+        "applied": True,
         "route_count": created_route_count,
         "line_count": created_line_count,
         "skipped_count": skipped_count,
@@ -10062,6 +10165,10 @@ def render_gallery_batch_variant_promotion(project, active_lines, selected_line_
 
 
 def render_candidate_route_creation_section(project) -> None:
+    confirm_key = "gallery_candidate_route_creation_confirm"
+    if st.session_state.pop("gallery_candidate_route_creation_confirm_reset_pending", False):
+        st.session_state[confirm_key] = False
+
     st.markdown("#### Candidateから別案シーンを作成")
     st.caption(
         "選択したイラストのCandidatesを、シーン区切り付きの同一シーン別案として本編列へ追加します。"
@@ -10087,10 +10194,6 @@ def render_candidate_route_creation_section(project) -> None:
     )
     target_resolution = _candidate_route_target_lines(project, scope, selected_line_ids)
     target_line_ids = tuple(getattr(line, "id", "") for line in target_resolution["target_lines"])
-    signature = {
-        "scope": scope,
-        "target_line_ids": target_line_ids,
-    }
     for warning in target_resolution.get("warnings", []):
         st.warning(warning)
 
@@ -10108,26 +10211,24 @@ def render_candidate_route_creation_section(project) -> None:
         disabled=preview_disabled,
         key="gallery_candidate_route_creation_preview_btn",
     ):
-        st.session_state.gallery_candidate_route_creation_preview = {
-            "signature": signature,
-            "preview": preview_candidate_route_creation(
-                project,
-                scope,
-                selected_line_ids=selected_line_ids,
-            ),
-        }
+        st.session_state.gallery_candidate_route_creation_preview = preview_candidate_route_creation(
+            project, scope, selected_line_ids=selected_line_ids,
+        )
+        st.session_state.gallery_candidate_route_creation_confirm = False
 
     preview_state = st.session_state.get("gallery_candidate_route_creation_preview")
-    preview_current = (
-        preview_state
-        and preview_state.get("signature") == signature
-    )
+    current_preview = (preview_candidate_route_creation(project, scope, selected_line_ids, example_limit=0)
+                       if preview_state else None)
+    preview_current = bool(preview_state and current_preview
+        and preview_state.get("fingerprint") == current_preview.get("fingerprint")
+        and preview_state.get("apply_plan") == current_preview.get("apply_plan"))
     if preview_state and not preview_current:
+        st.session_state[confirm_key] = False
         st.caption("別案シーン作成プレビューが古くなっています。もう一度プレビューしてください。")
     if not preview_current:
         return
 
-    preview = preview_state["preview"]
+    preview = preview_state
     metric_cols = st.columns(5)
     metric_cols[0].metric("対象イラスト", preview["target_line_count"])
     metric_cols[1].metric("Candidateありイラスト", preview["candidate_line_count"])
@@ -10165,8 +10266,14 @@ def render_candidate_route_creation_section(project) -> None:
             st.session_state.project,
             scope,
             selected_line_ids=selected_line_ids,
+            preview=preview_state,
         )
         st.session_state.pop("gallery_candidate_route_creation_preview", None)
+        if result.get("stale_preview"):
+            st.session_state["gallery_candidate_route_creation_confirm_reset_pending"] = True
+            st.warning(result["error"])
+            st.rerun()
+            return
         st.session_state.gallery_feedback = (
             f"{result['route_count']}件のシーンと{result['line_count']}件のCandidate由来イラストを追加しました。"
         )
