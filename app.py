@@ -282,6 +282,7 @@ from core.gallery_variant_promotion import (
     resolve_variant_promotion_insert_index,
 )
 from ui.gallery_variant_promotion_lifecycle import apply_and_publish_batch_gallery_variant_promotion
+from ui.selected_routes_candidate_adoption_lifecycle import apply_and_publish_selected_routes_candidate_adoption
 from core.gallery_operation_scope_presentation import (
     get_gallery_operation_scope_presentation,
     iter_gallery_operation_scope_presentations,
@@ -9758,37 +9759,50 @@ def render_gallery_batch_candidate_adoption(
                 disabled=not route_apply_enabled,
                 key="route_batch_candidate_adoption_apply_btn",
             ):
-                prev_focus = st.session_state.get("focused_line_id")
-                if preview_scope != "selected_routes":
+                if preview_scope == "selected_routes":
+                    apply_and_publish_selected_routes_candidate_adoption(
+                        st.session_state.project,
+                        preview_selected_route_ids,
+                        expected_signature=preview_signature,
+                        source=preview_source,
+                        session_state=st.session_state,
+                        resolve_path=_runtime_asset_path,
+                        path_exists=profiled_path_exists,
+                        push_history=push_history,
+                        build_graph=build_graph,
+                        get_persistent_line_candidates=_get_persistent_line_candidates,
+                        sync_line_generated_candidates_to_session=_sync_line_generated_candidates_to_session,
+                        restore_focus_after_graph_update=restore_focus_after_graph_update,
+                        sync_text_areas=sync_text_areas,
+                        save_current_project_if_possible=save_current_project_if_possible,
+                    )
+                else:
+                    prev_focus = st.session_state.get("focused_line_id")
                     push_history()
-                result = apply_route_batch_candidate_adoption(
-                    st.session_state.project,
-                    scope=preview_scope,
-                    route_id=preview_selected_route_id,
-                    selected_line_ids=selected_line_ids,
-                    selected_route_ids=preview_selected_route_ids,
-                    expected_signature=preview_signature,
-                    source=preview_source,
-                )
-                updated_project = result.pop("updated_project", None)
-                apply_succeeded = bool(result.get("applied_count", 0)) and (
-                    preview_scope != "selected_routes" or result.get("applied")
-                )
-                if apply_succeeded:
-                    if preview_scope == "selected_routes":
-                        push_history()
-                    if updated_project is not None:
-                        st.session_state.project = updated_project
-                    st.session_state.project = build_graph(st.session_state.project)
-                    applied_line_ids = set(result.get("applied_line_ids") or [])
-                    for line in getattr(st.session_state.project, "prompt_lines", []):
-                        if getattr(line, "id", "") in applied_line_ids:
-                            _sync_line_generated_candidates_to_session(line, _get_persistent_line_candidates(line))
-                    restore_focus_after_graph_update(prev_focus)
-                    sync_text_areas()
-                    save_current_project_if_possible("route-scope candidates batch adopted")
-                st.session_state.pop("route_batch_candidate_adoption_preview", None)
-                st.session_state.route_batch_candidate_adoption_apply_result = result
+                    result = apply_route_batch_candidate_adoption(
+                        st.session_state.project,
+                        scope=preview_scope,
+                        route_id=preview_selected_route_id,
+                        selected_line_ids=selected_line_ids,
+                        selected_route_ids=preview_selected_route_ids,
+                        expected_signature=preview_signature,
+                        source=preview_source,
+                    )
+                    updated_project = result.pop("updated_project", None)
+                    apply_succeeded = bool(result.get("applied_count", 0))
+                    if apply_succeeded:
+                        if updated_project is not None:
+                            st.session_state.project = updated_project
+                        st.session_state.project = build_graph(st.session_state.project)
+                        applied_line_ids = set(result.get("applied_line_ids") or [])
+                        for line in getattr(st.session_state.project, "prompt_lines", []):
+                            if getattr(line, "id", "") in applied_line_ids:
+                                _sync_line_generated_candidates_to_session(line, _get_persistent_line_candidates(line))
+                        restore_focus_after_graph_update(prev_focus)
+                        sync_text_areas()
+                        save_current_project_if_possible("route-scope candidates batch adopted")
+                    st.session_state.pop("route_batch_candidate_adoption_preview", None)
+                    st.session_state.route_batch_candidate_adoption_apply_result = result
                 st.rerun()
 
         st.divider()
