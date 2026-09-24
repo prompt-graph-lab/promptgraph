@@ -10165,6 +10165,10 @@ def render_gallery_batch_variant_promotion(project, active_lines, selected_line_
 
 
 def render_candidate_route_creation_section(project) -> None:
+    confirm_key = "gallery_candidate_route_creation_confirm"
+    if st.session_state.pop("gallery_candidate_route_creation_confirm_reset_pending", False):
+        st.session_state[confirm_key] = False
+
     st.markdown("#### Candidateから別案シーンを作成")
     st.caption(
         "選択したイラストのCandidatesを、シーン区切り付きの同一シーン別案として本編列へ追加します。"
@@ -10219,6 +10223,7 @@ def render_candidate_route_creation_section(project) -> None:
         and preview_state.get("fingerprint") == current_preview.get("fingerprint")
         and preview_state.get("apply_plan") == current_preview.get("apply_plan"))
     if preview_state and not preview_current:
+        st.session_state[confirm_key] = False
         st.caption("別案シーン作成プレビューが古くなっています。もう一度プレビューしてください。")
     if not preview_current:
         return
@@ -10265,6 +10270,7 @@ def render_candidate_route_creation_section(project) -> None:
         )
         st.session_state.pop("gallery_candidate_route_creation_preview", None)
         if result.get("stale_preview"):
+            st.session_state["gallery_candidate_route_creation_confirm_reset_pending"] = True
             st.warning(result["error"])
             st.rerun()
             return

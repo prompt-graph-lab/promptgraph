@@ -37,6 +37,49 @@ class Session(dict):
         self[name] = value
 
 
+class StreamlitStub:
+    def __init__(self, session_state):
+        self.session_state = session_state
+        self.clicked_buttons = set()
+        self.button_disabled = {}
+        self.checkbox_values = []
+        self.rerun_count = 0
+
+    def markdown(self, *args, **kwargs):
+        pass
+
+    def caption(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def radio(self, label, options, *, key, **kwargs):
+        return self.session_state.get(key, options[0])
+
+    def button(self, *args, disabled=False, key=None, **kwargs):
+        self.button_disabled[key] = disabled
+        return key in self.clicked_buttons and not disabled
+
+    def checkbox(self, *args, key, **kwargs):
+        value = bool(self.session_state.get(key, kwargs.get("value", False)))
+        self.session_state[key] = value
+        self.checkbox_values.append(value)
+        return value
+
+    def columns(self, count):
+        return [self] * count
+
+    def metric(self, *args, **kwargs):
+        pass
+
+    def rerun(self):
+        self.rerun_count += 1
+
+
 def line(line_id, index, candidates=None, **kwargs):
     return PromptLine(
         id=line_id, original_file_name=f"{line_id}.png", original_index=index,
@@ -55,6 +98,7 @@ def setup(tmp_path):
         "_candidate_route_target_lines", "preview_candidate_route_creation",
         "_apply_candidate_prompt_to_line", "_build_candidate_route_line",
         "apply_candidate_route_creation", "_reindex_project_lines",
+        "render_candidate_route_creation_section",
         "_line_candidate_key", "_get_persistent_line_candidates",
         "_append_persistent_line_candidates", "_get_session_line_generated_candidates",
         "_sync_line_generated_candidates_to_session", "_get_line_generated_candidates",
@@ -65,6 +109,7 @@ def setup(tmp_path):
     holder = {}
     session = Session(current_project_path=str(tmp_path / "project.json"),
                       line_generated_candidates={}, focused_line_id="a")
+    streamlit = StreamlitStub(session)
 
     def record_history():
         events.append("history")
@@ -75,7 +120,7 @@ def setup(tmp_path):
         })
 
     namespace = dict(
-        st=SimpleNamespace(session_state=session), os=os, stat=stat, json=json,
+        st=streamlit, os=os, stat=stat, json=json,
         hashlib=hashlib, copy=copy, uuid=__import__("uuid"),
         datetime=__import__("datetime").datetime, timezone=__import__("datetime").timezone,
         PromptLine=PromptLine, parse_prompt=parse_prompt,
@@ -97,6 +142,8 @@ def setup(tmp_path):
         is_gallery_operation_prompt_line=is_gallery_operation_prompt_line,
         get_prompt_line_label=lambda item: f"{item.original_file_name}:{item.current_index + 1}",
         route_separator_label=lambda item: item.separator_label or item.current_text or item.original_file_name,
+        get_selected_line_ids=lambda project: ["a"],
+        _short_preview=lambda value, limit: str(value)[:limit],
         get_line_by_id=lambda project, line_id: next((item for item in project.prompt_lines if item.id == line_id), None),
         _gallery_route_anchor_line_id=lambda project, selected: session.get("focused_line_id") or (selected or [""])[0],
         push_history=record_history,
@@ -114,6 +161,7 @@ def setup(tmp_path):
     holder["parent"] = parent
     session.project = project
     return SimpleNamespace(ns=namespace, session=session, events=events,
+                           streamlit=streamlit,
                            history_snapshots=history_snapshots,
                            project=project, image=image, parent=parent, other=other,
                            preview=lambda scope="selected_lines", selected=None, limit=8:
@@ -122,6 +170,65 @@ def setup(tmp_path):
                            apply=lambda preview, scope="selected_lines", selected=None:
                            namespace["apply_candidate_route_creation"](
                                project, scope, ["a"] if selected is None else selected, preview=preview))
+
+
+def test_stale_render_resets_confirmation_and_restored_preview_requires_reconfirmation(setup):
+    preview = setup.preview()
+    preview_key = "gallery_candidate_route_creation_preview"
+    confirm_key = "gallery_candidate_route_creation_confirm"
+    setup.session["gallery_candidate_route_creation_scope"] = "selected_lines"
+    setup.session[preview_key] = preview
+    setup.session[confirm_key] = True
+    saved_preview = copy.deepcopy(preview)
+
+    setup.parent.generated_candidates[0]["unknown"]["nested"].append(3)
+    setup.ns["render_candidate_route_creation_section"](setup.project)
+
+    assert setup.session[confirm_key] is False
+    assert setup.session[preview_key] == saved_preview
+    assert "gallery_candidate_route_creation_apply_btn" not in setup.streamlit.button_disabled
+
+    setup.parent.generated_candidates[0]["unknown"]["nested"] = [1, 2]
+    setup.ns["render_candidate_route_creation_section"](setup.project)
+
+    assert setup.session[confirm_key] is False
+    assert setup.streamlit.checkbox_values[-1] is False
+    assert setup.streamlit.button_disabled["gallery_candidate_route_creation_apply_btn"] is True
+
+    setup.session[confirm_key] = True
+    setup.ns["render_candidate_route_creation_section"](setup.project)
+    assert setup.streamlit.button_disabled["gallery_candidate_route_creation_apply_btn"] is False
+
+
+def test_final_stale_apply_rejection_resets_confirmation_before_next_render(setup):
+    preview = setup.preview()
+    preview_key = "gallery_candidate_route_creation_preview"
+    confirm_key = "gallery_candidate_route_creation_confirm"
+    reset_key = "gallery_candidate_route_creation_confirm_reset_pending"
+    setup.session["gallery_candidate_route_creation_scope"] = "selected_lines"
+    setup.session[preview_key] = preview
+    setup.session[confirm_key] = True
+    setup.streamlit.clicked_buttons.add("gallery_candidate_route_creation_apply_btn")
+    original_apply = setup.ns["apply_candidate_route_creation"]
+
+    def drift_before_final_check(*args, **kwargs):
+        setup.parent.current_text = "changed after render freshness check"
+        return original_apply(*args, **kwargs)
+
+    setup.ns["apply_candidate_route_creation"] = drift_before_final_check
+    setup.ns["render_candidate_route_creation_section"](setup.project)
+
+    assert setup.streamlit.button_disabled["gallery_candidate_route_creation_apply_btn"] is False
+    assert setup.session[confirm_key] is True
+    assert setup.session[reset_key] is True
+    assert preview_key not in setup.session
+    assert setup.streamlit.rerun_count == 1
+
+    setup.streamlit.clicked_buttons.clear()
+    setup.ns["render_candidate_route_creation_section"](setup.project)
+
+    assert setup.session[confirm_key] is False
+    assert reset_key not in setup.session
 
 
 def assert_stale_without_effects(setup, preview):
