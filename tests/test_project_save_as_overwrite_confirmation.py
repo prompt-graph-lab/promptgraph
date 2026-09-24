@@ -10,6 +10,7 @@ from unittest import mock
 
 from streamlit.testing.v1 import AppTest
 
+from core import project_save_as_safety
 from core.io import load_project_from_json, save_project_to_json
 from core.project import Project, PromptLine
 
@@ -38,13 +39,7 @@ class ProjectSaveAsSnapshotTests(unittest.TestCase):
             for node in cls.tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
-        namespace = {}
-        imports = [node for node in cls.tree.body
-                   if isinstance(node, ast.ImportFrom)
-                   and node.module == "core.project_save_as_safety"]
-        module = ast.Module(body=imports, type_ignores=[])
-        exec(compile(module, "app.py", "exec"), namespace)
-        cls.namespace = namespace
+        cls.namespace = vars(project_save_as_safety)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

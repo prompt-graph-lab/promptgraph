@@ -1,8 +1,16 @@
-from core.project_save_as_safety import (
-    normalize_project_save_as_path,
-    inspect_project_save_as_destination,
-    build_project_save_as_pending_overwrite,
-    project_save_as_confirmation_is_fresh,
+from core.project_save_as_safety import normalize_project_save_as_path
+from ui.project_save_as_lifecycle import (
+    PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY,
+    PROJECT_SAVE_AS_OVERWRITE_ACK_KEY,
+    PROJECT_SAVE_AS_OVERWRITE_ACK_WIDGET_KEY,
+    PROJECT_SAVE_AS_OVERWRITE_ACK_RESET_PENDING_KEY,
+    PROJECT_SAVE_AS_FEEDBACK_KEY,
+    clear_project_save_as_confirmation,
+    reset_project_save_as_confirmation_state,
+    invalidate_project_save_as_confirmation_for_path_change,
+    sync_project_save_as_overwrite_acknowledgment,
+    save_project_as_requested,
+    confirm_project_save_as_overwrite,
 )
 from ui.module_candidate_selection_session import (
     prepare_module_candidate_selection_widget_state,
@@ -461,15 +469,6 @@ GRAPH_LAYOUT_MODE_STATE_KEY = "graph_layout_mode_value"
 GRAPH_LAYOUT_MODE_WIDGET_KEY = "_graph_layout_mode_widget"
 GRAPH_COOCCURRENCE_STATE_KEY = "graph_show_cooccurrence_overlay"
 GRAPH_COOCCURRENCE_WIDGET_KEY = "_graph_show_cooccurrence_overlay_widget"
-PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY = "project_save_as_pending_overwrite"
-PROJECT_SAVE_AS_OVERWRITE_ACK_KEY = "project_save_as_overwrite_acknowledged"
-PROJECT_SAVE_AS_OVERWRITE_ACK_WIDGET_KEY = (
-    "_project_save_as_overwrite_acknowledged_widget"
-)
-PROJECT_SAVE_AS_OVERWRITE_ACK_RESET_PENDING_KEY = (
-    "project_save_as_overwrite_ack_reset_pending"
-)
-PROJECT_SAVE_AS_FEEDBACK_KEY = "project_save_as_feedback"
 MANAGEMENT_WORKSPACE_TARGETS = {
     "project_management": {
         "title": "Project Management",
@@ -5622,130 +5621,6 @@ def clear_module_edit_scope_if_missing(project):
     scope_name = st.session_state.get("module_edit_scope_name")
     if scope_name and scope_name not in get_available_modules(project):
         clear_module_edit_scope()
-
-
-def arm_project_save_as_overwrite(target_snapshot: dict) -> None:
-    """Store one occupied target snapshot for a separate confirmation action."""
-
-    st.session_state[PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY] = (
-        build_project_save_as_pending_overwrite(
-            target_snapshot,
-            st.session_state.get("current_project_path", ""),
-            st.session_state.get("project"),
-        )
-    )
-    st.session_state[PROJECT_SAVE_AS_OVERWRITE_ACK_KEY] = False
-    st.session_state[PROJECT_SAVE_AS_OVERWRITE_ACK_RESET_PENDING_KEY] = True
-    st.session_state.pop(PROJECT_SAVE_AS_FEEDBACK_KEY, None)
-
-
-def clear_project_save_as_confirmation(*, clear_feedback: bool = False) -> None:
-    """Clear durable confirmation and schedule safe widget reconstruction."""
-
-    st.session_state.pop(PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY, None)
-    st.session_state.pop(PROJECT_SAVE_AS_OVERWRITE_ACK_KEY, None)
-    st.session_state[PROJECT_SAVE_AS_OVERWRITE_ACK_RESET_PENDING_KEY] = True
-    if clear_feedback:
-        st.session_state.pop(PROJECT_SAVE_AS_FEEDBACK_KEY, None)
-
-
-def reset_project_save_as_confirmation_state() -> None:
-    """Clear Save As confirmation after a successful Project transition."""
-
-    clear_project_save_as_confirmation(clear_feedback=True)
-
-
-def invalidate_project_save_as_confirmation_for_path_change() -> None:
-    """Invalidate an armed target without mutating the path widget itself."""
-
-    if st.session_state.get(PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY):
-        clear_project_save_as_confirmation(clear_feedback=False)
-        st.session_state[PROJECT_SAVE_AS_FEEDBACK_KEY] = (
-            "warning",
-            "上書き対象が確認後に変更されました。保存先を再確認してください。",
-        )
-
-
-def sync_project_save_as_overwrite_acknowledgment() -> None:
-    st.session_state[PROJECT_SAVE_AS_OVERWRITE_ACK_KEY] = bool(
-        st.session_state.get(
-            PROJECT_SAVE_AS_OVERWRITE_ACK_WIDGET_KEY,
-            False,
-        )
-    )
-
-
-def _commit_project_save_as(
-    normalized_path: str,
-    *,
-    target_existed: bool,
-) -> None:
-    """Run the existing success sequence only after the atomic writer returns."""
-
-    save_project_to_json(st.session_state.project, normalized_path)
-    st.session_state.current_project_path = normalized_path
-    ensure_current_project_folder_layout(normalized_path)
-    st.session_state.last_saved_at = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    st.session_state.autosave_feedback = "manual save"
-    st.session_state.settings = remember_project(
-        st.session_state.settings,
-        normalized_path,
-    )
-    save_settings(st.session_state.settings)
-    reset_project_assets_operation_state()
-    if (
-        not target_existed
-        and project_discovery_path_is_within(
-            normalized_path,
-            default_projects_dir(),
-        )
-    ):
-        request_project_directory_discovery_refresh()
-    clear_project_save_as_confirmation(clear_feedback=False)
-    st.session_state[PROJECT_SAVE_AS_FEEDBACK_KEY] = (
-        "success",
-        "プロジェクトを保存しました。",
-    )
-
-
-def confirm_project_save_as_overwrite() -> None:
-    """Freshly validate and execute the armed destructive Save As action."""
-
-    pending = st.session_state.get(PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY)
-    acknowledged = bool(
-        st.session_state.get(PROJECT_SAVE_AS_OVERWRITE_ACK_KEY, False)
-    )
-    fresh, current_snapshot = project_save_as_confirmation_is_fresh(
-        pending,
-        st.session_state.get("save_project_json_path", ""),
-        st.session_state.get("current_project_path", ""),
-        st.session_state.get("project"),
-    )
-    if not acknowledged or not fresh:
-        clear_project_save_as_confirmation(clear_feedback=False)
-        st.session_state[PROJECT_SAVE_AS_FEEDBACK_KEY] = (
-            "warning",
-            "上書き対象が確認後に変更されました。保存先を再確認してください。",
-        )
-        return
-
-    normalized_path = str(current_snapshot.get("normalized_path") or "")
-    try:
-        _commit_project_save_as(
-            normalized_path,
-            target_existed=True,
-        )
-    except Exception as exc:
-        st.session_state.pop(PROJECT_SAVE_AS_OVERWRITE_ACK_KEY, None)
-        st.session_state[
-            PROJECT_SAVE_AS_OVERWRITE_ACK_RESET_PENDING_KEY
-        ] = True
-        st.session_state[PROJECT_SAVE_AS_FEEDBACK_KEY] = (
-            "error",
-            f"Project JSONを保存できませんでした: {exc}",
-        )
 
 
 def ensure_current_project_folder_layout(project_path: str) -> bool:
@@ -20998,47 +20873,13 @@ with st.sidebar.expander("Advanced", expanded=False):
         key="save_project_as_json_button",
         disabled=not bool(st.session_state.project),
     ):
-        try:
-            target_snapshot = inspect_project_save_as_destination(json_path)
-        except (OSError, TypeError, ValueError) as exc:
-            clear_project_save_as_confirmation(clear_feedback=False)
-            st.session_state[PROJECT_SAVE_AS_FEEDBACK_KEY] = (
-                "error",
-                str(exc),
-            )
-        else:
-            if target_snapshot.get("kind") == "file":
-                arm_project_save_as_overwrite(target_snapshot)
-            elif target_snapshot.get("kind") == "missing":
-                try:
-                    fresh_snapshot = inspect_project_save_as_destination(
-                        target_snapshot["normalized_path"]
-                    )
-                    if fresh_snapshot.get("kind") == "file":
-                        arm_project_save_as_overwrite(fresh_snapshot)
-                    elif fresh_snapshot.get("kind") != "missing":
-                        raise ValueError(
-                            "Project JSONの保存先は通常ファイルではありません。"
-                        )
-                    else:
-                        _commit_project_save_as(
-                            fresh_snapshot["normalized_path"],
-                            target_existed=False,
-                        )
-                except Exception as exc:
-                    clear_project_save_as_confirmation(
-                        clear_feedback=False
-                    )
-                    st.session_state[PROJECT_SAVE_AS_FEEDBACK_KEY] = (
-                        "error",
-                        f"Project JSONを保存できませんでした: {exc}",
-                    )
-            else:
-                clear_project_save_as_confirmation(clear_feedback=False)
-                st.session_state[PROJECT_SAVE_AS_FEEDBACK_KEY] = (
-                    "error",
-                    "Project JSONの保存先は通常ファイルではありません。",
-                )
+        save_project_as_requested(
+            json_path,
+            ensure_current_project_folder_layout=ensure_current_project_folder_layout,
+            reset_project_assets_operation_state=reset_project_assets_operation_state,
+            default_projects_dir=default_projects_dir,
+            request_project_directory_discovery_refresh=request_project_directory_discovery_refresh,
+        )
 
     if st.session_state.get(
         PROJECT_SAVE_AS_OVERWRITE_ACK_RESET_PENDING_KEY,
@@ -21097,6 +20938,12 @@ with st.sidebar.expander("Advanced", expanded=False):
                         )
                     ),
                     on_click=confirm_project_save_as_overwrite,
+                    kwargs={
+                        "ensure_current_project_folder_layout": ensure_current_project_folder_layout,
+                        "reset_project_assets_operation_state": reset_project_assets_operation_state,
+                        "default_projects_dir": default_projects_dir,
+                        "request_project_directory_discovery_refresh": request_project_directory_discovery_refresh,
+                    },
                 )
             with overwrite_cols[1]:
                 st.button(

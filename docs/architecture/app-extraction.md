@@ -16,7 +16,7 @@ proposed new package hierarchy.
 | --- | --- | --- |
 | Startup and UI composition | top-level state initialization, page configuration, Sidebar and main workspace dispatch | `core.settings`, `core.startup`, `core.version`, Streamlit; executes on every rerun |
 | Editing context and navigation | `open_management_workspace`, `reset_*_session_state`, graph selection, Focus navigation | Shared session keys, widget mirrors, pending resets, Project switching |
-| Undo and persistence orchestration | `push_history`, `undo`, `load_project_json_into_session`, Save As confirmation helpers | `Project.clone`, `core.io`, settings, filesystem snapshots, rerun/reset ordering |
+| Undo and persistence orchestration | `push_history`, `undo`, `load_project_json_into_session`, `ui.project_save_as_lifecycle` | `Project.clone`, `core.io`, settings, filesystem snapshots, rerun/reset ordering |
 | Project management and assets | `render_project_management_workspace`, discovery, import, fork and asset panels | `core.project_discovery`, `core.new_project_workspace`, `core.project_root_import`, `ui.project_root_import_session`, `core.lightweight_fork*`, `core.io`; preview/confirm/apply lifecycle |
 | Prompt inspection and editing | syntax diagnostics, source/current diffs, batch previews, line editors | `core.parser`, `core.operations`, `core.batch_preview`; rendering and mutation remain coupled to the app |
 | ComfyUI preparation and execution | `build_single_line_workflow`, `_build_focus_line_workflow_preview`, `_run_current_line_comfy_multiple` | Embedded metadata, shared path/settings, Module expansion, `core.comfyui`, execution logs and Candidate ingestion |
@@ -1328,6 +1328,27 @@ rendering, apply operations, Project mutation, history, persistence/save,
 focus restoration, Gallery-owned swap behavior, rerun orchestration, and
 unrelated reset behavior. The owner does not change Module/Attribute or Swap
 semantics, Project schema/persistence, or workflow/generator orchestration.
+
+### Project Save As lifecycle
+
+`ui.project_save_as_lifecycle` owns the Advanced Project Save As operation from
+destination inspection and fresh reinspection through overwrite confirmation,
+the atomic writer call, and the successful Project/session transition. It owns
+the pending target/source binding, acknowledgment and reset keys, stale
+invalidation, feedback state, and the exact post-write sequence: current path,
+folder layout, saved time and autosave feedback, remembered Project, settings
+save, Project Assets reset, conditional Project Directory discovery refresh,
+confirmation cleanup, then success feedback. Writer failures leave the target
+and successful transition unchanged; later failures retain their existing
+partial side effects and error handling.
+
+`core.project_save_as_safety` retains path normalization, destination snapshots,
+and overwrite freshness checks. `core.io` retains atomic Project JSON writing.
+`app.py` retains path widgets, confirmation controls, feedback rendering, and
+the existing folder-layout, Project Assets, and Project Directory owners
+called by this feature. `core.settings` retains remembered-Project and settings
+storage. This is a Save As-specific lifecycle, not a generic Project transition
+or persistence controller.
 
 ### Project Import session lifecycle
 
