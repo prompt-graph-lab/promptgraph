@@ -2931,16 +2931,26 @@ def collect_project_serialized_path_references(
     """Collect Project-local asset paths from the normal serialized form."""
 
     normalized_root = _normalized_real_path(project_root)
+    serialization_path = os.path.join(normalized_root, "project.json")
+    serializable_data = _project_to_serializable_data(
+        project.clone(),
+        serialization_path,
+    )
+    return _collect_project_data_path_references(
+        serializable_data,
+        project_root=normalized_root,
+    )
+
+
+def _collect_project_data_path_references(data: dict, *, project_root: str) -> dict:
+    """Use the same asset-path scope for live and saved Project data."""
+
+    normalized_root = _normalized_real_path(project_root)
     generated_root = _normalized_real_path(
         os.path.join(normalized_root, "generated")
     )
     candidates_root = _normalized_real_path(
         os.path.join(normalized_root, "candidates")
-    )
-    serialization_path = os.path.join(normalized_root, "project.json")
-    serializable_data = _project_to_serializable_data(
-        project.clone(),
-        serialization_path,
     )
     references: dict[str, list[dict]] = {}
 
@@ -2982,7 +2992,7 @@ def collect_project_serialized_path_references(
             for index, item in enumerate(normalized_items):
                 visit(item, f"{location}[{index}]")
 
-    visit(serializable_data, "$")
+    visit(data, "$")
     reference_payload = [
         {
             "path": path,
@@ -3004,8 +3014,68 @@ def collect_project_serialized_path_references(
         "reference_count": sum(len(items) for items in references.values()),
         "unique_path_count": len(references),
         "reference_digest": _stable_project_digest(reference_payload),
-        "serialization_digest": _stable_project_digest(serializable_data),
+        "serialization_digest": _stable_project_digest(data),
     }
+
+
+def _read_cleanup_saved_project(
+    project_path: str,
+    *,
+    project_root: str,
+) -> tuple[dict, str]:
+    """Read the actual saved Project; reject absent or unsupported JSON."""
+
+    if os.path.islink(project_path):
+        raise ValueError("Project JSON is a symlink.")
+    before = os.stat(project_path, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("Project JSON is not a regular file.")
+    with open(project_path, "rb") as handle:
+        content = handle.read()
+    after = os.stat(project_path, follow_symlinks=False)
+    if (
+        before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_ino != after.st_ino
+    ):
+        raise ValueError("Project JSON changed during scan.")
+    data = json.loads(content.decode("utf-8"))
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("prompt_lines"), list)
+        or not all(isinstance(line, dict) for line in data["prompt_lines"])
+        or not isinstance(data.get("nodes", {}), dict)
+        or not isinstance(data.get("edges", []), list)
+        or not isinstance(data.get("line_groups", {}), dict)
+        or not isinstance(data.get("module_library") or {}, dict)
+        or any(not isinstance(edge, list) for edge in data.get("edges", []))
+        or any(
+            not all(
+                field in line
+                for field in (
+                    "id",
+                    "original_file_name",
+                    "original_index",
+                    "current_index",
+                    "original_text",
+                    "current_text",
+                    "tokens",
+                )
+            )
+            for line in data["prompt_lines"]
+        )
+        or any(
+            not isinstance(node, dict)
+            or not all(field in node for field in ("id", "word", "depth"))
+            for node in data.get("nodes", {}).values()
+        )
+    ):
+        raise ValueError("Unsupported Project JSON structure.")
+    references = _collect_project_data_path_references(
+        data,
+        project_root=project_root,
+    )
+    return references, hashlib.sha256(content).hexdigest()
 
 
 def _cleanup_relative_path(path: str, project_root: str) -> str:
@@ -3173,6 +3243,7 @@ def _cleanup_preview_signature(
     *,
     project_path: str,
     references: dict,
+    saved_project_sha256: str,
     generated_files: list[dict],
     candidate_files: list[dict],
     eligible_items: list[dict],
@@ -3184,6 +3255,7 @@ def _cleanup_preview_signature(
             "",
         ),
         "project_reference_digest": references.get("reference_digest", ""),
+        "saved_project_sha256": saved_project_sha256,
         "generated_files": [
             {
                 key: item.get(key)
@@ -3257,6 +3329,9 @@ def preview_verified_project_asset_duplicate_cleanup(
     if not project_path:
         summary["reason"] = "Project not saved."
         return summary
+    if os.path.islink(project_path):
+        summary["reason"] = "Saved Project JSON is a symlink."
+        return summary
 
     try:
         normalized_project_path = _normalized_real_path(project_path)
@@ -3270,6 +3345,14 @@ def preview_verified_project_asset_duplicate_cleanup(
     project_root = _normalized_real_path(
         os.path.dirname(normalized_project_path)
     )
+    try:
+        saved_references, saved_project_sha256 = _read_cleanup_saved_project(
+            normalized_project_path,
+            project_root=project_root,
+        )
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        summary["reason"] = f"Saved Project JSON is invalid: {exc}"
+        return summary
     generated_root = _normalized_real_path(
         os.path.join(project_root, "generated")
     )
@@ -3321,7 +3404,14 @@ def preview_verified_project_asset_duplicate_cleanup(
     candidate_by_size: dict[int, list[dict]] = {}
     for candidate in candidate_files:
         candidate_by_size.setdefault(candidate["size"], []).append(candidate)
-    reference_map = reference_summary["references"]
+    reference_map = {
+        path: list(reference_summary["references"].get(path, []))
+        + list(saved_references["references"].get(path, []))
+        for path in (
+            reference_summary["references"].keys()
+            | saved_references["references"].keys()
+        )
+    }
     scanned_or_skipped_paths = {
         str(item.get("path") or "")
         for item in (
@@ -3506,11 +3596,23 @@ def preview_verified_project_asset_duplicate_cleanup(
     summary["signature"] = _cleanup_preview_signature(
         project_path=normalized_project_path,
         references=reference_summary,
+        saved_project_sha256=saved_project_sha256,
         generated_files=generated_files,
         candidate_files=candidate_files,
         eligible_items=summary["eligible_items"],
     )
+    summary["saved_project_sha256"] = saved_project_sha256
     return summary
+
+
+def _cleanup_saved_project_content_matches(path: str, expected_sha256: str) -> bool:
+    try:
+        if os.path.islink(path):
+            return False
+        with open(path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest() == expected_sha256
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def _cleanup_file_metadata_matches(
@@ -3602,6 +3704,13 @@ def delete_verified_project_asset_source_duplicates(
         )
         if metadata_error:
             raise ProjectAssetsPreviewStaleError(metadata_error)
+    if not _cleanup_saved_project_content_matches(
+        fresh_preview["project_path"],
+        fresh_preview["saved_project_sha256"],
+    ):
+        raise ProjectAssetsPreviewStaleError(
+            "Saved Project JSON changed after preview. Scan again before deleting."
+        )
 
     deleted_files = []
     deleted_bytes = 0
@@ -3611,6 +3720,11 @@ def delete_verified_project_asset_source_duplicates(
             generated_root=generated_root,
             candidates_root=candidates_root,
         )
+        if not metadata_error and not _cleanup_saved_project_content_matches(
+            fresh_preview["project_path"],
+            fresh_preview["saved_project_sha256"],
+        ):
+            metadata_error = "Saved Project JSON changed after preview."
         if metadata_error:
             return {
                 "status": (
