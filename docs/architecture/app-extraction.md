@@ -1443,6 +1443,29 @@ not own Project or PromptLine mutation, history, persistence/schema,
 generation or filesystem/network orchestration, or the feature-specific
 operation plans and writes.
 
+### Candidate Route Creation apply lifecycle
+
+`ui.candidate_route_creation_lifecycle` owns the feature-specific apply gate and
+Route/Line materialization through `apply_candidate_route_creation_plan`. It
+recomputes the complete live preview and compares both its fingerprint and
+immutable apply plan before side effects. A stale preview returns the existing
+error without Candidate synchronization, history, Project mutation, graph
+publication, or save. A fresh plan synchronizes every target's current
+persistent and session Candidates before history, then materializes only the
+stored route and candidate records in reversed plan order, inserts them after
+their sources, and reindexes. The owner retains the existing result counts,
+generated IDs, timestamps, metadata, and partial effects if a post-gate step
+raises; it does not provide rollback or atomic publication.
+
+`app.py` retains target resolution, Fresh Preview construction, Streamlit
+controls, confirmation reset, messages, and reruns. After successful
+materialization it owns the shared graph rebuild, focus and selected-route
+publication, and save in their existing order. Generic Candidate
+synchronization, prompt application, Route reindexing, source metadata, and
+lineage helpers stay with their existing owners. The apply owner is limited to
+Candidate Route Creation and does not combine adoption, promotion, swaps, or
+other Gallery operations.
+
 ### Batch Promote Variants publication lifecycle
 
 `ui.gallery_variant_promotion_lifecycle` owns the application-side publication

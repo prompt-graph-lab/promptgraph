@@ -28,6 +28,7 @@ from core.operations import resolve_gallery_route_for_line
 from core.parser import parse_prompt
 from core.project import Project, PromptLine
 from core.prompt_line_selection import is_gallery_operation_prompt_line, is_route_separator
+from ui.candidate_route_creation_lifecycle import apply_candidate_route_creation_plan
 
 
 class Session(dict):
@@ -96,7 +97,7 @@ def setup(tmp_path):
     names = {
         "_candidate_route_line_base_label", "_candidate_route_label",
         "_candidate_route_target_lines", "preview_candidate_route_creation",
-        "_apply_candidate_prompt_to_line", "_build_candidate_route_line",
+        "_apply_candidate_prompt_to_line",
         "apply_candidate_route_creation", "_reindex_project_lines",
         "render_candidate_route_creation_section",
         "_line_candidate_key", "_get_persistent_line_candidates",
@@ -137,6 +138,7 @@ def setup(tmp_path):
         _json_safe_source_value=_json_safe_source_value,
         resolve_project_asset_path=resolve_project_asset_path,
         build_candidate_route_creation_preview=build_candidate_route_creation_preview,
+        apply_candidate_route_creation_plan=apply_candidate_route_creation_plan,
         resolve_gallery_route_for_line=resolve_gallery_route_for_line,
         is_route_separator=is_route_separator,
         is_gallery_operation_prompt_line=is_gallery_operation_prompt_line,
@@ -410,6 +412,8 @@ def test_stale_apply_does_not_normalize_or_sync_candidate_records(setup):
     ]
     preview = setup.preview()
     setup.parent.generated_candidates[0]["unknown"] = "changed"
+    setup.ns["_get_line_generated_candidates"] = lambda line: pytest.fail(
+        "stale Apply reached Candidate synchronization")
     assert_stale_without_effects(setup, preview)
     assert setup.parent.generated_candidates[1]["path"] == r"folder\inactive.png"
     assert setup.session.line_generated_candidates["a"][0]["path"] == r"folder\session-inactive.png"
@@ -487,3 +491,137 @@ def test_apply_materializes_stored_plan_after_final_recheck(setup):
     assert derived.source_generation_info["source_raw_metadata"]["unknown"] == {"nested": [1, 2]}
     assert derived.lineage_info["parent_route_id"] == "route"
     assert setup.events == ["history", "graph", "save"]
+
+
+def test_fresh_apply_orders_sync_history_insertion_reindex_and_app_publication(setup, tmp_path):
+    (tmp_path / "b.png").write_bytes(b"image")
+    setup.other.generated_candidates = [{"path": "b.png"}]
+    preview = setup.preview(scope="all_lines")
+    assert len(json.loads(preview["apply_plan"])["routes"]) == 2
+    original_sync = setup.ns["_get_line_generated_candidates"]
+    original_reindex = setup.ns["_reindex_project_lines"]
+
+    def sync(line):
+        setup.events.append(f"sync:{line.id}")
+        assert [item.id for item in setup.project.prompt_lines] == ["route", "a", "b"]
+        return original_sync(line)
+
+    def reindex(project):
+        setup.events.append("reindex")
+        return original_reindex(project)
+
+    def save(reason):
+        setup.events.append("save")
+        assert setup.session.focused_line_id == setup.session.gallery_selected_route_separator_id
+        assert setup.session.gallery_expanded_line_id == setup.session.focused_line_id
+
+    setup.ns["_get_line_generated_candidates"] = sync
+    setup.ns["_reindex_project_lines"] = reindex
+    setup.ns["save_current_project_if_possible"] = save
+    result = setup.apply(preview, scope="all_lines")
+
+    assert result["applied"] is True
+    assert result["route_count"] == result["line_count"] == 2
+    assert result["skipped_count"] == result["missing_count"] == 0
+    assert setup.events == ["sync:a", "sync:b", "history", "reindex", "graph", "save"]
+    assert len(setup.history_snapshots) == 1
+    assert [item.lineage_info.get("parent_line_id") for item in setup.project.prompt_lines
+            if item.line_type == "separator"] == [None, "a", "b"]
+    created_separators = [item for item in setup.project.prompt_lines
+                          if item.line_type == "separator" and item.id != "route"]
+    assert result["first_separator_id"] == created_separators[-1].id
+    assert [item.current_index for item in setup.project.prompt_lines] == list(
+        range(len(setup.project.prompt_lines)))
+
+
+def test_materialized_line_preserves_source_candidate_and_parent_metadata(setup, tmp_path):
+    (tmp_path / "candidate.png").write_bytes(b"image")
+    setup.parent.node_path = ["source", "node"]
+    setup.parent.image_path = "parent.png"
+    setup.parent.generated_image_path = "generated-parent.png"
+    setup.parent.selected_candidate_path = "selected-parent.png"
+    setup.parent.extra_unreviewed_field = {"retained_on_parent": True}
+    setup.parent.generated_candidates = [{
+        "path": "candidate.png", "prompt_text": "candidate, prompt",
+        "negative_prompt": "candidate negative", "seed": 0,
+        "workflow_path": "workflow.json", "origin_line_id": "upstream",
+        "run_index": 3, "unknown": {"nested": [1, 2]},
+    }]
+    preview = setup.preview()
+    planned_candidate = json.loads(preview["apply_plan"])["routes"][0]["candidates"][0]
+    result = setup.apply(preview)
+    separator = next(item for item in setup.project.prompt_lines if item.id == result["first_separator_id"])
+    derived = next(item for item in setup.project.prompt_lines if item.duplicated_from == "a")
+
+    assert result["route_count"] == result["line_count"] == 1
+    assert derived.id.startswith("line_") and separator.id.startswith("separator_")
+    assert separator.separator_label == "a.png:2 Candidates"
+    assert separator.lineage_info["candidate_count"] == 1
+    assert derived.original_file_name == "candidate.png"
+    assert derived.original_text == "positive"
+    assert derived.current_text == "candidate, prompt"
+    assert derived.tokens == parse_prompt("candidate, prompt")
+    assert derived.negative_prompt == "candidate negative"
+    assert derived.edited is True and derived.deleted is False
+    assert derived.image_path == "candidate.png"
+    assert derived.generated_image_path is None and derived.selected_candidate_path is None
+    assert derived.generated_candidates == [] and derived.gallery_variants == []
+    assert derived.line_type is None and derived.separator_label is None
+    assert derived.node_path == ["source", "node"]
+    assert derived.node_path is not setup.parent.node_path
+    assert not hasattr(derived, "extra_unreviewed_field")
+    assert derived.source_generation_info["source_kind"] == "derived_candidate"
+    assert derived.source_generation_info["source_raw_metadata"] == planned_candidate["record"]
+    assert derived.source_generation_info["source_raw_metadata"] is not setup.parent.generated_candidates[0]
+    assert derived.lineage_info["source"] == "candidate_route_creation"
+    assert derived.lineage_info["lineage_kind"] == "candidate_route_creation"
+    assert derived.lineage_info["parent_line_id"] == "a"
+    assert derived.lineage_info["parent_line_index"] == 1
+    assert derived.lineage_info["parent_line_label"] == "a.png"
+    assert derived.lineage_info["parent_image_path"] == "selected-parent.png"
+    assert derived.lineage_info["parent_route_id"] == "route"
+    assert derived.lineage_info["candidate_index"] == 0
+    assert derived.lineage_info["candidate_seed"] == 0
+    assert derived.lineage_info["candidate_workflow"] == "workflow.json"
+    assert derived.lineage_info["candidate_origin_line_id"] == "upstream"
+    assert derived.lineage_info["candidate_run_index"] == 3
+    assert derived.lineage_info["created_route_id"] == separator.id
+    assert derived.lineage_info["created_at"] == separator.lineage_info["created_at"]
+
+
+def test_fresh_zero_route_result_does_not_sync_or_publish(setup):
+    setup.parent.generated_candidates = []
+    preview = setup.preview()
+    result = setup.apply(preview)
+    assert result == {
+        "applied": False, "route_count": 0, "line_count": 0,
+        "skipped_count": 1, "missing_count": 0, "duplicate_count": 0,
+        "no_candidate_count": 1, "first_separator_id": "",
+    }
+    assert setup.events == [] and setup.history_snapshots == []
+    assert setup.session.project is setup.project
+
+
+def test_post_gate_materialization_error_leaves_prior_route_and_history_without_publication(setup, tmp_path):
+    (tmp_path / "b.png").write_bytes(b"image")
+    setup.other.generated_candidates = [{"path": "b.png"}]
+    preview = setup.preview(scope="all_lines")
+    original_apply_prompt = setup.ns["_apply_candidate_prompt_to_line"]
+
+    def fail_second_plan(line, candidate):
+        if line.duplicated_from == "a":
+            raise RuntimeError("materialization failed")
+        return original_apply_prompt(line, candidate)
+
+    setup.ns["_apply_candidate_prompt_to_line"] = fail_second_plan
+    with pytest.raises(RuntimeError, match="materialization failed"):
+        setup.apply(preview, scope="all_lines")
+
+    assert setup.events == ["history"]
+    assert len(setup.history_snapshots) == 1
+    assert [item.lineage_info.get("parent_line_id") for item in setup.project.prompt_lines
+            if item.line_type == "separator"] == [None, "b"]
+    assert any(item.duplicated_from == "b" for item in setup.project.prompt_lines)
+    assert not any(item.duplicated_from == "a" for item in setup.project.prompt_lines)
+    assert setup.session.project is setup.project
+    assert setup.session.focused_line_id == "a"
