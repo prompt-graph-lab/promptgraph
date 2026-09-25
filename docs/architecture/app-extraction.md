@@ -1499,6 +1499,23 @@ generic Project lifecycle and persistence, and unrelated Route operations
 remain outside this owner. This is a feature-specific publication controller,
 not a generic Candidate/Variant/Route transaction or persistence framework.
 
+### Project Assets Candidate/Variant copy lifecycle
+
+`ui.project_assets_copy_lifecycle` owns the application-side Preview and
+confirmation reset, render-time signature check, ordinary-exception session
+rollback, and successful publication for Project Assets copy/localize. The
+successful sequence remains Candidate cache rebuild from persistent Candidates,
+saved time, autosave feedback, copy Preview removal, confirmation reset
+scheduling, and verified-cleanup operation-state reset. The render-time stale
+gate refreshes the Preview before any core copy; a commit-time stale error from
+the core transaction refreshes it separately. Both require confirmation again.
+
+`core.io` retains Preview and signature construction, source/collision planning,
+reference and lineage rewriting, commit-time revalidation, filesystem copy,
+rollback, and the single atomic Project JSON save. `app.py` retains the Sidebar
+renderer, messages, rerun, and the separate verified duplicate-cleanup flow.
+The copy lifecycle does not own destructive cleanup or other Project workflows.
+
 ### Selected Scenes Candidate Adoption publication lifecycle
 
 `ui.selected_routes_candidate_adoption_lifecycle` owns the application-side
