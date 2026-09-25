@@ -6434,6 +6434,8 @@ def render_verified_project_asset_duplicate_cleanup(
                 "Previewが古いか、削除前validationに失敗しました。"
                 "1件も削除していません。再scanしてください。"
             )
+            if result.get("error"):
+                st.caption(format_core_message_for_display(result["error"]))
         if status in {"success", "partial_failure", "partial_stale"}:
             result_col_1, result_col_2 = st.columns(2)
             result_col_1.metric(

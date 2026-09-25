@@ -11,6 +11,7 @@ from core.io import (
     collect_project_serialized_path_references,
     delete_verified_project_asset_source_duplicates,
     preview_verified_project_asset_duplicate_cleanup,
+    save_project_to_json,
 )
 from core.project import Project, PromptLine
 
@@ -29,10 +30,9 @@ def _line(line_id="line-a", index=0, **kwargs):
     return PromptLine(**values)
 
 
-def _write_project_marker(project_path: Path) -> bytes:
-    original = b'{"saved":"project","unchanged":true}\r\n'
-    project_path.write_bytes(original)
-    return original
+def _write_saved_project(project_path: Path, project=None) -> bytes:
+    save_project_to_json(project if project is not None else Project(), str(project_path))
+    return project_path.read_bytes()
 
 
 class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
@@ -48,7 +48,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
             source.write_bytes(b"byte-identical-image")
             retained.write_bytes(source.read_bytes())
             project_path = project_root / "custom-project-name.json"
-            _write_project_marker(project_path)
+            _write_saved_project(project_path)
             project = Project(
                 prompt_lines=[
                     _line(
@@ -133,7 +133,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
                     source.write_bytes(b"same")
                     retained.write_bytes(b"same")
                     project_path = project_root / "project.json"
-                    _write_project_marker(project_path)
+                    _write_saved_project(project_path)
                     line = _line(
                         generated_candidates=[
                             {"path": "candidates/retained.png"}
@@ -224,7 +224,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
             mismatch_source.write_bytes(b"aaaa")
             mismatch_copy.write_bytes(b"bbbb")
             project_path = project_root / "project.json"
-            _write_project_marker(project_path)
+            _write_saved_project(project_path)
             project = Project(
                 prompt_lines=[
                     _line(
@@ -267,7 +267,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
             for path in (source, referenced, unreferenced):
                 path.write_bytes(b"same-image")
             project_path = project_root / "project.json"
-            _write_project_marker(project_path)
+            _write_saved_project(project_path)
             project = Project(
                 prompt_lines=[
                     _line(
@@ -301,7 +301,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir) / "project.json"
-            _write_project_marker(project_path)
+            _write_saved_project(project_path)
             missing = preview_verified_project_asset_duplicate_cleanup(
                 project,
                 str(project_path),
@@ -323,7 +323,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
             (project_root / "generated").mkdir()
             (project_root / "candidates").mkdir()
             project_path = project_root / "project.json"
-            _write_project_marker(project_path)
+            _write_saved_project(project_path)
             project = Project(
                 prompt_lines=[
                     _line(
@@ -365,7 +365,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
             source.write_bytes(b"same")
             retained.write_bytes(b"same")
             project_path = project_root / "project.json"
-            _write_project_marker(project_path)
+            _write_saved_project(project_path)
             project = Project(
                 prompt_lines=[
                     _line(
@@ -410,7 +410,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
             source.write_bytes(b"same")
             retained.write_bytes(b"same")
             project_path = project_root / "project.json"
-            _write_project_marker(project_path)
+            _write_saved_project(project_path)
             project = Project(
                 prompt_lines=[
                     _line(
@@ -455,7 +455,7 @@ class VerifiedDuplicateCleanupPreviewTests(unittest.TestCase):
             except OSError as exc:
                 self.skipTest(f"symlink creation unavailable: {exc}")
             project_path = project_root / "project.json"
-            _write_project_marker(project_path)
+            _write_saved_project(project_path)
             project = Project(
                 prompt_lines=[
                     _line(
@@ -519,9 +519,10 @@ class VerifiedDuplicateCleanupApplyTests(unittest.TestCase):
                 )
             )
         project_path = root / "project.json"
-        original_json = _write_project_marker(project_path)
+        project = Project(prompt_lines=lines)
+        original_json = _write_saved_project(project_path, project)
         return (
-            Project(prompt_lines=lines),
+            project,
             project_path,
             original_json,
             sources,
@@ -545,11 +546,16 @@ class VerifiedDuplicateCleanupApplyTests(unittest.TestCase):
                 str(project_path),
             )
 
-            result = delete_verified_project_asset_source_duplicates(
-                project,
-                str(project_path),
-                preview,
-            )
+            with mock.patch(
+                "core.io._save_project_to_json_atomically",
+                side_effect=AssertionError("cleanup must not save"),
+            ) as save_mock:
+                result = delete_verified_project_asset_source_duplicates(
+                    project,
+                    str(project_path),
+                    preview,
+                )
+            save_mock.assert_not_called()
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(result["deleted_count"], 2)
@@ -571,6 +577,197 @@ class VerifiedDuplicateCleanupApplyTests(unittest.TestCase):
             self.assertEqual(project_path.read_bytes(), original_json)
             self.assertTrue(result["project_json_unchanged"])
             self.assertTrue(result["candidates_unchanged"])
+
+    def test_unsaved_live_source_reference_protects_source(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project, project_path, saved_json, sources, _ = self._fixture(
+                Path(temp_dir)
+            )
+            project.prompt_lines[0].image_path = "generated/a.png"
+
+            preview = preview_verified_project_asset_duplicate_cleanup(
+                project, str(project_path)
+            )
+
+            self.assertTrue(preview["valid"])
+            self.assertEqual(preview["eligible_count"], 0)
+            self.assertEqual(
+                preview["protected_items"][0]["reason"],
+                "source is still referenced",
+            )
+            self.assertEqual(project_path.read_bytes(), saved_json)
+            self.assertTrue(sources[0].exists())
+
+    def test_saved_only_candidate_reference_qualifies_retained_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project, project_path, saved_json, sources, retained = self._fixture(
+                Path(temp_dir)
+            )
+            line = project.prompt_lines[0]
+            line.generated_candidates.clear()
+            line.gallery_variants.clear()
+            line.lineage_info.clear()
+
+            preview = preview_verified_project_asset_duplicate_cleanup(
+                project, str(project_path)
+            )
+
+            self.assertTrue(preview["valid"])
+            self.assertEqual(preview["eligible_count"], 1)
+            self.assertEqual(preview["eligible_items"][0]["retained_paths"], [
+                os.path.normcase(os.path.realpath(retained[0]))
+            ])
+            self.assertEqual(project_path.read_bytes(), saved_json)
+            self.assertTrue(sources[0].exists())
+
+    def test_saved_only_source_reference_protects_source(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project, project_path, _, sources, _ = self._fixture(Path(temp_dir))
+            project.prompt_lines[0].image_path = "generated/a.png"
+            saved_json = _write_saved_project(project_path, project)
+            project.prompt_lines[0].image_path = None
+
+            preview = preview_verified_project_asset_duplicate_cleanup(
+                project, str(project_path)
+            )
+
+            self.assertEqual(preview["eligible_count"], 0)
+            self.assertEqual(
+                preview["protected_items"][0]["reason"],
+                "source is still referenced",
+            )
+            self.assertEqual(project_path.read_bytes(), saved_json)
+            self.assertTrue(sources[0].exists())
+
+    def test_minimal_supported_saved_project_json_is_scanned(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project, project_path, _, sources, retained = self._fixture(
+                Path(temp_dir)
+            )
+            project_path.write_bytes(b'{"prompt_lines": []}')
+
+            preview = preview_verified_project_asset_duplicate_cleanup(
+                project, str(project_path)
+            )
+
+            self.assertTrue(preview["valid"])
+            self.assertEqual(preview["eligible_count"], 1)
+            self.assertEqual(preview["eligible_items"][0]["retained_paths"], [
+                os.path.normcase(os.path.realpath(retained[0]))
+            ])
+            self.assertTrue(sources[0].exists())
+
+    def test_changed_saved_json_stales_before_first_unlink(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project, project_path, saved_json, sources, _ = self._fixture(
+                Path(temp_dir), names=("a", "b")
+            )
+            preview = preview_verified_project_asset_duplicate_cleanup(
+                project, str(project_path)
+            )
+            project_path.write_bytes(saved_json + b"\n")
+
+            with mock.patch("core.io.os.remove") as remove_mock:
+                with self.assertRaises(ProjectAssetsPreviewStaleError):
+                    delete_verified_project_asset_source_duplicates(
+                        project, str(project_path), preview
+                    )
+            remove_mock.assert_not_called()
+            self.assertTrue(all(path.exists() for path in sources))
+
+    def test_saved_json_change_during_apply_blocks_first_unlink(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project, project_path, saved_json, sources, _ = self._fixture(
+                Path(temp_dir), names=("a", "b")
+            )
+            preview = preview_verified_project_asset_duplicate_cleanup(
+                project, str(project_path)
+            )
+            io_module = __import__("core.io", fromlist=["core.io"])
+            real_check = io_module._cleanup_item_metadata_error
+            checked = 0
+
+            def change_json_after_full_validation(*args, **kwargs):
+                nonlocal checked
+                error = real_check(*args, **kwargs)
+                checked += 1
+                if checked == len(sources):
+                    project_path.write_bytes(saved_json + b"\n")
+                return error
+
+            with mock.patch(
+                "core.io._cleanup_item_metadata_error",
+                side_effect=change_json_after_full_validation,
+            ):
+                with mock.patch("core.io.os.remove") as remove_mock:
+                    with self.assertRaises(ProjectAssetsPreviewStaleError):
+                        delete_verified_project_asset_source_duplicates(
+                            project, str(project_path), preview
+                        )
+            remove_mock.assert_not_called()
+            self.assertTrue(all(path.exists() for path in sources))
+
+    def test_invalid_or_missing_saved_json_fails_closed(self):
+        cases = {
+            "unsupported": b'{"saved":"project"}',
+            "unparseable": b"{bad json",
+            "invalid_line": b'{"prompt_lines":[{}],"nodes":{},"edges":[]}',
+            "invalid_line_groups": b'{"prompt_lines":[],"line_groups":[]}',
+            "missing": None,
+        }
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    project, project_path, _, sources, _ = self._fixture(
+                        Path(temp_dir)
+                    )
+                    good_preview = preview_verified_project_asset_duplicate_cleanup(
+                        project, str(project_path)
+                    )
+                    if content is None:
+                        project_path.unlink()
+                    else:
+                        project_path.write_bytes(content)
+
+                    preview = preview_verified_project_asset_duplicate_cleanup(
+                        project, str(project_path)
+                    )
+                    self.assertFalse(preview["valid"])
+                    self.assertEqual(preview["eligible_count"], 0)
+                    with mock.patch("core.io.os.remove") as remove_mock:
+                        with self.assertRaises(ProjectAssetsPreviewStaleError):
+                            delete_verified_project_asset_source_duplicates(
+                                project, str(project_path), good_preview
+                            )
+                    remove_mock.assert_not_called()
+                    self.assertTrue(all(path.exists() for path in sources))
+
+    def test_unreadable_saved_json_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project, project_path, _, sources, _ = self._fixture(Path(temp_dir))
+            good_preview = preview_verified_project_asset_duplicate_cleanup(
+                project, str(project_path)
+            )
+            real_open = open
+
+            def deny_project_json(path, *args, **kwargs):
+                if os.path.normcase(os.fspath(path)) == os.path.normcase(
+                    os.fspath(project_path)
+                ):
+                    raise PermissionError("simulated unreadable Project JSON")
+                return real_open(path, *args, **kwargs)
+
+            with mock.patch("builtins.open", side_effect=deny_project_json):
+                preview = preview_verified_project_asset_duplicate_cleanup(
+                    project, str(project_path)
+                )
+                with self.assertRaises(ProjectAssetsPreviewStaleError):
+                    delete_verified_project_asset_source_duplicates(
+                        project, str(project_path), good_preview
+                    )
+            self.assertFalse(preview["valid"])
+            self.assertEqual(preview["eligible_count"], 0)
+            self.assertTrue(all(path.exists() for path in sources))
 
     def test_scan_and_apply_each_run_one_full_preview_without_second_hash_pass(
         self,
@@ -759,7 +956,7 @@ class VerifiedDuplicateCleanupApplyTests(unittest.TestCase):
                 str(project_path),
             )
             other_project_path = root / "other.json"
-            _write_project_marker(other_project_path)
+            _write_saved_project(other_project_path)
 
             with self.assertRaises(ProjectAssetsPreviewStaleError):
                 delete_verified_project_asset_source_duplicates(

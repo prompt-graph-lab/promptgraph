@@ -1516,6 +1516,15 @@ rollback, and the single atomic Project JSON save. `app.py` retains the Sidebar
 renderer, messages, rerun, and the separate verified duplicate-cleanup flow.
 The copy lifecycle does not own destructive cleanup or other Project workflows.
 
+Verified duplicate cleanup remains separate. Its Scan protects the union of
+live Project references and references in the saved Project JSON at the
+selected path. Missing, unreadable, invalid, or unsupported saved JSON makes
+the Preview ineligible. Apply checks the saved JSON content again before
+deletion, alongside the existing live-reference and per-file checks; a changed
+saved JSON stales the Preview. Cleanup does not save Project JSON, add history,
+or mutate Project/Candidate state. Once deletion starts, a later file failure
+or stale check retains the existing partial-result behavior without rollback.
+
 ### Selected Scenes Candidate Adoption publication lifecycle
 
 `ui.selected_routes_candidate_adoption_lifecycle` owns the application-side
