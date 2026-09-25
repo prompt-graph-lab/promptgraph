@@ -164,7 +164,7 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         copy_button = sidebar.index('"確認してProjectへ取り込む"')
         self.assertLess(copy_button, cleanup_call)
         self.assertEqual(
-            sidebar.count("_copy_project_assets_and_save_with_session_rollback("),
+            sidebar.count("apply_project_assets_copy("),
             1,
         )
         self.assertEqual(
@@ -387,7 +387,9 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         reset_cleanup = self._source(
             "reset_project_assets_cleanup_operation_state"
         )
-        sidebar = self._source("render_project_assets_sidebar_section")
+        copy_lifecycle = (
+            self.app_path.parent / "ui" / "project_assets_copy_lifecycle.py"
+        ).read_text(encoding="utf-8")
         self.assertIn(
             "reset_project_assets_cleanup_operation_state()",
             reset_all,
@@ -398,7 +400,7 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         )
         self.assertIn(
             "reset_project_assets_cleanup_operation_state()",
-            sidebar,
+            copy_lifecycle,
         )
         for project_transition in (
             "publish_loaded_project_to_session",

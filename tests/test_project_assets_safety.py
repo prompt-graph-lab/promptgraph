@@ -4,7 +4,6 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 from core.io import (
@@ -14,6 +13,15 @@ from core.io import (
     preview_copy_candidates_to_project,
 )
 from core.project import Project, PromptLine
+from ui.project_assets_copy_lifecycle import apply_project_assets_copy
+
+
+class _SessionState(dict):
+    def __getattr__(self, name):
+        return self[name]
+
+    def __setattr__(self, name, value):
+        self[name] = value
 
 
 def _line(line_id, index, *, candidates=None, variants=None):
@@ -486,14 +494,9 @@ class ProjectAssetsUiContractTests(unittest.TestCase):
         self.assertIn("missing_source_count", renderer)
         self.assertIn("collision_count", renderer)
         self.assertIn("上記のcopy内容とProject参照更新を確認しました", renderer)
-        self.assertIn("fresh_preview.get(\"signature\")", renderer)
-        self.assertIn("preview.get(\"signature\")", renderer)
-        self.assertLess(
-            renderer.index("preview_copy_candidates_to_project("),
-            renderer.index(
-                "_copy_project_assets_and_save_with_session_rollback("
-            ),
-        )
+        self.assertIn('or not preview.get("planned_copy_count")', renderer)
+        self.assertIn("disabled=apply_disabled", renderer)
+        self.assertIn("apply_project_assets_copy(", renderer)
 
     def test_preview_path_has_no_save_history_copy_or_rerun(self):
         renderer = self._source("render_project_assets_sidebar_section")
@@ -501,7 +504,7 @@ class ProjectAssetsUiContractTests(unittest.TestCase):
         apply_button = renderer.index('"確認してProjectへ取り込む"')
         preview_path = renderer[preview_button:apply_button]
         for forbidden in (
-            "_copy_project_assets_and_save_with_session_rollback(",
+            "apply_project_assets_copy(",
             "save_project_to_json(",
             "push_history(",
             "st.rerun(",
@@ -512,22 +515,13 @@ class ProjectAssetsUiContractTests(unittest.TestCase):
         renderer = self._source("render_project_assets_sidebar_section")
         self.assertEqual(renderer.count("save_project_to_json("), 0)
         self.assertEqual(
-            renderer.count(
-                "_copy_project_assets_and_save_with_session_rollback("
-            ),
+            renderer.count("apply_project_assets_copy("),
             1,
         )
         self.assertEqual(renderer.count("push_history("), 0)
-        self.assertEqual(renderer.count("st.rerun("), 2)
-        self.assertEqual(
-            renderer.count("PROJECT_ASSETS_CONFIRM_RESET_PENDING_KEY"),
-            4,
-        )
-        self.assertIn("_sync_project_assets_candidate_session_state(project)", renderer)
-        success_path = renderer.split(
-            "_sync_project_assets_candidate_session_state(project)",
-            1,
-        )[1]
+        self.assertEqual(renderer.count("st.rerun("), 1)
+        self.assertIn('if result["status"] == "stale":', renderer)
+        success_path = renderer.split('if result["status"] == "error":', 1)[1]
         self.assertNotIn("st.rerun(", success_path)
 
     def test_save_failure_preserves_json_files_and_session_state(self):
@@ -557,27 +551,10 @@ class ProjectAssetsUiContractTests(unittest.TestCase):
             previous_candidate_state = {
                 "line-a": [{"path": str(source), "status": "before"}]
             }
-            fake_st = SimpleNamespace(
-                session_state=SimpleNamespace(
-                    project=project,
-                    line_generated_candidates={"changed": True},
-                )
+            session_state = _SessionState(
+                project=project,
+                line_generated_candidates=previous_candidate_state,
             )
-            namespace = {
-                "copy_candidates_to_project_and_save_atomically": (
-                    copy_candidates_to_project_and_save_atomically
-                ),
-                "ProjectAssetsPreviewStaleError": (
-                    ProjectAssetsPreviewStaleError
-                ),
-                "st": fake_st,
-            }
-            exec(self._source(
-                "_copy_project_assets_and_save_with_session_rollback"
-            ), namespace)
-            apply_with_rollback = namespace[
-                "_copy_project_assets_and_save_with_session_rollback"
-            ]
 
             def fail_after_partial_temporary_write(_project, _output_path, handle):
                 handle.write('{"partial":')
@@ -594,23 +571,28 @@ class ProjectAssetsUiContractTests(unittest.TestCase):
                 "core.io._write_project_json",
                 side_effect=fail_after_partial_temporary_write,
             ):
-                with self.assertRaises(UnicodeEncodeError):
-                    apply_with_rollback(
-                        project,
-                        str(project_path),
-                        preview["signature"],
-                        previous_project,
-                        previous_candidate_state,
-                    )
+                result = apply_project_assets_copy(
+                    session_state,
+                    project,
+                    str(project_path),
+                    preview,
+                    line_candidate_key=lambda line: str(line.id),
+                    get_persistent_line_candidates=lambda line: line.generated_candidates,
+                    reset_project_assets_cleanup_operation_state=lambda: None,
+                )
+
+            self.assertEqual(result["status"], "error")
+            self.assertIsInstance(result["error"], UnicodeEncodeError)
 
             self.assertEqual(project_path.read_bytes(), original_json)
             self.assertEqual(
                 project.prompt_lines[0].generated_candidates[0]["path"],
                 str(source),
             )
-            self.assertIs(fake_st.session_state.project, previous_project)
+            self.assertIsNot(session_state.project, project)
+            self.assertEqual(session_state.project, previous_project)
             self.assertEqual(
-                fake_st.session_state.line_generated_candidates,
+                session_state.line_generated_candidates,
                 previous_candidate_state,
             )
             copied_files = [
