@@ -1513,17 +1513,29 @@ the core transaction refreshes it separately. Both require confirmation again.
 `core.io` retains Preview and signature construction, source/collision planning,
 reference and lineage rewriting, commit-time revalidation, filesystem copy,
 rollback, and the single atomic Project JSON save. `app.py` retains the Sidebar
-renderer, messages, rerun, and the separate verified duplicate-cleanup flow.
-The copy lifecycle does not own destructive cleanup or other Project workflows.
+renderer, messages, and rerun. The copy lifecycle does not own destructive
+cleanup or other Project workflows.
 
-Verified duplicate cleanup remains separate. Its Scan protects the union of
-live Project references and references in the saved Project JSON at the
-selected path. Missing, unreadable, invalid, or unsupported saved JSON makes
-the Preview ineligible. Apply checks the saved JSON content again before
-deletion, alongside the existing live-reference and per-file checks; a changed
-saved JSON stales the Preview. Cleanup does not save Project JSON, add history,
-or mutate Project/Candidate state. Once deletion starts, a later file failure
-or stale check retains the existing partial-result behavior without rollback.
+### Verified Project Asset duplicate cleanup lifecycle
+
+`ui.project_assets_duplicate_cleanup_lifecycle` owns the cleanup-specific
+session keys, Project replacement reset, pending confirmation reset, explicit
+Scan Preview storage, one Apply dispatch, stale/validation error normalization,
+and result preservation. `app.py` retains the Sidebar placement, Preview and
+result rendering, messages, destructive confirmation controls, and rerun.
+Project transition composition and the separate copy/localize controls remain
+there; successful copy calls the cleanup-specific reset owner.
+
+`core.io` retains the entire destructive safety transaction: inventory, path,
+root, symlink, hash and duplicate checks, Preview signatures, freshness checks,
+per-file checks, and unlink. Scan protects the union of live Project references
+and references in the saved Project JSON at the selected path. Missing,
+unreadable, invalid, or unsupported saved JSON makes the Preview ineligible.
+Apply checks the exact saved JSON content again before deletion, alongside the
+live-reference and per-file checks; changed saved content stales the Preview.
+Cleanup does not save Project JSON, add history, or mutate Project/Candidate
+state. Once deletion starts, a later file failure or stale check retains the
+existing partial-result behavior without rollback or automatic retry.
 
 ### Selected Scenes Candidate Adoption publication lifecycle
 

@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from core.io import ProjectAssetsPreviewStaleError
+from ui import project_assets_duplicate_cleanup_lifecycle as lifecycle
+
 
 class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
     @classmethod
@@ -82,42 +85,38 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         fake_st = FakeStreamlit()
         preview_helper = mock.Mock()
         delete_helper = mock.Mock()
-        stale_error = type(
-            "ProjectAssetsPreviewStaleError",
-            (Exception,),
-            {},
+        preview_patch = mock.patch.object(
+            lifecycle,
+            "preview_verified_project_asset_duplicate_cleanup",
+            preview_helper,
         )
+        delete_patch = mock.patch.object(
+            lifecycle,
+            "delete_verified_project_asset_source_duplicates",
+            delete_helper,
+        )
+        preview_patch.start()
+        delete_patch.start()
+        self.addCleanup(preview_patch.stop)
+        self.addCleanup(delete_patch.stop)
         constants = {
-            node.targets[0].id: node.value.value
-            for node in self.tree.body
-            if isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id.startswith(
-                "PROJECT_ASSETS_CLEANUP_"
-            )
-            and isinstance(node.value, ast.Constant)
+            name: getattr(lifecycle, name)
+            for name in dir(lifecycle)
+            if name.startswith("PROJECT_ASSETS_CLEANUP_")
         }
         namespace = {
             "st": fake_st,
             "os": os,
-            "preview_verified_project_asset_duplicate_cleanup": (
-                preview_helper
+            "scan_project_assets_cleanup": lifecycle.scan_project_assets_cleanup,
+            "apply_project_assets_cleanup": lifecycle.apply_project_assets_cleanup,
+            "consume_project_assets_cleanup_confirmation_reset": (
+                lifecycle.consume_project_assets_cleanup_confirmation_reset
             ),
-            "delete_verified_project_asset_source_duplicates": (
-                delete_helper
-            ),
-            "ProjectAssetsPreviewStaleError": stale_error,
+            "format_core_message_for_display": str,
             "_format_project_assets_bytes": lambda value: f"{value} B",
             "_project_assets_cleanup_preview_rows": lambda preview: [],
             **constants,
         }
-        exec(
-            self._source(
-                "reset_project_assets_cleanup_operation_state"
-            ),
-            namespace,
-        )
         exec(
             self._source(
                 "render_verified_project_asset_duplicate_cleanup"
@@ -131,7 +130,7 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
             fake_st,
             preview_helper,
             delete_helper,
-            stale_error,
+            ProjectAssetsPreviewStaleError,
             constants,
         )
 
@@ -195,15 +194,16 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         renderer = self._source(
             "render_verified_project_asset_duplicate_cleanup"
         )
+        lifecycle_source = Path(lifecycle.__file__).read_text(encoding="utf-8")
         self.assertEqual(
             renderer.count(
-                "delete_verified_project_asset_source_duplicates("
+                "apply_project_assets_cleanup("
             ),
             1,
         )
         self.assertEqual(
             renderer.count(
-                "preview_verified_project_asset_duplicate_cleanup("
+                "scan_project_assets_cleanup("
             ),
             1,
         )
@@ -226,21 +226,33 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         ]
         self.assertEqual(
             scan_branch.count(
-                "preview_verified_project_asset_duplicate_cleanup("
+                "scan_project_assets_cleanup("
             ),
             1,
         )
         self.assertNotIn(
-            "preview_verified_project_asset_duplicate_cleanup(",
+            "scan_project_assets_cleanup(",
             passive_render,
         )
         self.assertNotIn(
-            "preview_verified_project_asset_duplicate_cleanup(",
+            "scan_project_assets_cleanup(",
             apply_branch,
         )
         self.assertIn(
-            "delete_verified_project_asset_source_duplicates(",
+            "apply_project_assets_cleanup(",
             apply_branch,
+        )
+        self.assertEqual(
+            lifecycle_source.count(
+                "preview_verified_project_asset_duplicate_cleanup("
+            ),
+            1,
+        )
+        self.assertEqual(
+            lifecycle_source.count(
+                "delete_verified_project_asset_source_duplicates("
+            ),
+            1,
         )
         for forbidden in (
             "os.remove(",
@@ -253,6 +265,7 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
             "project.__dict__",
         ):
             self.assertNotIn(forbidden, renderer)
+            self.assertNotIn(forbidden, lifecycle_source)
 
     def test_apply_requires_eligible_checkbox_and_exact_phrase(self):
         renderer = self._source(
@@ -363,6 +376,7 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         self.assertTrue(fake_st.rerun_called)
 
     def test_cleanup_widget_keys_are_unique_and_separate(self):
+        lifecycle_source = Path(lifecycle.__file__).read_text(encoding="utf-8")
         expected_keys = (
             "project_assets_cleanup_preview",
             "project_assets_cleanup_confirm",
@@ -373,7 +387,7 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         )
         for key in expected_keys:
             self.assertEqual(
-                self.source.count(f'"{key}"'),
+                lifecycle_source.count(f'"{key}"'),
                 1,
                 key,
             )
@@ -384,14 +398,12 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
 
     def test_project_transitions_and_copy_apply_clear_cleanup_preview(self):
         reset_all = self._source("reset_project_assets_operation_state")
-        reset_cleanup = self._source(
-            "reset_project_assets_cleanup_operation_state"
-        )
+        reset_cleanup = Path(lifecycle.__file__).read_text(encoding="utf-8")
         copy_lifecycle = (
             self.app_path.parent / "ui" / "project_assets_copy_lifecycle.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            "reset_project_assets_cleanup_operation_state()",
+            "reset_project_assets_cleanup_operation_state(st.session_state)",
             reset_all,
         )
         self.assertIn(
@@ -401,6 +413,10 @@ class ProjectAssetsCleanupUiWiringTests(unittest.TestCase):
         self.assertIn(
             "reset_project_assets_cleanup_operation_state()",
             copy_lifecycle,
+        )
+        self.assertIn(
+            "lambda: reset_project_assets_cleanup_operation_state(",
+            self._source("render_project_assets_sidebar_section"),
         )
         for project_transition in (
             "publish_loaded_project_to_session",
