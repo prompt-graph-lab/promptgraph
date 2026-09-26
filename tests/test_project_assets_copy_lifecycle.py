@@ -4,6 +4,7 @@ from unittest import mock
 from core.io import ProjectAssetsPreviewStaleError
 from core.project import Project, PromptLine
 from ui import project_assets_copy_lifecycle as lifecycle
+from ui import project_assets_duplicate_cleanup_lifecycle as cleanup_lifecycle
 
 
 class _SessionState(dict):
@@ -51,7 +52,7 @@ class ProjectAssetsCopyLifecycleTests(unittest.TestCase):
         )
         self.cleanup = mock.Mock()
 
-    def _apply(self, *, candidate_getter=None):
+    def _apply(self, *, candidate_getter=None, cleanup_callback=None):
         return lifecycle.apply_project_assets_copy(
             self.session,
             self.project,
@@ -61,7 +62,9 @@ class ProjectAssetsCopyLifecycleTests(unittest.TestCase):
             get_persistent_line_candidates=(
                 candidate_getter or (lambda line: line.generated_candidates)
             ),
-            reset_project_assets_cleanup_operation_state=self.cleanup,
+            reset_project_assets_cleanup_operation_state=(
+                cleanup_callback or self.cleanup
+            ),
         )
 
     def test_success_uses_one_core_transaction_then_syncs_candidates_and_resets(self):
@@ -225,3 +228,44 @@ class ProjectAssetsCopyLifecycleTests(unittest.TestCase):
         lifecycle.consume_project_assets_copy_confirmation_reset(self.session)
         self.assertFalse(self.session[lifecycle.PROJECT_ASSETS_CONFIRM_KEY])
         self.assertNotIn(lifecycle.PROJECT_ASSETS_CONFIRM_RESET_PENDING_KEY, self.session)
+
+    def test_success_resets_cleanup_through_its_separate_owner(self):
+        self.session[cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_PREVIEW_KEY] = {
+            "signature": "cleanup-preview"
+        }
+        self.session[cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_RESULT_KEY] = {
+            "status": "stale"
+        }
+        self.session[cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_CONFIRM_KEY] = True
+        self.session[cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_PHRASE_KEY] = (
+            "DELETE VERIFIED DUPLICATES"
+        )
+        with mock.patch.object(
+            lifecycle,
+            "preview_copy_candidates_to_project",
+            return_value={"signature": "confirmed"},
+        ), mock.patch.object(
+            lifecycle,
+            "copy_candidates_to_project_and_save_atomically",
+            return_value={"copied": 0},
+        ):
+            result = self._apply(
+                cleanup_callback=lambda: cleanup_lifecycle.reset_project_assets_cleanup_operation_state(
+                    self.session
+                )
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn(cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_PREVIEW_KEY, self.session)
+        self.assertNotIn(cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_RESULT_KEY, self.session)
+        self.assertTrue(
+            self.session[cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_RESET_PENDING_KEY]
+        )
+        self.assertTrue(self.session[cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_CONFIRM_KEY])
+        cleanup_lifecycle.consume_project_assets_cleanup_confirmation_reset(
+            self.session
+        )
+        self.assertFalse(self.session[cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_CONFIRM_KEY])
+        self.assertEqual(
+            self.session[cleanup_lifecycle.PROJECT_ASSETS_CLEANUP_PHRASE_KEY], ""
+        )

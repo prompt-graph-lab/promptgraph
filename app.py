@@ -242,7 +242,7 @@ from core.animadex_discovery import (
 )
 from core.animadex_modules import build_global_module_preview_from_animadex_record
 from core import project_directory_duplication
-from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, _json_safe_source_value, ensure_project_folder_layout, preview_verified_project_asset_duplicate_cleanup, delete_verified_project_asset_source_duplicates, ProjectAssetsPreviewStaleError, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
+from core.io import load_directory, load_prompt_file, export_to_txt, export_to_prompt_files, export_final_images, preview_final_image_export, save_project_to_json, add_image_metadata_import, summarize_image_metadata_line_import, create_prompt_lines_from_latest_image_import, find_image_metadata_for_line, build_source_generation_info_from_candidate, build_lineage_info_from_candidate, _json_safe_source_value, ensure_project_folder_layout, resolve_project_asset_path, extract_image_metadata_for_path, get_global_module_library_path, load_global_module_library, natural_sort_key, IMAGE_METADATA_EXTENSIONS
 from core.project_json_open import prepare_project_json_open
 from core.graph_builder import build_graph
 from core.graph_edit_illustration_browser import (
@@ -301,6 +301,18 @@ from ui.project_assets_copy_lifecycle import (
     consume_project_assets_copy_confirmation_reset,
     reset_project_assets_copy_operation_state,
     store_project_assets_copy_preview,
+)
+from ui.project_assets_duplicate_cleanup_lifecycle import (
+    PROJECT_ASSETS_CLEANUP_PREVIEW_KEY,
+    PROJECT_ASSETS_CLEANUP_CONFIRM_KEY,
+    PROJECT_ASSETS_CLEANUP_PHRASE_KEY,
+    PROJECT_ASSETS_CLEANUP_RESULT_KEY,
+    PROJECT_ASSETS_CLEANUP_SCAN_RUNNING_KEY,
+    PROJECT_ASSETS_CLEANUP_APPLY_RUNNING_KEY,
+    apply_project_assets_cleanup,
+    consume_project_assets_cleanup_confirmation_reset,
+    reset_project_assets_cleanup_operation_state,
+    scan_project_assets_cleanup,
 )
 from ui.candidate_route_creation_lifecycle import apply_candidate_route_creation_plan
 from core.gallery_operation_scope_presentation import (
@@ -443,15 +455,6 @@ UI_PROFILE_ENABLED_KEY = "ui_profiling_enabled"
 UI_PROFILE_TIMINGS_KEY = "ui_profile_timings"
 UI_PROFILE_FULL_RECORDED_KEY = "ui_profile_full_recorded"
 ACTIVE_MANAGEMENT_WORKSPACE_KEY = "active_management_workspace"
-PROJECT_ASSETS_CLEANUP_PREVIEW_KEY = "project_assets_cleanup_preview"
-PROJECT_ASSETS_CLEANUP_CONFIRM_KEY = "project_assets_cleanup_confirm"
-PROJECT_ASSETS_CLEANUP_PHRASE_KEY = "project_assets_cleanup_phrase"
-PROJECT_ASSETS_CLEANUP_RESULT_KEY = "project_assets_cleanup_result"
-PROJECT_ASSETS_CLEANUP_SCAN_RUNNING_KEY = "project_assets_cleanup_scan_running"
-PROJECT_ASSETS_CLEANUP_APPLY_RUNNING_KEY = "project_assets_cleanup_apply_running"
-PROJECT_ASSETS_CLEANUP_RESET_PENDING_KEY = (
-    "project_assets_cleanup_reset_pending"
-)
 from ui.project_root_import_session import (
     PROJECT_ROOT_IMPORT_PREVIEW_KEY,
     PROJECT_ROOT_IMPORT_RESULT_KEY,
@@ -701,21 +704,7 @@ def reset_project_assets_operation_state() -> None:
     """Clear Project-bound Project Assets preview state after Project replacement."""
 
     reset_project_assets_copy_operation_state(st.session_state)
-    reset_project_assets_cleanup_operation_state()
-
-
-def reset_project_assets_cleanup_operation_state(
-    *,
-    keep_result: bool = False,
-) -> None:
-    """Clear Project-bound duplicate-cleanup state."""
-
-    st.session_state.pop(PROJECT_ASSETS_CLEANUP_PREVIEW_KEY, None)
-    if not keep_result:
-        st.session_state.pop(PROJECT_ASSETS_CLEANUP_RESULT_KEY, None)
-    st.session_state[PROJECT_ASSETS_CLEANUP_SCAN_RUNNING_KEY] = False
-    st.session_state[PROJECT_ASSETS_CLEANUP_APPLY_RUNNING_KEY] = False
-    st.session_state[PROJECT_ASSETS_CLEANUP_RESET_PENDING_KEY] = True
+    reset_project_assets_cleanup_operation_state(st.session_state)
 
 
 def reset_module_attribute_authoring_project_session_state() -> None:
@@ -6390,12 +6379,7 @@ def render_verified_project_asset_duplicate_cleanup(
     project,
     project_path,
 ) -> None:
-    if st.session_state.pop(
-        PROJECT_ASSETS_CLEANUP_RESET_PENDING_KEY,
-        False,
-    ):
-        st.session_state[PROJECT_ASSETS_CLEANUP_CONFIRM_KEY] = False
-        st.session_state[PROJECT_ASSETS_CLEANUP_PHRASE_KEY] = ""
+    consume_project_assets_cleanup_confirmation_reset(st.session_state)
 
     st.divider()
     st.markdown("**Verified Duplicate Cleanup / 検証済み重複整理**")
@@ -6504,20 +6488,7 @@ def render_verified_project_asset_duplicate_cleanup(
         key="project_assets_cleanup_scan",
         width="stretch",
     ):
-        st.session_state[PROJECT_ASSETS_CLEANUP_SCAN_RUNNING_KEY] = True
-        try:
-            preview = (
-                preview_verified_project_asset_duplicate_cleanup(
-                    project,
-                    project_path,
-                )
-            )
-            st.session_state[PROJECT_ASSETS_CLEANUP_PREVIEW_KEY] = preview
-            st.session_state.pop(PROJECT_ASSETS_CLEANUP_RESULT_KEY, None)
-            st.session_state[PROJECT_ASSETS_CLEANUP_CONFIRM_KEY] = False
-            st.session_state[PROJECT_ASSETS_CLEANUP_PHRASE_KEY] = ""
-        finally:
-            st.session_state[PROJECT_ASSETS_CLEANUP_SCAN_RUNNING_KEY] = False
+        scan_project_assets_cleanup(st.session_state, project, project_path)
 
     preview = st.session_state.get(PROJECT_ASSETS_CLEANUP_PREVIEW_KEY)
     if not isinstance(preview, dict):
@@ -6609,38 +6580,9 @@ def render_verified_project_asset_duplicate_cleanup(
         key="project_assets_cleanup_apply",
         width="stretch",
     ):
-        st.session_state[PROJECT_ASSETS_CLEANUP_APPLY_RUNNING_KEY] = True
-        try:
-            cleanup_result = (
-                delete_verified_project_asset_source_duplicates(
-                    project,
-                    project_path,
-                    preview,
-                )
-            )
-        except ProjectAssetsPreviewStaleError as exc:
-            cleanup_result = {
-                "status": "stale",
-                "deleted_count": 0,
-                "deleted_bytes": 0,
-                "error": str(exc),
-                "remaining_eligible_files": [],
-            }
-        except Exception as exc:
-            cleanup_result = {
-                "status": "validation_failure",
-                "deleted_count": 0,
-                "deleted_bytes": 0,
-                "error": str(exc),
-                "remaining_eligible_files": [],
-            }
-        finally:
-            st.session_state[
-                PROJECT_ASSETS_CLEANUP_APPLY_RUNNING_KEY
-            ] = False
-
-        st.session_state[PROJECT_ASSETS_CLEANUP_RESULT_KEY] = cleanup_result
-        reset_project_assets_cleanup_operation_state(keep_result=True)
+        apply_project_assets_cleanup(
+            st.session_state, project, project_path, preview
+        )
         st.rerun()
 
 
@@ -6778,7 +6720,9 @@ def render_project_assets_sidebar_section() -> None:
                     line_candidate_key=_line_candidate_key,
                     get_persistent_line_candidates=_get_persistent_line_candidates,
                     reset_project_assets_cleanup_operation_state=(
-                        reset_project_assets_cleanup_operation_state
+                        lambda: reset_project_assets_cleanup_operation_state(
+                            st.session_state
+                        )
                     ),
                 )
                 if result["status"] == "stale":
