@@ -149,6 +149,9 @@ class AttributeGroupSwapWorkspaceStateTests(unittest.TestCase):
     def setUpClass(cls):
         cls.root = Path(__file__).resolve().parents[1]
         cls.app_source = (cls.root / "app.py").read_text(encoding="utf-8")
+        cls.lifecycle_source = (
+            cls.root / "ui" / "attribute_group_swap_selected_routes_lifecycle.py"
+        ).read_text(encoding="utf-8")
         cls.tree = ast.parse(cls.app_source)
         cls.functions = {
             node.name: node
@@ -964,33 +967,39 @@ class AttributeGroupSwapWorkspaceStateTests(unittest.TestCase):
         preview = self._source(
             "_render_selected_routes_attribute_group_swap_preview"
         )
-        apply_call = preview.index(
+        self.assertIn(
+            "result = apply_and_publish_selected_routes_attribute_group_swap",
+            preview,
+        )
+        owner = self.lifecycle_source
+        apply_call = owner.index(
             "result = apply_selected_routes_attribute_group_swap"
         )
-        success = preview.index('if result.get("applied"):', apply_call)
-        history = preview.index("push_history()", success)
-        assign = preview.index(
-            'st.session_state.project = result["updated_project"]',
+        success = owner.index('if result.get("applied"):', apply_call)
+        history = owner.index("push_history()", success)
+        assign = owner.index(
+            'session_state.project = result["updated_project"]',
             success,
         )
-        restore = preview.index(
+        restore = owner.index(
             "restore_focus_after_graph_update(previous_focus)",
             assign,
         )
-        sync = preview.index("sync_text_areas()", restore)
-        clear_preview = preview.index(
-            "st.session_state.pop(preview_state_key, None)",
+        sync = owner.index("sync_text_areas()", restore)
+        clear_preview = owner.index(
+            "session_state.pop(preview_state_key, None)",
             sync,
         )
-        clear_confirm = preview.index(
-            "st.session_state.pop(confirm_key, None)",
+        clear_confirm = owner.index(
+            "session_state.pop(confirm_key, None)",
             clear_preview,
         )
-        save = preview.index(
+        save = owner.index(
             'save_current_project_if_possible("selected Routes attribute group swap applied")',
             clear_confirm,
         )
-        rerun = preview.index("st.rerun()", save)
+        rerun = preview.index("st.rerun()")
+        self.assertLess(preview.index('if result.get("applied"):'), rerun)
         self.assertEqual(
             [
                 apply_call,
@@ -1002,7 +1011,6 @@ class AttributeGroupSwapWorkspaceStateTests(unittest.TestCase):
                 clear_preview,
                 clear_confirm,
                 save,
-                rerun,
             ],
             sorted(
                 [
@@ -1015,16 +1023,15 @@ class AttributeGroupSwapWorkspaceStateTests(unittest.TestCase):
                     clear_preview,
                     clear_confirm,
                     save,
-                    rerun,
                 ]
             ),
         )
         self.assertNotIn(
             "push_history()",
-            preview[apply_call:success],
+            owner[apply_call:success],
         )
         for durable_key in DURABLE_KEYS:
-            self.assertNotIn(f'pop("{durable_key}"', preview)
+            self.assertNotIn(f'pop("{durable_key}"', owner)
 
     def test_reset_clears_exact_operation_state_only(self):
         state = {

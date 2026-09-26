@@ -331,8 +331,10 @@ from ui.attribute_group_swap_session import (
     prepare_attribute_group_swap_require_full_match_widget_state,
     sync_attribute_group_swap_require_full_match_widget_state,
 )
+from ui.attribute_group_swap_selected_routes_lifecycle import (
+    apply_and_publish_selected_routes_attribute_group_swap,
+)
 from core.attribute_group_swap_selected_routes import (
-    apply_selected_routes_attribute_group_swap,
     build_selected_routes_attribute_group_swap_plan,
     build_selected_routes_attribute_group_swap_signature,
     get_attribute_groups_snapshot,
@@ -10285,33 +10287,21 @@ def _render_selected_routes_attribute_group_swap_preview(
         ),
         key=f"{key_prefix}_apply_btn",
     ):
-        previous_focus = st.session_state.get("focused_line_id")
-        result = apply_selected_routes_attribute_group_swap(
-            st.session_state.project,
-            st.session_state.get("gallery_selected_route_ids", []),
-            expected_signature=preview.get("signature", ""),
+        result = apply_and_publish_selected_routes_attribute_group_swap(
+            preview=preview,
             from_group_key=from_group_key,
             to_group_key=to_group_key,
             require_full_match=require_full_match,
-            project_path=st.session_state.get("current_project_path", ""),
+            preview_state_key=preview_state_key,
+            confirm_key=confirm_key,
+            feedback_mode=feedback_mode,
+            session_state=st.session_state,
+            push_history=push_history,
+            restore_focus_after_graph_update=restore_focus_after_graph_update,
+            sync_text_areas=sync_text_areas,
+            save_current_project_if_possible=save_current_project_if_possible,
         )
         if result.get("applied"):
-            push_history()
-            st.session_state.project = result["updated_project"]
-            restore_focus_after_graph_update(previous_focus)
-            sync_text_areas()
-            st.session_state.pop(preview_state_key, None)
-            st.session_state.pop(confirm_key, None)
-            if feedback_mode == "gallery":
-                st.session_state.gallery_feedback = (
-                    f"Attribute Group Swap applied to {result['applied_count']} line(s)."
-                )
-                st.session_state.gallery_feedback_kind = "success"
-            else:
-                st.session_state.attribute_group_swap_notice = (
-                    f"Attribute Group Swap applied to {result['applied_count']} line(s)."
-                )
-            save_current_project_if_possible("selected Routes attribute group swap applied")
             st.rerun()
         elif result.get("stale_preview"):
             st.warning("Previewが古くなりました。Fresh Previewを実行してください。")
