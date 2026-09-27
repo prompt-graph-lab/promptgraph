@@ -34,18 +34,16 @@ class SelectedRoutesModuleSwapUiWiringTests(unittest.TestCase):
         self.assertGreater(full_plan_call, preview_button)
         self.assertEqual(1, self.module_swap_source.count("build_selected_routes_module_swap_plan"))
 
-    def test_atomic_apply_commits_history_and_autosave_only_after_success(self):
-        apply_call = self.module_swap_source.index("result = apply_selected_routes_module_swap")
+    def test_selected_routes_dispatches_only_its_publication_lifecycle(self):
+        apply_call = self.module_swap_source.index("result = apply_and_publish_selected_routes_module_swap")
         success = self.module_swap_source.index('if result.get("applied"):', apply_call)
-        push = self.module_swap_source.index("push_history()", success)
-        assign = self.module_swap_source.index('st.session_state.project = result["updated_project"]', success)
-        autosave = self.module_swap_source.index(
-            'save_current_project_if_possible("Selected Routes Module Swap applied")', success
-        )
+        rerun = self.module_swap_source.index("st.rerun()", success)
+        other_scope = self.module_swap_source.index('key="module_swap_apply_btn"')
         self.assertLess(apply_call, success)
-        self.assertLess(success, push)
-        self.assertLess(push, assign)
-        self.assertLess(assign, autosave)
+        self.assertLess(success, rerun)
+        self.assertLess(rerun, other_scope)
+        self.assertIn("st.session_state.project = apply_module_swap(", self.module_swap_source[other_scope:])
+        self.assertNotIn("apply_selected_routes_module_swap(", self.module_swap_source)
 
     def test_route_diff_precedes_confirmation_and_apply(self):
         route_diff = self.module_swap_source.index('st.markdown("**Scene / Illustration diff**")')

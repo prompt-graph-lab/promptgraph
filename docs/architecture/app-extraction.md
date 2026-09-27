@@ -1349,6 +1349,23 @@ diff and negative-metadata/drift display, confirmation widget, stale/error
 messages, and rerun. Other Attribute Group Swap scopes, Module Swap,
 Attribute Group CRUD, and Global Library authoring remain separate.
 
+### Selected Routes Module Swap publication lifecycle
+
+`ui.module_swap_selected_routes_lifecycle` owns only the application-side
+Selected Routes Module Swap Apply and publication sequence. It captures Focus
+before one core apply call. On success it pushes one history snapshot of the
+original Project, publishes exactly the core result's updated Project, restores
+Focus, saves once, and clears only the Module Swap Preview. Stale, failed, and
+no-op results make no publication or cleanup changes.
+
+`core.module_swap_selected_routes` retains target resolution, planning and
+signatures, Fresh Preview, stale validation, clone-based atomic mutation,
+result validation, and the non-Prompt invariants. `app.py` retains all visible
+Module Swap controls, Preview and diff, confirmation, stale/error display,
+other scopes, and rerun. This owner is specific to the Selected Routes Module
+Swap lifecycle and does not combine with Attribute Group Swap or a shared
+Project, history, or persistence framework.
+
 ### Project Save As lifecycle
 
 `ui.project_save_as_lifecycle` owns the Advanced Project Save As operation from
