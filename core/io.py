@@ -3792,6 +3792,12 @@ def get_global_module_library_path(settings: dict = None) -> str:
 
 
 def load_global_module_library(settings: dict = None) -> dict:
+    """Load the prompt-only Global Module Library.
+
+    Stale Project-local ``reference_assets`` baggage (for example from an
+    older Project -> Global copy) is removed; other metadata is kept.
+    """
+    from core.module_container_policy import module_library_for_prompt_only_container
     from core.operations import normalize_module_library
 
     library_path = get_global_module_library_path(settings)
@@ -3807,16 +3813,23 @@ def load_global_module_library(settings: dict = None) -> dict:
         data = data["module_library"]
     if not isinstance(data, dict):
         return {}
-    return normalize_module_library(data)
+    return module_library_for_prompt_only_container(normalize_module_library(data))
 
 
 def save_global_module_library(module_library: dict, settings: dict = None) -> str:
+    """Atomically save the prompt-only Global Module Library.
+
+    Project-local ``reference_assets`` can never be serialized here.
+    """
+    from core.module_container_policy import module_library_for_prompt_only_container
     from core.operations import normalize_module_library
 
     library_path = get_global_module_library_path(settings)
     library_dir = os.path.dirname(library_path)
     os.makedirs(library_dir, exist_ok=True)
-    normalized_library = normalize_module_library(module_library or {})
+    normalized_library = module_library_for_prompt_only_container(
+        normalize_module_library(module_library or {})
+    )
     temporary_path = ""
     try:
         with tempfile.NamedTemporaryFile(

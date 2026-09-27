@@ -9,6 +9,10 @@ from core.modules import (
     validate_module_graph,
 )
 from core.module_token_rules import _parse_module_rule_text
+from core.module_container_policy import (
+    module_entry_for_prompt_only_container,
+    module_has_reference_assets,
+)
 import re
 import logging
 import copy
@@ -1108,11 +1112,20 @@ def import_global_modules_to_project(
     module_names: List[str],
     overwrite: bool = False,
 ) -> Dict[str, Any]:
+    """Copy Global (prompt-only) Modules into the Project Module Library.
+
+    The Global source is projected through the prompt-only container policy,
+    so stale Global ``reference_assets`` baggage never materializes in a
+    Project. An explicit overwrite of a Project Module that carries
+    ``reference_assets`` is refused per Module and leaves that entry unchanged;
+    it is reported in ``blocked_reference_asset_overwrite``.
+    """
     global_library = normalize_module_library(global_module_library or {})
     project_library = get_project_module_library(project)
     imported = []
     skipped_existing = []
     skipped_missing = []
+    blocked_reference_asset_overwrite = []
     for module_name in module_names or []:
         name = str(module_name or "").strip()
         if not name or name not in global_library:
@@ -1122,13 +1135,17 @@ def import_global_modules_to_project(
         if name in project_library and not overwrite:
             skipped_existing.append(name)
             continue
-        project_library[name] = copy.deepcopy(global_library[name])
+        if name in project_library and module_has_reference_assets(project_library[name]):
+            blocked_reference_asset_overwrite.append(name)
+            continue
+        project_library[name] = module_entry_for_prompt_only_container(global_library[name])
         imported.append(name)
     normalize_module_library(project)
     return {
         "imported": imported,
         "skipped_existing": skipped_existing,
         "skipped_missing": skipped_missing,
+        "blocked_reference_asset_overwrite": blocked_reference_asset_overwrite,
     }
 
 def _replace_module_candidate_tokens_in_text(
@@ -1470,7 +1487,9 @@ def apply_detected_modules(
     project_library = get_project_module_library(project)
     for module_name in preview["import_needed"]:
         if module_name in normalized_library and module_name not in project_library:
-            project_library[module_name] = copy.deepcopy(normalized_library[module_name])
+            project_library[module_name] = module_entry_for_prompt_only_container(
+                normalized_library[module_name]
+            )
 
     line_lookup = {
         getattr(line, "id", ""): line

@@ -425,13 +425,15 @@ compatibility owner is unchanged; replacing it is outside this extraction.
 The Module token rules smoke test also reports a `gallery_page_size` warning
 about assigning both a widget default and session state. Its unchanged Gallery
 pagination owner is outside this extraction as well.
-The synthetic save check also exposes an existing compatibility limitation:
-Project Module Editor calls `core.operations.set_module_entry`, which replaces
-the entry and drops unknown extension fields (reproduced with a synthetic
-`extension` key). The same unchanged core function reproduces this on the base
-main revision. This differs from the metadata-preserving Global Module editing
-path and is recorded for separate investigation, not changed or generalized
-as part of token extraction.
+The synthetic save check at the time also exposed a compatibility limitation
+that has since been resolved: Project Module Editor calls
+`core.operations.set_module_entry`, which now delegates to
+`update_module_entry_preserving_metadata`. That helper deep-copies the existing
+entry and updates only the known prompt fields, so same-Project unknown
+extension fields (for example a synthetic `extension` key, or the reserved
+Module-vNext `reference_assets` field) are preserved, matching the Global
+Module editing path. `tests/test_project_module_save_preserves_unknown_fields.py`
+pins this through save and reload.
 
 ### Download-phase characterization (runtime unchanged)
 

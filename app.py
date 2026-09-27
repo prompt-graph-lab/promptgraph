@@ -255,6 +255,11 @@ from core.module_library_search import (
     filter_global_module_library,
     normalize_global_module_search_selection,
 )
+from core.module_container_policy import (
+    module_entry_for_prompt_only_container,
+    module_has_reference_assets,
+    module_reference_assets_json_save_as_block_reason,
+)
 from core.operations import rename_node, delete_nodes, preview_delete_nodes, insert_node, duplicate_nodes, move_nodes, merge_duplicates_in_line, merge_duplicates_all_lines, apply_node_weight, preview_apply_node_weight, insert_subgraph, replace_with_subgraph, rename_word_global, preview_rename_word_global, rename_module, preview_rename_module, preview_apply_module_preset, apply_module_preset, preview_module_swap, apply_module_swap, preview_attribute_group_swap, apply_attribute_group_swap, preview_propagate_attribute_group_tokens, apply_propagate_attribute_group_tokens, scan_global_module_candidates, import_global_modules_to_project, preview_apply_detected_modules, apply_detected_modules, preview_create_module_replace, apply_create_module_replace, preview_replace_with_module, apply_replace_with_module, build_module_reference_token, get_insert_module_reference_anchor_options, preview_bulk_insert_module_reference, apply_bulk_insert_module_reference, _replacement_contains_module_markers, validate_library_module_body, MODULE_TYPES, GLOBAL_MODULE_CATEGORIES, ATTRIBUTE_LABEL_UNASSIGNED, SUGGESTED_ATTRIBUTE_LABELS, SUGGESTED_ATTRIBUTE_SLOTS, add_project_custom_attribute_labels, get_attribute_label_options, get_frequent_attribute_labels, get_project_module_library, get_module_body, get_module_type, get_module_category, get_module_core_tokens, get_module_min_match_tokens, increment_attribute_label_usage_counts, set_module_candidate_rules, set_module_entry, update_module_entry_preserving_metadata, preview_module_candidates, preview_apply_module_candidates, apply_module_candidates, create_library_module, copy_outfit_module_to_character_attribute_group, create_attribute_group, create_attribute_group_from_tokens, rename_attribute_group, set_attribute_group_slot, set_attribute_group_tokens, set_attribute_group_negative_metadata, build_attribute_group_negative_preview, add_nodes_to_attribute_group, delete_attribute_group, get_attribute_group_rows, get_module_attribute_rows, get_node_attribute_key, get_node_attribute_label, get_token_attribute_key, get_token_attribute_label, get_project_attribute_groups, get_project_custom_attribute_labels, normalize_attribute_group_name, normalize_attribute_slot, set_node_attribute_label, set_token_attribute_label, get_project_line_groups, resolve_line_group_ids, create_line_group, delete_line_group, get_gallery_route_options, get_module_swap_route_options, resolve_gallery_route_for_line, resolve_module_swap_target_line_ids, delete_word_global, insert_word_global, count_matches, get_available_modules, get_active_tokens, get_display_tokens, get_display_tokens_from_text, extract_module_structure_from_text, preview_batch_text_edit, apply_batch_text_edit, preview_focus_edit_propagation, apply_focus_edit_propagation, get_duplicate_token_marks, is_valid_exact_remove_target, is_valid_exact_replace_target, is_valid_replace_token, is_valid_add_if_missing_target
 from core.parser import parse_prompt, extract_node_metadata, extract_mod_info, is_structural_mod_marker
 import streamlit.components.v1 as components
@@ -10742,6 +10747,12 @@ def _render_lightweight_fork_apply_result(result: dict) -> None:
                     for reason, count in sorted(skipped_reasons.items())
                 )
             )
+        omitted_reference_modules = result.get("module_reference_assets_omitted_count", 0)
+        if omitted_reference_modules:
+            st.caption(
+                "Module visual references are not carried into Derived Projects yet: "
+                f"{omitted_reference_modules} Module(s) were copied prompt-only."
+            )
         affected_routes = result.get("affected_routes", [])
         if affected_routes:
             st.caption(
@@ -16435,6 +16446,14 @@ GLOBAL_MODULE_LIBRARY_SEARCH_QUERY_KEY = (
 GLOBAL_MODULE_LIBRARY_SEARCH_WIDGET_KEY = (
     "_global_module_library_search_query_widget"
 )
+GLOBAL_MODULE_VISUAL_REFERENCES_OMITTED_NOTICE = (
+    "Visual references remain Project-local and were not copied to the "
+    "Global Module Library."
+)
+GLOBAL_MODULE_OVERWRITE_BLOCKED_NOTICE = (
+    "This Project Module has Project-local visual references, so it cannot "
+    "be overwritten from the Global Module Library. It was left unchanged."
+)
 
 
 def initialize_global_module_library_search_query() -> str:
@@ -16951,7 +16970,10 @@ def render_create_module_from_scratch_section(project):
                 key="global_module_save_btn",
             ):
                 project_library = get_project_module_library(st.session_state.project)
-                project_module_entry = copy.deepcopy(
+                visual_references_omitted = module_has_reference_assets(
+                    project_library[save_global_name]
+                )
+                project_module_entry = module_entry_for_prompt_only_container(
                     project_library[save_global_name]
                 )
                 project_module_entry["category"] = save_global_category
@@ -16984,6 +17006,10 @@ def render_create_module_from_scratch_section(project):
                     st.error(f"Global Module Libraryを保存できませんでした: {exc}")
                     st.stop()
                 st.session_state.global_module_library_notice = f"Saved global module '{save_global_name}' to {saved_path}."
+                if visual_references_omitted:
+                    st.session_state.global_module_library_notice += (
+                        " " + GLOBAL_MODULE_VISUAL_REFERENCES_OMITTED_NOTICE
+                    )
                 st.rerun()
         else:
             st.caption("Create a saved project module before saving to the global library.")
@@ -17009,8 +17035,17 @@ def render_create_module_from_scratch_section(project):
             st.caption(f"Type: {get_module_type(global_library, load_global_name)}")
             st.caption(f"Body: {_short_preview(get_module_body(global_library, load_global_name), 120)}")
             project_module_exists = load_global_name in project_module_names
+            project_module_has_visual_references = (
+                project_module_exists
+                and module_has_reference_assets(
+                    get_project_module_library(project).get(load_global_name)
+                )
+            )
             allow_project_overwrite = True
-            if project_module_exists:
+            if project_module_has_visual_references:
+                allow_project_overwrite = False
+                st.caption(GLOBAL_MODULE_OVERWRITE_BLOCKED_NOTICE)
+            elif project_module_exists:
                 allow_project_overwrite = st.checkbox(
                     "Overwrite project module with global version",
                     value=False,
@@ -17036,10 +17071,22 @@ def render_create_module_from_scratch_section(project):
                         "VisibleなGlobal Moduleを選び直してください。"
                     )
                     st.stop()
+                if module_has_reference_assets(
+                    get_project_module_library(st.session_state.project).get(load_global_name)
+                ):
+                    st.warning(GLOBAL_MODULE_OVERWRITE_BLOCKED_NOTICE)
+                    st.stop()
                 push_history()
                 prev_focus = st.session_state.get("focused_line_id")
-                project_library = get_project_module_library(st.session_state.project)
-                project_library[load_global_name] = copy.deepcopy(global_library[load_global_name])
+                load_result = import_global_modules_to_project(
+                    st.session_state.project,
+                    global_library,
+                    [load_global_name],
+                    overwrite=True,
+                )
+                if load_global_name not in load_result["imported"]:
+                    st.warning(GLOBAL_MODULE_OVERWRITE_BLOCKED_NOTICE)
+                    st.stop()
                 st.session_state.project = build_graph(st.session_state.project)
                 restore_focus_after_graph_update(prev_focus)
                 sync_text_areas()
@@ -20642,6 +20689,13 @@ if st.sidebar.button(
     key="quick_save_project",
 ):
     try:
+        quick_save_block_reason = module_reference_assets_json_save_as_block_reason(
+            st.session_state.project,
+            st.session_state.get("current_project_path", ""),
+            json_path_default,
+        )
+        if quick_save_block_reason:
+            raise ValueError(quick_save_block_reason)
         save_project_to_json(st.session_state.project, json_path_default)
     except Exception as exc:
         st.sidebar.error(f"プロジェクトを保存できませんでした: {exc}")

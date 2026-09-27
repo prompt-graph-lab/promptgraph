@@ -178,7 +178,8 @@ Fork project generation should reset or clear:
 - transient preview/cache state;
 - stale adoption preview state;
 - Comfy generation run state;
-- old `source_generation_info` when it points to old candidates/generated outputs.
+- old `source_generation_info` when it points to old candidates/generated outputs;
+- the reserved Project-local Module field `reference_assets`: Derived Project Module copies are prompt-only until file-aware transfer exists, because no file under `refs/modules/` is copied and its Project-relative paths would dangle (see [Module vNext public compatibility](module-attribute-design.md#module-vnext-public-compatibility-p0)). Every other Module field, including the Module Graph, Attribute metadata, and unknown extension fields, is kept. The materialization result reports `module_reference_assets_omitted_count`.
 
 Fork project generation should add provenance outside the destructive data path:
 
