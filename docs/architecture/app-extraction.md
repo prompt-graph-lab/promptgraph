@@ -1628,6 +1628,15 @@ small behavior-preserving extraction PRs:
 Moving these areas requires explicit ownership, persistence, dependency, or
 product decisions. They should not be disguised as generic controllers.
 
+For Selected Routes Generation, `app.py` invalidates only that feature's
+confirmation when the stored Preview becomes stale. A cheap-plan mismatch
+clears it before the checkbox renders; a mismatch found by submit-time full
+preflight schedules the checkbox reset for the next rerun. The stored Preview
+remains until an explicit Fresh Preview. This confirmation safety behavior is
+a prerequisite for any later Generation lifecycle extraction;
+`core.gallery_generation` keeps its existing planning, validation, and
+execution ownership.
+
 ### C — Still-safe extraction candidate (0 clusters remain)
 
 The Module Candidate Selection draft/widget synchronization candidate from this

@@ -1113,6 +1113,8 @@ def reset_gallery_route_action_session_state() -> None:
         "pro_gallery_global_generation_count",
         "gallery_generation_selected_routes_preview",
         "gallery_generation_selected_routes_confirm",
+        "gallery_generation_selected_routes_confirm_pending_reset",
+        "gallery_generation_selected_routes_stale_reason",
         "_gallery_generation_scope_widget",
         "_gallery_generation_selected_route_id_widget",
         "_gallery_generation_run_count_widget",
@@ -8976,6 +8978,10 @@ def render_gallery_global_generation_controls(
             st.caption(
                 "Gallery上部のSelected Scenesで選択した複数シーンを、現在のProject順でCandidate生成します。"
             )
+            if st.session_state.pop("gallery_generation_selected_routes_confirm_pending_reset", False):
+                st.session_state.gallery_generation_selected_routes_confirm = False
+                st.session_state._gallery_generation_selected_routes_confirm_widget = False
+            stale_reason = st.session_state.pop("gallery_generation_selected_routes_stale_reason", "")
             current_plan = _build_selected_routes_gallery_generation_plan(
                 project,
                 int(run_count),
@@ -8994,6 +9000,7 @@ def render_gallery_global_generation_controls(
                         full_preflight=True,
                     )
                 )
+                st.session_state.gallery_generation_selected_routes_confirm = False
                 st.session_state._gallery_generation_selected_routes_confirm_widget = False
 
             stored_preview = st.session_state.get("gallery_generation_selected_routes_preview")
@@ -9001,7 +9008,11 @@ def render_gallery_global_generation_controls(
             _render_selected_routes_gallery_generation_preview(preview_to_render)
             submit_validation = validate_selected_routes_generation_submit(stored_preview, current_plan)
             if stored_preview and not submit_validation.get("allowed"):
+                st.session_state.gallery_generation_selected_routes_confirm = False
+                st.session_state._gallery_generation_selected_routes_confirm_widget = False
                 st.warning(format_core_message_for_display(submit_validation.get("reason")) or "Fresh Previewを再実行してください。")
+            if stale_reason:
+                st.warning(stale_reason)
             confirmed = st.checkbox(
                 "Preview内容を確認しました",
                 key="_gallery_generation_selected_routes_confirm_widget",
@@ -9023,8 +9034,13 @@ def render_gallery_global_generation_controls(
             )
             fresh_validation = validate_selected_routes_generation_submit(stored_preview, fresh_plan)
             if not fresh_validation.get("allowed"):
-                st.warning(format_core_message_for_display(fresh_validation.get("reason")) or "Fresh Previewを再実行してください。")
-                return
+                st.session_state.gallery_generation_selected_routes_confirm = False
+                st.session_state.gallery_generation_selected_routes_confirm_pending_reset = True
+                st.session_state.gallery_generation_selected_routes_stale_reason = (
+                    format_core_message_for_display(fresh_validation.get("reason"))
+                    or "Fresh Previewを再実行してください。"
+                )
+                st.rerun()
 
             push_history()
             result = _execute_selected_routes_gallery_generation_plan(project, fresh_plan)
