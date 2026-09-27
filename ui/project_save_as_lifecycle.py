@@ -5,6 +5,9 @@ from datetime import datetime
 import streamlit as st
 
 from core.io import save_project_to_json
+from core.module_container_policy import (
+    module_reference_assets_json_save_as_block_reason,
+)
 from core.project_discovery import path_is_within as project_discovery_path_is_within
 from core.project_save_as_safety import (
     build_project_save_as_pending_overwrite,
@@ -76,6 +79,23 @@ def sync_project_save_as_overwrite_acknowledgment() -> None:
     )
 
 
+def _module_reference_assets_save_as_block_reason(target_path) -> str:
+    """Refuse JSON-only Save As that would move Module references elsewhere."""
+
+    return module_reference_assets_json_save_as_block_reason(
+        st.session_state.get("project"),
+        st.session_state.get("current_project_path", ""),
+        target_path,
+    )
+
+
+def _refuse_project_save_as(reason: str) -> None:
+    """Leave the Project, target and current path untouched; explain why."""
+
+    clear_project_save_as_confirmation(clear_feedback=False)
+    st.session_state[PROJECT_SAVE_AS_FEEDBACK_KEY] = ("error", reason)
+
+
 def _commit_project_save_as(
     normalized_path: str,
     *,
@@ -87,6 +107,9 @@ def _commit_project_save_as(
 ) -> None:
     """Publish the existing Save As transition after the atomic writer returns."""
 
+    block_reason = _module_reference_assets_save_as_block_reason(normalized_path)
+    if block_reason:
+        raise ValueError(block_reason)
     save_project_to_json(st.session_state.project, normalized_path)
     st.session_state.current_project_path = normalized_path
     ensure_current_project_folder_layout(normalized_path)
@@ -125,6 +148,10 @@ def save_project_as_requested(
 ) -> None:
     """Inspect the destination again before a one-click save or confirmation."""
 
+    block_reason = _module_reference_assets_save_as_block_reason(json_path)
+    if block_reason:
+        _refuse_project_save_as(block_reason)
+        return
     try:
         target_snapshot = inspect_project_save_as_destination(json_path)
     except (OSError, TypeError, ValueError) as exc:
@@ -198,6 +225,10 @@ def confirm_project_save_as_overwrite(
         return
 
     normalized_path = str(current_snapshot.get("normalized_path") or "")
+    block_reason = _module_reference_assets_save_as_block_reason(normalized_path)
+    if block_reason:
+        _refuse_project_save_as(block_reason)
+        return
     try:
         _commit_project_save_as(
             normalized_path,
