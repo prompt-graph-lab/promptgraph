@@ -153,6 +153,7 @@ The policy:
 - local provenance paths are not saved: fields such as `thumbnail_path`, `image_path`, and `source_path` are stripped from the snapshot;
 - portable URLs such as `source_url` may be saved;
 - unknown metadata fields are kept only after passing an absolute-path inspection; unknown fields carrying local paths are stripped like the known ones;
+- **`reference_assets` is excluded from Module snapshots in Template v1.** It is the reserved Project-local Module-vNext field ([Module vNext public compatibility](module-attribute-design.md#module-vnext-public-compatibility-p0)). Template v1 is prompt-only and no Module asset file accompanies a template. The field's paths are Project-relative (`refs/modules/...`), so the absolute-path inspection above would let them through, and they would dangle. This explicit field exclusion takes precedence over generic unknown-field preservation. A future Template format may carry or reference Module Packs; that is not part of v1;
 - the inspection is recursive over nested metadata structures; if an absolute path still remains anywhere in the snapshot after filtering, Template Save is blocked rather than saved with the leak;
 - Module equality comparison (section 6) excludes local path / provenance metadata, so the same AnimaDex module imported from two different local directories does not produce a false same-name conflict.
 
@@ -372,3 +373,4 @@ Not implemented in Pro v1:
 - Add uses only the existing project schema; no template-specific fields enter project JSON.
 - No slot tokens or unresolved placeholders are ever written into normal PromptLines.
 - Module snapshot serialization preserves unknown metadata fields within the bounds of the Portable Snapshot Policy: local provenance paths are stripped, portable metadata is kept.
+- Module snapshots never contain the Project-local `reference_assets` field (Template v1 is prompt-only).

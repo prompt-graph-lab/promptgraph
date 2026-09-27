@@ -11,6 +11,10 @@ from collections import Counter
 from typing import Any, Callable, Iterable
 
 from core.io import save_project_to_json
+from core.module_container_policy import (
+    count_modules_with_reference_assets,
+    module_library_for_prompt_only_container,
+)
 from core.parser import parse_prompt
 from core.project import Project, PromptLine
 from core.route_operations import (
@@ -1050,7 +1054,11 @@ def build_lightweight_fork_project(
     source_lines = raw_source_lines if preview.get("scope") == "selected_routes" else _ordered_lines(raw_source_lines)
     fork_project = Project(source_directory="")
     fork_project.merge_by_word_only = bool(getattr(source_project, "merge_by_word_only", True))
-    fork_project.module_library = copy.deepcopy(getattr(source_project, "module_library", {}) or {})
+    # Derived Project Module copies are prompt-only until file-aware transfer
+    # exists: Project-local `reference_assets` would dangle there.
+    fork_project.module_library = module_library_for_prompt_only_container(
+        getattr(source_project, "module_library", {}) or {}
+    )
     fork_project.node_attribute_labels = copy.deepcopy(getattr(source_project, "node_attribute_labels", {}) or {})
     fork_project.custom_attribute_labels = copy.deepcopy(getattr(source_project, "custom_attribute_labels", []) or [])
     fork_project.attribute_label_usage_counts = copy.deepcopy(getattr(source_project, "attribute_label_usage_counts", {}) or {})
@@ -1469,6 +1477,7 @@ def materialize_lightweight_fork(
         "preview_signature": validation.get("preview_signature") or stored_preview.get("signature", {}),
         "stale_preview": bool(validation.get("stale_preview")),
         "conflict": bool(validation.get("conflict")),
+        "module_reference_assets_omitted_count": 0,
     }
     if not validation.get("valid"):
         return result
@@ -1551,6 +1560,9 @@ def materialize_lightweight_fork(
             "success": True,
             "error": "",
             "materialized_count": len(_materializable_entries(stored_preview)),
+            "module_reference_assets_omitted_count": count_modules_with_reference_assets(
+                getattr(source_project, "module_library", {}) or {}
+            ),
         })
         return result
     except Exception as exc:

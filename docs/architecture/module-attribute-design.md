@@ -716,11 +716,49 @@ The practical success of loose-match Module Swap is evidence that the semantic-s
 
 That is useful evidence for the direction. It is not proof that the current heuristic model is complete, and it is not a reason to skip the explicit model: the same production use also produced the failure modes this document already records — residue left outside a too-narrow Module boundary, state encoded into Variant names, and unassigned tokens with no defined handling.
 
+## Module vNext Public Compatibility (P0)
+
+Status: compatibility reservation only. PromptGraph public still treats Modules as prompt-generation assets. This section records what public guarantees so that the Desktop Module vNext design ([promptgraph-desktop `docs/module-vnext-design.md`](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/module-vnext-design.md)) can later write Module visual references into a Project without public corrupting or leaking them. Public does not consume these images, and generation does not use them.
+
+**Reserved field.** A Project Module entry may carry the additive, opaque, top-level extension field `reference_assets`:
+
+```json
+"reference_assets": {
+    "format": 1,
+    "assets": [ ... ]
+}
+```
+
+- The container is versioned by an integer `format`; format 1 is the first reserved Project representation.
+- `assets` is ordered and represents 0..N Module-wide visual references.
+- Binary image bytes never live in Module JSON; asset records point at files.
+- The detailed format-1 record shape is frozen by the first Desktop slice that writes it, not here. Public does not validate the content, and future fields inside the envelope remain preservation-compatible within a Project.
+
+**Reserved namespace.** `refs/modules/` inside the Project folder is reserved for Project-local Module reference assets. `refs/` is an existing standard Project folder; public does not create `refs/modules/` (opening or saving a Project never does), and Candidate / Variant storage and cleanup never treat it as Candidate storage.
+
+**Boundaries.** One pure owner, `core/module_container_policy.py`, holds the field name, the namespace constant, and the prompt-only projection (deep copy; removes only the top-level `reference_assets`; keeps every other field, including unknown extensions and nested values that merely look like paths; never mutates the source; no filesystem access).
+
+| Path | Behavior |
+|---|---|
+| Same Project: normalize, load, save, Project Module edit (`set_module_entry`), candidate rules | **Preserved** like any other unknown extension field. |
+| Global Module Library (`global_modules.json`) | **Prompt-only.** `reference_assets` does not belong there. Global load and Global save both apply the prompt-only projection, so a stale field left by an older Project → Global copy is removed at that boundary; all other Global metadata is kept. The Global format is unchanged and is not a Module Pack. |
+| Project → Global | The Project Module is copied through the prompt-only projection. The Project source entry is untouched. The copy is not blocked; a notice says visual references remain Project-local. |
+| Global → Project, new name | The Global entry is sanitized through the same projection, so stale Global baggage never materializes in a Project. No file is copied. This also covers Modules imported by Apply Detected Modules. |
+| Global → Project, overwrite of a Project Module that carries `reference_assets` | **Refused.** `import_global_modules_to_project(..., overwrite=True)` leaves that entry unchanged and reports it in `blocked_reference_asset_overwrite`; other selected Modules keep their existing per-Module semantics. The destination's references are deliberately **not** kept on a replaced prompt definition, because that could attach old visual references to a semantically different Module. The UI goes through this core contract and does not offer the overwrite. |
+| Derived Project (Lightweight Fork) | Module copies are **prompt-only** until file-aware transfer exists: `reference_assets` is stripped, nothing under `refs/modules/` is copied, and the result reports `module_reference_assets_omitted_count`. Appending to an existing Derived Project leaves that Project's own Module library unchanged. |
+| Scene Template v1 (design only) | Module snapshots **exclude** `reference_assets` ([Portable Snapshot Policy](global-route-template.md#portable-snapshot-policy)). |
+| AnimaDex → Global | Remains Global and prompt-only; no Module asset support. The authoritative Global save cannot carry `reference_assets`. |
+| Whole-folder Project copies (Duplicate Project directory, Project root import) | Unchanged: the folder, including `refs/`, is copied with the Project JSON, so relative references keep their base. |
+| Advanced Save As of the Project JSON to another folder | Unchanged: Save As does not relocate any Project-relative reference (Candidates included). A consumer that resolves `reference_assets` against the new folder must fail closed. |
+
+**Not part of this reservation.** Reading, validating, hashing, thumbnailing, attaching, detaching, copying or cleaning up Module reference files; `refs/modules/` creation; generation-input mapping; Module Graph changes (no `asset_ref` nodes, asset edges, graph-scoped binding or new node kinds; `reference_assets` is a Module-level extension only); and changes to prompt identity or equality. A user-level Module Pack and a graph-scoped asset reference are separate future designs.
+
 ## Current Boundaries
 
 Current limitations:
 
 - No save/load format changes are required for the current metadata workflow.
+- The Module-vNext `reference_assets` field and `refs/modules/` namespace are reserved and preserved only (see [Module vNext Public Compatibility](#module-vnext-public-compatibility-p0)); public neither reads nor writes Module reference files.
 - No automatic tag normalization.
 - No AI/LLM automation requirement.
 - Attribute Group Swap is implemented for project-local Groups; its Selected Routes scope requires compatible normalized slots, while broader attribute-based Module Swap remains future work.
