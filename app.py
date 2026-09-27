@@ -340,9 +340,11 @@ from core.attribute_group_swap_selected_routes import (
     get_attribute_groups_snapshot,
 )
 from core.module_swap_selected_routes import (
-    apply_selected_routes_module_swap,
     build_selected_routes_module_swap_plan,
     build_selected_routes_module_swap_signature,
+)
+from ui.module_swap_selected_routes_lifecycle import (
+    apply_and_publish_selected_routes_module_swap,
 )
 from core.lora_mapping import extract_lora_references_from_lines, lora_file_injection_name, match_lora_references_to_files, scan_lora_directory, summarize_mapping_results
 from core.negative_prompt_analysis import analyze_negative_prompts, build_global_negative_delta_preview
@@ -15470,23 +15472,17 @@ def _render_selected_routes_module_swap_preview(preview, source_module, target_m
         ),
         key="module_swap_selected_routes_apply_btn",
     ):
-        previous_focus = st.session_state.get("focused_line_id")
-        result = apply_selected_routes_module_swap(
-            st.session_state.project,
-            st.session_state.get("gallery_selected_route_ids", []),
-            expected_signature=preview.get("signature", ""),
+        result = apply_and_publish_selected_routes_module_swap(
+            preview=preview,
             source_module_name=source_module,
             target_module_name=target_module,
             match_mode=match_mode,
-            project_path=st.session_state.get("current_project_path", ""),
-            disabled_modules=st.session_state.get("disabled_modules", set()),
+            session_state=st.session_state,
+            push_history=push_history,
+            restore_focus_after_graph_update=restore_focus_after_graph_update,
+            save_current_project_if_possible=save_current_project_if_possible,
         )
         if result.get("applied"):
-            push_history()
-            st.session_state.project = result["updated_project"]
-            restore_focus_after_graph_update(previous_focus)
-            save_current_project_if_possible("Selected Routes Module Swap applied")
-            st.session_state.pop("module_swap_preview", None)
             st.rerun()
         elif result.get("stale_preview"):
             st.warning("Previewが古くなりました。Fresh Previewを実行してください。")
