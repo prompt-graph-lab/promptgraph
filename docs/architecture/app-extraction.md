@@ -1323,11 +1323,31 @@ session/widget abstraction.
 
 `app.py` retains the Attribute Group Swap renderer, option and label
 construction, route-option construction and selected-route target resolution,
-preview and confirmation state, selected-routes plan/signature and preview
-rendering, apply operations, Project mutation, history, persistence/save,
-focus restoration, Gallery-owned swap behavior, rerun orchestration, and
-unrelated reset behavior. The owner does not change Module/Attribute or Swap
-semantics, Project schema/persistence, or workflow/generator orchestration.
+preview and confirmation controls, selected-routes plan/signature and preview
+rendering, apply operations for other scopes, Gallery-owned swap behavior,
+rerun orchestration, and unrelated reset behavior. The owner does not change
+Module/Attribute or Swap semantics, Project schema/persistence, or
+workflow/generator orchestration.
+
+### Selected Routes Attribute Group Swap publication lifecycle
+
+`ui.attribute_group_swap_selected_routes_lifecycle` owns the application-side
+Apply and success publication shared by the Gallery and Module/Attribute Apply
+surfaces. It captures Focus before the core apply, then only on success pushes
+one history snapshot of the original Project, replaces the active Project,
+restores Focus, synchronizes text areas, clears this operation's Preview and
+confirmation, publishes the surface-specific feedback, and saves once. Stale,
+invalid, failed, and no-op results do not publish or save. The existing
+Streamlit widget cleanup requires confirmation again if a Preview becomes
+stale and later returns to its previous fingerprint.
+
+`core.attribute_group_swap_selected_routes` retains selected-Route planning,
+slot and group validation, Preview/signature construction, the final stale
+gate, clone-based atomic positive-Prompt mutation, and result validation.
+`app.py` retains the visible Gallery and Apply-workspace controls, Preview
+diff and negative-metadata/drift display, confirmation widget, stale/error
+messages, and rerun. Other Attribute Group Swap scopes, Module Swap,
+Attribute Group CRUD, and Global Library authoring remain separate.
 
 ### Project Save As lifecycle
 

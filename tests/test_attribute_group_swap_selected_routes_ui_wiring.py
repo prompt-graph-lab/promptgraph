@@ -7,6 +7,9 @@ class SelectedRoutesAttributeGroupSwapUiWiringTests(unittest.TestCase):
     def setUpClass(cls):
         root = Path(__file__).resolve().parents[1]
         cls.app_source = (root / "app.py").read_text(encoding="utf-8")
+        cls.lifecycle_source = (
+            root / "ui" / "attribute_group_swap_selected_routes_lifecycle.py"
+        ).read_text(encoding="utf-8")
         cls.project_source = (root / "core" / "project.py").read_text(encoding="utf-8")
         start = cls.app_source.index("def _render_selected_routes_attribute_group_swap_preview")
         end = cls.app_source.index("def _lightweight_fork_selected_line_ids", start)
@@ -79,15 +82,19 @@ class SelectedRoutesAttributeGroupSwapUiWiringTests(unittest.TestCase):
         self.assertLess(confirm, apply_button)
 
     def test_atomic_apply_commits_history_and_autosave_only_after_success(self):
-        apply_call = self.selected_routes_source.index(
+        self.assertIn(
+            "result = apply_and_publish_selected_routes_attribute_group_swap",
+            self.selected_routes_source,
+        )
+        apply_call = self.lifecycle_source.index(
             "result = apply_selected_routes_attribute_group_swap"
         )
-        success = self.selected_routes_source.index('if result.get("applied"):', apply_call)
-        push = self.selected_routes_source.index("push_history()", success)
-        assign = self.selected_routes_source.index(
-            'st.session_state.project = result["updated_project"]', success
+        success = self.lifecycle_source.index('if result.get("applied"):', apply_call)
+        push = self.lifecycle_source.index("push_history()", success)
+        assign = self.lifecycle_source.index(
+            'session_state.project = result["updated_project"]', success
         )
-        autosave = self.selected_routes_source.index(
+        autosave = self.lifecycle_source.index(
             'save_current_project_if_possible("selected Routes attribute group swap applied")',
             success,
         )
@@ -95,6 +102,21 @@ class SelectedRoutesAttributeGroupSwapUiWiringTests(unittest.TestCase):
         self.assertLess(success, push)
         self.assertLess(push, assign)
         self.assertLess(assign, autosave)
+
+    def test_gallery_and_apply_workspace_share_the_selected_routes_owner(self):
+        call = "_render_selected_routes_attribute_group_swap_flow("
+        self.assertIn(call, self.gallery_source)
+        self.assertIn(call, self.apply_source)
+        self.assertIn(
+            "result = apply_and_publish_selected_routes_attribute_group_swap",
+            self.selected_routes_source,
+        )
+        self.assertEqual(
+            1,
+            self.selected_routes_source.count(
+                "result = apply_and_publish_selected_routes_attribute_group_swap"
+            ),
+        )
 
     def test_preview_discloses_slot_negative_metadata_drift_and_preserved_state(self):
         for text in (
