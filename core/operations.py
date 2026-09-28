@@ -899,7 +899,7 @@ def preview_module_candidates(
     module_name: str,
     core_tokens: Optional[List[str]] = None,
     min_match_tokens: Optional[int] = None,
-    example_limit: int = 50,
+    example_limit: Optional[int] = 50,
 ) -> Dict[str, Any]:
     module_body = get_module_body(project, module_name)
     module_tokens = _module_rule_tokens(module_body)
@@ -955,7 +955,7 @@ def preview_module_candidates(
             continue
 
         total_candidate_count += 1
-        if len(examples) >= example_limit:
+        if example_limit is not None and len(examples) >= example_limit:
             continue
         examples.append({
             "line_id": getattr(line, "id", ""),
@@ -1186,14 +1186,14 @@ def preview_apply_module_candidates(
     module_name: str,
     core_tokens: Optional[List[str]] = None,
     min_match_tokens: Optional[int] = None,
-    example_limit: int = 50,
+    example_limit: Optional[int] = 50,
 ) -> Dict[str, Any]:
     candidate_preview = preview_module_candidates(
         project,
         module_name,
         core_tokens=core_tokens,
         min_match_tokens=min_match_tokens,
-        example_limit=1000000,
+        example_limit=None,
     )
     module_reference = build_module_reference_token(module_name)
     line_lookup = {
@@ -1226,7 +1226,7 @@ def preview_apply_module_candidates(
             continue
 
         affected_line_count += 1
-        if len(examples) >= example_limit:
+        if example_limit is not None and len(examples) >= example_limit:
             continue
         examples.append({
             "line_id": candidate["line_id"],
