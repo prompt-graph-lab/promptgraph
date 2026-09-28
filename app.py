@@ -13198,14 +13198,30 @@ def _restore_gallery_route_from_trash(project, record: dict) -> dict:
     previous_focus = st.session_state.get("focused_line_id")
     previous_highlight = st.session_state.get("highlighted_line_id")
     previous_expanded = st.session_state.get("gallery_expanded_line_id")
-    history_length = len(st.session_state.get("history", []))
-    push_history()
-    result = restore_removed_route(project, str(record.get("id") or route_handle))
+    # Capture the same pre-restore Project as push_history, but defer the
+    # bounded-history mutation until core confirms this Scene Restore succeeded.
+    history_snapshot = (
+        st.session_state.project.clone() if st.session_state.project else None
+    )
+
+    def commit_restore_history() -> None:
+        if history_snapshot is not None:
+            history = st.session_state.history
+            history.append(history_snapshot)
+            if len(history) > 20:
+                history.pop(0)
+
+    try:
+        result = restore_removed_route(project, str(record.get("id") or route_handle))
+    except Exception:
+        # A core exception can follow partial in-place mutation. Preserve the
+        # existing Undo snapshot and exception propagation in that case.
+        commit_restore_history()
+        raise
     if not result.get("restored"):
-        history = st.session_state.get("history", [])
-        del history[history_length:]
         return result
 
+    commit_restore_history()
     reset_gallery_route_action_session_state()
     reset_gallery_route_move_preview_state()
     st.session_state.pop(

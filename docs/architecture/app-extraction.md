@@ -38,6 +38,11 @@ see [agent-orchestration-handoff.md](agent-orchestration-handoff.md).
 Importing `app.py` executes the UI, so extracting functions by importing the app
 back into a new module would create the wrong dependency direction.
 
+Scene Restore remains in `app.py`. Its rejected operations now leave Undo
+history unchanged even at the 20-entry cap; a successful restore keeps one
+pre-restore snapshot and applies the existing cap. This correction does not
+extract the Scene Restore lifecycle or change core Route Restore semantics.
+
 ## Initial extraction (PR #2)
 
 1. **Prompt inspection — `core.prompt_inspection`.** Structural statistics,
@@ -1323,8 +1328,10 @@ line inputs, and import decisions are checked again before Apply creates an
 isolated result. A stale plan is invalidated before history or mutation, and
 only a successful result is published with one Undo snapshot. Unrelated Module
 metadata and `reference_assets` do not participate in prompt freshness. The
-Undo snapshot for this prompt-only Apply retains each Project-local
-`reference_assets` value by identity, without traversing or copying it.
+same-Project Apply keeps the current Project-local `reference_assets` value by
+identity. Its ordinary Undo snapshot uses `push_history()` and `Project.clone()`,
+so that snapshot is an independent deep copy, including `reference_assets`.
+No asset filesystem behavior is added by this prompt-only Apply.
 
 ### Apply-workspace Attribute Group Swap session lifecycle
 
