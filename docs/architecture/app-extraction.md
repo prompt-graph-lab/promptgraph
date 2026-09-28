@@ -1312,6 +1312,20 @@ lets `app.py` push one Undo snapshot and publish the updated Project. This
 same-Project path reads only selected prompt fields and preserves the current
 opaque `reference_assets` value without examining it or Project-local files.
 
+Global Module Candidate Scanner Apply has its own cross-container reviewed plan
+in `core.global_module_candidate_apply`. Preview freezes every replacement,
+independent of the number of displayed examples, and records whether each
+selected Global Module will be imported or will use an existing same-name
+Project Module. Imports use the frozen prompt-only Global entry; existing
+Project Modules keep their definition and opaque Project-local extensions.
+The selected Global and existing Project prompt definitions, ordered Prompt
+line inputs, and import decisions are checked again before Apply creates an
+isolated result. A stale plan is invalidated before history or mutation, and
+only a successful result is published with one Undo snapshot. Unrelated Module
+metadata and `reference_assets` do not participate in prompt freshness. The
+Undo snapshot for this prompt-only Apply retains each Project-local
+`reference_assets` value by identity, without traversing or copying it.
+
 ### Apply-workspace Attribute Group Swap session lifecycle
 
 `ui.attribute_group_swap_session` owns the Apply-workspace Attribute Group

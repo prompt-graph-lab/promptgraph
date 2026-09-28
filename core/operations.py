@@ -1358,7 +1358,7 @@ def preview_apply_detected_modules(
     module_library: Dict[str, Any],
     module_names: List[str],
     min_core_match_lines: int = 1,
-    example_limit: int = 50,
+    example_limit: Optional[int] = 50,
 ) -> Dict[str, Any]:
     normalized_library = normalize_module_library(module_library or {})
     selected_names = []
@@ -1374,7 +1374,7 @@ def preview_apply_detected_modules(
         project,
         normalized_library,
         min_core_match_lines=min_core_match_lines,
-        example_limit=1000000,
+        example_limit=len(getattr(project, "prompt_lines", [])),
     )
     result_by_name = {
         result["module_name"]: result
@@ -1432,7 +1432,7 @@ def preview_apply_detected_modules(
             working_text_by_line_id[line_id] = replacement["after"]
             affected_line_count += 1
             affected_line_ids.add(line_id)
-            if len(examples) >= example_limit:
+            if example_limit is not None and len(examples) >= example_limit:
                 continue
             examples.append({
                 "line_id": line_id,
