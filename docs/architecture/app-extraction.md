@@ -1295,10 +1295,22 @@ remain at the caller.
 
 `app.py` retains the Module Candidate Selection renderer, candidate preview,
 pending-created-Module handoff, rule writes, Module application, Project
-mutation, history, persistence, focus restoration, rerun orchestration, and
+publication, history, persistence, focus restoration, rerun orchestration, and
 unrelated reset behavior. This owner is feature-specific and does not combine
 with the Project Module Inspector controller or introduce a generic
 session/widget abstraction.
+
+Project Module Candidate Apply now stores a feature-specific immutable plan
+containing every reviewed Prompt replacement, independent of the number of
+examples displayed. At Confirm, `core.module_candidate_apply` compares the
+selected Module's effective body, tokens, reference, explicit Apply rules, and
+ordered Prompt-line matching, display, and materialization state with the
+reviewed state. A mismatch invalidates
+the Apply preview before history or Project mutation; a fresh match applies the
+frozen replacements to an isolated Project result. Only a successful result
+lets `app.py` push one Undo snapshot and publish the updated Project. This
+same-Project path reads only selected prompt fields and preserves the current
+opaque `reference_assets` value without examining it or Project-local files.
 
 ### Apply-workspace Attribute Group Swap session lifecycle
 

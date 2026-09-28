@@ -14,6 +14,12 @@ from core.operations import (
     set_module_candidate_rules,
 )
 from core.project import Project, PromptLine
+from core.module_candidate_apply import (
+    apply_reviewed_module_candidates,
+    build_module_candidate_apply_plan,
+    preview_project_module_candidates,
+    project_module_candidate_prompt_library,
+)
 
 
 FIXED_DURABLE_KEYS = (
@@ -412,6 +418,19 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
         def _history():
             calls["history"] += 1
 
+        def _build_plan(value, module_name, *, core_tokens, min_match_tokens):
+            return object(), _apply_preview(
+                value, module_name,
+                core_tokens=core_tokens, min_match_tokens=min_match_tokens,
+            )
+
+        def _apply_reviewed(value, plan, *, module_name, core_tokens, min_match_tokens):
+            applied = _apply(
+                value, module_name,
+                core_tokens=core_tokens, min_match_tokens=min_match_tokens,
+            )
+            return types.SimpleNamespace(applied=True, stale=False, project=applied)
+
         def _restore(value):
             calls["restore"].append(value)
 
@@ -422,6 +441,7 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
             "st": st,
             "is_free": lambda: free,
             "get_project_module_library": lambda value: module_library,
+            "project_module_candidate_prompt_library": project_module_candidate_prompt_library,
             "get_module_body": lambda library, name: library[name]["body"],
             "get_module_core_tokens": (
                 lambda library, name: list(
@@ -439,6 +459,9 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
             "preview_module_candidates": _candidate_preview,
             "preview_apply_module_candidates": _apply_preview,
             "apply_module_candidates": _apply,
+            "preview_project_module_candidates": _candidate_preview,
+            "build_module_candidate_apply_plan": _build_plan,
+            "apply_reviewed_module_candidates": _apply_reviewed,
             "push_history": _history,
             "restore_focus_after_graph_update": _restore,
             "sync_text_areas": _sync,
@@ -479,6 +502,7 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
             },
             "module_candidate_apply_preview": {
                 "signature": dict(signature),
+                "plan": object(),
                 "preview": {
                     "module_name": signature["module_name"],
                     "module_reference": (
@@ -851,7 +875,7 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
         )
         self.assertEqual(calls["apply"], [])
         self.assertIn("module_candidate_preview", st.session_state)
-        self.assertIn("module_candidate_apply_preview", st.session_state)
+        self.assertNotIn("module_candidate_apply_preview", st.session_state)
 
         st.events.clear()
         st.widget_values = {}
@@ -902,7 +926,7 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
         )
         self.assertEqual(calls["history"], 0)
         self.assertEqual(calls["apply"], [])
-        self.assertIn("module_candidate_apply_preview", st.session_state)
+        self.assertNotIn("module_candidate_apply_preview", st.session_state)
 
     def test_save_rules_keeps_previews_and_drafts_without_rerun(self):
         signature = {
@@ -986,6 +1010,112 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
             1,
         )
         self.assertEqual(st.rerun_count, 1)
+
+    def test_real_apply_gate_invalidates_stale_preview_and_requires_new_review(self):
+        namespace, st, calls, project, _ = self._runtime(
+            state={
+                "module_candidate_core_tokens_Module A": ["red hair"],
+                "module_candidate_min_match_tokens_Module A": 1,
+            }
+        )
+        namespace["preview_project_module_candidates"] = preview_project_module_candidates
+        namespace["build_module_candidate_apply_plan"] = build_module_candidate_apply_plan
+        events = []
+        def _record_apply(*args, **kwargs):
+            result = apply_reviewed_module_candidates(*args, **kwargs)
+            events.append(("core", result.applied, result.stale))
+            return result
+        original_history = namespace["push_history"]
+        def _record_history():
+            self.assertEqual(events[-1], ("core", True, False))
+            self.assertIs(st.session_state.project, project)
+            original_history()
+            events.append(("history",))
+        namespace["apply_reviewed_module_candidates"] = _record_apply
+        namespace["push_history"] = _record_history
+        render = namespace[self.renderer_name]
+
+        st.button_clicks = {"module_candidate_preview_btn"}
+        render(project)
+        st.button_clicks = {"module_candidate_apply_preview_btn"}
+        render(project)
+        self.assertEqual(
+            st.session_state.module_candidate_apply_preview["preview"]["examples"][0]["after"],
+            "<mod:Module A>, outdoors",
+        )
+
+        line = project.prompt_lines[0]
+        original_text, original_tokens = line.current_text, list(line.tokens)
+        line.current_text = "red hair, blue eyes, indoors"
+        line.tokens = ["red hair", "blue eyes", "indoors"]
+        st.button_clicks = {"module_candidate_apply_confirm_btn"}
+        render(project)
+        self.assertEqual(calls["history"], 0)
+        self.assertEqual(calls["restore"], [])
+        self.assertEqual(calls["sync"], 0)
+        self.assertIs(st.session_state.project, project)
+        self.assertEqual(st.session_state.focused_line_id, "line-1")
+        self.assertNotIn("module_candidate_apply_preview", st.session_state)
+
+        line.current_text, line.tokens = original_text, original_tokens
+        st.button_clicks = {"module_candidate_apply_confirm_btn"}
+        render(project)
+        self.assertEqual(calls["history"], 0)
+
+        st.button_clicks = {"module_candidate_apply_preview_btn"}
+        render(project)
+        line.current_text, line.tokens = "other", ["other"]
+        st.button_clicks = {"module_candidate_apply_confirm_btn"}
+        render(project)
+        self.assertEqual(calls["history"], 0)
+        self.assertIs(st.session_state.project, project)
+        self.assertEqual(st.session_state.focused_line_id, "line-1")
+        self.assertNotIn("module_candidate_apply_preview", st.session_state)
+
+        line.current_text, line.tokens = original_text, original_tokens
+        st.button_clicks = {"module_candidate_apply_preview_btn"}
+        render(project)
+        current_refs = {"format": 1, "assets": [{"future": "keep"}]}
+        project.module_library["Module A"]["reference_assets"] = current_refs
+        st.button_clicks = {"module_candidate_apply_confirm_btn"}
+        render(project)
+        self.assertEqual(calls["history"], 1)
+        self.assertEqual(events[-2:], [("core", True, False), ("history",)])
+        self.assertIsNot(st.session_state.project, project)
+        self.assertEqual(project.prompt_lines[0].current_text, original_text)
+        self.assertEqual(st.session_state.project.prompt_lines[0].current_text,
+                         "<mod:Module A>, outdoors")
+        self.assertIs(st.session_state.project.module_library["Module A"]["reference_assets"],
+                      current_refs)
+        self.assertEqual(calls["restore"], ["line-1"])
+        self.assertEqual(calls["sync"], 1)
+        self.assertEqual(st.rerun_count, 1)
+        self.assertNotIn("module_candidate_preview", st.session_state)
+        self.assertNotIn("module_candidate_apply_preview", st.session_state)
+
+    def test_real_apply_failure_does_not_push_history_or_publish(self):
+        namespace, st, calls, project, _ = self._runtime(
+            state={
+                "module_candidate_core_tokens_Module A": ["red hair"],
+                "module_candidate_min_match_tokens_Module A": 1,
+            }
+        )
+        namespace["preview_project_module_candidates"] = preview_project_module_candidates
+        namespace["build_module_candidate_apply_plan"] = build_module_candidate_apply_plan
+        namespace["apply_reviewed_module_candidates"] = apply_reviewed_module_candidates
+        render = namespace[self.renderer_name]
+        st.button_clicks = {"module_candidate_preview_btn"}
+        render(project)
+        st.button_clicks = {"module_candidate_apply_preview_btn"}
+        render(project)
+        st.button_clicks = {"module_candidate_apply_confirm_btn"}
+        with patch("core.module_candidate_apply.build_graph", side_effect=RuntimeError("graph failed")):
+            with self.assertRaisesRegex(RuntimeError, "graph failed"):
+                render(project)
+        self.assertEqual(calls["history"], 0)
+        self.assertIs(st.session_state.project, project)
+        self.assertEqual(calls["restore"], [])
+        self.assertEqual(calls["sync"], 0)
 
     def test_reset_clears_only_candidate_operation_state(self):
         operation_keys = (
