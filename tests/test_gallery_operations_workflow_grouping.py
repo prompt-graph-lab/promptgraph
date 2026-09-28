@@ -275,7 +275,7 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
     def test_selected_routes_and_gallery_regions_wrap_grouped_operations(self):
         mode_start = self.app_source.index("def render_pro_gallery_mode")
         mode_end = self.app_source.index(
-            "def _restore_gallery_route_from_trash",
+            "def render_pro_trash_view_mode",
             mode_start,
         )
         mode_source = self.app_source[mode_start:mode_end]

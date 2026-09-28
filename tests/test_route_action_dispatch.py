@@ -118,9 +118,12 @@ class RouteActionUiWiringTests(unittest.TestCase):
         self.assertIn("get_route_removal_diagnostics(project)", trash_source)
         self.assertIn("get_active_route_removal_records(project)", trash_source)
         self.assertIn('"Restore Scene"', trash_source)
-        restore_start = self.app_source.index("def _restore_gallery_route_from_trash")
-        restore_end = self.app_source.index("def render_pro_trash_view_mode", restore_start)
-        restore_source = self.app_source[restore_start:restore_end]
+        self.assertIn("apply_and_publish_gallery_scene_restore(", trash_source)
+        self.assertIn("synchronize_selected_routes=_set_gallery_selected_route_ids_after_structure_change", trash_source)
+        self.assertIn('if result.get("restored"):\n                        st.rerun()', trash_source)
+        restore_source = Path(__file__).resolve().parents[1].joinpath(
+            "ui/gallery_scene_restore_lifecycle.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("restore_removed_route(", restore_source)
         self.assertIn("reset_gallery_route_action_session_state()", restore_source)
 

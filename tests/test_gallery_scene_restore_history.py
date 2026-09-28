@@ -1,9 +1,8 @@
 """Scene Restore keeps rejected operations out of bounded Undo history."""
 
-import ast
 import copy
-from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from core.project import Project, PromptLine
 from core.route_operations import (
@@ -11,6 +10,7 @@ from core.route_operations import (
     remove_route_block,
     restore_removed_route,
 )
+from ui import gallery_scene_restore_lifecycle as lifecycle
 
 
 class _State(dict):
@@ -92,26 +92,20 @@ def _run_restore(project, record, history, events, *, save_result=True,
         events.append(("save", reason))
         return save_result
 
-    namespace = {
-        "st": type("UI", (), {"session_state": state})(),
-        "restore_removed_route": restore,
-        "reset_gallery_route_action_session_state": lambda: events.append("route action reset"),
-        "reset_gallery_route_move_preview_state": lambda: events.append("move preview reset"),
-        "build_graph": build_graph,
-        "_set_gallery_selected_route_ids_after_structure_change":
-            lambda current_project: events.append("selected route sync"),
-        "get_route_move_ui_state": route_state,
-        "restore_focus_after_graph_update": lambda focus: events.append(("focus", focus)),
-        "save_current_project_if_possible": save,
-    }
-    source = Path(__file__).resolve().parents[1].joinpath("app.py").read_text(encoding="utf-8")
-    nodes = [
-        node for node in ast.parse(source).body
-        if isinstance(node, ast.FunctionDef)
-        and node.name in {"push_history", "_restore_gallery_route_from_trash"}
-    ]
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), "app.py", "exec"), namespace)
-    result = namespace["_restore_gallery_route_from_trash"](project, record)
+    with patch.object(lifecycle, "restore_removed_route", side_effect=restore), patch.object(
+        lifecycle, "get_route_move_ui_state", side_effect=route_state
+    ):
+        result = lifecycle.apply_and_publish_gallery_scene_restore(
+            project,
+            record,
+            session_state=state,
+            reset_gallery_route_action_session_state=lambda: events.append("route action reset"),
+            reset_gallery_route_move_preview_state=lambda: events.append("move preview reset"),
+            build_graph=build_graph,
+            synchronize_selected_routes=lambda current_project: events.append("selected route sync"),
+            restore_focus_after_graph_update=lambda focus: events.append(("focus", focus)),
+            save_current_project_if_possible=save,
+        )
     return state, result
 
 
