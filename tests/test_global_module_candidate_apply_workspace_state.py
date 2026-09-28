@@ -1,7 +1,6 @@
 """The Global scanner publishes only a fresh reviewed Apply result."""
 
 import ast
-import copy
 from pathlib import Path
 import unittest
 
@@ -135,13 +134,12 @@ def _reviewed_state(project, global_library):
 
 
 class GlobalModuleCandidateApplyWorkspaceTests(unittest.TestCase):
-    def test_opt_in_undo_snapshot_never_deepcopies_opaque_references(self):
-        class Opaque:
-            def __deepcopy__(self, memo):
-                raise AssertionError("reference_assets copied")
-
+    def test_undo_snapshot_contains_an_independent_reference_assets_copy(self):
         project = _project()
-        refs = Opaque()
+        refs = {
+            "format": 1,
+            "assets": [{"path": "refs/modules/x/image.png"}],
+        }
         project.module_library["X"] = {"body": "green eyes", "reference_assets": refs}
         ui = _UI(project, {"results": []}, (None, {}), {})
         ui.session_state.history = []
@@ -150,32 +148,31 @@ class GlobalModuleCandidateApplyWorkspaceTests(unittest.TestCase):
             item for item in ast.parse(source).body
             if isinstance(item, ast.FunctionDef) and item.name == "push_history"
         )
-        namespace = {
-            "st": ui,
-            "copy": copy,
-            "module_has_reference_assets": lambda entry: isinstance(entry, dict) and "reference_assets" in entry,
-            "REFERENCE_ASSETS_FIELD": "reference_assets",
-        }
+        namespace = {"st": ui}
         exec(compile(ast.Module(body=[node], type_ignores=[]), "app.py", "exec"), namespace)
-        namespace["push_history"](preserve_module_reference_assets=True)
+        namespace["push_history"]()
         self.assertEqual(1, len(ui.session_state.history))
         snapshot = ui.session_state.history[0]
         self.assertIsNot(project, snapshot)
-        self.assertIs(refs, snapshot.module_library["X"]["reference_assets"])
+        snapshot_refs = snapshot.module_library["X"]["reference_assets"]
+        self.assertEqual(refs, snapshot_refs)
+        self.assertIsNot(refs, snapshot_refs)
+        self.assertIsNot(refs["assets"], snapshot_refs["assets"])
         self.assertIsNot(project.module_library["X"], snapshot.module_library["X"])
 
+        project.module_library["X"]["reference_assets"]["assets"][0]["path"] = (
+            "refs/modules/x/changed.png"
+        )
+        self.assertEqual("refs/modules/x/image.png", snapshot_refs["assets"][0]["path"])
+
     def test_opaque_project_reference_change_stays_current_and_is_preserved(self):
-        class Opaque:
-            def __iter__(self):
-                raise AssertionError("reference_assets inspected")
-
-            def __deepcopy__(self, memo):
-                raise AssertionError("reference_assets copied")
-
         project = _project()
-        project.module_library["X"] = {"body": "green eyes, smile", "reference_assets": Opaque()}
+        project.module_library["X"] = {
+            "body": "green eyes, smile",
+            "reference_assets": {"format": 1, "assets": [{"path": "refs/modules/x/a.png"}]},
+        }
         ui = _reviewed_state(project, _global())
-        newer_refs = Opaque()
+        newer_refs = {"format": 1, "assets": [{"path": "refs/modules/x/b.png"}]}
         project.module_library["X"]["reference_assets"] = newer_refs
         ui.button_clicks = {"global_module_candidate_apply_btn"}
         history = []

@@ -256,7 +256,6 @@ from core.module_library_search import (
     normalize_global_module_search_selection,
 )
 from core.module_container_policy import (
-    REFERENCE_ASSETS_FIELD,
     module_entry_for_prompt_only_container,
     module_has_reference_assets,
     module_reference_assets_json_save_as_block_reason,
@@ -1250,20 +1249,9 @@ def profiled_render(name: str):
     return decorator
 
 
-def push_history(*, preserve_module_reference_assets=False):
+def push_history():
     if st.session_state.project:
-        if preserve_module_reference_assets:
-            # This prompt-only Apply leaves Project-local Module references
-            # opaque. Keep their values by identity in its Undo snapshot too.
-            memo = {}
-            for entry in (getattr(st.session_state.project, "module_library", None) or {}).values():
-                if module_has_reference_assets(entry):
-                    value = entry[REFERENCE_ASSETS_FIELD]
-                    memo[id(value)] = value
-            snapshot = copy.deepcopy(st.session_state.project, memo)
-        else:
-            snapshot = st.session_state.project.clone()
-        st.session_state.history.append(snapshot)
+        st.session_state.history.append(st.session_state.project.clone())
         # 履歴が多すぎると重くなるので制限
         if len(st.session_state.history) > 20:
             st.session_state.history.pop(0)
@@ -16127,7 +16115,7 @@ def render_global_module_candidate_scanner_section(project):
                         st.warning("Global module apply preview is out of date. Scan and preview again.")
                         st.rerun()
                     elif apply_result.applied:
-                        push_history(preserve_module_reference_assets=True)
+                        push_history()
                         prev_focus = st.session_state.get("focused_line_id")
                         st.session_state.project = apply_result.project
                         restore_focus_after_graph_update(prev_focus)
