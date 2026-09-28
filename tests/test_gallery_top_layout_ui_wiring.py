@@ -7,7 +7,7 @@ class GalleryTopLayoutUiWiringTests(unittest.TestCase):
     def setUpClass(cls):
         app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
         mode_start = app_source.index("def render_pro_gallery_mode")
-        mode_end = app_source.index("def _restore_gallery_route_from_trash", mode_start)
+        mode_end = app_source.index("def render_pro_trash_view_mode", mode_start)
         launcher_start = app_source.index("def render_gallery_operations_launcher")
         launcher_end = app_source.index("def render_gallery_active_operation_panel", launcher_start)
         cls.app_source = app_source

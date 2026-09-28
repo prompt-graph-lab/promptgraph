@@ -307,6 +307,7 @@ from core.gallery_variant_promotion import (
     resolve_variant_promotion_insert_index,
 )
 from ui.gallery_variant_promotion_lifecycle import apply_and_publish_batch_gallery_variant_promotion
+from ui.gallery_scene_restore_lifecycle import apply_and_publish_gallery_scene_restore
 from ui.selected_routes_candidate_adoption_lifecycle import apply_and_publish_selected_routes_candidate_adoption
 from ui.project_assets_copy_lifecycle import (
     PROJECT_ASSETS_PREVIEW_KEY,
@@ -429,7 +430,6 @@ from core.route_operations import (
     move_route_block,
     remove_route_block,
     resolve_route_block,
-    restore_removed_route,
 )
 from core.settings import (
     EDITION,
@@ -13193,69 +13193,6 @@ def render_pro_gallery_mode(project):
         record_profile_timing("Gallery visible card loop", time.perf_counter() - gallery_card_loop_start)
     render_gallery_pagination_footer(display_lines)
 
-def _restore_gallery_route_from_trash(project, record: dict) -> dict:
-    route_handle = str(record.get("route_handle") or record.get("separator_line_id") or "").strip()
-    previous_focus = st.session_state.get("focused_line_id")
-    previous_highlight = st.session_state.get("highlighted_line_id")
-    previous_expanded = st.session_state.get("gallery_expanded_line_id")
-    # Capture the same pre-restore Project as push_history, but defer the
-    # bounded-history mutation until core confirms this Scene Restore succeeded.
-    history_snapshot = (
-        st.session_state.project.clone() if st.session_state.project else None
-    )
-
-    def commit_restore_history() -> None:
-        if history_snapshot is not None:
-            history = st.session_state.history
-            history.append(history_snapshot)
-            if len(history) > 20:
-                history.pop(0)
-
-    try:
-        result = restore_removed_route(project, str(record.get("id") or route_handle))
-    except Exception:
-        # A core exception can follow partial in-place mutation. Preserve the
-        # existing Undo snapshot and exception propagation in that case.
-        commit_restore_history()
-        raise
-    if not result.get("restored"):
-        return result
-
-    commit_restore_history()
-    reset_gallery_route_action_session_state()
-    reset_gallery_route_move_preview_state()
-    st.session_state.pop(
-        f"pro_trash_restore_route_confirm_{record.get('id') or route_handle}",
-        None,
-    )
-    st.session_state.project = build_graph(project)
-    _set_gallery_selected_route_ids_after_structure_change(st.session_state.project)
-    restored_state = get_route_move_ui_state(
-        st.session_state.project,
-        route_handle=route_handle,
-        focused_line_id=previous_focus,
-        highlighted_line_id=previous_highlight,
-        expanded_line_id=previous_expanded,
-    )
-    st.session_state.gallery_selected_route_separator_id = restored_state[
-        "gallery_selected_route_separator_id"
-    ]
-    st.session_state.focused_line_id = restored_state["focused_line_id"]
-    st.session_state.highlighted_line_id = restored_state["highlighted_line_id"]
-    st.session_state.gallery_expanded_line_id = restored_state["gallery_expanded_line_id"]
-    affected_line_ids = set(record.get("line_ids") or [])
-    st.session_state.gallery_move_targets = {
-        line_id: selected
-        for line_id, selected in st.session_state.get("gallery_move_targets", {}).items()
-        if line_id not in affected_line_ids
-    }
-    restore_focus_after_graph_update(restored_state["focused_line_id"])
-    save_current_project_if_possible("route restored")
-    st.session_state.gallery_feedback = f"Restored Scene '{route_handle}'."
-    st.session_state.gallery_feedback_kind = "success"
-    return result
-
-
 def render_pro_trash_view_mode(project):
     route_removal_diagnostics = get_route_removal_diagnostics(project)
     for diagnostic in route_removal_diagnostics:
@@ -13312,7 +13249,17 @@ def render_pro_trash_view_mode(project):
                     disabled=not confirmed,
                     width="stretch",
                 ):
-                    result = _restore_gallery_route_from_trash(project, record)
+                    result = apply_and_publish_gallery_scene_restore(
+                        project,
+                        record,
+                        session_state=st.session_state,
+                        reset_gallery_route_action_session_state=reset_gallery_route_action_session_state,
+                        reset_gallery_route_move_preview_state=reset_gallery_route_move_preview_state,
+                        build_graph=build_graph,
+                        synchronize_selected_routes=_set_gallery_selected_route_ids_after_structure_change,
+                        restore_focus_after_graph_update=restore_focus_after_graph_update,
+                        save_current_project_if_possible=save_current_project_if_possible,
+                    )
                     if result.get("restored"):
                         st.rerun()
                     st.warning(

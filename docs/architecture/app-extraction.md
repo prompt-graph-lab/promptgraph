@@ -38,10 +38,15 @@ see [agent-orchestration-handoff.md](agent-orchestration-handoff.md).
 Importing `app.py` executes the UI, so extracting functions by importing the app
 back into a new module would create the wrong dependency direction.
 
-Scene Restore remains in `app.py`. Its rejected operations now leave Undo
-history unchanged even at the 20-entry cap; a successful restore keeps one
-pre-restore snapshot and applies the existing cap. This correction does not
-extract the Scene Restore lifecycle or change core Route Restore semantics.
+`ui.gallery_scene_restore_lifecycle` owns the Gallery Scene removal-record
+Restore application and publication sequence. It captures a pre-restore Undo
+snapshot without mutating history on rejection, retains the existing 20-entry
+cap on success or a core exception after possible in-place mutation, then
+resets route action state, rebuilds and publishes the graph, synchronizes Route
+selection and focus, prunes move targets, saves once, and publishes feedback.
+`core.route_operations` retains Route Restore and UI-state derivation.
+`app.py` retains the Trash renderer, confirmation, warnings, and rerun. Single-Line
+Restore and other Gallery history flows remain with their existing owners.
 
 ## Initial extraction (PR #2)
 
