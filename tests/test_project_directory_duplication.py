@@ -2,12 +2,10 @@
 
 import ast
 from dataclasses import asdict
-from datetime import datetime
 import ntpath
 import os
 from pathlib import Path
 import posixpath
-import shutil
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -190,56 +188,26 @@ def test_predicate_exception_identity_and_default_failure():
     assert caught.value is error
 
 
-@pytest.mark.parametrize('blocked', [False, True])
-@pytest.mark.parametrize('save_failure', [False, True])
-def test_actual_app_import_and_write_boundary(monkeypatch, blocked, save_failure):
+def test_actual_app_dispatch_reaches_feature_lifecycle():
     project = object()
     state = State(project=project, current_project_path='Project/p.json')
     app = load_functions(APP, state)
-    assert app['project_directory_duplication'] is planner
     calls = []
-    original = planner.plan_project_directory_duplication
-    def plan(*args, **kwargs):
-        calls.append('plan')
-        result = original(*args, **kwargs)
-        calls.append(result)
-        return result
-    monkeypatch.setattr(planner, 'plan_project_directory_duplication', plan)
-    # Patch the app's observation surface only; no real files or copies needed.
-    app['os'] = SimpleNamespace(path=SimpleNamespace(
-        isfile=lambda _: True, isdir=lambda _: True, exists=lambda _: blocked,
-    ))
-    def save(value, path):
-        calls.append(('save', value, path))
-        if save_failure:
-            raise OSError('save failed')
     app.update(
-        save_project_to_json=save,
-        ensure_current_project_folder_layout=lambda path: calls.append(('layout', path)),
-        shutil=SimpleNamespace(copytree=lambda *args, **kwargs: calls.append(('copy', args, kwargs)), ignore_patterns=shutil.ignore_patterns),
-        _find_copied_project_json=lambda *args: calls.append(('find', args)) or 'copied.json',
-        load_project_json_into_session=lambda path: calls.append(('load', path)) or True,
-        request_project_directory_discovery_refresh=lambda: calls.append('refresh'),
-        datetime=datetime,
+        duplicate_project_directory=lambda *args, **kwargs: calls.append((args, kwargs)) or (True, 'opened'),
+        save_project_to_json=object(),
+        ensure_current_project_folder_layout=object(),
+        load_project_json_into_session=object(),
+        request_project_directory_discovery_refresh=object(),
     )
-    success, message = app['duplicate_current_project_directory']('A/B')
-    result = calls[1]
-    assert calls[0] == 'plan'
-    if blocked:
-        assert not success and message == result.error
-        assert len(calls) == 2
-    elif save_failure:
-        assert not success and message == '複製前のプロジェクト保存に失敗しました: save failed'
-        assert len(calls) == 3
-    else:
-        assert success
-        assert calls[2:4] == [('save', project, result.source_project_path), ('layout', result.source_project_path)]
-        assert calls[4][0:2] == ('copy', (result.source_project_dir, result.destination_dir))
-        ignored = ['.promptgraph_cache', '.x.tmp', '.git', '__pycache__', '.pytest_cache', '.mypy_cache', '.DS_Store', 'Thumbs.db']
-        assert calls[4][2]['ignore']('unused', ignored + ['project.json', 'refs']) == set(ignored)
-        assert calls[5:] == [('find', (result.destination_dir, result.source_project_path)), ('load', 'copied.json'), 'refresh']
-        assert state.autosave_feedback == 'project duplicated'
-        assert state.last_saved_at
+    assert app['duplicate_current_project_directory']('A/B') == (True, 'opened')
+    assert calls == [(("A/B",), {
+        'session_state': state,
+        'save_project_to_json': app['save_project_to_json'],
+        'ensure_current_project_folder_layout': app['ensure_current_project_folder_layout'],
+        'load_project_json_into_session': app['load_project_json_into_session'],
+        'request_project_directory_discovery_refresh': app['request_project_directory_discovery_refresh'],
+    })]
 
 
 def test_app_helpers_reach_imported_owner(monkeypatch):

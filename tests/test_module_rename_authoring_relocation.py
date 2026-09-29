@@ -338,7 +338,7 @@ class ModuleRenameAuthoringRelocationTests(unittest.TestCase):
         self.assertIn("open_project=load_project_json_into_session", startup)
         duplicate = self._source("duplicate_current_project_directory")
         self.assertIn(
-            "load_project_json_into_session(destination_project_path)",
+            "load_project_json_into_session=load_project_json_into_session",
             duplicate,
         )
 
