@@ -48,6 +48,18 @@ selection and focus, prunes move targets, saves once, and publishes feedback.
 `app.py` retains the Trash renderer, confirmation, warnings, and rerun. Single-Line
 Restore and other Gallery history flows remain with their existing owners.
 
+`ui.project_directory_duplication_lifecycle` owns the Duplicate Project
+whole-folder operation after `core.project_directory_duplication` plans and
+validates the destination: save the live Project to its source JSON, prepare
+the source layout, copy the directory, resolve the copied primary Project JSON,
+open it through the existing Project loader, then publish duplicate feedback
+and request discovery refresh. The directory copy retains Project-local assets,
+including `refs/modules/`, without interpreting them. A later copy or load
+failure keeps the existing filesystem and session partial effects; the lifecycle
+does not delete the destination or roll back the source save. `app.py` retains
+the management renderer, confirmation, success/warning messages, and rerun;
+the shared Project loader retains cross-feature open and reset publication.
+
 ## Initial extraction (PR #2)
 
 1. **Prompt inspection — `core.prompt_inspection`.** Structural statistics,

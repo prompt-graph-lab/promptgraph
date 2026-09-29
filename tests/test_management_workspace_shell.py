@@ -168,8 +168,15 @@ class ManagementWorkspaceShellTests(unittest.TestCase):
             "is_valid_new_module_name",
         )
         self.assertIn(
-            "load_project_json_into_session(destination_project_path)",
+            "load_project_json_into_session=load_project_json_into_session",
             duplicate,
+        )
+        duplication_lifecycle = (
+            self.root / "ui" / "project_directory_duplication_lifecycle.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "load_project_json_into_session(destination_project_path)",
+            duplication_lifecycle,
         )
 
         prompt_import = self._function_source(

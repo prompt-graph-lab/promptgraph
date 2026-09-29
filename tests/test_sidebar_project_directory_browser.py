@@ -208,7 +208,9 @@ class SidebarProjectDirectoryBrowserTests(unittest.TestCase):
             new_project.index("request_project_directory_discovery_refresh()"),
         )
 
-        duplicate = self._source("duplicate_current_project_directory")
+        duplicate = (
+            self.app_path.parent / "ui" / "project_directory_duplication_lifecycle.py"
+        ).read_text(encoding="utf-8")
         self.assertLess(
             duplicate.index("load_project_json_into_session(destination_project_path)"),
             duplicate.index("request_project_directory_discovery_refresh()"),

@@ -277,7 +277,6 @@ import streamlit.components.v1 as components
 import os
 import uuid
 import copy
-import shutil
 import json
 import html
 import time
@@ -308,6 +307,7 @@ from core.gallery_variant_promotion import (
 )
 from ui.gallery_variant_promotion_lifecycle import apply_and_publish_batch_gallery_variant_promotion
 from ui.gallery_scene_restore_lifecycle import apply_and_publish_gallery_scene_restore
+from ui.project_directory_duplication_lifecycle import duplicate_project_directory
 from ui.selected_routes_candidate_adoption_lifecycle import apply_and_publish_selected_routes_candidate_adoption
 from ui.project_assets_copy_lifecycle import (
     PROJECT_ASSETS_PREVIEW_KEY,
@@ -5828,68 +5828,15 @@ def _duplicate_project_destination_dir(destination_name: str) -> str:
     )
 
 
-def _find_copied_project_json(destination_dir: str, source_project_path: str) -> str:
-    preferred_path = os.path.join(destination_dir, os.path.basename(source_project_path))
-    if os.path.exists(preferred_path):
-        return preferred_path
-    json_files = [
-        os.path.join(destination_dir, file_name)
-        for file_name in os.listdir(destination_dir)
-        if file_name.lower().endswith(".json") and os.path.isfile(os.path.join(destination_dir, file_name))
-    ]
-    return json_files[0] if len(json_files) == 1 else ""
-
-
 def duplicate_current_project_directory(destination_name: str) -> tuple[bool, str]:
-    project_available = bool(st.session_state.project)
-    plan = project_directory_duplication.plan_project_directory_duplication(
-        st.session_state.get("current_project_path", "") if project_available else "",
+    return duplicate_project_directory(
         destination_name,
-        project_available=project_available,
-        isfile=os.path.isfile,
-        isdir=os.path.isdir,
-        exists=os.path.exists,
+        session_state=st.session_state,
+        save_project_to_json=save_project_to_json,
+        ensure_current_project_folder_layout=ensure_current_project_folder_layout,
+        load_project_json_into_session=load_project_json_into_session,
+        request_project_directory_discovery_refresh=request_project_directory_discovery_refresh,
     )
-    if plan.error:
-        return False, plan.error
-    source_project_path = plan.source_project_path
-    source_project_dir = plan.source_project_dir
-    destination_dir = plan.destination_dir
-
-    try:
-        save_project_to_json(st.session_state.project, source_project_path)
-        ensure_current_project_folder_layout(source_project_path)
-    except Exception as exc:
-        return False, f"複製前のプロジェクト保存に失敗しました: {exc}"
-
-    shutil.copytree(
-        source_project_dir,
-        destination_dir,
-        ignore=shutil.ignore_patterns(
-            ".promptgraph_cache",
-            ".*.tmp",
-            ".git",
-            "__pycache__",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".DS_Store",
-            "Thumbs.db",
-        ),
-    )
-    destination_project_path = _find_copied_project_json(destination_dir, source_project_path)
-    if not destination_project_path:
-        return False, "複製先で開くproject JSONが見つかりません。"
-
-    try:
-        if not load_project_json_into_session(destination_project_path):
-            return False, "複製先project JSONを開けませんでした。"
-    except Exception as exc:
-        return False, f"複製先project JSONを開けませんでした: {exc}"
-
-    st.session_state.last_saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state.autosave_feedback = "project duplicated"
-    request_project_directory_discovery_refresh()
-    return True, f"プロジェクトディレクトリを複製して開きました: {destination_project_path}"
 
 
 def render_project_defaults_management_section() -> None:
