@@ -1745,3 +1745,58 @@ Category C candidate remains from that audit. The net difference includes
 intervening product development and is not an extraction-only measurement;
 coherent ownership and behavior preservation remain the objective rather than
 line-count reduction.
+
+## Extraction phase closeout — current main
+
+The residual audit above is the earlier experiment #10 snapshot. Its A/B/C/D
+classifications, measurements, and reasoning record that decision at the time;
+they are not a fresh inventory of every function after later product work. On
+public main through PR #108 (`b8b6759854e5fbb03e58daaa13017ec1928ec814`),
+the open-ended `app.py` extraction phase is complete. `app.py` remains the
+intentional terminal Streamlit shell. This does not freeze the file or imply
+that entire Candidate, Project, Module, or filesystem clusters were extracted.
+
+Later work established narrower, feature-specific boundaries and safety gates:
+
+- Candidate/Variant/Scene operations gained Candidate Route Fresh Preview
+  safety and its apply lifecycle, Batch Promote Variants publication, Selected
+  Scenes Candidate Adoption publication, Selected Routes Attribute Group Swap
+  and Module Swap publication, and Scene Restore history neutrality and
+  lifecycle ownership. Their existing core plans and application composition
+  remain separate.
+- Project/filesystem operations gained the Save As lifecycle, Project Assets
+  Candidate/Variant copy lifecycle, persisted-reference protection and
+  Verified Duplicate Cleanup lifecycle, and Duplicate Project lifecycle.
+  These are operation-specific boundaries, not one Project transaction owner.
+- Module work added [Module-vNext P0 compatibility groundwork](module-attribute-design.md#module-vnext-public-compatibility-p0)
+  and fresh, reviewed-plan safety for Project and Global Module Candidate
+  Apply. Public P0 preserves the opaque Project Module `reference_assets`
+  container, reserves `refs/modules/`, and enforces prompt-only transfer
+  boundaries; it does not implement Module reference-asset use. The detailed
+  asset-record schema, authoring, and filesystem behavior belong to the
+  appropriate Desktop/product design.
+
+The remaining split responsibilities are deliberate:
+
+- **Selected Routes Generation:** `core.gallery_generation` owns planning,
+  submit validation, sequential execution, output ingestion, Candidate
+  handling, and partial-failure reporting. `app.py` owns progress, status, and
+  ETA display; the ComfyUI/output adapter; and terminal history, save, and
+  result publication. Extracting the remaining path now would mostly relocate
+  callback and UI orchestration without a clearer owner.
+- **Final Image Export:** there is no immutable reviewed contract for the exact
+  output bytes. Execution recomputes live core export state; current Preview
+  signatures do not bind the exact source image bytes or destination contents,
+  and capacity/destination profiling is advisory. Keep the current app/core
+  split pending a concrete product contract; this is not an immutable
+  reviewed-byte extraction task.
+- **Project load/open:** the shared loader and `app.py` compose loaders, session
+  resets, and publication across features. This stays an application-level
+  transition, not a generic lifecycle manager.
+
+Category A terminal composition remains legitimate, and Category D mixed or
+low-value glue remains intentionally unextracted. Future normal development is
+product-driven and reactive: another extraction needs a concrete product,
+safety, ownership, or lifecycle reason. Reducing `app.py` line count is not a
+goal by itself; this closeout does not choose the next feature or reopen an
+unbounded extraction queue.
