@@ -7,6 +7,11 @@ from core.gallery_operation_scope_presentation import (
     GALLERY_OPERATION_SCOPE_PRESENTATION,
     get_gallery_operation_scope_presentation,
 )
+from core.ui_terminology import (
+    BATCH_SCOPE_DISPLAY_LABELS,
+    ILLUSTRATION_GROUP_LABEL,
+    format_illustration_count,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +120,59 @@ class GalleryOperationScopeClarityTests(unittest.TestCase):
         self.assertFalse(
             GALLERY_OPERATION_SCOPE_PRESENTATION["module_candidates"]["has_user_selectable_scope"]
         )
+
+    def test_batch_scope_display_labels_keep_stable_scope_ids(self):
+        namespace = {
+            "st": type("Streamlit", (), {"session_state": {"focused_line_id": "focus"}})(),
+            "get_selected_line_ids": lambda _project: ["one", "two"],
+            "get_line_by_id": lambda _project, _line_id: object(),
+            "_gallery_route_options_with_counts": lambda _project: ["scene"],
+            "line_group_scope_options": lambda _project: {"group::sample": "Illustration Group: sample (2 Illustrations)"},
+            "BATCH_SCOPE_DISPLAY_LABELS": BATCH_SCOPE_DISPLAY_LABELS,
+        }
+        exec(function_source(APP_SOURCE, "batch_scope_options"), namespace)
+        options = namespace["batch_scope_options"](object(), include_routes=True)
+        self.assertEqual(
+            {
+                "all": "All Illustrations",
+                "focus": "Focus Illustration only",
+                "selected": "Selected Illustrations (2)",
+                "current_route": "Current Scene",
+                "selected_route": "Selected Scene",
+                "group::sample": "Illustration Group: sample (2 Illustrations)",
+            },
+            options,
+        )
+        self.assertEqual(
+            (
+                "All Illustrations",
+                "Focus Illustration only",
+                "Selected Illustrations (N)",
+                "Current Scene",
+                "Selected Scene",
+                "Illustration Group: <name> (N Illustrations)",
+            ),
+            GALLERY_OPERATION_SCOPE_PRESENTATION["batch_edit"]["renderer_scope_labels"],
+        )
+        for old_label in ("All lines", "Focus line only", "Selected lines", "Current route", "Selected route"):
+            self.assertFalse(any(old_label in label for label in options.values()))
+
+    def test_illustration_group_terminology_is_visible(self):
+        group_namespace = {
+            "get_project_line_groups": lambda _project: {"sample": ["one"]},
+            "resolve_line_group_ids": lambda _project, _name: ["one"],
+            "ILLUSTRATION_GROUP_LABEL": ILLUSTRATION_GROUP_LABEL,
+            "format_illustration_count": format_illustration_count,
+        }
+        exec(function_source(APP_SOURCE, "line_group_scope_options"), group_namespace)
+        self.assertEqual(
+            {"group::sample": "Illustration Group: sample (1 Illustration)"},
+            group_namespace["line_group_scope_options"](object()),
+        )
+        group_section = function_source(APP_SOURCE, "render_line_groups_section")
+        self.assertIn("ILLUSTRATION_GROUPS_LABEL", group_section)
+        self.assertIn("No Illustration Groups yet.", group_section)
+        self.assertNotIn("No line groups yet.", group_section)
 
     def test_registry_matches_authoritative_renderer_literals(self):
         renderer_literals = {

@@ -10,6 +10,8 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping
 
+from core.ui_terminology import BATCH_SCOPE_DISPLAY_LABELS, ILLUSTRATION_GROUP_LABEL
+
 
 _ENTRIES: tuple[dict[str, Any], ...] = (
     {
@@ -83,12 +85,12 @@ _ENTRIES: tuple[dict[str, Any], ...] = (
             "Illustration Group / イラストグループ",
         ),
         "renderer_scope_labels": (
-            "All lines",
-            "Focus line only",
-            "Selected lines (N)",
-            "Current route",
-            "Selected route",
-            "Group: <name> (N lines)",
+            BATCH_SCOPE_DISPLAY_LABELS["all"],
+            BATCH_SCOPE_DISPLAY_LABELS["focus"],
+            f"{BATCH_SCOPE_DISPLAY_LABELS['selected']} (N)",
+            BATCH_SCOPE_DISPLAY_LABELS["current_route"],
+            BATCH_SCOPE_DISPLAY_LABELS["selected_route"],
+            f"{ILLUSTRATION_GROUP_LABEL}: <name> (N Illustrations)",
         ),
         "uses_shared_selected_scenes": False,
         "has_single_scene_selector": True,

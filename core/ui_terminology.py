@@ -6,6 +6,8 @@ session-state keys, and operation identifiers intentionally remain unchanged.
 
 ILLUSTRATION_LABEL = "Illustration"
 ILLUSTRATIONS_LABEL = "Illustrations"
+ILLUSTRATION_GROUP_LABEL = "Illustration Group"
+ILLUSTRATION_GROUPS_LABEL = "Illustration Groups"
 SCENE_LABEL = "Scene"
 SCENES_LABEL = "Scenes"
 GRAPH_EDIT_LABEL = "Graph Edit"
@@ -29,6 +31,21 @@ GALLERY_SCOPE_DISPLAY_LABELS_JA = {
     "selected_routes": "選択中の複数シーン",
     "selected_lines": "選択中のイラスト",
 }
+
+BATCH_SCOPE_DISPLAY_LABELS = {
+    "all": "All Illustrations",
+    "focus": "Focus Illustration only",
+    "selected": "Selected Illustrations",
+    "current_route": "Current Scene",
+    "selected_route": "Selected Scene",
+}
+
+
+def format_illustration_count(count: int) -> str:
+    """Format a user-visible Illustration count without changing its value."""
+
+    noun = ILLUSTRATION_LABEL if count == 1 else ILLUSTRATIONS_LABEL
+    return f"{count} {noun}"
 
 
 # These are renderer-only aliases for stable machine-facing values returned by
@@ -97,8 +114,8 @@ CORE_MESSAGE_DISPLAY_LABELS = {
     "Current line is not available in the active Gallery lines.": "現在のイラストは有効なGalleryイラストではありません。",
     "No current Route resolved for the selected line.": "選択中のイラストから現在のシーンを解決できません。",
     "Current Route has no active prompt lines.": "現在のシーンに有効なイラストがありません。",
-    "Select at least one Line Group.": "Line Groupを1つ以上選択してください。",
-    "Selected Line Group has no active prompt lines.": "選択中のLine Groupに有効なイラストがありません。",
+    "Select at least one Line Group.": "イラストグループを1つ以上選択してください。",
+    "Selected Line Group has no active prompt lines.": "選択中のイラストグループに有効なイラストがありません。",
     "No Gallery routes are available in this project.": "このProjectに利用可能なシーンがありません。",
     "Select at least one Route.": "シーンを1つ以上選択してください。",
     "Selected Route has no active prompt lines.": "選択中のシーンに有効なイラストがありません。",

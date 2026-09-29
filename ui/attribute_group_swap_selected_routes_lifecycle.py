@@ -1,6 +1,7 @@
 """Application publication for Selected Routes Attribute Group Swap."""
 
 from core.attribute_group_swap_selected_routes import apply_selected_routes_attribute_group_swap
+from core.ui_terminology import format_illustration_count
 
 
 def apply_and_publish_selected_routes_attribute_group_swap(
@@ -39,12 +40,12 @@ def apply_and_publish_selected_routes_attribute_group_swap(
         session_state.pop(confirm_key, None)
         if feedback_mode == "gallery":
             session_state.gallery_feedback = (
-                f"Attribute Group Swap applied to {result['applied_count']} line(s)."
+                f"Attribute Group Swap applied to {format_illustration_count(result['applied_count'])}."
             )
             session_state.gallery_feedback_kind = "success"
         else:
             session_state.attribute_group_swap_notice = (
-                f"Attribute Group Swap applied to {result['applied_count']} line(s)."
+                f"Attribute Group Swap applied to {format_illustration_count(result['applied_count'])}."
             )
         save_current_project_if_possible("selected Routes attribute group swap applied")
     return result

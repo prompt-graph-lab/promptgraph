@@ -35,6 +35,16 @@ def _line(line_id, text="prompt", *, line_type=None, **fields):
 
 
 class CoreReasonContractCompatibilityTests(unittest.TestCase):
+    def test_group_and_separator_core_terms_translate_only_for_display(self):
+        self.assertEqual(
+            "イラストグループを1つ以上選択してください。",
+            format_core_message_for_display("Select at least one Line Group."),
+        )
+        self.assertEqual(
+            "Scene separator",
+            format_core_message_for_display("Route separator"),
+        )
+
     def test_route_move_remove_restore_and_action_reasons_remain_legacy_contracts(self):
         project = Project(
             prompt_lines=[
