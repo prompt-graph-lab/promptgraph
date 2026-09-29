@@ -267,7 +267,7 @@ class ModuleInspectorResponsibilitySplitTests(unittest.TestCase):
             '.metric("Status", status)',
             'selected_report.get("library_body")',
             "affected_lines[:20]",
-            '"Additional affected lines are hidden."',
+            '"Additional affected Illustrations are hidden."',
             'line_info["inline_contents"] + '
             'line_info["range_contents"]',
             'line_info["malformed"]',
@@ -331,7 +331,7 @@ class ModuleInspectorResponsibilitySplitTests(unittest.TestCase):
             'key="module_rename_preview_btn"',
             "preview_rename_module(",
             "st.session_state.module_rename_preview = ",
-            '.metric("Affected lines", '
+            '.metric("Affected Illustrations", '
             'rename_preview_state["affected_line_count"])',
             '.metric("Markers", '
             'rename_preview_state["marker_occurrence_count"])',

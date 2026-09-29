@@ -15,6 +15,7 @@ from core.operations import (
     scan_global_module_candidates,
 )
 from core.project import Project, PromptLine
+from core.ui_terminology import format_illustration_count
 
 
 class _State(dict):
@@ -98,6 +99,7 @@ def _render(ui, current_library, history, *, apply=apply_reviewed_global_module_
     node.decorator_list = []
     namespace = {
         "st": ui,
+        "format_illustration_count": format_illustration_count,
         "is_free": lambda: False,
         "get_global_module_library_path": lambda settings: "unused",
         "load_global_module_library": lambda settings: current_library[0],

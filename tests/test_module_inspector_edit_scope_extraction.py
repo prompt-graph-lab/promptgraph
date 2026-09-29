@@ -145,7 +145,7 @@ class ModuleInspectorEditScopeExtractionTests(unittest.TestCase):
             self.assertIn(expected, self.panel_source)
         self.assertIn("affected_lines[:20]", self.panel_source)
         self.assertIn(
-            'st.caption("Additional affected lines are hidden.")',
+            'st.caption("Additional affected Illustrations are hidden.")',
             self.panel_source,
         )
         self.assertIn(

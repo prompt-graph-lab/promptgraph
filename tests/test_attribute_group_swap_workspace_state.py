@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from core.ui_terminology import format_illustration_count
 from ui import attribute_group_swap_session
 
 
@@ -289,6 +290,7 @@ class AttributeGroupSwapWorkspaceStateTests(unittest.TestCase):
 
         namespace = {
             "st": st,
+            "format_illustration_count": format_illustration_count,
             "is_free": lambda: False,
             "get_attribute_groups_snapshot": lambda value: groups,
             "_format_attribute_group_swap_option": lambda value, key: key,

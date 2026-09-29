@@ -369,7 +369,7 @@ class InsertModuleReferenceWorkspaceStateTests(unittest.TestCase):
         self.assertTrue(set(DURABLE_INPUT_KEYS).isdisjoint(widget_keys))
         self.assertNotIn(PREVIEW_KEY, widget_keys)
 
-    def test_widget_types_labels_and_matching_temporary_keys_are_unchanged(self):
+    def test_widget_types_display_labels_and_matching_temporary_keys(self):
         expected = {
             "Module type filter": (
                 "selectbox",
@@ -379,7 +379,7 @@ class InsertModuleReferenceWorkspaceStateTests(unittest.TestCase):
                 "selectbox",
                 "_insert_module_reference_name_widget",
             ),
-            "Target line": (
+            "Target Illustration": (
                 "selectbox",
                 "_insert_module_reference_line_id_widget",
             ),
@@ -665,7 +665,7 @@ class InsertModuleReferenceWorkspaceStateTests(unittest.TestCase):
             st.session_state,
         )
         self.assertIn(
-            ("warning", "No token anchors available on this line."),
+            ("warning", "No token anchors available on this Illustration."),
             st.events,
         )
         self.assertEqual(calls["preview"], [])
@@ -720,7 +720,7 @@ class InsertModuleReferenceWorkspaceStateTests(unittest.TestCase):
             ("caption", "Preview is out of date. Run preview again."),
             st.events,
         )
-        self.assertIn(("metric", "Affected lines", 1), st.events)
+        self.assertIn(("metric", "Affected Illustrations", 1), st.events)
         for durable_key, widget_key in zip(
             DURABLE_INPUT_KEYS[:5],
             TEMPORARY_WIDGET_KEYS[:5],
@@ -946,7 +946,7 @@ class InsertModuleReferenceWorkspaceStateTests(unittest.TestCase):
                 False,
                 {"alpha": {"type": "generic", "body": "body"}},
                 [],
-                "No target prompt lines.",
+                "No target Illustrations.",
                 {
                     "insert_module_reference_type_filter",
                     "insert_module_reference_name",

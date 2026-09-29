@@ -157,7 +157,7 @@ class SelectedRoutesAttributeGroupSwapLifecycleTests(unittest.TestCase):
                 self.assertEqual(before.attribute_groups, state.project.attribute_groups)
                 self.assertEqual(before.module_library, state.project.module_library)
                 self.assertEqual(["route"], state.gallery_selected_route_ids)
-                message = "Attribute Group Swap applied to 1 line(s)."
+                message = "Attribute Group Swap applied to 1 Illustration."
                 if mode == "gallery":
                     self.assertEqual(message, state.gallery_feedback)
                     self.assertEqual("success", state.gallery_feedback_kind)

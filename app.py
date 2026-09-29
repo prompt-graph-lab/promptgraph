@@ -444,9 +444,13 @@ from core.settings import (
 )
 from core.startup import attempt_startup_project_auto_open
 from core.ui_terminology import (
+    BATCH_SCOPE_DISPLAY_LABELS,
     GALLERY_SCOPE_DISPLAY_LABELS,
     GALLERY_SCOPE_DISPLAY_LABELS_JA,
+    ILLUSTRATION_GROUP_LABEL,
+    ILLUSTRATION_GROUPS_LABEL,
     format_core_message_for_display,
+    format_illustration_count,
 )
 from core.version import __version__
 from core.new_project_workspace import (
@@ -1549,17 +1553,17 @@ def render_shortcut_actions():
                     new_text=new_text if prompt_changed else _UNCHANGED,
                     new_negative_prompt=new_negative_prompt if negative_prompt_changed else _UNCHANGED,
                 )
-                st.session_state.shortcut_feedback = "Saved focused line"
+                st.session_state.shortcut_feedback = "Saved focused Illustration"
                 st.rerun()
             else:
                 st.session_state.shortcut_feedback = "No changes to save"
                 st.rerun()
         else:
-            st.session_state.shortcut_feedback = "No focused line"
+            st.session_state.shortcut_feedback = "No focused Illustration"
             st.rerun()
 
     if copy_success:
-        st.session_state.shortcut_feedback = "Copied focused line prompt"
+        st.session_state.shortcut_feedback = "Copied focused Illustration prompt"
         st.rerun()
 
     if copy_failed:
@@ -1567,7 +1571,7 @@ def render_shortcut_actions():
         st.rerun()
 
     if focus_editor:
-        st.session_state.shortcut_feedback = "Focused line editor"
+        st.session_state.shortcut_feedback = "Focused Illustration editor"
         st.rerun()
 
 def update_line_negative_prompt(line_id: str, new_negative_prompt: str):
@@ -1625,14 +1629,14 @@ def _markdown_code(value: str) -> str:
 
 def render_prompt_syntax_diagnostics(prompt_text: str, fragment_limit: int = 10):
     module_names = extract_module_reference_names_from_text(prompt_text)
-    st.caption("Module references in this line:")
+    st.caption("Module references in this Illustration:")
     if module_names:
         st.markdown("\n".join(f"- {_markdown_code(name)}" for name in module_names))
     else:
         st.caption("- none")
         st.caption(
-            "This line does not contain module references. Module toggles only affect `<mod:name>` references already present in the line. "
-            "To make toggles affect this line, apply a module candidate so matching tokens are replaced with a module reference."
+            "This Illustration does not contain module references. Module toggles only affect `<mod:name>` references already present in the Illustration. "
+            "To make toggles affect this Illustration, apply a module candidate so matching tokens are replaced with a module reference."
         )
 
     novelai_fragments = detect_novelai_syntax_fragments(prompt_text)
@@ -1912,7 +1916,7 @@ def render_source_current_prompt_diff(line):
         current_label="Current prompt preview",
         source_text=source_prompt,
         current_text=current_prompt,
-        no_source_message="No source prompt is preserved for this line.",
+        no_source_message="No source prompt is preserved for this Illustration.",
         identical_message="Source prompt and current prompt are identical.",
     )
 
@@ -1930,7 +1934,7 @@ def render_source_current_negative_prompt_diff(line):
         current_label="Current negative prompt preview",
         source_text=source_negative_prompt,
         current_text=current_negative_prompt,
-        no_source_message="No source negative prompt is preserved for this line.",
+        no_source_message="No source negative prompt is preserved for this Illustration.",
         identical_message="Source negative prompt and current negative prompt are identical.",
     )
 
@@ -1942,7 +1946,7 @@ def render_source_generation_info(line):
     with st.expander("Source Generation Info", expanded=False):
         st.caption("Read-only provenance. Editing the working prompt or negative prompt does not change this source snapshot.")
         if not source_info:
-            st.info("No preserved source generation info for this line.")
+            st.info("No preserved source generation info for this Illustration.")
             return
 
         source_kind = source_info.get("source_kind")
@@ -2261,7 +2265,7 @@ def render_comfy_workflow_debug_preview(project, line):
         if line_workflow_text:
             st.caption("Workflow source")
             st.code(line_workflow_label, language="text")
-            st.caption("Using line-specific workflow metadata.")
+            st.caption("Using Illustration-specific workflow metadata.")
         else:
             st.caption("Workflow source")
             st.code(resolved_workflow_path or "(not available)", language="text")
@@ -2419,7 +2423,7 @@ def render_comfyui_settings_workspace() -> None:
 def render_comfyui_daily_sidebar_section() -> None:
     workflow_preset_options = ensure_comfy_settings_session_state()
     st.sidebar.caption(
-        "ComfyUI settings support focused-line generation and candidate review."
+        "ComfyUI settings support focused Illustration generation and candidate review."
     )
     comfy_sidebar = st.sidebar.expander("ComfyUI", expanded=False)
     comfy_sidebar.selectbox(
@@ -2625,7 +2629,7 @@ def _line_export_prompt_text(line) -> str:
 def render_comfy_prompt_injection_export(raw_text: str, source_label: str, container=st):
     container.markdown("---")
     container.markdown("**Prompt Injection Export**")
-    container.caption("Inject one PromptGraph line into selected API-style CLIP text nodes and download the rewritten workflow JSON.")
+    container.caption("Inject one PromptGraph Illustration into selected API-style CLIP text nodes and download the rewritten workflow JSON.")
 
     if not raw_text or not raw_text.strip():
         container.info("Load or paste a workflow JSON before exporting an injected workflow.")
@@ -2648,7 +2652,7 @@ def render_comfy_prompt_injection_export(raw_text: str, source_label: str, conta
     project = st.session_state.get("project")
     visible_lines = get_visible_prompt_lines(project)
     if not visible_lines:
-        container.info("Load a PromptGraph project with prompt lines before exporting an injected workflow.")
+        container.info("Load a PromptGraph project with Illustrations before exporting an injected workflow.")
         return
 
     candidates = get_text_encode_candidates(workflow_data)
@@ -2665,7 +2669,7 @@ def render_comfy_prompt_injection_export(raw_text: str, source_label: str, conta
         line_options,
     )
     selected_line_id = container.selectbox(
-        "Source PromptGraph line",
+        "Source PromptGraph Illustration",
         options=line_options,
         format_func=lambda line_id: get_prompt_line_label(line_by_id[line_id]),
         key="comfy_prompt_injection_line_id",
@@ -2739,7 +2743,7 @@ def render_comfy_prompt_injection_export(raw_text: str, source_label: str, conta
         "Manual negative prompt fallback",
         height=80,
         key="comfy_prompt_injection_manual_negative",
-        help="Used only when the selected line has no negative prompt. Leave blank to keep the workflow negative prompt unchanged.",
+        help="Used only when the selected Illustration has no negative prompt. Leave blank to keep the workflow negative prompt unchanged.",
     )
     manual_negative_text = _snapshot_comfyui_draft_widget(
         "prompt_injection",
@@ -2752,14 +2756,14 @@ def render_comfy_prompt_injection_export(raw_text: str, source_label: str, conta
     negative_text = line_negative_text or manual_negative_text.strip()
     negative_node_id = negative_candidate.get("node_id") or ""
     if line_negative_text:
-        container.caption(f"Negative prompt source: selected line metadata ({len(line_negative_text)} chars).")
+        container.caption(f"Negative prompt source: selected Illustration metadata ({len(line_negative_text)} chars).")
     elif manual_negative_text.strip():
         container.caption(f"Negative prompt source: manual fallback ({len(manual_negative_text.strip())} chars).")
     else:
         container.caption("Negative prompt source: none; workflow negative node will be left unchanged.")
 
     if not positive_text.strip():
-        container.warning("Selected line has no positive prompt text.")
+        container.warning("Selected Illustration has no positive prompt text.")
         return
 
     try:
@@ -2801,12 +2805,12 @@ def render_lora_directory_mapping(container=st):
     project = st.session_state.get("project")
     visible_lines = get_visible_prompt_lines(project)
     if not visible_lines:
-        container.info("Load a PromptGraph project with prompt lines to inspect LoRA references.")
+        container.info("Load a PromptGraph project with Illustrations to inspect LoRA references.")
         return
 
     references = extract_lora_references_from_lines(visible_lines)
     if not references:
-        container.info("No LoRA tags were found in visible prompt lines.")
+        container.info("No LoRA tags were found in visible Illustrations.")
         return
 
     _prepare_comfyui_draft_widget(
@@ -2876,7 +2880,7 @@ def render_lora_directory_mapping(container=st):
             table_rows.append({
                 "LoRA name": result["name"],
                 "observed weight(s)": ", ".join(result["weights"]),
-                "source line count": len(result["line_ids"]),
+                "source Illustration count": len(result["line_ids"]),
                 "status": result["status"],
                 "matched/candidate files": "\n".join(matched_or_candidates),
             })
@@ -3199,12 +3203,12 @@ def render_lora_loader_injection_export(raw_text: str, source_label: str, contai
 
 def render_generation_settings_consistency_panel(container=st):
     container.markdown("**Generation Settings Consistency**")
-    container.caption("Read-only check for shared sampler, model, and generation settings across visible prompt lines.")
+    container.caption("Read-only check for shared sampler, model, and generation settings across visible Illustrations.")
 
     project = st.session_state.get("project")
     visible_lines = get_visible_prompt_lines(project)
     if not visible_lines:
-        container.info("Load a PromptGraph project with prompt lines to analyze generation settings.")
+        container.info("Load a PromptGraph project with Illustrations to analyze generation settings.")
         return
 
     analysis = analyze_generation_settings(
@@ -3212,12 +3216,12 @@ def render_generation_settings_consistency_panel(container=st):
         metadata_lookup=lambda line: find_image_metadata_for_line(project, line),
     )
     metric_cols = container.columns(3)
-    metric_cols[0].metric("Visible lines", analysis["total_lines"])
+    metric_cols[0].metric("Visible Illustrations", analysis["total_lines"])
     metric_cols[1].metric("With settings", analysis["lines_with_settings"])
     metric_cols[2].metric("Without settings", analysis["lines_without_settings"])
 
     if not analysis["lines_with_settings"]:
-        container.info("No generation settings were found on visible lines or their imported metadata.")
+        container.info("No generation settings were found on visible Illustrations or their imported metadata.")
         return
 
     field_rows = [
@@ -3258,23 +3262,23 @@ def render_generation_settings_consistency_panel(container=st):
             difference_rows.append({
                 "field": field["label"],
                 "status": field["status"],
-                "line": value_row["line_label"],
-                "line id": value_row["line_id"],
+                "Illustration": value_row["line_label"],
+                "Illustration id": value_row["line_id"],
                 "value": value_row["value"],
             })
     if difference_rows:
-        with container.expander("Per-line setting differences", expanded=False) as diff_expander:
+        with container.expander("Per-Illustration setting differences", expanded=False) as diff_expander:
             diff_expander.dataframe(difference_rows, hide_index=True, width="stretch")
 
 
 def render_negative_prompt_consistency_panel(container=st):
     container.markdown("**Negative Prompt Consistency**")
-    container.caption("Read-only check for shared negative prompt templates across visible prompt lines.")
+    container.caption("Read-only check for shared negative prompt templates across visible Illustrations.")
 
     project = st.session_state.get("project")
     visible_lines = get_visible_prompt_lines(project)
     if not visible_lines:
-        container.info("Load a PromptGraph project with prompt lines to analyze negative prompts.")
+        container.info("Load a PromptGraph project with Illustrations to analyze negative prompts.")
         return
 
     analysis = analyze_negative_prompts(
@@ -3282,14 +3286,14 @@ def render_negative_prompt_consistency_panel(container=st):
         metadata_lookup=lambda line: find_image_metadata_for_line(project, line),
     )
     metric_cols = container.columns(5)
-    metric_cols[0].metric("Visible lines", analysis["total_lines"])
+    metric_cols[0].metric("Visible Illustrations", analysis["total_lines"])
     metric_cols[1].metric("With negative", analysis["lines_with_negative"])
     metric_cols[2].metric("Without negative", analysis["lines_without_negative"])
     metric_cols[3].metric("Unique texts", analysis["unique_negative_count"])
     metric_cols[4].metric("Top coverage", _format_percent(analysis["most_common_ratio"]))
 
     if not analysis["lines_with_negative"]:
-        container.info("No negative prompts were found on visible lines or their imported metadata.")
+        container.info("No negative prompts were found on visible Illustrations or their imported metadata.")
         return
 
     if analysis["all_identical"]:
@@ -3297,7 +3301,7 @@ def render_negative_prompt_consistency_panel(container=st):
     else:
         container.caption(
             f"Most common negative prompt appears in {analysis['most_common_count']} "
-            f"of {analysis['lines_with_negative']} detected lines ({_format_percent(analysis['most_common_ratio'])})."
+            f"of {analysis['lines_with_negative']} detected Illustrations ({_format_percent(analysis['most_common_ratio'])})."
         )
 
     if analysis["most_common_negative"]:
@@ -3307,7 +3311,7 @@ def render_negative_prompt_consistency_panel(container=st):
     token_rows = [
         {
             "token": row["token"],
-            "line count": row["line_count"],
+            "Illustration count": row["line_count"],
             "coverage": _format_percent(row["coverage"]),
             "type": row["kind"],
         }
@@ -3325,7 +3329,7 @@ def render_negative_prompt_consistency_panel(container=st):
             "negative prompt preview": variant["preview"],
             "count": variant["count"],
             "coverage": _format_percent(variant["coverage"]),
-            "source lines": _compact_label_list(variant["line_labels"]),
+            "source Illustrations": _compact_label_list(variant["line_labels"]),
         }
         for index, variant in enumerate(analysis["variants"])
     ]
@@ -3335,16 +3339,16 @@ def render_negative_prompt_consistency_panel(container=st):
 
     detail_rows = [
         {
-            "line": row["line_label"],
+            "Illustration": row["line_label"],
             "variant": row["variant_id"] or "(none)",
             "negative chars": row["negative_prompt_length"],
-            "line-specific additions": ", ".join(row["line_specific_tokens"]) if row["line_specific_tokens"] else "",
+            "Illustration-specific additions": ", ".join(row["line_specific_tokens"]) if row["line_specific_tokens"] else "",
         }
         for row in analysis["per_line"]
         if row["negative_prompt"]
     ]
     if detail_rows:
-        with container.expander("Per-line negative prompt details", expanded=False):
+        with container.expander("Per-Illustration negative prompt details", expanded=False):
             container.dataframe(detail_rows, hide_index=True, width="stretch")
 
     preview = build_global_negative_delta_preview(analysis)
@@ -3361,12 +3365,12 @@ def render_negative_prompt_consistency_panel(container=st):
             preview_expander.markdown("**Global Negative candidate**")
             preview_expander.code(preview["candidate_text"], language="text")
         else:
-            preview_expander.info("No safe all-line global negative candidate was found.")
+            preview_expander.info("No safe all-Illustration global negative candidate was found.")
 
         delta_rows = [
             {
-                "line": row["line_label"],
-                "line id": row["line_id"],
+                "Illustration": row["line_label"],
+                "Illustration id": row["line_id"],
                 "variant": row["variant_id"] or "(none)",
                 "delta tokens": row["delta_text"] or "",
                 "negative chars": row["negative_prompt_length"],
@@ -3374,7 +3378,7 @@ def render_negative_prompt_consistency_panel(container=st):
             for row in preview["delta_rows"]
         ]
         if delta_rows:
-            delta_label = "Per-line Negative Delta preview" if preview["candidate_tokens"] else "Unshared tokens preview"
+            delta_label = "Per-Illustration Negative Delta preview" if preview["candidate_tokens"] else "Unshared tokens preview"
             preview_expander.markdown(f"**{delta_label}**")
             preview_expander.dataframe(delta_rows, hide_index=True, width="stretch")
 
@@ -4559,7 +4563,7 @@ def _render_route_batch_candidate_adoption_preview(preview: dict) -> None:
     st.warning(preview.get("drift_warning", ""))
 
     metric_cols = st.columns(5)
-    metric_cols[0].metric("Targeted lines", preview.get("targeted_line_count", 0))
+    metric_cols[0].metric("Targeted Illustrations", preview.get("targeted_line_count", 0))
     metric_cols[1].metric("Will adopt", preview.get("will_adopt_count", 0))
     metric_cols[2].metric("First main image", preview.get("first_main_image_count", 0))
     metric_cols[3].metric("Swaps with retreat", preview.get("swap_with_retreat_count", 0))
@@ -4594,7 +4598,7 @@ def _render_route_batch_candidate_adoption_preview(preview: dict) -> None:
         )
 
     if not preview.get("entries"):
-        st.info("No target lines were resolved for this preview.")
+        st.info("No target Illustrations were resolved for this preview.")
     for entry in preview.get("entries", []):
         operation = entry.get("operation") or "skipped"
         with st.container(border=True):
@@ -5051,7 +5055,7 @@ def _render_gallery_variant_grid(line, key_prefix="variant"):
                     st.caption(f"Raw: `{missing['raw_path']}`")
                     st.caption(f"Resolved: `{missing['resolved_path']}`")
         if not variants:
-            st.caption("No appended variants for this line yet.")
+            st.caption("No appended variants for this Illustration yet.")
             return
 
         cols = st.columns(min(4, len(variants)))
@@ -5113,7 +5117,7 @@ def _render_gallery_variant_grid(line, key_prefix="variant"):
                         placement=placement,
                     )
                     if new_line_id:
-                        st.session_state.gallery_feedback = "Variant promoted to a new Gallery route."
+                        st.session_state.gallery_feedback = "Variant promoted to a new Gallery Scene."
                         st.rerun()
                     st.warning("Variant could not be promoted. Check that the variant image path still exists.")
 
@@ -5168,10 +5172,10 @@ def render_current_line_candidate_gallery(line, project=None):
             st.caption(f"{missing_count} missing candidate path(s) skipped.")
         if not existing_candidates:
             if active_candidates:
-                st.caption("No displayable active candidates for this line.")
+                st.caption("No displayable active candidates for this Illustration.")
             else:
-                st.caption("No active generated candidates for this line yet.")
-            if active_candidates and st.button("Clear current line candidates", key=f"clear_candidates_{_line_candidate_key(line)}"):
+                st.caption("No active generated candidates for this Illustration yet.")
+            if active_candidates and st.button("Clear current Illustration candidates", key=f"clear_candidates_{_line_candidate_key(line)}"):
                 _clear_line_generated_candidates(line)
                 save_current_project_if_possible("line candidates cleared")
                 st.rerun()
@@ -5182,7 +5186,7 @@ def render_current_line_candidate_gallery(line, project=None):
         st.markdown("##### Appended Variants")
         _render_gallery_variant_grid(line, key_prefix="candidate_gallery_variant")
 
-        if existing_candidates and st.button("Clear current line candidates", key=f"clear_candidates_{_line_candidate_key(line)}"):
+        if existing_candidates and st.button("Clear current Illustration candidates", key=f"clear_candidates_{_line_candidate_key(line)}"):
             _clear_line_generated_candidates(line)
             save_current_project_if_possible("line candidates cleared")
             st.rerun()
@@ -5386,7 +5390,7 @@ def render_single_line_comfy_execution(project, line):
     # Legacy selected-line panel; the active Focus Edit Generate / Compare panel is wired separately below.
     st.markdown("#### Single Illustration ComfyUI Execution")
     if not line:
-        st.info("Focus or highlight a prompt line to generate it once.")
+        st.info("Focus or highlight an Illustration to generate it once.")
         return
 
     st.caption("Selected Illustration")
@@ -5401,7 +5405,7 @@ def render_single_line_comfy_execution(project, line):
     )
 
     if st.session_state.edition == "FREE":
-        st.info("Single line ComfyUI execution is available in the Pro edition.")
+        st.info("Single Illustration ComfyUI execution is available in the Pro edition.")
         return
 
     workflow_path = st.session_state.get("comfy_workflow_path") or st.session_state.settings.get("comfyui_workflow_path", "workflow_api.json")
@@ -5410,7 +5414,7 @@ def render_single_line_comfy_execution(project, line):
     st.caption("Resolved Workflow Path")
     st.code(line_workflow_label or resolved_workflow_path or "(not set)", language="text")
     if line_workflow_label:
-        st.caption("Using line-specific ComfyUI workflow metadata.")
+        st.caption("Using Illustration-specific ComfyUI workflow metadata.")
     elif workflow_source_kind == "preset":
         st.caption("Using selected shared workflow preset.")
     if not line_workflow_text and resolved_workflow_path and not os.path.exists(resolved_workflow_path):
@@ -5418,7 +5422,7 @@ def render_single_line_comfy_execution(project, line):
 
     if st.button("Generate Current Illustration Once", key=f"single_line_comfy_generate_{line.id}"):
         if st.session_state.edition == "FREE":
-            show_upgrade_dialog("Single line ComfyUI execution is available in the Pro edition.")
+            show_upgrade_dialog("Single Illustration ComfyUI execution is available in the Pro edition.")
             st.stop()
 
         comfy_url = st.session_state.get("comfy_url") or st.session_state.settings.get("comfyui_url", "127.0.0.1:8188")
@@ -5470,7 +5474,7 @@ def render_single_line_comfy_execution(project, line):
             else:
                 st.info("Generation queued/completed, but output path was not detected.")
         except Exception as exc:
-            st.error(f"Single line generation failed: {exc}")
+            st.error(f"Single Illustration generation failed: {exc}")
 
     st.markdown("##### Multi-generate")
     st.caption("Uses the existing ComfyUI execution path. Seeds follow the current ComfyUI helper behavior.")
@@ -5516,7 +5520,7 @@ def render_line_before_after_preview(line):
 
     st.markdown("#### Before / After")
     if not source_exists and not generated_exists:
-        st.caption("No source or generated image available for this line.")
+        st.caption("No source or generated image available for this Illustration.")
         return
 
     if source_exists and generated_exists:
@@ -5542,7 +5546,7 @@ def render_selected_line_panel(project, line, include_generation=True):
 
     with st.container(border=True):
         st.markdown("### Selected Illustration Panel")
-        st.caption("Focused line is used first; highlighted line is used when no focus is active.")
+        st.caption("Focused Illustration is used first; highlighted Illustration is used when no focus is active.")
         render_line_before_after_preview(line)
         render_selected_line_negative_prompt_editor(line)
         render_source_current_prompt_diff(line)
@@ -5561,7 +5565,7 @@ def render_selected_line_negative_prompt_editor(line):
         st.session_state[text_key] = stored_negative_prompt
 
     with st.expander("Selected Illustration Negative Prompt", expanded=False):
-        st.caption("Stored per-line negative prompt. Future Global Negative / Delta support will build on this.")
+        st.caption("Stored per-Illustration negative prompt. Future Global Negative / Delta support will build on this.")
         st.markdown(f"Illustration: `{get_prompt_line_label(line)}` / `{line.id}`")
         draft_negative_prompt = st.text_area(
             "Negative prompt",
@@ -7490,7 +7494,7 @@ def create_route_separator_after_line(project, line_id: str, label: str | None =
         None,
     )
     if target_index is None:
-        return {"created": False, "message": "Target line was not found.", "separator_id": "", "label": ""}
+        return {"created": False, "message": "Target Illustration was not found.", "separator_id": "", "label": ""}
 
     target_line = project.prompt_lines[target_index]
     if is_route_separator(target_line):
@@ -7512,7 +7516,7 @@ def create_route_separator_after_line(project, line_id: str, label: str | None =
         st.session_state.gallery_selected_route_separator_id_pending = getattr(next_visible_line, "id", "")
         return {
             "created": False,
-            "message": "A route separator already exists immediately after this image.",
+            "message": "A Scene separator already exists immediately after this image.",
             "separator_id": getattr(next_visible_line, "id", ""),
             "label": route_separator_label(next_visible_line),
         }
@@ -8249,7 +8253,7 @@ def _gallery_route_options_with_counts(project) -> list[dict]:
 
 def _format_gallery_route_option(route: dict) -> str:
     route_label = route.get("route_label") or route.get("route_id") or "Scene"
-    return f"{route_label} ({int(route.get('line_count', 0) or 0)} lines)"
+    return f"{route_label} ({int(route.get('line_count', 0) or 0)} Illustrations)"
 
 
 def resolve_gallery_operation_targets(
@@ -8402,7 +8406,7 @@ def _render_gallery_operation_target_summary(resolution: dict) -> None:
     if resolution.get("route_id"):
         st.caption(
             f"シーン: {resolution.get('route_label') or '(名称なし)'} "
-            f"({resolution.get('route_id')}, {resolution.get('route_line_count') or 0} lines)"
+            f"({resolution.get('route_id')}, {resolution.get('route_line_count') or 0} Illustrations)"
         )
     st.caption(f"対象イラスト: {len(resolution.get('target_lines', []))}")
     for warning in resolution.get("warnings", [])[:3]:
@@ -9166,7 +9170,7 @@ def render_gallery_global_generation_controls(
             st.info(
                 f"{_gallery_operation_scope_label(scope)}: "
                 f"{target_resolution.get('route_label') or '(名称なし)'} "
-                f"({target_resolution.get('route_line_count') or 0} lines) に候補を追加しました。"
+                f"({target_resolution.get('route_line_count') or 0} イラスト) に候補を追加しました。"
             )
         if failure_records:
             st.warning(f"{len(failure_records)} 件の生成で問題がありました。残りのイラストは処理済みです。")
@@ -9207,9 +9211,9 @@ def render_gallery_batch_candidate_adoption(
             "Preview adoption source",
             options=preview_source_options,
             format_func=lambda value: {
-                "latest": "Latest active candidate per line",
-                "first": "First active candidate per line",
-                GALLERY_VARIANT_PREVIEW_SOURCE: "Latest appended Gallery Variant per line",
+                "latest": "Latest active candidate per Illustration",
+                "first": "First active candidate per Illustration",
+                GALLERY_VARIANT_PREVIEW_SOURCE: "Latest appended Gallery Variant per Illustration",
             }[value],
             horizontal=True,
             key="_route_batch_candidate_adoption_preview_source_widget",
@@ -9306,7 +9310,7 @@ def render_gallery_batch_candidate_adoption(
             )
             all_scope_line_ids = tuple(all_scope_resolution.get("target_line_ids", []))
             st.warning(
-                "All scope can affect every eligible Gallery line in the project. "
+                "All scope can affect every eligible Gallery Illustration in the project. "
                 "All apply requires a fresh preview, the confirmation checkbox, "
                 f"and the exact `{ALL_APPLY_CONFIRM_PHRASE}` phrase."
             )
@@ -9404,11 +9408,11 @@ def render_gallery_batch_candidate_adoption(
                     )
                 st.warning(
                     "Review the project-wide target list carefully before applying. "
-                    "This can update every eligible Gallery line with an active Candidate or Gallery Variant source."
+                    "This can update every eligible Gallery Illustration with an active Candidate or Gallery Variant source."
                 )
                 st.caption(
                     "All scope summary: "
-                    f"target lines {route_preview.get('targeted_line_count', 0)} / "
+                    f"target Illustrations {route_preview.get('targeted_line_count', 0)} / "
                     f"will adopt {route_preview.get('will_adopt_count', 0)} / "
                     f"swaps {route_preview.get('swap_with_retreat_count', 0)} / "
                     f"first main images {route_preview.get('first_main_image_count', 0)} / "
@@ -9507,8 +9511,8 @@ def render_gallery_batch_candidate_adoption(
             "Adoption source",
             options=source_options,
             format_func=lambda value: {
-                "latest": "Latest candidate per line",
-                "first": "First candidate per line",
+                "latest": "Latest candidate per Illustration",
+                "first": "First candidate per Illustration",
             }[value],
             horizontal=True,
             key="_gallery_candidate_adoption_source_widget",
@@ -9547,8 +9551,8 @@ def render_gallery_batch_candidate_adoption(
             "Scope",
             options=scope_options,
             format_func=lambda value: {
-                "all": "All lines with candidates",
-                "selected": f"Selected lines ({len(selected_line_ids)})",
+                "all": "All Illustrations with candidates",
+                "selected": f"Selected Illustrations ({len(selected_line_ids)})",
             }[value],
             horizontal=True,
             key="_gallery_candidate_adoption_scope_widget",
@@ -9591,7 +9595,7 @@ def render_gallery_batch_candidate_adoption(
 
         preview = preview_state["preview"]
         metric_cols = st.columns(5 if mode == "append" else 4)
-        metric_cols[0].metric("Target lines", preview["target_line_count"])
+        metric_cols[0].metric("Target Illustrations", preview["target_line_count"])
         metric_cols[1].metric("Candidates found", preview["candidates_found"])
         metric_cols[2].metric("Missing", preview["candidates_missing"])
         if mode == "append":
@@ -9609,10 +9613,10 @@ def render_gallery_batch_candidate_adoption(
             st.caption(f"Current adopted image: {_short_preview(example.get('current_image') or '(none)', 180)}")
             st.caption(f"Candidate image: {_short_preview(example.get('candidate_image') or '(none)', 180)}")
             if mode == "append":
-                st.caption(f"Gallery variants on line: {example.get('gallery_variants_count', 0)}")
+                st.caption(f"Gallery variants on Illustration: {example.get('gallery_variants_count', 0)}")
                 st.caption("Operation: append variant without changing the current adopted image.")
                 if example.get("already_variant"):
-                    st.caption("Already appended as a variant; apply will skip this line.")
+                    st.caption("Already appended as a variant; apply will skip this Illustration.")
                     st.caption(f"Matched variant id: `{example.get('matched_variant_id') or '(unknown)'}`")
                     st.caption(f"Matched variant path: {_short_preview(example.get('matched_variant_path') or '(none)', 180)}")
             metadata_caption = example.get("candidate_metadata") or "(no candidate metadata summary)"
@@ -9643,7 +9647,7 @@ def render_gallery_batch_candidate_adoption(
             action_label = "Appended" if mode == "append" else "Adopted"
             st.success(
                 f"{action_label} {result['updated_count']} candidate image(s). "
-                f"Skipped {result['skipped_count']} line(s)."
+                f"Skipped {format_illustration_count(result['skipped_count'])}."
             )
             st.rerun()
 
@@ -9819,7 +9823,7 @@ def render_gallery_batch_variant_promotion(project, active_lines, selected_line_
                 st.dataframe(detail_rows, hide_index=True, width="stretch")
             hidden_count = max(0, len(stored_plan["entries"]) - detail_limit)
             if hidden_count:
-                st.caption(f"{hidden_count} Illustration(s) are hidden from this detail table.")
+                st.caption(f"{format_illustration_count(hidden_count)} {'is' if hidden_count == 1 else 'are'} hidden from this detail table.")
 
         if stored_plan["will_promote"] == 0:
             st.info("昇格予定のVariantはありません。")
@@ -9912,7 +9916,7 @@ def render_candidate_route_creation_section(project) -> None:
         if route_resolution and route_resolution.get("route_id"):
             st.caption(
                 f"現在のシーン: {route_resolution.get('route_label') or 'Scene'} "
-                f"({route_resolution.get('line_count', 0)} lines)"
+                f"({route_resolution.get('line_count', 0)} Illustrations)"
             )
 
     preview_disabled = not target_line_ids
@@ -10485,9 +10489,9 @@ def render_gallery_attribute_group_swap_section(project) -> None:
     if target_resolution.get("route_id"):
         st.caption(
             f"Scene: {target_resolution.get('route_label') or '(unnamed)'} "
-            f"({target_resolution.get('route_line_count') or len(target_line_ids)} lines)"
+            f"({target_resolution.get('route_line_count') or len(target_line_ids)} Illustrations)"
         )
-    st.caption(f"Target lines: {len(target_line_ids)}")
+    st.caption(f"Target Illustrations: {len(target_line_ids)}")
     for warning in target_resolution.get("warnings", [])[:3]:
         st.warning(warning)
 
@@ -10573,7 +10577,7 @@ def render_gallery_attribute_group_swap_section(project) -> None:
         restore_focus_after_graph_update(prev_focus)
         sync_text_areas()
         st.session_state.pop("gallery_attribute_group_swap_preview", None)
-        st.session_state.gallery_feedback = f"Attribute Group Swap applied to {preview['affected_line_count']} line(s)."
+        st.session_state.gallery_feedback = f"Attribute Group Swap applied to {format_illustration_count(preview['affected_line_count'])}."
         st.session_state.gallery_feedback_kind = "success"
         save_current_project_if_possible("gallery attribute group swap applied")
         st.rerun()
@@ -12114,7 +12118,7 @@ def render_gallery_final_image_export(project) -> None:
         preview_rows = [
             {
                 "output": item.get("output_filename", ""),
-                "line": item.get("source_original_filename", ""),
+                "Illustration": item.get("source_original_filename", ""),
                 "source": item.get("source_image_path", ""),
                 "size": (
                     _format_project_assets_bytes(
@@ -12123,7 +12127,7 @@ def render_gallery_final_image_export(project) -> None:
                     if item.get("source_size_available")
                     else "Unknown"
                 ),
-                "route": (item.get("route") or {}).get("route_label", ""),
+                "Scene": (item.get("route") or {}).get("route_label", ""),
             }
             for item in preview.get("items", [])[:5]
         ]
@@ -13176,7 +13180,7 @@ def render_pro_trash_view_mode(project):
                 st.markdown(f"### Scene: {route_label}")
                 st.caption(
                     f"Handle: {route_handle} / "
-                    f"{record.get('removed_line_count') or len(line_ids)} lines / "
+                    f"{record.get('removed_line_count') or len(line_ids)} Illustrations / "
                     f"Workbench: {record.get('workbench_line_count') or 0} / "
                     f"active before remove: {record.get('active_line_count_before_remove') or 0} / "
                     f"already deleted: {len(already_deleted_ids)} / "
@@ -13804,7 +13808,7 @@ def render_graph_edit_illustration_editor(project, line, *, reorder_disabled=Fal
                 "Negative Prompt",
                 key=negative_text_widget_key,
                 height=100,
-                help="Optional. Stored per line and exported, but not graphed in v1.",
+                help="Optional. Stored per Illustration and exported, but not graphed in v1.",
             )
 
             prompt_changed = new_text != line.current_text
@@ -14014,7 +14018,7 @@ def render_focus_edit_navigation_controls(project, focused_line):
     previous_line_id, next_line_id = get_adjacent_focus_line_ids(project, focused_line.id)
     has_unsaved_edits = focus_line_has_unsaved_edits(focused_line)
 
-    st.markdown("#### Finish / Move to another line")
+    st.markdown("#### Finish / Move to another Illustration")
     if has_unsaved_edits:
         st.warning("Save changes before navigating.")
 
@@ -14072,7 +14076,7 @@ def render_focus_edit_navigation_controls(project, focused_line):
 
 def render_focus_edit_image_comparison(target_line):
     st.markdown("#### Image Reference")
-    st.caption("Compact original / generated comparison for this focused line.")
+    st.caption("Compact original / generated comparison for this focused Illustration.")
     img_c1, img_c2 = st.columns(2)
     with img_c1:
         st.caption("Original Image")
@@ -14091,7 +14095,7 @@ def render_focus_edit_image_comparison(target_line):
 
 def render_focus_edit_advanced_tools(project):
     with st.expander("Advanced Batch / Structure Tools", expanded=False):
-        st.caption("Optional multi-line and structural tools for after focused-line editing.")
+        st.caption("Optional multi-Illustration and structural tools for after focused Illustration editing.")
         render_line_groups_section(project)
         render_batch_editing_section(project)
         render_module_preset_apply_section(project)
@@ -14103,7 +14107,7 @@ def render_focus_edit_meta_information(project, line):
         return
 
     with st.expander("Meta Information", expanded=False):
-        st.caption("Reference details for the focused line.")
+        st.caption("Reference details for the focused Illustration.")
         st.write(f"**{line.id}** / {getattr(line, 'original_file_name', '') or 'Unknown source'}")
         render_line_metadata_inspector(project, line, expanded=False)
 
@@ -14164,7 +14168,7 @@ def render_selected_line_batch_actions(project, selected_line_ids):
     c_del, c_dup = st.columns(2)
     with c_del:
         if st.button("Delete Selected Illustrations", key="delete_selected_lines_context"):
-            if not require_pro("Batch line operations are available in Pro."):
+            if not require_pro("Batch Illustration operations are available in Pro."):
                 st.stop()
 
             push_history()
@@ -14184,7 +14188,7 @@ def render_selected_line_batch_actions(project, selected_line_ids):
             st.rerun()
     with c_dup:
         if st.button("Duplicate Selected Illustrations", key="duplicate_selected_lines_context"):
-            if not require_pro("Batch line operations are available in Pro."):
+            if not require_pro("Batch Illustration operations are available in Pro."):
                 st.stop()
 
             push_history()
@@ -14210,15 +14214,15 @@ def batch_scope_options(project, include_routes: bool = False, selected_line_ids
     selected_line_ids = selected_line_ids if selected_line_ids is not None else get_selected_line_ids(project)
     focused_line = get_line_by_id(project, st.session_state.get("focused_line_id"))
     scope_options = {
-        "all": "All lines",
+        "all": BATCH_SCOPE_DISPLAY_LABELS["all"],
     }
     if focused_line:
-        scope_options["focus"] = "Focus line only"
+        scope_options["focus"] = BATCH_SCOPE_DISPLAY_LABELS["focus"]
     if selected_line_ids:
-        scope_options["selected"] = f"Selected lines ({len(selected_line_ids)})"
+        scope_options["selected"] = f"{BATCH_SCOPE_DISPLAY_LABELS['selected']} ({len(selected_line_ids)})"
     if include_routes and _gallery_route_options_with_counts(project):
-        scope_options["current_route"] = "Current route"
-        scope_options["selected_route"] = "Selected route"
+        scope_options["current_route"] = BATCH_SCOPE_DISPLAY_LABELS["current_route"]
+        scope_options["selected_route"] = BATCH_SCOPE_DISPLAY_LABELS["selected_route"]
     scope_options.update(line_group_scope_options(project))
     return scope_options
 
@@ -14252,7 +14256,7 @@ def render_batch_token_reorder_section(project):
 
     scope_options = batch_scope_options(project)
     if is_free():
-        st.caption("Free mode can reorder tokens only in the active Focus Edit line.")
+        st.caption("Free mode can reorder tokens only in the active Focus Edit Illustration.")
     elif st.session_state.get("batch_reorder_scope") not in scope_options:
         st.session_state.batch_reorder_scope = "all"
 
@@ -14275,7 +14279,7 @@ def render_batch_token_reorder_section(project):
     with c3:
         if is_free():
             scope_key = "focus"
-            st.caption("Target: Focus line only")
+            st.caption("Target: Focus Illustration only")
         else:
             scope_key = st.selectbox(
                 "Target",
@@ -14289,7 +14293,7 @@ def render_batch_token_reorder_section(project):
         if target_line_ids is None and is_free():
             st.stop()
         if target_line_ids == []:
-            st.warning("No target lines.")
+            st.warning("No target Illustrations.")
             st.stop()
 
         push_history()
@@ -14310,7 +14314,8 @@ def line_group_scope_options(project):
     options = {}
     for group_name in sorted(get_project_line_groups(project)):
         valid_line_ids = resolve_line_group_ids(project, group_name)
-        options[f"group::{group_name}"] = f"Group: {group_name} ({len(valid_line_ids)} lines)"
+        count = len(valid_line_ids)
+        options[f"group::{group_name}"] = f"{ILLUSTRATION_GROUP_LABEL}: {group_name} ({format_illustration_count(count)})"
     return options
 
 def render_batch_preview_text(
@@ -14415,7 +14420,7 @@ def render_compact_batch_preview_example(
 
 def render_line_groups_section(project):
     st.markdown("---")
-    with st.expander("Illustration Groups", expanded=False):
+    with st.expander(ILLUSTRATION_GROUPS_LABEL, expanded=False):
         if is_free():
             st.info("Illustration Groups are available in Pro.")
             return
@@ -14429,7 +14434,7 @@ def render_line_groups_section(project):
             if line.id in selected_set and is_gallery_operation_prompt_line(line)
         ]
 
-        st.caption(f"Selected lines: {len(valid_selected)}")
+        st.caption(f"Selected Illustrations: {len(valid_selected)}")
         if valid_selected:
             selected_preview = ", ".join(
                 f"{line.original_file_name}:{line.original_index + 1}"
@@ -14439,31 +14444,31 @@ def render_line_groups_section(project):
                 selected_preview += f", +{len(valid_selected) - 5} more"
             st.caption(selected_preview)
 
-        group_name = st.text_input("Group name", key="line_group_name")
+        group_name = st.text_input("Illustration Group name", key="line_group_name")
         clean_group_name = group_name.strip()
         create_error = None
         if not clean_group_name:
-            create_error = "Group name is required."
+            create_error = "Illustration Group name is required."
         elif clean_group_name in groups:
-            create_error = "A group with this name already exists."
+            create_error = "An Illustration Group with this name already exists."
         elif not valid_selected:
-            create_error = "Select lines before creating a group."
+            create_error = "Select Illustrations before creating a group."
 
         if create_error:
             st.caption(create_error)
 
-        if st.button("Create Group from Selected Illustrations", disabled=bool(create_error), key="line_group_create_btn"):
+        if st.button("Create Illustration Group from Selected Illustrations", disabled=bool(create_error), key="line_group_create_btn"):
             push_history()
             if create_line_group(st.session_state.project, clean_group_name, selected_line_ids):
                 st.session_state.pop("batch_edit_preview", None)
                 st.rerun()
-            st.warning("Could not create group.")
+            st.warning("Could not create Illustration Group.")
 
         if not groups:
-            st.info("No line groups yet.")
+            st.info("No Illustration Groups yet.")
             return
 
-        st.markdown("**Existing groups**")
+        st.markdown("**Existing Illustration Groups**")
         for group_name in sorted(groups):
             valid_ids = resolve_line_group_ids(project, group_name)
             sample_lines = [
@@ -14482,7 +14487,8 @@ def render_line_groups_section(project):
 
             c1, c2 = st.columns([0.8, 0.2])
             with c1:
-                st.write(f"**{group_name}** ({len(valid_ids)} lines)")
+                count = len(valid_ids)
+                st.write(f"**{group_name}** ({format_illustration_count(count)})")
                 st.caption(sample_label)
             with c2:
                 if st.button("Delete", key=f"delete_line_group_{group_name}"):
@@ -14507,7 +14513,7 @@ def render_focus_edit_token_picker(project, target_line, label="Raw Prompt Token
         return
 
     with st.expander(label, expanded=False):
-        st.caption("Select a focused-line token for graph operations and Propagate Edit.")
+        st.caption("Select a focused Illustration token for graph operations and Propagate Edit.")
         selected_ids = set(st.session_state.get("selected_node_ids", []))
         selected_pair = next(
             (
@@ -14596,7 +14602,7 @@ def render_focus_edit_propagation_section(project, target_line):
         st.info("Propagate Edit is available in Pro.")
         return
 
-    st.caption("Apply a tested one-token insert or replacement from this focused line to other lines.")
+    st.caption("Apply a tested one-token insert or replacement from this focused Illustration to other Illustrations.")
 
     selected_source_node_ids = [
         node_id
@@ -14604,7 +14610,7 @@ def render_focus_edit_propagation_section(project, target_line):
         if node_id in getattr(target_line, "node_path", []) and node_id in getattr(project, "nodes", {})
     ]
     if not selected_source_node_ids:
-        st.info("Select one token in the focused line graph before propagating.")
+        st.info("Select one token in the focused Illustration graph before propagating.")
         return
 
     source_node = project.nodes[selected_source_node_ids[0]]
@@ -14666,7 +14672,7 @@ def render_focus_edit_propagation_section(project, target_line):
     elif edit_tokens[0].startswith("<mod:") or edit_tokens[0].startswith("</mod:"):
         validation_error = "Module tags are not supported in propagation v1."
     elif target_line_ids == []:
-        validation_error = "No target lines."
+        validation_error = "No target Illustrations."
     elif focus_line_has_unsaved_edits(target_line):
         validation_error = "Save Focus Edit changes before propagating."
 
@@ -14709,14 +14715,14 @@ def render_focus_edit_propagation_section(project, target_line):
         return
 
     metric_cols = st.columns(3)
-    metric_cols[0].metric("Target lines", preview["target_line_count"])
-    metric_cols[1].metric("Affected lines", preview["affected_line_count"])
+    metric_cols[0].metric("Target Illustrations", preview["target_line_count"])
+    metric_cols[1].metric("Affected Illustrations", preview["affected_line_count"])
     metric_cols[2].metric("Skipped tags", preview["skipped_module_structure_count"])
 
     if preview["affected_line_count"] == 0:
-        st.warning("No lines will change.")
+        st.warning("No Illustrations will change.")
     if preview["skipped_module_structure_count"]:
-        st.warning("Some lines were skipped because the edit would change module tag structure.")
+        st.warning("Some Illustrations were skipped because the edit would change module tag structure.")
 
     if st.button(
         "Apply Propagation",
@@ -14838,7 +14844,7 @@ def render_batch_editing_section(project):
             st.caption("保存済みのシーン選択を対象にするにはIllustration Groupを作成してください。")
 
         if st.button("全重複を統合", key="batch_merge_all_duplicates"):
-            if not require_pro("Batch line operations are available in Pro."):
+            if not require_pro("Batch Illustration operations are available in Pro."):
                 st.stop()
 
             push_history()
@@ -14962,13 +14968,13 @@ def render_batch_editing_section(project):
                 key="batch_edit_add_position",
             )
             if add_position == "learned_neighbor":
-                st.caption("Learns immediate nearby token placement from existing lines. Single-token add prompts only in v1.")
+                st.caption("Learns immediate nearby token placement from existing Illustrations. Single-token add prompts only in v1.")
                 learned_neighbor_fallback = st.radio(
                     "No learned neighbor fallback",
                     options=["skip", "end"],
                     format_func=lambda value: {
-                        "skip": "Skip lines with no learned neighbor match",
-                        "end": "Insert at end of line",
+                        "skip": "Skip Illustrations with no learned neighbor match",
+                        "end": "Insert at end of Illustration",
                     }[value],
                     horizontal=True,
                     key="batch_edit_learned_neighbor_fallback",
@@ -14977,7 +14983,7 @@ def render_batch_editing_section(project):
                 insert_after_prompt = st.text_input(
                     "Insert after prompt",
                     key="batch_edit_insert_after_prompt",
-                    help="Leave empty to add at the end of each target line.",
+                    help="Leave empty to add at the end of each target Illustration.",
                 )
 
         target_line_ids = resolve_batch_edit_target_line_ids(
@@ -15036,7 +15042,7 @@ def render_batch_editing_section(project):
         if operation == "remove" and remove_match_mode == "exact_token" and search_text.strip() and not is_valid_exact_remove_target(search_text):
             validation_error = "Exact prompt token mode supports one prompt token."
         if target_line_ids == []:
-            validation_error = "No target lines."
+            validation_error = "No target Illustrations."
 
         if validation_error:
             st.warning(validation_error)
@@ -15109,17 +15115,17 @@ def render_batch_editing_section(project):
 
         preview = preview_state["preview"]
         metric_cols = st.columns(4)
-        metric_cols[0].metric("Target lines", preview["target_line_count"])
-        metric_cols[1].metric("Affected lines", preview["affected_line_count"])
+        metric_cols[0].metric("Target Illustrations", preview["target_line_count"])
+        metric_cols[1].metric("Affected Illustrations", preview["affected_line_count"])
         metric_cols[2].metric("Skipped no-neighbor", preview.get("skipped_no_neighbor_count", 0))
         metric_cols[3].metric("Skipped tags", preview["skipped_module_structure_count"])
 
         if preview["affected_line_count"] == 0:
-            st.warning("No lines will change.")
+            st.warning("No Illustrations will change.")
         if preview["skipped_module_structure_count"]:
-            st.warning("Some lines were skipped because the edit would change module tag structure.")
+            st.warning("Some Illustrations were skipped because the edit would change module tag structure.")
         if preview.get("skipped_no_neighbor_count", 0):
-            st.info("Some lines were skipped because no learned neighbor matched.")
+            st.info("Some Illustrations were skipped because no learned neighbor matched.")
 
         apply_current_batch_edit("batch_edit_apply_top_btn")
 
@@ -15150,12 +15156,12 @@ def render_module_preset_apply_section(project):
         selected_line_ids = get_selected_line_ids(project)
         focused_line = get_line_by_id(project, st.session_state.get("focused_line_id"))
         scope_options = {
-            "all": "All lines",
+            "all": BATCH_SCOPE_DISPLAY_LABELS["all"],
         }
         if focused_line:
-            scope_options["focus"] = "Focus line only"
+            scope_options["focus"] = BATCH_SCOPE_DISPLAY_LABELS["focus"]
         if selected_line_ids:
-            scope_options["selected"] = f"Selected lines ({len(selected_line_ids)})"
+            scope_options["selected"] = f"{BATCH_SCOPE_DISPLAY_LABELS['selected']} ({len(selected_line_ids)})"
         scope_options.update(line_group_scope_options(project))
         if st.session_state.get("module_preset_scope") not in scope_options:
             st.session_state.module_preset_scope = "all"
@@ -15197,7 +15203,7 @@ def render_module_preset_apply_section(project):
         if not module_name:
             validation_error = "Target module is required."
         if target_line_ids == []:
-            validation_error = "No target lines."
+            validation_error = "No target Illustrations."
 
         if validation_error:
             st.warning(validation_error)
@@ -15227,17 +15233,17 @@ def render_module_preset_apply_section(project):
 
         preview = preview_state["preview"]
         metric_cols = st.columns(4)
-        metric_cols[0].metric("Target lines", preview["target_line_count"])
-        metric_cols[1].metric("Affected lines", preview["affected_line_count"])
+        metric_cols[0].metric("Target Illustrations", preview["target_line_count"])
+        metric_cols[1].metric("Affected Illustrations", preview["affected_line_count"])
         metric_cols[2].metric("Skipped malformed", preview["skipped_malformed_count"])
         metric_cols[3].metric("Skipped tags", preview["skipped_module_structure_count"])
 
         if preview["affected_line_count"] == 0:
-            st.warning("No lines will change.")
+            st.warning("No Illustrations will change.")
         if preview["skipped_malformed_count"]:
-            st.warning("Some lines were skipped because the module range was malformed.")
+            st.warning("Some Illustrations were skipped because the module range was malformed.")
         if preview["skipped_module_structure_count"]:
-            st.warning("Some lines were skipped because the edit would change module tag structure.")
+            st.warning("Some Illustrations were skipped because the edit would change module tag structure.")
 
         for example in preview["examples"]:
             st.caption(f"{example['file']}:{example['line_number']}")
@@ -15502,7 +15508,7 @@ def render_module_swap_section(project):
                     "Illustration Groups",
                     options=group_names,
                     default=default_groups,
-                    format_func=lambda group_name: f"{group_name} ({len(resolve_line_group_ids(project, group_name))} lines)",
+                    format_func=lambda group_name: f"{group_name} ({len(resolve_line_group_ids(project, group_name))} Illustrations)",
                     key="module_swap_line_groups",
                 )
                 selection_labels = list(selected_line_groups)
@@ -15679,7 +15685,7 @@ def render_module_swap_section(project):
         summary_cols[2].metric("一致なしスキップ", preview["skipped_no_match_count"])
         summary_cols[3].metric("対象範囲", scope_options.get(scope_key, scope_key))
         st.caption(f"対象範囲: {scope_options.get(scope_key, scope_key)}")
-        st.caption(f"選択: {', '.join(selection_labels) if selection_labels else '(全prompt line)'}")
+        st.caption(f"選択: {', '.join(selection_labels) if selection_labels else '(全イラスト)'}")
         st.caption(f"差し替え元Module: {source_module}")
         st.caption(f"差し替え先Module: {target_module}")
 
@@ -15773,7 +15779,7 @@ def render_global_module_candidate_scanner_section(project):
         c1, c2 = st.columns(2)
         with c1:
             min_core_match_lines = st.number_input(
-                "Minimum core match lines",
+                "Minimum core match Illustrations",
                 min_value=0,
                 max_value=999,
                 value=1,
@@ -15829,7 +15835,7 @@ def render_global_module_candidate_scanner_section(project):
 
         scan = scan_state["scan"]
         metric_cols = st.columns(5)
-        metric_cols[0].metric("Prompt lines", scan["line_count"])
+        metric_cols[0].metric("Illustrations", scan["line_count"])
         metric_cols[1].metric("Global modules", scan["scanned_module_count"])
         metric_cols[2].metric("Candidates", scan["result_count"])
         metric_cols[3].metric("Below threshold", scan["below_threshold_count"])
@@ -15846,8 +15852,8 @@ def render_global_module_candidate_scanner_section(project):
             summary_rows.append({
                 "Module": result["module_name"],
                 "Type": result["module_type"],
-                "Core match lines": result["core_match_line_count"],
-                "Token match lines": result["token_match_line_count"],
+                "Core match Illustrations": result["core_match_line_count"],
+                "Token match Illustrations": result["token_match_line_count"],
                 "Avg ratio": f"{result['average_match_ratio']:.2f}",
                 "Best ratio": f"{result['best_match_ratio']:.2f}",
                 "Additional matches": result["additional_token_match_count"],
@@ -15863,7 +15869,7 @@ def render_global_module_candidate_scanner_section(project):
                 options=import_options,
                 format_func=lambda name: (
                     f"{name} "
-                    f"({next(row for row in importable_results if row['module_name'] == name)['core_match_line_count']} core lines)"
+                    f"({next(row for row in importable_results if row['module_name'] == name)['core_match_line_count']} core Illustrations)"
                 ),
                 key="global_module_candidate_import_names",
             )
@@ -15907,7 +15913,7 @@ def render_global_module_candidate_scanner_section(project):
             options=apply_options,
             format_func=lambda name: (
                 f"{name} "
-                f"({next(row for row in results if row['module_name'] == name)['core_match_line_count']} core lines)"
+                f"({next(row for row in results if row['module_name'] == name)['core_match_line_count']} core Illustrations)"
             ),
             key="global_module_candidate_apply_names",
         )
@@ -15957,9 +15963,9 @@ def render_global_module_candidate_scanner_section(project):
             apply_preview = apply_preview_state["preview"]
             apply_cols = st.columns(5)
             apply_cols[0].metric("Modules", len(apply_preview["selected_module_names"]))
-            apply_cols[1].metric("Candidate lines", apply_preview["candidate_line_count"])
+            apply_cols[1].metric("Candidate Illustrations", apply_preview["candidate_line_count"])
             apply_cols[2].metric("Changes", apply_preview["affected_line_count"])
-            apply_cols[3].metric("Affected lines", apply_preview["affected_line_id_count"])
+            apply_cols[3].metric("Affected Illustrations", apply_preview["affected_line_id_count"])
             apply_cols[4].metric("Already referenced", apply_preview["skipped_existing_reference_count"])
             if apply_preview["import_needed"]:
                 st.info(
@@ -15968,12 +15974,12 @@ def render_global_module_candidate_scanner_section(project):
                 )
             if apply_preview["skipped_existing_module_block_count"]:
                 st.warning(
-                    f"{apply_preview['skipped_existing_module_block_count']} candidate(s) were skipped because the line already contains structural module markers."
+                    f"{apply_preview['skipped_existing_module_block_count']} candidate(s) were skipped because the Illustration already contains structural module markers."
                 )
             if apply_preview["skipped_no_change_count"]:
                 st.caption(f"Skipped no-change candidates: {apply_preview['skipped_no_change_count']}")
             if apply_preview["affected_line_count"] == 0:
-                st.info("No candidate prompt lines will change.")
+                st.info("No candidate Illustrations will change.")
 
             for example in apply_preview["examples"]:
                 st.markdown(f"**{example['display_id']}**")
@@ -16038,7 +16044,7 @@ def render_global_module_candidate_scanner_section(project):
         for result in results:
             title = (
                 f"{result['module_name']} - "
-                f"{result['core_match_line_count']} core line(s), "
+                f"core matches: {format_illustration_count(result['core_match_line_count'])}, "
                 f"best {result['best_match_ratio']:.2f}"
             )
             with st.expander(title, expanded=False):
@@ -17207,12 +17213,12 @@ def render_create_module_from_scratch_section(project):
                 st.caption(f"Module targets: {_short_preview(', '.join(preview['module_targets']))}")
 
             metric_cols = st.columns(3)
-            metric_cols[0].metric("Target lines", preview["target_line_count"])
-            metric_cols[1].metric("Affected lines", preview["affected_line_count"])
+            metric_cols[0].metric("Target Illustrations", preview["target_line_count"])
+            metric_cols[1].metric("Affected Illustrations", preview["affected_line_count"])
             metric_cols[2].metric("Skipped malformed", preview["skipped_malformed_count"])
 
             if preview["affected_line_count"] == 0:
-                st.info("No prompt lines will change. Applying will still save the module to the project library.")
+                st.info("No Illustrations will change. Applying will still save the module to the project library.")
             if preview["skipped_malformed_count"]:
                 st.warning("Some module ranges were skipped because they were malformed or nested.")
 
@@ -17309,12 +17315,12 @@ def render_create_module_from_scratch_section(project):
                 st.caption(f"Module targets: {_short_preview(', '.join(replace_preview['module_targets']))}")
 
             replace_metric_cols = st.columns(3)
-            replace_metric_cols[0].metric("Target lines", replace_preview["target_line_count"])
-            replace_metric_cols[1].metric("Affected lines", replace_preview["affected_line_count"])
+            replace_metric_cols[0].metric("Target Illustrations", replace_preview["target_line_count"])
+            replace_metric_cols[1].metric("Affected Illustrations", replace_preview["affected_line_count"])
             replace_metric_cols[2].metric("Skipped malformed", replace_preview["skipped_malformed_count"])
 
             if replace_preview["affected_line_count"] == 0:
-                st.info("No prompt lines will change.")
+                st.info("No Illustrations will change.")
             if replace_preview["skipped_malformed_count"]:
                 st.warning("Some module ranges were skipped because they were malformed or nested.")
 
@@ -17439,7 +17445,7 @@ def render_insert_saved_module_reference_section(project):
             if not getattr(line, "deleted", False)
         ]
         if not valid_lines:
-            st.info("No target prompt lines.")
+            st.info("No target Illustrations.")
             return
 
         selected_line_ids = get_selected_line_ids(project)
@@ -17461,7 +17467,7 @@ def render_insert_saved_module_reference_section(project):
 
         line_lookup = {line.id: line for line in valid_lines}
         target_line_id = st.selectbox(
-            "Target line",
+            "Target Illustration",
             options=valid_line_ids,
             format_func=lambda line_id: (
                 f"{line_lookup[line_id].original_file_name}:"
@@ -17483,15 +17489,15 @@ def render_insert_saved_module_reference_section(project):
             ],
         )
         scope_options = {
-            "current": "Current line",
+            "current": "Current Illustration",
         }
         if selected_line_ids:
-            scope_options["selected"] = f"Selected lines ({len(selected_line_ids)})"
+            scope_options["selected"] = f"Selected Illustrations ({len(selected_line_ids)})"
         elif st.session_state.get("focused_line_id") or st.session_state.get("highlighted_line_id"):
-            scope_options["selected"] = "Selected lines (current focus/highlight)"
+            scope_options["selected"] = "Selected Illustrations (current focus/highlight)"
         if current_group_name:
-            scope_options["current_group"] = f"Current line group: {current_group_name} ({len(current_group_ids)} lines)"
-        scope_options["all"] = f"All lines ({len(valid_line_ids)})"
+            scope_options["current_group"] = f"Current Illustration Group: {current_group_name} ({len(current_group_ids)} Illustrations)"
+        scope_options["all"] = f"All Illustrations ({len(valid_line_ids)})"
         prepare_insert_module_reference_widget_state(
             "insert_module_reference_scope",
             "_insert_module_reference_scope_widget",
@@ -17508,8 +17514,8 @@ def render_insert_saved_module_reference_section(project):
         st.session_state.insert_module_reference_scope = insertion_scope
 
         position_labels = {
-            "start": "Start of line",
-            "end": "End of line",
+            "start": "Start of Illustration",
+            "end": "End of Illustration",
             "learned_neighbor": "Learned neighbor placement",
             "before": "Before selected token",
             "after": "After selected token",
@@ -17530,10 +17536,10 @@ def render_insert_saved_module_reference_section(project):
         )
         st.session_state.insert_module_reference_position = position
         if insertion_scope != "current":
-            st.caption("Before/after token insertion is available for Current line only in v1.")
+            st.caption("Before/after token insertion is available for Current Illustration only in v1.")
         learned_neighbor_fallback = "skip"
         if position == "learned_neighbor":
-            st.caption("Learns immediate nearby token placement from existing lines that already contain this module reference.")
+            st.caption("Learns immediate nearby token placement from existing Illustrations that already contain this module reference.")
             prepare_insert_module_reference_widget_state(
                 "insert_module_reference_learned_neighbor_fallback",
                 "_insert_module_reference_learned_neighbor_fallback_widget",
@@ -17544,8 +17550,8 @@ def render_insert_saved_module_reference_section(project):
                 "No learned neighbor fallback",
                 options=["skip", "end"],
                 format_func=lambda value: {
-                    "skip": "Skip lines with no learned neighbor match",
-                    "end": "Insert at end of line",
+                    "skip": "Skip Illustrations with no learned neighbor match",
+                    "end": "Insert at end of Illustration",
                 }[value],
                 horizontal=False,
                 key="_insert_module_reference_learned_neighbor_fallback_widget",
@@ -17559,7 +17565,7 @@ def render_insert_saved_module_reference_section(project):
         if insertion_scope == "current" and position in ("before", "after"):
             anchor_indices = [option["index"] for option in anchor_options]
             if not anchor_indices:
-                st.warning("No token anchors available on this line.")
+                st.warning("No token anchors available on this Illustration.")
 
             if anchor_indices:
                 prepare_insert_module_reference_widget_state(
@@ -17593,10 +17599,10 @@ def render_insert_saved_module_reference_section(project):
                     ]
                     if line_id in valid_line_ids
                 ]
-            scope_warning = None if target_line_ids else "No selected, focused, or highlighted lines."
+            scope_warning = None if target_line_ids else "No selected, focused, or highlighted Illustrations."
         elif insertion_scope == "current_group":
             target_line_ids = current_group_ids
-            scope_warning = None if target_line_ids else "No current line group target found."
+            scope_warning = None if target_line_ids else "No current Illustration Group target found."
         else:
             target_line_ids = None
             scope_warning = None
@@ -17646,8 +17652,8 @@ def render_insert_saved_module_reference_section(project):
         st.caption(f"Scope: {scope_options[insertion_scope]}")
 
         metric_cols = st.columns(4)
-        metric_cols[0].metric("Target lines", preview["target_line_count"])
-        metric_cols[1].metric("Affected lines", preview["affected_line_count"])
+        metric_cols[0].metric("Target Illustrations", preview["target_line_count"])
+        metric_cols[1].metric("Affected Illustrations", preview["affected_line_count"])
         metric_cols[2].metric("Skipped no-neighbor", preview.get("skipped_no_neighbor_count", 0))
         metric_cols[3].metric("Skipped existing", preview["skipped_existing_count"])
 
@@ -17660,9 +17666,9 @@ def render_insert_saved_module_reference_section(project):
             st.caption(f"After: {_short_preview(example['after'], 140)}")
 
         if preview["affected_line_count"] == 0:
-            st.info("No prompt line will change.")
+            st.info("No Illustration will change.")
         if preview.get("skipped_no_neighbor_count", 0):
-            st.info("Some lines were skipped because no learned neighbor matched.")
+            st.info("Some Illustrations were skipped because no learned neighbor matched.")
 
         if st.button(
             "Apply Insert Reference",
@@ -17877,7 +17883,7 @@ def render_module_usage_inspection(selected_module, selected_report) -> None:
     affected_lines = selected_report["lines"]
     if selected_report.get("library_body"):
         st.caption(f"Library: {_short_preview(selected_report['library_body'])}")
-    st.caption(f"Showing {min(len(affected_lines), 20)} of {len(affected_lines)} affected lines.")
+    st.caption(f"Showing {min(len(affected_lines), 20)} of {len(affected_lines)} affected Illustrations.")
     for line_info in affected_lines[:20]:
         st.markdown(f"**{line_info['file']}:{line_info['line_number']}**")
         contents = line_info["inline_contents"] + line_info["range_contents"]
@@ -17888,7 +17894,7 @@ def render_module_usage_inspection(selected_module, selected_report) -> None:
         st.caption(f"Raw: {_short_preview(line_info['raw_text'])}")
         st.caption(f"Active: {_short_preview(line_info['active_preview'])}")
     if len(affected_lines) > 20:
-        st.caption("Additional affected lines are hidden.")
+        st.caption("Additional affected Illustrations are hidden.")
 
 
 def render_module_edit_scope_controls(selected_module) -> None:
@@ -17992,7 +17998,7 @@ def render_module_rename_controls(selected_module, module_names) -> None:
         if rename_preview_state:
             st.caption(f"{rename_preview_state['old_name']} -> {rename_preview_state['new_name']}")
             preview_cols = st.columns(2)
-            preview_cols[0].metric("Affected lines", rename_preview_state["affected_line_count"])
+            preview_cols[0].metric("Affected Illustrations", rename_preview_state["affected_line_count"])
             preview_cols[1].metric("Markers", rename_preview_state["marker_occurrence_count"])
             marker_cols = st.columns(3)
             marker_cols[0].metric("Inline", rename_preview_state["inline_occurrence_count"])
@@ -18535,7 +18541,7 @@ def render_attribute_group_swap_section(project):
 
         st.markdown("**Preview Summary**")
         cols = st.columns(3)
-        cols[0].metric("Target lines", preview["target_line_count"])
+        cols[0].metric("Target Illustrations", preview["target_line_count"])
         cols[1].metric("Affected", preview["affected_line_count"])
         cols[2].metric("No match", preview["no_match_line_count"])
         cols2 = st.columns(2)
@@ -18570,7 +18576,7 @@ def render_attribute_group_swap_section(project):
             )
             restore_focus_after_graph_update(prev_focus)
             st.session_state.attribute_group_swap_notice = (
-                f"Attribute Group Swap applied to {preview['affected_line_count']} line(s)."
+                f"Attribute Group Swap applied to {format_illustration_count(preview['affected_line_count'])}."
             )
             st.session_state.pop("attribute_group_swap_preview", None)
             save_current_project_if_possible("attribute group swap applied")
@@ -18821,7 +18827,7 @@ def render_attribute_group_add_tokens_and_propagate(project, selected_group: str
         sync_text_areas()
         st.session_state.pop("attribute_group_propagate_preview", None)
         st.session_state.attribute_group_inspector_notice = (
-            f"Propagated added tokens to {preview['affected_line_count']} line(s)."
+            f"Propagated added tokens to {format_illustration_count(preview['affected_line_count'])}."
         )
         save_current_project_if_possible("attribute group added tokens propagated")
         st.rerun()
@@ -19165,25 +19171,25 @@ def render_attribute_group_inspector_section(project):
             st.caption("Preview only. No prompts or negative prompts are changed.")
             preview_line = get_selected_line_for_attribute_preview(project)
             if not preview_line:
-                st.info("Select or focus a line to preview disabled-state negative behavior.")
+                st.info("Select or focus an Illustration to preview disabled-state negative behavior.")
             else:
                 preview = build_attribute_group_negative_preview(project, selected_group, preview_line)
                 if not preview:
                     st.info("No preview is available for this Attribute Group.")
                 else:
-                    st.caption(f"Selected line: `{preview['line_label']}`")
-                    st.caption("If this Attribute Group were disabled in the selected line:")
+                    st.caption(f"Selected Illustration: `{preview['line_label']}`")
+                    st.caption("If this Attribute Group were disabled in the selected Illustration:")
                     preview_rows = [
                         {
                             "Area": "positive/group tokens",
                             "Tokens": _short_preview(", ".join(preview["group_tokens"]), 180),
                         },
                         {
-                            "Area": "found in selected line",
+                            "Area": "found in selected Illustration",
                             "Tokens": _short_preview(", ".join(preview["found_positive_tokens"]), 180),
                         },
                         {
-                            "Area": "missing in selected line",
+                            "Area": "missing in selected Illustration",
                             "Tokens": _short_preview(", ".join(preview["missing_positive_tokens"]), 180),
                         },
                         {
@@ -19195,7 +19201,7 @@ def render_attribute_group_inspector_section(project):
                             "Tokens": _short_preview(", ".join(preview["negative_when_disabled"]), 180),
                         },
                         {
-                            "Area": "existing per-line negative",
+                            "Area": "existing per-Illustration negative",
                             "Tokens": _short_preview(", ".join(preview["existing_negative_tokens"]), 180),
                         },
                         {
@@ -19314,7 +19320,7 @@ def render_module_candidate_selection_section(project):
             st.info("Create or load a project module before previewing candidates.")
             return
 
-        st.caption("Preview prompt lines that could become candidates for a saved module.")
+        st.caption("Preview Illustrations that could become candidates for a saved module.")
         pending_module = st.session_state.get("pending_module_candidate_selection")
         if pending_module in module_names:
             if st.session_state.get("module_candidate_pending_applied") != pending_module:
@@ -19325,7 +19331,7 @@ def render_module_candidate_selection_section(project):
                 st.session_state.module_candidate_pending_applied = pending_module
             st.info(
                 f"Recently created module: `{pending_module}`. "
-                "Preview candidate lines and apply only after checking before/after results."
+                "Preview candidate Illustrations and apply only after checking before/after results."
             )
         prepare_module_candidate_selection_widget_state(module_names)
         module_name = st.selectbox(
@@ -19428,12 +19434,12 @@ def render_module_candidate_selection_section(project):
             return
 
         preview = preview_state["preview"]
-        st.metric("Candidate lines", preview["total_candidate_count"])
+        st.metric("Candidate Illustrations", preview["total_candidate_count"])
         st.caption(f"Core: {_short_preview(', '.join(preview['core_tokens']), 120)}")
         st.caption(f"Minimum match: {preview['min_match_tokens']}/{len(preview['module_tokens'])} tokens")
 
         if preview["total_candidate_count"] == 0:
-            st.info("No prompt lines match these candidate rules.")
+            st.info("No Illustrations match these candidate rules.")
             return
 
         for example in preview["examples"]:
@@ -19482,7 +19488,7 @@ def render_module_candidate_selection_section(project):
         st.caption(f"Reference: `{apply_preview['module_reference']}`")
 
         if apply_preview["affected_line_count"] == 0:
-            st.info("No candidate lines will change.")
+            st.info("No candidate Illustrations will change.")
             return
 
         for example in apply_preview["examples"]:
@@ -19512,7 +19518,7 @@ def render_module_candidate_selection_section(project):
                 st.warning("Apply preview is out of date. Run preview apply again.")
                 return
             if not result.applied:
-                st.info("No candidate lines will change.")
+                st.info("No candidate Illustrations will change.")
                 return
             push_history()
             prev_focus = st.session_state.get("focused_line_id")
@@ -20114,9 +20120,9 @@ def render_selected_token_module_builder(project, selected_node_ids, connect_act
         module_reference = build_module_reference_token(created_name)
         st.success(f"Created module: {created_name}.")
         st.info(
-            f"This saved the module to the project Module Library, but existing prompt lines are still raw tokens. "
+            f"This saved the module to the project Module Library, but existing Illustrations are still raw tokens. "
             f"Use Module Candidate Selection to preview and replace matching tokens with `{module_reference}`. "
-            "Module toggles only affect lines that already contain module references."
+            "Module toggles only affect Illustrations that already contain module references."
         )
         if st.button("Use this module in Candidate Selection", key=f"selection_module_candidate_hint_{created_name}"):
             st.session_state.pending_module_candidate_selection = created_name
@@ -20388,7 +20394,7 @@ def render_selection_action_bar(project):
                     st.caption(f"Module scope active: {delete_preview_state['module_scope_name']}")
                 metric_cols = st.columns(4)
                 metric_cols[0].metric("Selected tokens", preview["selected_node_count"])
-                metric_cols[1].metric("Affected lines", preview["affected_line_count"])
+                metric_cols[1].metric("Affected Illustrations", preview["affected_line_count"])
                 metric_cols[2].metric("Tokens to delete", preview["tokens_to_delete_count"])
                 metric_cols[3].metric("Module deletes", preview["module_related_delete_count"])
 
@@ -20449,7 +20455,7 @@ def render_selection_action_bar(project):
                     st.caption(f"Module scope active: {weight_preview_state['module_scope_name']}")
                 metric_cols = st.columns(5)
                 metric_cols[0].metric("Selected tokens", preview["selected_node_count"])
-                metric_cols[1].metric("Affected lines", preview["affected_line_count"])
+                metric_cols[1].metric("Affected Illustrations", preview["affected_line_count"])
                 metric_cols[2].metric("Tokens to update", preview["tokens_to_update_count"])
                 metric_cols[3].metric("Already target", preview["already_target_weight_count"])
                 metric_cols[4].metric("Weighted before", preview["weighted_token_before_count"])
@@ -20505,7 +20511,7 @@ def render_selection_action_bar(project):
                     st.caption(f"Module scope active: {preview_state['module_scope_name']}")
                 metric_cols = st.columns(4)
                 metric_cols[0].metric("Total matches", preview["total_matches"])
-                metric_cols[1].metric("Affected lines", preview["affected_line_count"])
+                metric_cols[1].metric("Affected Illustrations", preview["affected_line_count"])
                 metric_cols[2].metric("Weighted tokens", preview["weighted_token_match_count"])
                 metric_cols[3].metric("Module matches", preview["module_related_match_count"])
 
@@ -20978,8 +20984,8 @@ with col1:
     st.markdown('<div id="navigation-prompt-graph"></div>', unsafe_allow_html=True)
     if focus_edit_active:
         st.markdown("#### Global Overview")
-        st.caption("Project-wide PromptGraph and PromptCloud stay here while the right side edits the focused prompt line.")
-        st.info("Focused line nodes are highlighted in the global graph.")
+        st.caption("Project-wide PromptGraph and PromptCloud stay here while the right side edits the focused Illustration.")
+        st.info("Focused Illustration nodes are highlighted in the global graph.")
         st.markdown("#### Prompt Graph")
     else:
         st.markdown("#### Prompt Graph")
@@ -20998,7 +21004,7 @@ with col1:
     show_cooccurrence_overlay = st.checkbox(
         "共起エッジを表示",
         key=GRAPH_COOCCURRENCE_WIDGET_KEY,
-        help="Adds light dashed edges between displayed words that frequently appear in the same prompt line.",
+        help="Adds light dashed edges between displayed words that frequently appear in the same Illustration.",
     )
     st.session_state[GRAPH_COOCCURRENCE_STATE_KEY] = show_cooccurrence_overlay
     st.caption("Blue/amber edges = syntax flow and divergence; gray dashed edges = semantic co-occurrence.")
@@ -21015,7 +21021,7 @@ with col1:
     if highlighted_line:
         cap_col, clear_col = st.columns([3, 1])
         with cap_col:
-            st.caption(f"Highlighted line path: {highlighted_line.original_file_name}")
+            st.caption(f"Highlighted Illustration path: {highlighted_line.original_file_name}")
         with clear_col:
             if st.button("Clear Illustration Highlight", key="clear_line_highlight"):
                 st.session_state.highlighted_line_id = None
@@ -21123,7 +21129,7 @@ with col1:
                     color="#D3D8DE",
                     width=1,
                     dashes=True,
-                    title=f"Co-occurs in {count} prompt lines",
+                    title=f"Co-occurs in {count} Illustrations",
                     arrows={"to": {"enabled": False}},
                 )
             )
@@ -21384,7 +21390,7 @@ with col1:
                 "word": seed_word,
                 "line_ids": seed_line_ids,
             }
-            st.success(f"Seeded Batch Edit with '{seed_word}' across {len(seed_line_ids)} matching lines.")
+            st.success(f"Seeded Batch Edit with '{seed_word}' across {len(seed_line_ids)} matching Illustrations.")
             st.rerun()
         promptcloud_selected_node_ids = [
             nid for nid in st.session_state.selected_node_ids
@@ -21592,14 +21598,14 @@ with col2:
             render_prompt_syntax_diagnostics(target_line.current_text)
 
             edit_panel = st.expander("Manual Prompt Editing", expanded=False)
-            edit_panel.caption("Direct text override for the focused prompt line.")
+            edit_panel.caption("Direct text override for the focused Illustration.")
             new_text = edit_panel.text_area("Edit Prompt", target_line.current_text, key=f"focus_text_{target_line.id}", height=150)
             new_negative_prompt = edit_panel.text_area(
                 "Negative Prompt",
                 getattr(target_line, "negative_prompt", "") or "",
                 key=f"focus_negative_text_{target_line.id}",
                 height=100,
-                help="Optional. Stored per line and exported, but not graphed in v1.",
+                help="Optional. Stored per Illustration and exported, but not graphed in v1.",
             )
             c1, c2 = edit_panel.columns(2)
             with c1:
