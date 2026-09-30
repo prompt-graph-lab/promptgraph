@@ -20,11 +20,29 @@ def resolve_comfy_workflow_path(workflow_path, *, get_current_project_path):
     return os.path.abspath(expanded_path)
 
 
+def is_comfy_workflow_preset_directory_path_valid(preset_dir):
+    """Reject malformed input before Windows can collapse invalid components."""
+    path_value = os.fspath(preset_dir)
+    if any(ord(character) < 32 for character in path_value):
+        return False
+    if os.name == "nt":
+        _drive, path_tail = os.path.splitdrive(path_value)
+        if any(character in '<>:"|?*' for character in path_tail):
+            return False
+    return True
+
+
 def list_comfy_workflow_presets(preset_dir):
-    if not os.path.isdir(preset_dir):
+    if not is_comfy_workflow_preset_directory_path_valid(preset_dir):
+        return []
+    try:
+        if not os.path.isdir(preset_dir):
+            return []
+        file_names = os.listdir(preset_dir)
+    except (OSError, ValueError):
         return []
     presets = []
-    for file_name in sorted(os.listdir(preset_dir), key=str.casefold):
+    for file_name in sorted(file_names, key=str.casefold):
         if os.path.splitext(file_name)[1].lower() != ".json":
             continue
         preset_path = os.path.join(preset_dir, file_name)
@@ -37,8 +55,13 @@ def resolve_comfy_workflow_preset_path(preset_name, preset_dir):
     clean_name = os.path.basename(str(preset_name or "").strip())
     if not clean_name:
         return ""
-    preset_path = os.path.abspath(os.path.join(preset_dir, clean_name))
-    preset_root = os.path.abspath(preset_dir)
+    if not is_comfy_workflow_preset_directory_path_valid(preset_dir):
+        return ""
+    try:
+        preset_path = os.path.abspath(os.path.join(preset_dir, clean_name))
+        preset_root = os.path.abspath(preset_dir)
+    except (OSError, ValueError):
+        return ""
     if os.path.dirname(preset_path) != preset_root:
         return ""
     if os.path.splitext(preset_path)[1].lower() != ".json":

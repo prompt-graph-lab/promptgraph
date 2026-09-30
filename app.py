@@ -433,12 +433,14 @@ from core.route_operations import (
 )
 from core.settings import (
     EDITION,
+    get_comfyui_workflow_preset_directory,
     get_animadex_local_path,
     get_last_project_path,
     get_projects_root_directory,
     get_recent_projects,
     load_settings,
     normalize_projects_root_directory,
+    normalize_comfyui_workflow_preset_directory,
     remember_project,
     save_settings,
 )
@@ -2298,13 +2300,21 @@ def resolve_comfy_workflow_path(workflow_path):
     )
 
 
+def get_active_comfy_workflow_preset_directory():
+    return get_comfyui_workflow_preset_directory(
+        st.session_state.settings, WORKFLOW_PRESET_DIR,
+    )
+
+
 def list_comfy_workflow_presets():
-    return comfy_workflow_paths.list_comfy_workflow_presets(WORKFLOW_PRESET_DIR)
+    return comfy_workflow_paths.list_comfy_workflow_presets(
+        get_active_comfy_workflow_preset_directory(),
+    )
 
 
 def resolve_comfy_workflow_preset_path(preset_name):
     return comfy_workflow_paths.resolve_comfy_workflow_preset_path(
-        preset_name, WORKFLOW_PRESET_DIR,
+        preset_name, get_active_comfy_workflow_preset_directory(),
     )
 
 
@@ -2342,6 +2352,9 @@ def ensure_comfy_settings_session_state():
         "force_shared_comfy_workflow": bool(
             settings.get("force_shared_comfy_workflow", False)
         ),
+        "comfy_workflow_preset_directory": normalize_comfyui_workflow_preset_directory(
+            settings.get("comfyui_workflow_preset_directory", "")
+        ),
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -2367,6 +2380,63 @@ def update_comfy_settings():
     save_settings(settings)
 
 
+def update_comfy_workflow_preset_directory():
+    settings = st.session_state.settings
+    directory = normalize_comfyui_workflow_preset_directory(
+        st.session_state.get("comfy_workflow_preset_directory", "")
+    )
+    settings["comfyui_workflow_preset_directory"] = directory
+    st.session_state.comfy_workflow_preset_directory = directory
+    selected = st.session_state.get(
+        "comfy_workflow_preset", settings.get("comfyui_workflow_preset", "")
+    )
+    if selected not in list_comfy_workflow_presets():
+        selected = ""
+    st.session_state.comfy_workflow_preset = selected
+    settings["comfyui_workflow_preset"] = selected
+    save_settings(settings)
+
+
+def reset_comfy_workflow_preset_directory():
+    st.session_state.comfy_workflow_preset_directory = ""
+    update_comfy_workflow_preset_directory()
+
+
+def get_comfy_workflow_preset_directory_error():
+    directory = get_active_comfy_workflow_preset_directory()
+    if not comfy_workflow_paths.is_comfy_workflow_preset_directory_path_valid(directory):
+        return "Workflow Preset directory path is invalid."
+    try:
+        if not os.path.isdir(directory):
+            return "Workflow Preset directory is missing or is not a directory."
+        os.listdir(directory)
+    except (OSError, ValueError):
+        return "Workflow Preset directory is invalid or unreadable."
+    return ""
+
+
+def render_comfy_workflow_preset_directory_settings():
+    st.text_input(
+        "Workflow Preset directory",
+        key="comfy_workflow_preset_directory",
+        help="Blank uses bundled workflows/. External directories are read-only; only top-level JSON files are listed.",
+        on_change=update_comfy_workflow_preset_directory,
+    )
+    st.button(
+        "Reset Workflow Preset directory to bundled workflows",
+        key="reset_comfy_workflow_preset_directory",
+        on_click=reset_comfy_workflow_preset_directory,
+    )
+    configured = st.session_state.settings.get("comfyui_workflow_preset_directory", "")
+    mode = "external" if configured else "bundled"
+    st.caption(f"Preset directory ({mode}): {get_active_comfy_workflow_preset_directory()}")
+    error = get_comfy_workflow_preset_directory_error()
+    if error:
+        st.warning(f"{error} No presets are available from this directory.")
+    else:
+        st.caption(f"Available presets: {len(list_comfy_workflow_presets())}")
+
+
 def render_comfyui_settings_workspace() -> None:
     ensure_comfy_settings_session_state()
     st.info(
@@ -2387,9 +2457,10 @@ def render_comfyui_settings_workspace() -> None:
     st.checkbox(
         "共通ワークフローを強制使用",
         key="force_shared_comfy_workflow",
-        help="埋め込みワークフローを無視し、workflow_api.json を常に使用します。",
+        help="埋め込みワークフローを無視し、使用可能な選択中プリセットを優先します。プリセットがなければ Workflow JSON fallback path を使用します。",
         on_change=update_comfy_settings,
     )
+    render_comfy_workflow_preset_directory_settings()
 
     st.markdown("**Current effective configuration**")
     active_preset = st.session_state.get("comfy_workflow_preset", "")
@@ -2432,11 +2503,13 @@ def render_comfyui_daily_sidebar_section() -> None:
         format_func=lambda value: "(none)" if not value else value,
         key="comfy_workflow_preset",
         help=(
-            "Shared workflow JSON files in the repository workflows/ directory. "
+            "Shared workflow JSON files in the active Workflow Preset directory. "
             "Used when the project workflow path is missing."
         ),
         on_change=update_comfy_settings,
     )
+    if get_comfy_workflow_preset_directory_error():
+        comfy_sidebar.caption("Preset directory unavailable. Check ComfyUI Settings.")
     comfy_sidebar.caption(
         f"Configured endpoint: {st.session_state.comfy_url or '(not set)'}"
     )

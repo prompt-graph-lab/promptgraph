@@ -157,8 +157,10 @@ class ComfyUiAnalysisWorkspacePerformanceTests(unittest.TestCase):
             ["render_comfyui_settings_workspace"],
             {
                 "st": st,
+                "get_comfy_workflow_preset_directory_error": lambda: "",
                 "ensure_comfy_settings_session_state": count("ensure"),
                 "update_comfy_settings": count("save"),
+                "render_comfy_workflow_preset_directory_settings": lambda: None,
                 "resolve_effective_comfy_workflow_path": count(
                     "resolve", ("C:/workflow.json", "project")
                 ),
@@ -208,6 +210,7 @@ class ComfyUiAnalysisWorkspacePerformanceTests(unittest.TestCase):
             ["render_comfyui_daily_sidebar_section"],
             {
                 "st": st,
+                "get_comfy_workflow_preset_directory_error": lambda: "",
                 "ensure_comfy_settings_session_state": ensure,
                 "update_comfy_settings": save,
                 "resolve_effective_comfy_workflow_path": resolve,

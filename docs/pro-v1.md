@@ -466,11 +466,24 @@ The extractor does not guess positive/negative roles from multiple unrelated tex
 
 ## Workflow Presets
 
-Workflow Presets are reusable shared ComfyUI workflow templates. Effective workflow resolution stays conservative:
+Workflow Presets are reusable shared ComfyUI workflow templates.
+
+ComfyUI Settings configures an application-local Workflow Preset directory. Blank
+uses the bundled `workflows/` directory; an external directory lists only its
+top-level JSON files. A missing or invalid external directory shows a warning
+and no presets, without switching back to bundled files. Changing or resetting
+the directory keeps the selected filename only if it exists in the new directory;
+otherwise the saved selection is cleared. Daily preset selection stays in the
+Sidebar. This setting does not copy or edit Workflow files or enter Project JSON.
+
+Effective workflow resolution stays conservative:
 
 1. embedded line ComfyUI workflow metadata when usable and not forced off
 2. project workflow path when configured and present
 3. selected Workflow Preset when available
 4. shared workflow path fallback
+
+Force shared workflow bypasses embedded metadata and prefers an available
+selected preset, then uses the configured Workflow JSON fallback path.
 
 Workflow Presets do not mutate imported metadata, source generation snapshots, editable prompt fields, or project save/load schema.

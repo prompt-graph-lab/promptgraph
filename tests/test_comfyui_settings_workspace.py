@@ -5,7 +5,7 @@ import types
 import unittest
 from pathlib import Path
 
-from core import comfy_workflow_paths
+from core import comfy_workflow_paths, settings as app_settings
 
 
 class _SessionState(dict):
@@ -56,6 +56,10 @@ class ComfyUiSettingsWorkspaceTests(unittest.TestCase):
         return ast.get_source_segment(self.app_source, self.functions[name])
 
     def _load_functions(self, *names, namespace):
+        namespace.setdefault("normalize_comfyui_workflow_preset_directory", app_settings.normalize_comfyui_workflow_preset_directory)
+        namespace.setdefault("get_comfyui_workflow_preset_directory", app_settings.get_comfyui_workflow_preset_directory)
+        namespace.setdefault("get_active_comfy_workflow_preset_directory", lambda: app_settings.get_comfyui_workflow_preset_directory(namespace["st"].session_state.settings, namespace["WORKFLOW_PRESET_DIR"]))
+        namespace.setdefault("render_comfy_workflow_preset_directory_settings", lambda: None)
         module = ast.Module(
             body=[self.functions[name] for name in names],
             type_ignores=[],
@@ -84,6 +88,7 @@ class ComfyUiSettingsWorkspaceTests(unittest.TestCase):
             "comfy_workflow_path",
             "force_shared_comfy_workflow",
             "comfy_workflow_preset",
+            "comfy_workflow_preset_directory",
         ):
             self.assertEqual(self.app_source.count(f'key="{key}"'), 1, key)
 
