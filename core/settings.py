@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
+from core.comfy_workflow_paths import is_comfy_workflow_preset_directory_path_valid
 
 SETTINGS_FILE = ".editor_settings.json"
 EDITION = "PRO"  # Change to "PRO" to unlock all features
@@ -17,6 +18,7 @@ def _default_settings():
         "comfyui_url": "127.0.0.1:8188",
         "comfyui_workflow_path": "workflow_api.json",
         "comfyui_workflow_preset": "",
+        "comfyui_workflow_preset_directory": "",
         "force_shared_comfy_workflow": False,
         "global_module_library_dir": DEFAULT_GLOBAL_MODULE_LIBRARY_DIR,
         "projects_root_directory": "",
@@ -24,6 +26,30 @@ def _default_settings():
         "last_project": "",
         "recent_projects": [],
     }
+
+
+def normalize_comfyui_workflow_preset_directory(path) -> str:
+    """Blank selects bundled presets; retain explicit invalid paths as broken."""
+    try:
+        path_value = os.fspath(path)
+    except (TypeError, ValueError):
+        path_value = str(path)
+    if not isinstance(path_value, str):
+        path_value = str(path_value)
+    clean_path = path_value.strip()
+    if not clean_path:
+        return ""
+    if not is_comfy_workflow_preset_directory_path_valid(clean_path):
+        return clean_path
+    try:
+        return os.path.abspath(os.path.expanduser(clean_path))
+    except (OSError, TypeError, ValueError):
+        return clean_path
+
+
+def get_comfyui_workflow_preset_directory(settings, bundled_directory) -> str:
+    configured = settings.get("comfyui_workflow_preset_directory", "") if isinstance(settings, dict) else ""
+    return normalize_comfyui_workflow_preset_directory(configured) or bundled_directory
 
 
 def normalize_projects_root_directory(path) -> str:
