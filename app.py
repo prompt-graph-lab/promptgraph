@@ -8082,7 +8082,7 @@ def validate_manual_candidate_path(path: str) -> tuple[str, str]:
 
 def render_gallery_line_editor(line, project):
     _consume_gallery_prompt_widget_sync(line)
-    st.markdown(f"#### 編集: `{get_prompt_line_label(line)}`")
+    st.markdown(f"#### イラストを編集中: `{get_prompt_line_label(line)}`")
     image_col, edit_col = st.columns([1, 2])
     with image_col:
         thumbnail_path = _line_thumbnail_path(line)
@@ -11475,104 +11475,105 @@ def render_gallery_operations_launcher(project) -> None:
         if st.session_state.get("gallery_move_targets", {}).get(line.id)
         and is_gallery_operation_prompt_line(line)
     ]
-    st.markdown("#### シーンのプロンプト・構造編集")
-    st.caption(
-        "既存シーンを編集し、再生成して、Candidateを本編へ反映する順に操作します。"
-    )
-    st.markdown("##### 1. Prompt／構造を編集")
-    st.caption(
-        "ModuleやAttribute、Promptを調整し、必要に応じて派生Projectを作成します。"
-    )
-    _render_gallery_operation_buttons(
-        [
-            (
-                "module_swap",
-                "モジュール差し替え",
-                "シーンまたはプロジェクト全体のキャラクター・服装・構造モジュールを入れ替えます。",
-            ),
-            (
-                "attribute_group_swap",
-                "Attribute Group Swap",
-                "Galleryのシーンや選択イラストを見ながら、衣装・表情・ポーズなどのAttribute差分を差し替えます。",
-            ),
-            (
-                "batch_edit",
-                "一括編集",
-                "選択・シーン・プロジェクト全体のプロンプトをプレビュー付きで一括修正します。",
-            ),
-            (
-                "lightweight_fork",
-                "派生Project",
-                "確定した最終シーケンスから、元Projectを変更せずに派生Projectを作成します。",
-            ),
-        ]
-    )
-    _render_gallery_active_operation_for_workflow(project, "route")
+    with st.container(border=True):
+        st.markdown("#### シーンのプロンプト・構造編集")
+        st.caption(
+            "既存シーンを編集し、再生成して、Candidateを本編へ反映する順に操作します。"
+        )
+        st.markdown("##### 1. Prompt／構造を編集")
+        st.caption(
+            "ModuleやAttribute、Promptを調整し、必要に応じて派生Projectを作成します。"
+        )
+        _render_gallery_operation_buttons(
+            [
+                (
+                    "module_swap",
+                    "モジュール差し替え",
+                    "シーンまたはプロジェクト全体のキャラクター・服装・構造モジュールを入れ替えます。",
+                ),
+                (
+                    "attribute_group_swap",
+                    "Attribute Group Swap",
+                    "Galleryのシーンや選択イラストを見ながら、衣装・表情・ポーズなどのAttribute差分を差し替えます。",
+                ),
+                (
+                    "batch_edit",
+                    "一括編集",
+                    "選択・シーン・プロジェクト全体のプロンプトをプレビュー付きで一括修正します。",
+                ),
+                (
+                    "lightweight_fork",
+                    "派生Project",
+                    "確定した最終シーケンスから、元Projectを変更せずに派生Projectを作成します。",
+                ),
+            ]
+        )
+        _render_gallery_active_operation_for_workflow(project, "route")
 
-    st.markdown("##### 2. Scene Generation / シーンを一括生成")
-    st.caption(
-        "編集後のPromptを使って、すべてのイラストまたは選択中のシーンを一括生成します。"
-    )
-    _render_gallery_operation_buttons(
-        [
-            (
-                "gallery_generation",
-                "一括生成を開く",
-                "既存のScene Generationをsingle active operation panelで開きます。",
-            ),
-        ]
-    )
-    _render_gallery_active_operation_for_workflow(project, "generation")
+        st.markdown("##### 2. Scene Generation / シーンを一括生成")
+        st.caption(
+            "編集後のPromptを使って、すべてのイラストまたは選択中のシーンを一括生成します。"
+        )
+        _render_gallery_operation_buttons(
+            [
+                (
+                    "gallery_generation",
+                    "一括生成を開く",
+                    "既存のScene Generationをsingle active operation panelで開きます。",
+                ),
+            ]
+        )
+        _render_gallery_active_operation_for_workflow(project, "generation")
 
-    st.markdown("##### 3. Candidateを本編へ反映")
-    st.caption(
-        "一括生成後に各イラストのCandidateを確認し、選択した画像を本編へ反映します。"
-    )
-    _render_gallery_operation_buttons(
-        [
-            (
-                "batch_candidate_adoption",
-                "Candidate Adoptionを開く",
-                "既存のScene Batch Candidate Adoptionをsingle active operation panelで開きます。",
-            ),
-        ]
-    )
-    _render_gallery_active_operation_for_workflow(project, "adoption")
+        st.markdown("##### 3. Candidateを本編へ反映")
+        st.caption(
+            "一括生成後に各イラストのCandidateを確認し、選択した画像を本編へ反映します。"
+        )
+        _render_gallery_operation_buttons(
+            [
+                (
+                    "batch_candidate_adoption",
+                    "Candidate Adoptionを開く",
+                    "既存のScene Batch Candidate Adoptionをsingle active operation panelで開きます。",
+                ),
+            ]
+        )
+        _render_gallery_active_operation_for_workflow(project, "adoption")
 
-    st.divider()
-    st.markdown("#### イラスト／Workbenchベースの作成・拡張")
-    st.caption(
-        "個別イラストやWorkbenchからCandidate／Variantを使って、本編イラストや別案シーンを増やします。"
-    )
-    st.caption(
-        "These operations use Illustration, Candidate, Variant, or Workbench context rather than the shared "
-        "Scene selection unless the operation explicitly offers Selected Scenes / 操作対象シーン."
-    )
-    render_gallery_batch_variant_promotion(project, active_lines, operation_selected_line_ids)
-    st.caption(
-        "Batch Promote Variantsはシーン区切りを作らず通常のGalleryイラストを追加します。"
-        "候補から別案シーンを作成はシーン区切り付きの別案シーンを追加します。"
-    )
-    _render_gallery_operation_buttons(
-        [
-            (
-                "candidate_route_creation",
-                "候補から別案シーンを作成",
-                "イラストのCandidatesをシーン区切り付きの別案シーンとして展開します。Candidate自体は削除しません。",
-            ),
-            (
-                "prompt_revert",
-                "Prompt Revert",
-                "対象イラストの編集中Positive Promptを元画像Promptへ戻します。画像参照とNegative Promptは変更しません。",
-            ),
-            (
-                "module_candidates",
-                "モジュール候補検索",
-                "共通トークン列をモジュール候補として検索し、モジュール参照を適用します。",
-            ),
-        ]
-    )
-    _render_gallery_active_operation_for_workflow(project, "line")
+    with st.container(border=True):
+        st.markdown("#### イラスト／Workbenchベースの作成・拡張")
+        st.caption(
+            "個別イラストやWorkbenchからCandidate／Variantを使って、本編イラストや別案シーンを増やします。"
+        )
+        st.caption(
+            "These operations use Illustration, Candidate, Variant, or Workbench context rather than the shared "
+            "Scene selection unless the operation explicitly offers Selected Scenes / 操作対象シーン."
+        )
+        render_gallery_batch_variant_promotion(project, active_lines, operation_selected_line_ids)
+        st.caption(
+            "Batch Promote Variantsはシーン区切りを作らず通常のGalleryイラストを追加します。"
+            "候補から別案シーンを作成はシーン区切り付きの別案シーンを追加します。"
+        )
+        _render_gallery_operation_buttons(
+            [
+                (
+                    "candidate_route_creation",
+                    "候補から別案シーンを作成",
+                    "イラストのCandidatesをシーン区切り付きの別案シーンとして展開します。Candidate自体は削除しません。",
+                ),
+                (
+                    "prompt_revert",
+                    "Prompt Revert",
+                    "対象イラストの編集中Positive Promptを元画像Promptへ戻します。画像参照とNegative Promptは変更しません。",
+                ),
+                (
+                    "module_candidates",
+                    "モジュール候補検索",
+                    "共通トークン列をモジュール候補として検索し、モジュール参照を適用します。",
+                ),
+            ]
+        )
+        _render_gallery_active_operation_for_workflow(project, "line")
 
 
 def render_gallery_active_operation_panel(project) -> None:
@@ -12690,9 +12691,12 @@ def render_gallery_route_separator_header(project, line, line_index: int, active
 
 
 def render_gallery_workbench_card(project, line, line_index: int, active_lines: list, move_targets: dict, move_target_ids: list[str], expanded_line_id: str | None) -> None:
+    is_editing = expanded_line_id == line.id
     inherited_color = current_route_color_for_line(active_lines, line.id)
     if inherited_color:
         st.caption(route_color_name(inherited_color))
+    if is_editing:
+        st.info("編集中")
     st.caption("作業場")
     st.markdown(f"**{workbench_title(line)}**")
     st.caption(_workbench_source_label(project, line))
@@ -12758,9 +12762,13 @@ def render_gallery_workbench_card(project, line, line_index: int, active_lines: 
 
     action_cols = st.columns(2)
     with action_cols[0]:
-        if st.button("編集", key=f"pro_gallery_edit_{line.id}"):
+        if st.button(
+            "編集を閉じる" if is_editing else "編集",
+            key=f"pro_gallery_edit_{line.id}",
+            type="primary" if is_editing else "secondary",
+        ):
             st.session_state.highlighted_line_id = line.id
-            st.session_state.gallery_expanded_line_id = None if expanded_line_id == line.id else line.id
+            st.session_state.gallery_expanded_line_id = None if is_editing else line.id
             st.rerun()
     with action_cols[1]:
         if st.button("一件削除", key=f"pro_gallery_delete_line_{line.id}"):
@@ -12783,9 +12791,12 @@ def render_gallery_normal_line_card(project, line, line_index: int, active_lines
         render_gallery_workbench_card(project, line, line_index, active_lines, move_targets, move_target_ids, expanded_line_id)
         return
 
+    is_editing = expanded_line_id == line.id
     inherited_color = current_route_color_for_line(active_lines, line.id)
     if inherited_color:
         st.caption(route_color_name(inherited_color))
+    if is_editing:
+        st.info("編集中")
     thumbnail_path = _line_thumbnail_path(line)
     if thumbnail_path:
         st.image(thumbnail_path, width="stretch")
@@ -12828,8 +12839,12 @@ def render_gallery_normal_line_card(project, line, line_index: int, active_lines
 
     action_cols = st.columns(2)
     with action_cols[0]:
-        if st.button("編集", key=f"pro_gallery_edit_{line.id}"):
-            st.session_state.gallery_expanded_line_id = None if expanded_line_id == line.id else line.id
+        if st.button(
+            "編集を閉じる" if is_editing else "編集",
+            key=f"pro_gallery_edit_{line.id}",
+            type="primary" if is_editing else "secondary",
+        ):
+            st.session_state.gallery_expanded_line_id = None if is_editing else line.id
             st.rerun()
     with action_cols[1]:
         if st.button("分岐", key=f"pro_gallery_create_route_branch_{line.id}"):
