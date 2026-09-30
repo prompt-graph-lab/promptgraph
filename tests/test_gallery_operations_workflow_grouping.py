@@ -1,4 +1,6 @@
 from pathlib import Path
+import ast
+from types import SimpleNamespace
 import unittest
 
 
@@ -22,6 +24,7 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
         cls.active_panel_source = cls.app_source[panel_start:panel_end]
 
     def test_workflow_groups_follow_production_order(self):
+        route_border = self.launcher_source.index("with st.container(border=True):")
         route_group = self.launcher_source.index(
             'st.markdown("#### シーンのプロンプト・構造編集")'
         )
@@ -61,10 +64,10 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
             '_render_gallery_active_operation_for_workflow(project, "adoption")',
             adoption,
         )
-        divider = self.launcher_source.index("st.divider()", adoption_panel)
+        line_border = self.launcher_source.index("with st.container(border=True):", adoption_panel)
         line_group = self.launcher_source.index(
             'st.markdown("#### イラスト／Workbenchベースの作成・拡張")',
-            divider,
+            line_border,
         )
         promotion = self.launcher_source.index(
             "render_gallery_batch_variant_promotion(",
@@ -77,6 +80,7 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
 
         self.assertEqual(
             [
+                route_border,
                 route_group,
                 phase_1,
                 route_buttons,
@@ -87,13 +91,14 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
                 phase_3,
                 adoption,
                 adoption_panel,
-                divider,
+                line_border,
                 line_group,
                 promotion,
                 candidate_route,
             ],
             sorted(
                 [
+                    route_border,
                     route_group,
                     phase_1,
                     route_buttons,
@@ -104,13 +109,80 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
                     phase_3,
                     adoption,
                     adoption_panel,
-                    divider,
+                    line_border,
                     line_group,
                     promotion,
                     candidate_route,
                 ]
             ),
         )
+        self.assertEqual(2, self.launcher_source.count("with st.container(border=True):"))
+        self.assertNotIn("st.divider()", self.launcher_source)
+
+    def test_bordered_groups_keep_workflows_in_order_and_render_once(self):
+        events = []
+
+        class FakeContainer:
+            def __init__(self, st):
+                self.st = st
+
+            def __enter__(self):
+                self.st.group += 1
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeStreamlit:
+            def __init__(self):
+                self.session_state = {"gallery_move_targets": {}}
+                self.group = 0
+
+            def container(self, *, border):
+                self_outer = self
+                assert border is True
+                return FakeContainer(self_outer)
+
+            def markdown(self, value):
+                events.append((self.group, "heading", value))
+
+            def caption(self, _value):
+                pass
+
+        namespace = {
+            "st": FakeStreamlit(),
+            "get_visible_prompt_lines": lambda _project: [SimpleNamespace(id="one")],
+            "is_gallery_operation_prompt_line": lambda _line: True,
+            "_render_gallery_operation_buttons": lambda actions: events.append(
+                (namespace["st"].group, "buttons", tuple(action[0] for action in actions))
+            ),
+            "_render_gallery_active_operation_for_workflow": lambda _project, group: events.append(
+                (namespace["st"].group, "active", group)
+            ),
+            "render_gallery_batch_variant_promotion": lambda *_args: events.append(
+                (namespace["st"].group, "promotion", None)
+            ),
+        }
+        node = next(
+            item for item in ast.parse(self.app_source).body
+            if isinstance(item, ast.FunctionDef) and item.name == "render_gallery_operations_launcher"
+        )
+        exec(ast.get_source_segment(self.app_source, node), namespace)
+        namespace["render_gallery_operations_launcher"](object())
+
+        assert [event for event in events if event[1] != "heading"] == [
+            (1, "buttons", ("module_swap", "attribute_group_swap", "batch_edit", "lightweight_fork")),
+            (1, "active", "route"),
+            (1, "buttons", ("gallery_generation",)),
+            (1, "active", "generation"),
+            (1, "buttons", ("batch_candidate_adoption",)),
+            (1, "active", "adoption"),
+            (2, "promotion", None),
+            (2, "buttons", ("candidate_route_creation", "prompt_revert", "module_candidates")),
+            (2, "active", "line"),
+        ]
+        assert (1, "heading", "#### シーンのプロンプト・構造編集") in events
+        assert (2, "heading", "#### イラスト／Workbenchベースの作成・拡張") in events
 
     def test_major_operation_renderers_are_not_duplicated(self):
         for call in (
