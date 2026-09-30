@@ -2717,6 +2717,54 @@ def is_valid_exact_replace_target(find_text: str, replace_text: str) -> bool:
         and bool(extract_node_metadata(replace_tokens[0])["base_word"].strip())
     )
 
+def is_valid_token_set_replace_target(find_text: str, replace_text: str) -> bool:
+    find_tokens = parse_prompt(find_text or "")
+    replace_tokens = parse_prompt(replace_text or "")
+    if not find_tokens or not replace_tokens:
+        return False
+    if any(is_structural_mod_marker(token) for token in find_tokens + replace_tokens):
+        return False
+    find_bases = [extract_node_metadata(token)["base_word"].strip() for token in find_tokens]
+    replace_bases = [extract_node_metadata(token)["base_word"].strip() for token in replace_tokens]
+    return (
+        all(find_bases) and all(replace_bases)
+        and len(set(find_bases)) == len(find_bases)
+    )
+
+
+def _replace_prompt_token_set(text: str, find_text: str, replace_text: str) -> str:
+    """Replace a complete set of prompt bases once, at its earliest occurrence."""
+    if not is_valid_token_set_replace_target(find_text, replace_text):
+        return text
+
+    find_bases = {
+        extract_node_metadata(token)["base_word"].strip()
+        for token in parse_prompt(find_text)
+    }
+    tokens = parse_prompt(text)
+    matched_indexes = [
+        index for index, token in enumerate(tokens)
+        if not is_structural_mod_marker(token)
+        and extract_node_metadata(token)["base_word"].strip() in find_bases
+    ]
+    matched_bases = {
+        extract_node_metadata(tokens[index])["base_word"].strip()
+        for index in matched_indexes
+    }
+    if matched_bases != find_bases:
+        return text
+
+    first_match = matched_indexes[0]
+    matched_set = set(matched_indexes)
+    result_tokens = []
+    for index, token in enumerate(tokens):
+        if index == first_match:
+            result_tokens.extend(parse_prompt(replace_text))
+        if index not in matched_set:
+            result_tokens.append(token)
+    return ", ".join(result_tokens)
+
+
 def is_valid_replace_token(replace_text: str) -> bool:
     replace_tokens = parse_prompt(replace_text or "")
     return len(replace_tokens) == 1 and bool(extract_node_metadata(replace_tokens[0])["base_word"].strip())
@@ -2992,6 +3040,8 @@ def _batch_transform_text(
         if remove_match_mode in ("exact_token", "contains_token"):
             return _remove_prompt_tokens(text, search_text, remove_mode, remove_match_mode)
         return _remove_prompts(text, search_text, remove_mode)
+    if operation == "replace" and replace_match_mode == "token_set":
+        return _replace_prompt_token_set(text, search_text, edit_text)
     if operation == "replace" and replace_match_mode in ("exact_token", "contains_token"):
         return _replace_prompt_tokens(text, search_text, edit_text, preserve_replace_weights, replace_match_mode)
     if operation == "remove_duplicates":

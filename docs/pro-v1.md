@@ -19,6 +19,19 @@ Graph Edit now pages its existing Illustration editor list through a display-onl
 
 The Browser changes no production scope. Graph, PromptCloud, Batch Edit, Module / Attribute operations, Project save, and export continue to use the full Project. Its filter, page, page size, collapse state, and notice are session-only and separate from every Gallery control. They survive same-Project mode/workspace transitions and reset through the canonical Graph session reset only after successful Project replacement; a failed Open preserves them. When the authoritative highlighted Illustration is hidden, the Browser reports that state and changes filter/page only after the user explicitly requests reveal. No Project, PromptLine, settings, scope, history, save, reason, or diagnostic contract changes. See [Graph Edit Illustration Browser](architecture/graph-edit-illustration-browser.md).
 
+## Batch Replace token sets
+
+Batch Editing includes an explicit `Prompt token set (N → M)` Replace mode.
+Find and Replace are parsed as prompt tokens. Every unique Find base must be
+present in an Illustration, regardless of order or adjacency. All matching
+source tokens are removed, and the authored replacement sequence is inserted
+once at the earliest matched position. Replacement order and authored weights
+are retained; source weights and relative positions are not transferred.
+Duplicate Find bases, empty inputs, and structural Module markers are rejected.
+The existing Module-structure guard still skips edits that would change tags;
+use the Module workflows for structure-aware changes. Exact, Contains, and
+Literal Replace keep their existing behavior, and Remove remains separate.
+
 ## Module workflow milestone
 
 The first practical Module workflow is now complete enough for end-to-end character-structure editing.

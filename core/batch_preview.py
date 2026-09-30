@@ -44,6 +44,12 @@ def _highlight_token_matches(text, search_text, match_mode):
 
     from core.parser import extract_node_metadata, is_structural_mod_marker
 
+    token_set_bases = {
+        extract_node_metadata(token)["base_word"].strip()
+        for token in parse_prompt(search_text or "")
+        if not is_structural_mod_marker(token)
+    } if match_mode == "token_set" else set()
+
     rendered_tokens = []
     for token in parse_prompt(text):
         if is_structural_mod_marker(token):
@@ -51,7 +57,11 @@ def _highlight_token_matches(text, search_text, match_mode):
             continue
 
         token_base = extract_node_metadata(token)["base_word"].strip()
-        matched = token_base == query if match_mode == "exact_token" else query in token_base
+        matched = (
+            token_base in token_set_bases if match_mode == "token_set"
+            else token_base == query if match_mode == "exact_token"
+            else query in token_base
+        )
         if not matched:
             rendered_tokens.append(html.escape(token))
             continue
@@ -64,15 +74,19 @@ def _highlight_token_matches(text, search_text, match_mode):
     return ", ".join(rendered_tokens)
 
 
-def _highlight_replace_result_tokens(text, replace_text):
+def _highlight_replace_result_tokens(text, replace_text, match_mode="exact_token"):
     tokens = parse_prompt(replace_text or "")
-    if len(tokens) != 1:
+    if not tokens or (match_mode != "token_set" and len(tokens) != 1):
         return html.escape(text)
 
     from core.parser import extract_node_metadata, is_structural_mod_marker
 
-    replacement_base = extract_node_metadata(tokens[0])["base_word"].strip()
-    if not replacement_base:
+    replacement_bases = {
+        extract_node_metadata(token)["base_word"].strip()
+        for token in tokens if not is_structural_mod_marker(token)
+    }
+    replacement_bases.discard("")
+    if not replacement_bases:
         return html.escape(text)
 
     rendered_tokens = []
@@ -83,7 +97,7 @@ def _highlight_replace_result_tokens(text, replace_text):
 
         token_html = html.escape(token)
         token_base = extract_node_metadata(token)["base_word"].strip()
-        if token_base == replacement_base:
+        if token_base in replacement_bases:
             token_html = f"<span style='background-color:#cfe8ff;color:#003b73;'>{token_html}</span>"
         rendered_tokens.append(token_html)
 

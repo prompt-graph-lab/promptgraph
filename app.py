@@ -260,7 +260,7 @@ from core.module_container_policy import (
     module_has_reference_assets,
     module_reference_assets_json_save_as_block_reason,
 )
-from core.operations import rename_node, delete_nodes, preview_delete_nodes, insert_node, duplicate_nodes, move_nodes, merge_duplicates_in_line, merge_duplicates_all_lines, apply_node_weight, preview_apply_node_weight, insert_subgraph, replace_with_subgraph, rename_word_global, preview_rename_word_global, rename_module, preview_rename_module, preview_apply_module_preset, apply_module_preset, preview_module_swap, apply_module_swap, preview_attribute_group_swap, apply_attribute_group_swap, preview_propagate_attribute_group_tokens, apply_propagate_attribute_group_tokens, scan_global_module_candidates, import_global_modules_to_project, preview_apply_detected_modules, apply_detected_modules, preview_create_module_replace, apply_create_module_replace, preview_replace_with_module, apply_replace_with_module, build_module_reference_token, get_insert_module_reference_anchor_options, preview_bulk_insert_module_reference, apply_bulk_insert_module_reference, _replacement_contains_module_markers, validate_library_module_body, MODULE_TYPES, GLOBAL_MODULE_CATEGORIES, ATTRIBUTE_LABEL_UNASSIGNED, SUGGESTED_ATTRIBUTE_LABELS, SUGGESTED_ATTRIBUTE_SLOTS, add_project_custom_attribute_labels, get_attribute_label_options, get_frequent_attribute_labels, get_project_module_library, get_module_body, get_module_type, get_module_category, get_module_core_tokens, get_module_min_match_tokens, increment_attribute_label_usage_counts, set_module_candidate_rules, set_module_entry, update_module_entry_preserving_metadata, preview_module_candidates, preview_apply_module_candidates, apply_module_candidates, create_library_module, copy_outfit_module_to_character_attribute_group, create_attribute_group, create_attribute_group_from_tokens, rename_attribute_group, set_attribute_group_slot, set_attribute_group_tokens, set_attribute_group_negative_metadata, build_attribute_group_negative_preview, add_nodes_to_attribute_group, delete_attribute_group, get_attribute_group_rows, get_module_attribute_rows, get_node_attribute_key, get_node_attribute_label, get_token_attribute_key, get_token_attribute_label, get_project_attribute_groups, get_project_custom_attribute_labels, normalize_attribute_group_name, normalize_attribute_slot, set_node_attribute_label, set_token_attribute_label, get_project_line_groups, resolve_line_group_ids, create_line_group, delete_line_group, get_gallery_route_options, get_module_swap_route_options, resolve_gallery_route_for_line, resolve_module_swap_target_line_ids, delete_word_global, insert_word_global, count_matches, get_available_modules, get_active_tokens, get_display_tokens, get_display_tokens_from_text, extract_module_structure_from_text, preview_batch_text_edit, apply_batch_text_edit, preview_focus_edit_propagation, apply_focus_edit_propagation, get_duplicate_token_marks, is_valid_exact_remove_target, is_valid_exact_replace_target, is_valid_replace_token, is_valid_add_if_missing_target
+from core.operations import rename_node, delete_nodes, preview_delete_nodes, insert_node, duplicate_nodes, move_nodes, merge_duplicates_in_line, merge_duplicates_all_lines, apply_node_weight, preview_apply_node_weight, insert_subgraph, replace_with_subgraph, rename_word_global, preview_rename_word_global, rename_module, preview_rename_module, preview_apply_module_preset, apply_module_preset, preview_module_swap, apply_module_swap, preview_attribute_group_swap, apply_attribute_group_swap, preview_propagate_attribute_group_tokens, apply_propagate_attribute_group_tokens, scan_global_module_candidates, import_global_modules_to_project, preview_apply_detected_modules, apply_detected_modules, preview_create_module_replace, apply_create_module_replace, preview_replace_with_module, apply_replace_with_module, build_module_reference_token, get_insert_module_reference_anchor_options, preview_bulk_insert_module_reference, apply_bulk_insert_module_reference, _replacement_contains_module_markers, validate_library_module_body, MODULE_TYPES, GLOBAL_MODULE_CATEGORIES, ATTRIBUTE_LABEL_UNASSIGNED, SUGGESTED_ATTRIBUTE_LABELS, SUGGESTED_ATTRIBUTE_SLOTS, add_project_custom_attribute_labels, get_attribute_label_options, get_frequent_attribute_labels, get_project_module_library, get_module_body, get_module_type, get_module_category, get_module_core_tokens, get_module_min_match_tokens, increment_attribute_label_usage_counts, set_module_candidate_rules, set_module_entry, update_module_entry_preserving_metadata, preview_module_candidates, preview_apply_module_candidates, apply_module_candidates, create_library_module, copy_outfit_module_to_character_attribute_group, create_attribute_group, create_attribute_group_from_tokens, rename_attribute_group, set_attribute_group_slot, set_attribute_group_tokens, set_attribute_group_negative_metadata, build_attribute_group_negative_preview, add_nodes_to_attribute_group, delete_attribute_group, get_attribute_group_rows, get_module_attribute_rows, get_node_attribute_key, get_node_attribute_label, get_token_attribute_key, get_token_attribute_label, get_project_attribute_groups, get_project_custom_attribute_labels, normalize_attribute_group_name, normalize_attribute_slot, set_node_attribute_label, set_token_attribute_label, get_project_line_groups, resolve_line_group_ids, create_line_group, delete_line_group, get_gallery_route_options, get_module_swap_route_options, resolve_gallery_route_for_line, resolve_module_swap_target_line_ids, delete_word_global, insert_word_global, count_matches, get_available_modules, get_active_tokens, get_display_tokens, get_display_tokens_from_text, extract_module_structure_from_text, preview_batch_text_edit, apply_batch_text_edit, preview_focus_edit_propagation, apply_focus_edit_propagation, get_duplicate_token_marks, is_valid_exact_remove_target, is_valid_exact_replace_target, is_valid_token_set_replace_target, is_valid_replace_token, is_valid_add_if_missing_target
 from core.module_candidate_apply import (
     apply_reviewed_module_candidates,
     build_module_candidate_apply_plan,
@@ -14434,7 +14434,7 @@ def render_batch_preview_text(
                 style="background-color:#cfe8ff;color:#003b73;",
             )
         else:
-            body = _highlight_replace_result_tokens(text, replace_text)
+            body = _highlight_replace_result_tokens(text, replace_text, match_mode)
     elif match_mode == "literal":
         body = _highlight_literal_matches(text, search_text)
     else:
@@ -14958,11 +14958,12 @@ def render_batch_editing_section(project):
             edit_text = st.text_input("Replace with prompt", key="batch_edit_edit_text")
             replace_match_mode = st.radio(
                 "Match mode",
-                options=["exact_token", "contains_token", "literal"],
+                options=["exact_token", "contains_token", "literal", "token_set"],
                 format_func=lambda value: {
                     "exact_token": "Exact prompt token",
                     "contains_token": "Contains prompt token",
                     "literal": "Literal text",
+                    "token_set": "Prompt token set (N → M)",
                 }[value],
                 horizontal=True,
                 key="batch_edit_replace_match_mode",
@@ -14972,6 +14973,14 @@ def render_batch_editing_section(project):
                     "Preserve weights",
                     value=True,
                     key="batch_edit_preserve_replace_weights",
+                )
+            elif replace_match_mode == "token_set":
+                preserve_replace_weights = False
+                st.caption(
+                    "Findの全Tokenがあるイラストだけを置換します。順序や隣接は問わず、"
+                    "一致した全Tokenを除き、最初の一致位置にReplaceを1回挿入します。"
+                    "Replaceの順序と指定した重みを使い、元の位置関係や重みは引き継ぎません。"
+                    "構造を保つ編集にはModuleの操作を使ってください。"
                 )
         elif operation == "remove":
             search_text = st.text_input("Prompt(s) to remove", key="batch_edit_search_text")
@@ -15123,6 +15132,8 @@ def render_batch_editing_section(project):
             validation_error = "Replace with prompt is required."
         if operation == "replace" and replace_match_mode == "exact_token" and search_text.strip() and edit_text.strip() and not is_valid_exact_replace_target(search_text, edit_text):
             validation_error = "Exact prompt token mode supports one find token and one replacement token."
+        if operation == "replace" and replace_match_mode == "token_set" and not is_valid_token_set_replace_target(search_text, edit_text):
+            validation_error = "Token set mode requires non-empty Find and Replace tokens, unique Find bases, and no structural Module markers."
         if operation == "replace" and replace_match_mode == "contains_token" and edit_text.strip() and not is_valid_replace_token(edit_text):
             validation_error = "Contains prompt token mode supports one replacement token."
         if operation == "remove" and not search_text.strip():
