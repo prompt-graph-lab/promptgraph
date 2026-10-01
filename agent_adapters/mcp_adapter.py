@@ -96,6 +96,8 @@ _SCENES_TOOL = "promptgraph_list_scenes"
 _ILLUSTRATIONS_TOOL = "promptgraph_list_illustrations"
 _ILLUSTRATION_TOOL = "promptgraph_get_illustration"
 _PREVIEW_TOOL = "promptgraph_preview_batch_replace"
+_PREVIEW_REQUIRED_ARGUMENTS = ("illustration_ids", "find_text", "replace_text")
+_PREVIEW_OPTIONAL_ARGUMENTS = ("match_mode", "preserve_weights")
 
 
 def _error(reason: str):
@@ -124,6 +126,21 @@ def _object_arguments(arguments, *, required=(), optional=()):
 
 def _arguments_have_types(arguments, expected):
     return all(type(arguments[key]) is expected[key] for key in expected if key in arguments)
+
+
+def _preview_transport_arguments(arguments):
+    """Validate only the Preview tool's immediate JSON shape before host access."""
+    args = _object_arguments(arguments, required=_PREVIEW_REQUIRED_ARGUMENTS,
+                             optional=_PREVIEW_OPTIONAL_ARGUMENTS)
+    if args is None or not _arguments_have_types(args, {
+            "illustration_ids": list, "find_text": str, "replace_text": str,
+            "match_mode": str, "preserve_weights": bool}):
+        return None
+    # The outer container is now a built-in list, so this exact-type scan cannot
+    # invoke coercion/stringification hooks on non-JSON Illustration IDs.
+    if any(type(item) is not str for item in args["illustration_ids"]):
+        return None
+    return args
 
 
 def get_tool_catalog():
@@ -186,8 +203,10 @@ class PromptGraphMCPAdapter:
             arguments = _object_arguments(arguments, required=("illustration_id",))
             if arguments is None or not _arguments_have_types(arguments, {"illustration_id": str}):
                 return _error("invalid_arguments")
-        elif name == _PREVIEW_TOOL and type(arguments) is not dict:
-            return _error("invalid_arguments")
+        elif name == _PREVIEW_TOOL:
+            arguments = _preview_transport_arguments(arguments)
+            if arguments is None:
+                return _error("invalid_arguments")
 
         if self._project_provider is None:
             return _error("missing_project_provider")

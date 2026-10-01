@@ -47,6 +47,20 @@ def request(**updates):
             **updates}
 
 
+class HostileValue:
+    def __str__(self):
+        raise AssertionError("must not stringify")
+
+    def __repr__(self):
+        raise AssertionError("must not repr")
+
+    def __iter__(self):
+        raise AssertionError("must not iterate")
+
+    def __deepcopy__(self, memo):
+        raise AssertionError("must not copy")
+
+
 def json_only(value):
     assert type(value) in (dict, list, str, int, float, bool, type(None))
     if type(value) is dict:
@@ -192,9 +206,6 @@ def test_provider_failure_does_not_leak_exception_details():
      lambda value: agent_facade.get_illustration(value, "workbench")),
     ("promptgraph_get_illustration", {"illustration_id": "deleted"},
      lambda value: agent_facade.get_illustration(value, "deleted")),
-    ("promptgraph_preview_batch_replace", {"find_text": "red", "replace_text": "gold"},
-     lambda value: agent_facade.preview_batch_replace(
-         value, {"find_text": "red", "replace_text": "gold"})),
     ("promptgraph_preview_batch_replace", request(illustration_ids=[]),
      lambda value: agent_facade.preview_batch_replace(value, request(illustration_ids=[]))),
     ("promptgraph_preview_batch_replace", request(illustration_ids=["scene-1"]),
@@ -220,19 +231,6 @@ def test_adapter_rejects_hostile_arguments_without_invoking_hooks_or_project_pro
         def __eq__(self, other):
             raise AssertionError("must not compare a non-JSON key")
 
-    class Hostile:
-        def __str__(self):
-            raise AssertionError("must not stringify")
-
-        def __repr__(self):
-            raise AssertionError("must not repr")
-
-        def __iter__(self):
-            raise AssertionError("must not iterate")
-
-        def __deepcopy__(self, memo):
-            raise AssertionError("must not copy")
-
     key = HostileKey()
     bad_object = {key: "not-json"}
     HostileKey.hash_calls = 0
@@ -241,11 +239,45 @@ def test_adapter_rejects_hostile_arguments_without_invoking_hooks_or_project_pro
     result = adapter.call_tool("promptgraph_get_illustration", bad_object)
     assert result["reason"] == "invalid_arguments"
     assert HostileKey.hash_calls == 0 and not provider_calls
-    assert adapter.call_tool("promptgraph_get_illustration", Hostile())["reason"] == "invalid_arguments"
-    assert adapter.call_tool("promptgraph_preview_batch_replace", {
-        "illustration_ids": ["one"], "find_text": Hostile(), "replace_text": "gold",
-    })["reason"] == "non_json_value"
-    assert provider_calls == [True]
+    result = adapter.call_tool("promptgraph_preview_batch_replace", bad_object)
+    assert result["reason"] == "invalid_arguments"
+    assert HostileKey.hash_calls == 0 and not provider_calls
+    assert adapter.call_tool("promptgraph_get_illustration", HostileValue())["reason"] == "invalid_arguments"
+    assert not provider_calls
+
+
+@pytest.mark.parametrize("arguments", [
+    None,
+    HostileValue(),
+    {"find_text": "red", "replace_text": "gold"},
+    {"illustration_ids": ["one"], "find_text": "red", "replace_text": "gold",
+     "extra": "ignored?"},
+    request(illustration_ids="one"),
+    request(illustration_ids=[HostileValue()]),
+    request(find_text=HostileValue()),
+    request(replace_text=[]),
+    request(match_mode=HostileValue()),
+    request(preserve_weights=1),
+])
+def test_preview_transport_invalid_shapes_do_not_invoke_project_provider(arguments):
+    calls = []
+    adapter = mcp_adapter.PromptGraphMCPAdapter(lambda: calls.append(True) or project())
+    result = adapter.call_tool("promptgraph_preview_batch_replace", arguments)
+    assert result["ok"] is False and result["reason"] == "invalid_arguments"
+    assert not calls
+    json_only(result)
+
+
+def test_preview_domain_invalid_request_reaches_facade_and_preserves_its_reason():
+    calls = []
+    value = project()
+    adapter = mcp_adapter.PromptGraphMCPAdapter(lambda: calls.append(True) or value)
+    arguments = request(illustration_ids=["missing"])
+    result = adapter.call_tool("promptgraph_preview_batch_replace", arguments)
+    assert calls == [True]
+    assert result == agent_facade.preview_batch_replace(value, arguments)
+    assert result["valid"] is False and result["reason"] == "unknown_illustration_id"
+    json_only(result)
 
 
 def test_invalid_transport_shape_and_unknown_tool_do_not_access_host_project():
