@@ -1,9 +1,10 @@
-# LLM Operator PoC-0: Agent Facade
+# LLM Operator PoC-0 and PoC-1a: Agent Facade and MCP Adapter Seam
 
 `core.agent_facade` is a small transport-neutral boundary for a later MCP adapter
 and an internal LLM harness. PoC-0 provides observations and one reviewed mutation
-family, Batch Replace. It integrates neither transport nor model. `app.py` remains
-the terminal application shell.
+family, Batch Replace. PoC-1a adds a separate SDK-independent MCP-facing logical
+tool adapter; it does not activate an MCP transport or integrate a model. `app.py`
+remains the terminal application shell.
 
 ## Layering and trust boundary
 
@@ -162,3 +163,59 @@ semantic inference, autonomous editing or generalized transaction framework.
 It neither implements a first-class Scene schema nor merges Route organization
 with Snapshot state. Future adapters share this boundary and must preserve its
 reviewed-intent and host-only publication responsibilities.
+
+## PoC-1a: MCP-facing adapter seam
+
+`agent_adapters.mcp_adapter` owns the small MCP-facing logical tool catalog,
+transport argument shape checks, host Project-provider boundary, and bounded
+adapter errors. It is deliberately outside `core`: it delegates every domain
+observation and Batch Replace Preview to `core.agent_facade`, which continues to
+own Scene/Illustration semantics, prompt validation, explicit target resolution,
+transforms, freshness, fingerprints, digests, and reviewed-envelope construction.
+The adapter is not a generic plugin registry or service container.
+
+The stable logical tool names and effects are:
+
+| Tool | Effect | Facade operation |
+| --- | --- | --- |
+| `promptgraph_capabilities` | Read-only | `discover_capabilities()` mapped to the adapter tool surface |
+| `promptgraph_project_summary` | Read-only | `summarize_project(project)` |
+| `promptgraph_list_scenes` | Read-only | `observe_scenes(project, ...)` |
+| `promptgraph_list_illustrations` | Read-only | `list_illustrations(project, ...)` |
+| `promptgraph_get_illustration` | Read-only | `get_illustration(project, illustration_id)` |
+| `promptgraph_preview_batch_replace` | Reviewed Preview | `preview_batch_replace(project, request)` |
+
+The catalog is a deterministic, inspectable JSON description with explicit
+schemas. It contains no Apply tool. Batch Replace targets remain explicit
+Illustration IDs; the adapter adds no semantic scopes or target inference. The
+facade Preview envelope is returned as-is rather than reconstructed by the
+adapter.
+
+The host supplies the active Project through a provider callback when it creates
+the adapter. Capabilities discovery does not need a Project; each other tool
+call asks the provider for the current Project and does not cache it. The
+adapter does not discover, load, save, or globally retain Projects, Previews,
+approval state, or results. Missing providers, invalid Projects, and provider
+exceptions return bounded JSON-safe errors without exception text, paths,
+reprs, stack traces, or type details. Argument and result boundaries contain
+ordinary JSON primitives and containers; Project, PromptLine, graph/session
+objects, callables, and arbitrary metadata never enter agent-facing results.
+
+Preview is the only mutation-related capability exposed to an agent. The host
+owns human approval and must retain the exact envelope approved for later
+host-only Apply. A `plan_id` is a content identifier and integrity check, not an
+authorization token. The model cannot prove approval by echoing an envelope,
+setting an `approved` flag, or supplying a plan ID. PoC-1a adds no Apply wrapper,
+approval registry, or mutable adapter-global Preview store. Until a real
+approval-custody boundary is designed, `core.agent_facade.apply_batch_replace`
+remains callable only by a trusted host.
+
+This adapter imports no MCP package and does not implement MCP wire behavior.
+There is no MCP SDK/runtime dependency, server process, authentication, stdio,
+HTTP, or SSE activation in PoC-1a, and the exact runtime dependency lock is not
+changed. A later official SDK/transport activation is a separate bounded slice
+that must reconcile the SDK's supported Python/runtime and dependency audit with
+PromptGraph's release contract. The internal LLM harness and UI integration
+remain later layers. Neither an MCP transport nor a harness becomes a domain
+owner; both must call this adapter/facade boundary while core behavior remains
+authoritative.

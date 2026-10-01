@@ -1,0 +1,221 @@
+"""SDK-independent MCP-facing catalog and call adapter for the Agent Facade.
+
+This module describes logical tool registrations; it does not implement MCP's
+wire protocol, own Project state, or expose mutation Apply.
+"""
+
+from copy import deepcopy
+from typing import Callable
+
+from core import agent_facade
+
+
+ADAPTER_CONTRACT_VERSION = "promptgraph.mcp-adapter.v1"
+
+
+_EMPTY_OBJECT = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": False,
+}
+
+_TOOL_CATALOG = (
+    {
+        "name": "promptgraph_capabilities",
+        "description": "List PromptGraph observations and the agent-facing Batch Replace Preview tool. Apply is not exposed.",
+        "inputSchema": _EMPTY_OBJECT,
+        "effect": "read_only",
+    },
+    {
+        "name": "promptgraph_project_summary",
+        "description": "Summarize the host-supplied active PromptGraph Project.",
+        "inputSchema": _EMPTY_OBJECT,
+        "effect": "read_only",
+    },
+    {
+        "name": "promptgraph_list_scenes",
+        "description": "List active separator-backed Scenes and their Illustration IDs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+            "additionalProperties": False,
+        },
+        "effect": "read_only",
+    },
+    {
+        "name": "promptgraph_list_illustrations",
+        "description": "List active Illustrations, optionally within one Scene.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            "additionalProperties": False,
+        },
+        "effect": "read_only",
+    },
+    {
+        "name": "promptgraph_get_illustration",
+        "description": "Read one Illustration by its stable ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "illustration_id": {"type": "string", "minLength": 1, "maxLength": 200},
+            },
+            "required": ["illustration_id"],
+            "additionalProperties": False,
+        },
+        "effect": "read_only",
+    },
+    {
+        "name": "promptgraph_preview_batch_replace",
+        "description": "Create a reviewed Batch Replace Preview for explicit Illustration IDs. This tool does not Apply the plan.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "illustration_ids": {
+                    "type": "array", "minItems": 1, "maxItems": 1000,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 200},
+                },
+                "find_text": {"type": "string", "minLength": 1, "maxLength": 10000},
+                "replace_text": {"type": "string", "minLength": 1, "maxLength": 10000},
+                "match_mode": {"type": "string", "enum": list(agent_facade.REPLACE_MODES)},
+                "preserve_weights": {"type": "boolean"},
+            },
+            "required": ["illustration_ids", "find_text", "replace_text"],
+            "additionalProperties": False,
+        },
+        "effect": "reviewed_preview",
+    },
+)
+
+_CAPABILITIES_TOOL = "promptgraph_capabilities"
+_SUMMARY_TOOL = "promptgraph_project_summary"
+_SCENES_TOOL = "promptgraph_list_scenes"
+_ILLUSTRATIONS_TOOL = "promptgraph_list_illustrations"
+_ILLUSTRATION_TOOL = "promptgraph_get_illustration"
+_PREVIEW_TOOL = "promptgraph_preview_batch_replace"
+
+
+def _error(reason: str):
+    return {
+        "adapter_contract_version": ADAPTER_CONTRACT_VERSION,
+        "ok": False,
+        "reason": reason,
+        "diagnostics": [{"code": reason}],
+    }
+
+
+def _object_arguments(arguments, *, required=(), optional=()):
+    if type(arguments) is not dict:
+        return None
+    # Reject non-JSON keys before any set/dict membership operation can invoke
+    # a caller-supplied key's hashing or equality hooks.
+    keys = list(arguments.keys())
+    if any(type(key) is not str for key in keys):
+        return None
+    if any(key not in keys for key in required):
+        return None
+    if any(key not in required and key not in optional for key in keys):
+        return None
+    return arguments
+
+
+def _arguments_have_types(arguments, expected):
+    return all(type(arguments[key]) is expected[key] for key in expected if key in arguments)
+
+
+def get_tool_catalog():
+    """Return a fresh deterministic logical catalog for later SDK registration."""
+    return deepcopy(list(_TOOL_CATALOG))
+
+
+def get_adapter_capabilities():
+    """Map the facade's modes to the smaller agent-callable MCP surface."""
+    facade_result = agent_facade.discover_capabilities()
+    batch, = facade_result["capabilities"]["mutations"]
+    return {
+        "adapter_contract_version": ADAPTER_CONTRACT_VERSION,
+        "facade_contract_version": facade_result["contract_version"],
+        "tools": [
+            {"name": item["name"], "effect": item["effect"]}
+            for item in _TOOL_CATALOG
+        ],
+        "batch_replace_preview_modes": list(batch["modes"]),
+        "batch_replace_requires_explicit_illustration_ids": True,
+        "agent_callable_apply": False,
+    }
+
+
+class PromptGraphMCPAdapter:
+    """Expose a fixed tool catalog against a host-supplied Project provider.
+
+    The provider is called for each Project-dependent tool call. The adapter
+    never caches the Project, Preview, approval state, or result.
+    """
+
+    def __init__(self, project_provider: Callable[[], object] | None):
+        self._project_provider = project_provider
+
+    def call_tool(self, name, arguments):
+        """Invoke one catalog tool and return only ordinary JSON data."""
+        if type(name) is not str:
+            return _error("unknown_tool")
+        if name not in {item["name"] for item in _TOOL_CATALOG}:
+            return _error("unknown_tool")
+        if name == _CAPABILITIES_TOOL:
+            if _object_arguments(arguments, required=()) is None or arguments:
+                return _error("invalid_arguments")
+            return get_adapter_capabilities()
+
+        # Validate the fixed transport shape before asking the host for its
+        # active Project. Domain-level values and semantics remain facade-owned.
+        if name == _SUMMARY_TOOL:
+            if _object_arguments(arguments, required=()) is None or arguments:
+                return _error("invalid_arguments")
+        elif name == _SCENES_TOOL:
+            arguments = _object_arguments(arguments, optional=("limit",))
+            if arguments is None or not _arguments_have_types(arguments, {"limit": int}):
+                return _error("invalid_arguments")
+        elif name == _ILLUSTRATIONS_TOOL:
+            arguments = _object_arguments(arguments, optional=("scene_id", "limit"))
+            if arguments is None or not _arguments_have_types(arguments, {"scene_id": str, "limit": int}):
+                return _error("invalid_arguments")
+        elif name == _ILLUSTRATION_TOOL:
+            arguments = _object_arguments(arguments, required=("illustration_id",))
+            if arguments is None or not _arguments_have_types(arguments, {"illustration_id": str}):
+                return _error("invalid_arguments")
+        elif name == _PREVIEW_TOOL and type(arguments) is not dict:
+            return _error("invalid_arguments")
+
+        if self._project_provider is None:
+            return _error("missing_project_provider")
+        if not callable(self._project_provider):
+            return _error("invalid_project_provider")
+        try:
+            project = self._project_provider()
+        except Exception:
+            return _error("project_provider_failed")
+
+        try:
+            if name == _SUMMARY_TOOL:
+                return agent_facade.summarize_project(project)
+
+            if name == _SCENES_TOOL:
+                return agent_facade.observe_scenes(project, **arguments)
+
+            if name == _ILLUSTRATIONS_TOOL:
+                return agent_facade.list_illustrations(project, **arguments)
+
+            if name == _ILLUSTRATION_TOOL:
+                return agent_facade.get_illustration(project, arguments["illustration_id"])
+
+            if name == _PREVIEW_TOOL:
+                # The facade owns the complete JSON/request validation and
+                # returns the exact Preview envelope; the adapter only routes it.
+                return agent_facade.preview_batch_replace(project, arguments)
+        except Exception:
+            return _error("adapter_call_failed")
+
+        return _error("unknown_tool")
