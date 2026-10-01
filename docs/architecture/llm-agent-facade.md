@@ -74,12 +74,12 @@ plan = preview_batch_replace(project, request)
 
 `illustration_ids`, `find_text` and `replace_text` are required. The mode defaults
 to `exact_token`; weight preservation defaults to true. Only `exact_token`,
-`contains_token`, `literal` and `token_set` are supported. Existing core token
-validators are authoritative. Token-set mode forces effective weight
-preservation to false and retains PR #113 semantics: all Find bases must match,
-all matching occurrences are removed, and the authored replacement sequence is
-inserted once at the earliest match. Literal mode permits an empty replacement,
-as the existing Batch Replace does; an empty Find is always rejected.
+`contains_token`, `literal` and `token_set` are supported. Find and Replace must
+both be non-empty for every mode, matching the Batch Editing product-level
+validation. Existing core token validators are authoritative. Token-set mode
+forces effective weight preservation to false and retains PR #113 semantics:
+all Find bases must match, all matching occurrences are removed, and the
+authored replacement sequence is inserted once at the earliest match.
 
 Requests permit no scope, selection, focus, visible-list or object-reference
 targets. Empty targets, duplicate requested IDs after trimming, unknown IDs,
@@ -147,9 +147,11 @@ if agent_payload["ok"]:
 Failures return `updated_project=None` with JSON-safe diagnostics; exception
 details are not exposed. The caller's Project, line identities, graph, library
 and Attribute Groups stay unchanged on success, failure, stale plans and
-ordinary exceptions. A valid no-op returns an independent clone with zero
-affected count; the host may choose not to publish it. Approval, history,
-autosave, persistence, UI publication and rerun remain outside this owner.
+ordinary exceptions. A valid no-op Preview returns zero affected count for
+observation, but Apply rejects it with `no_changes` before cloning or calling
+the Batch Apply core, matching the UI's disabled Apply boundary. Approval,
+history, autosave, persistence, UI publication and rerun remain outside this
+owner.
 
 ## Explicit non-goals
 

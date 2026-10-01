@@ -225,7 +225,6 @@ def test_invalid_requests_return_diagnostics_without_mutation(change, reason):
     ("contains_token", "shirt", "dress", True, "(dress:1.7), dress, red skirt"),
     ("literal", "white shirt", "dress, apron", True,
      "(dress, apron:1.7), dress, apronless, red skirt"),
-    ("literal", "white shirt", "", True, "(:1.7), less, red skirt"),
     ("token_set", "red skirt, white shirt", "(dress:1.2), apron, dress", True,
      "(dress:1.2), apron, dress, white shirtless"),
 ])
@@ -248,6 +247,18 @@ def test_replace_modes_use_core_preview_and_apply_semantics(mode, find, replacem
     assert result.updated_project.prompt_lines[0].tokens == parse_prompt(expected)
     assert proj == before and identities(proj) == identity
     json_only(result.agent_result)
+
+
+@pytest.mark.parametrize("mode", ["exact_token", "contains_token", "literal", "token_set"])
+def test_blank_replace_text_is_rejected_for_every_mode_without_project_mutation(mode):
+    proj = project()
+    before, identity = copy.deepcopy(proj), identities(proj)
+    plan = facade.preview_batch_replace(proj, request(
+        match_mode=mode, find_text="red", replace_text="   "))
+    assert not plan["valid"] and plan["reason"] == "invalid_replace_text"
+    result = facade.apply_batch_replace(proj, plan)
+    assert not result.agent_result["ok"] and result.updated_project is None
+    assert proj == before and identities(proj) == identity
 
 
 def test_project_order_normalization_deterministic_plan_and_no_registry():
@@ -464,11 +475,20 @@ def test_materialization_mismatch_discards_clone(monkeypatch):
     assert result.updated_project is None and proj == before
 
 
-def test_no_op_plan_still_uses_clone_and_reports_zero_changes():
+def test_no_op_plan_is_visible_but_apply_does_not_clone_or_call_core(monkeypatch):
     proj = project()
     plan = facade.preview_batch_replace(proj, request(find_text="absent"))
     assert plan["valid"] and plan["affected_count"] == plan["skipped_count"] == 0
     assert plan["unchanged_count"] == 1 and not plan["examples"]
+    before, identity = copy.deepcopy(proj), identities(proj)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("zero-change Apply must not clone or call Batch Apply")
+
+    monkeypatch.setattr(facade.copy, "deepcopy", unexpected)
+    monkeypatch.setattr(operations, "apply_batch_text_edit", unexpected)
     result = facade.apply_batch_replace(proj, plan)
-    assert result.agent_result["ok"] and result.updated_project is not proj
-    assert result.updated_project == proj
+    assert result.agent_result["applied"] is False
+    assert result.agent_result["reason"] == "no_changes"
+    assert result.updated_project is None
+    assert proj == before and identities(proj) == identity

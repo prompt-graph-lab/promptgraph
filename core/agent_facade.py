@@ -326,7 +326,7 @@ def _request(value, lines):
     find, replacement = value["find_text"], value["replace_text"]
     if any(type(text) is not str or len(text) > MAX_REQUEST_TEXT for text in (find, replacement)):
         raise _Invalid("invalid_replace_text")
-    if not find.strip() or (mode != "literal" and not replacement.strip()):
+    if not find.strip() or not replacement.strip():
         raise _Invalid("invalid_replace_text")
     validator = {"exact_token": operations.is_valid_exact_replace_target,
                  "token_set": operations.is_valid_token_set_replace_target}.get(mode)
@@ -455,6 +455,8 @@ def apply_batch_replace(project: Project, reviewed_plan) -> AgentApplyResult:
             raise _Invalid("stale_plan") from None
         if plan != fresh:
             raise _Invalid("stale_plan")
+        if fresh["affected_count"] == 0:
+            raise _Invalid("no_changes")
         updated = copy.deepcopy(project)
         updated = operations.apply_batch_text_edit(updated, **_kwargs(fresh["request"]))
         if updated is project or type(updated) is not Project:
