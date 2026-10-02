@@ -1,10 +1,10 @@
-# LLM Operator PoC-0 and PoC-1a: Agent Facade and MCP Adapter Seam
+# LLM Operator PoC-0, PoC-1a, and PoC-1b: Facade and MCP Binding
 
-`core.agent_facade` is a small transport-neutral boundary for a later MCP adapter
-and an internal LLM harness. PoC-0 provides observations and one reviewed mutation
-family, Batch Replace. PoC-1a adds a separate SDK-independent MCP-facing logical
-tool adapter; it does not activate an MCP transport or integrate a model. `app.py`
-remains the terminal application shell.
+`core.agent_facade` is a small transport-neutral boundary shared by the MCP SDK
+binding and a later internal LLM harness. PoC-0 provides observations and one
+reviewed mutation family, Batch Replace. PoC-1a adds the SDK-independent logical
+tool adapter; PoC-1b binds it to the official SDK without starting a transport
+process or integrating a model. `app.py` remains the terminal application shell.
 
 ## Layering and trust boundary
 
@@ -219,3 +219,57 @@ PromptGraph's release contract. The internal LLM harness and UI integration
 remain later layers. Neither an MCP transport nor a harness becomes a domain
 owner; both must call this adapter/facade boundary while core behavior remains
 authoritative.
+
+## PoC-1b: official MCP SDK binding
+
+`agent_adapters.mcp_sdk_binding` binds the PoC-1a logical tool catalog to the
+official MCP Python SDK `Server` API. It uses the SDK's public low-level
+`Server` interface so PromptGraph controls the exact existing JSON input
+schemas and can characterize the registered tool surface without duplicating
+facade behavior. The SDK wrapper delegates every tool call to
+`agent_adapters.mcp_adapter`; that adapter continues to validate transport
+shape before asking the host Project provider, and `core.agent_facade` remains
+the owner of domain validation and observations.
+
+The binding registers exactly the six PoC-1a tools:
+
+- `promptgraph_capabilities`
+- `promptgraph_project_summary`
+- `promptgraph_list_scenes`
+- `promptgraph_list_illustrations`
+- `promptgraph_get_illustration`
+- `promptgraph_preview_batch_replace`
+
+Read-only versus reviewed-Preview effects are carried as MCP tool annotations
+and PromptGraph metadata. Results preserve the adapter's JSON object as MCP
+`structuredContent` and include deterministic JSON text content. Project and
+all provider state remain host-owned; each Project-dependent call asks the
+adapter's provider for the current Project. The SDK binding retains no active
+Project, approved Preview, or authorization state.
+
+The SDK low-level server does not validate incoming call arguments against the
+published input schema. The adapter's existing transport-shape validation
+therefore remains required and runs before Project access; domain semantics
+remain in the facade. The binding does not add its own validation or rebuild
+Preview envelopes.
+
+There is deliberately no agent-callable Apply tool. The host must retain the
+exact Preview envelope approved by a human and may call the trusted facade
+Apply path only under its own approval-custody policy. A `plan_id` identifies
+content; it is not authorization. The MCP SDK binding neither asks the model
+to assert approval nor interprets any tool argument as approval.
+
+PoC-1b adds the pinned direct dependency `mcp==2.2.0` and regenerates the exact
+runtime lock under the supported Windows/CPython 3.14 wheel-only procedure.
+Dependency versions, package metadata, license groupings and lock digest are
+recorded in `requirements.txt`, `docs/supported-environment.md`, and
+`docs/release-process.md`. The MCP SDK's dependency footprint is part of that
+explicit runtime audit.
+
+This binding only constructs an in-process SDK `Server` for a host to register
+and test. It does not call the SDK run loop or activate stdio, HTTP, SSE,
+authentication, process lifecycle, or application startup. A later transport
+host must decide and implement those responsibilities as a separate slice.
+No internal LLM harness, UI, Streamlit/session access, or Project persistence
+is added. MCP remains a transport boundary; it does not become a PromptGraph
+domain owner.
