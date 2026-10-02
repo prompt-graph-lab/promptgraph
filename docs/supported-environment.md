@@ -49,18 +49,26 @@ from the developer environment.
 | Architecture | AMD64, 64-bit |
 | Lock-generation Python | CPython 3.14.4 |
 | Bootstrap tooling | pip 26.1.1 |
-| Runtime package count | 54 |
-| `requirements.txt` canonical LF-normalized SHA-256 | `EA7628D4C4059FAB5D9ADE168B2A567E68035721B8692B22F3638A69ED769C66` |
-| Clean venv creation | 6.497 seconds |
-| pip bootstrap | 5.360 seconds |
-| Wheel-only runtime install | 57.238 seconds |
-| `pip check` | pass, 1.323 seconds |
-| Install artifacts | 54 wheels, 0 source distributions |
+| Runtime package count | 69 |
+| `requirements.txt` canonical LF-normalized SHA-256 | `C7778182B7F6958A9404A23C8533ACBDBA22F4888F7CDA21A8C7FF6D7A085E31` |
+| Clean venv creation | 8.179 seconds (lock-generation environment) |
+| pip bootstrap | 6.349 seconds (lock-generation environment) |
+| Wheel-only runtime install | 112.027 seconds (lock-generation environment) |
+| `pip check` | pass |
+| Install artifacts | 69 wheels, 0 source distributions |
 
-`requirements.in` records the six direct dependency decisions.
+`requirements.in` records the seven direct dependency decisions.
 `requirements.txt` is the complete exact runtime lock, including transitives.
 Every runtime requirement uses `==`; pip, setuptools, wheel, pytest, and audit
 tools are not runtime-lock entries.
+
+Two independent clean CPython 3.14.4 environments installed
+`requirements.in` with pip 26.1.1 and `--only-binary=:all:`. Their normalized
+freezes matched exactly at 69 packages; the installs took 112.027 and 83.382
+seconds and each used 69 wheels with no source distributions. A third clean
+environment completed venv creation, pip bootstrap and installation of the
+committed `requirements.txt` in 90.866 seconds. It used 69 wheels and no source
+distributions; `pip check` and exact runtime-lock checks both passed.
 
 The lock digest is calculated after converting CRLF or CR line endings to LF
 and encoding the result as UTF-8. This keeps the dependency identity stable
@@ -179,7 +187,7 @@ committed lock is unsupported for Pro 1.0.0.
 Do not manually upgrade individual packages inside the release `.venv`.
 Dependency changes require all of the following:
 
-1. update the six direct decisions in `requirements.in`;
+1. update the seven direct decisions in `requirements.in`;
 2. create a fresh temporary CPython 3.14 x64 environment;
 3. install `pip==26.1.1`;
 4. install `requirements.in` with `--only-binary=:all:` and run `pip check`;

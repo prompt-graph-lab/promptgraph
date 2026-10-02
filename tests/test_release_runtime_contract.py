@@ -22,6 +22,7 @@ from core import runtime_environment, runtime_lock
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_DIRECT = {
     "matplotlib": "3.11.1",
+    "mcp": "2.2.0",
     "requests": "2.34.2",
     "streamlit": "1.60.0",
     "streamlit-agraph": "0.0.45",
@@ -29,7 +30,7 @@ EXPECTED_DIRECT = {
     "wordcloud": "1.9.6",
 }
 EXPECTED_LOCK_SHA256 = (
-    "EA7628D4C4059FAB5D9ADE168B2A567E68035721B8692B22F3638A69ED769C66"
+    "C7778182B7F6958A9404A23C8533ACBDBA22F4888F7CDA21A8C7FF6D7A085E31"
 )
 
 
@@ -75,7 +76,7 @@ class ReleaseRuntimeContractTests(unittest.TestCase):
         self.app_source = (ROOT / "app.py").read_text(encoding="utf-8")
         self.app_tree = ast.parse(self.app_source)
 
-    def test_direct_requirements_are_exactly_the_six_validated_pins(self):
+    def test_direct_requirements_are_exactly_the_seven_validated_pins(self):
         requirements = _requirements(self.requirements_in)
         actual = {
             canonicalize_name(requirement.name): _exact_pin(requirement)
@@ -92,7 +93,7 @@ class ReleaseRuntimeContractTests(unittest.TestCase):
     def test_runtime_lock_is_complete_exact_and_normalized(self):
         requirements = _requirements(self.requirements_lock)
         names = [canonicalize_name(requirement.name) for requirement in requirements]
-        self.assertEqual(54, len(requirements))
+        self.assertEqual(69, len(requirements))
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(names, sorted(names))
         for requirement in requirements:

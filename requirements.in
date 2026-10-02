@@ -1,5 +1,6 @@
 # PromptGraph Pro 1.0.0 direct runtime dependency intent.
 matplotlib==3.11.1
+mcp==2.2.0
 requests==2.34.2
 streamlit==1.60.0
 streamlit-agraph==0.0.45

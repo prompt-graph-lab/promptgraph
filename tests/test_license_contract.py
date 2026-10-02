@@ -48,8 +48,8 @@ class LicenseContractTests(unittest.TestCase):
         table_end = audit.index("\n\nThis repository only", table_start)
         audit_table = audit[table_start:table_end]
 
-        self.assertEqual(6, len(direct))
-        self.assertEqual(54, len(locked))
+        self.assertEqual(7, len(direct))
+        self.assertEqual(69, len(locked))
         self.assertTrue(set(direct).issubset(set(locked)))
         table_pins = re.findall(r"`([A-Za-z0-9][A-Za-z0-9._-]*==[0-9][^`]*)`", audit_table)
         self.assertEqual(set(locked), set(table_pins))

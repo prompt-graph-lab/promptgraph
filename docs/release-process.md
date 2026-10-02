@@ -93,14 +93,16 @@ third-party material.
 
 ### Runtime dependency audit
 
-`requirements.in` declares six direct runtime dependencies: `matplotlib`,
-`requests`, `streamlit`, `streamlit-agraph`, `websocket-client`, and `wordcloud`.
+`requirements.in` declares seven direct runtime dependencies: `matplotlib`,
+`mcp`, `requests`, `streamlit`, `streamlit-agraph`, `websocket-client`, and
+`wordcloud`.
 The exact versions are shown once each in the table below. The exact
-`requirements.txt` lock resolves 54 packages;
+`requirements.txt` lock resolves 69 packages;
 the entries below account for every non-comment lock line. License families
 come from the matching distribution metadata and `LICENSE`/`COPYING`/`NOTICE`
 files in the validated CPython 3.14 environment. The direct projects expose
 their upstream sources as [Matplotlib](https://github.com/matplotlib/matplotlib),
+[the official MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk),
 [Requests](https://github.com/psf/requests),
 [Streamlit](https://github.com/streamlit/streamlit),
 [streamlit-agraph](https://github.com/ChrisChross/streamlit-agraph),
@@ -115,23 +117,26 @@ turn the package into repository-vendored material.
 
 | License evidence | Exact lock entries (`name==version`) |
 | --- | --- |
-| MIT | `anyio==4.14.2`, `attrs==26.1.0`, `blinker==1.9.0`, `charset-normalizer==3.4.9`, `fonttools==4.63.0`, `h11==0.16.0`, `httptools==0.8.0`, `jsonschema==4.26.0`, `jsonschema-specifications==2025.9.1`, `narwhals==2.24.0`, `pyparsing==3.3.2`, `referencing==0.37.0`, `rpds-py==2026.6.3`, `six==1.17.0`, `streamlit-agraph==0.0.45`, `toml==0.10.2`, `urllib3==2.7.0`, `wordcloud==1.9.6` |
-| BSD-3-Clause | `altair==6.2.2`, `click==8.4.2`, `colorama==0.4.6`, `contourpy==1.3.3`, `cycler==0.12.1`, `gitdb==4.0.12`, `gitpython==3.1.57`, `idna==3.18`, `itsdangerous==2.2.0`, `jinja2==3.1.6`, `kiwisolver==1.5.0`, `markupsafe==3.0.3`, `networkx==3.6.1`, `pandas==3.0.5`, `protobuf==7.35.1`, `rdflib==7.6.0`, `smmap==5.0.3`, `starlette==1.3.1`, `uvicorn==0.52.1`, `websockets==16.1.1` |
-| Apache-2.0 | `pyarrow==24.0.0`, `pydeck==0.9.3`, `python-multipart==0.0.32`, `requests==2.34.2`, `streamlit==1.60.0`, `tenacity==9.1.4`, `tzdata==2026.3`, `watchdog==6.0.0`, `websocket-client==1.9.0` |
+| MIT | `annotated-types==0.8.0`, `anyio==4.15.1`, `attrs==26.1.0`, `blinker==1.9.0`, `charset-normalizer==3.5.2`, `fonttools==4.66.1`, `h11==0.16.0`, `httptools==0.8.0`, `jsonschema==4.26.0`, `jsonschema-specifications==2025.9.1`, `mcp==2.2.0`, `mcp-types==2.2.0`, `narwhals==2.26.0`, `pydantic==2.13.5`, `pydantic_core==2.46.5`, `PyJWT==2.15.1`, `pyparsing==3.3.3`, `referencing==0.37.0`, `rpds-py==2026.6.3`, `six==1.17.0`, `streamlit-agraph==0.0.45`, `toml==0.10.2`, `truststore==0.10.4`, `typing-inspection==0.4.4`, `urllib3==2.8.0`, `wordcloud==1.9.6` |
+| BSD-3-Clause | `altair==6.3.0`, `click==8.5.0`, `contourpy==1.4.0`, `cycler==0.12.1`, `gitdb==4.0.12`, `GitPython==3.2.0`, `httpcore2==2.13.1`, `httpx2==2.13.1`, `idna==3.20`, `itsdangerous==2.2.0`, `Jinja2==3.1.6`, `kiwisolver==1.5.1`, `MarkupSafe==3.0.3`, `networkx==3.7`, `pandas==3.0.6`, `protobuf==7.36.2`, `pycparser==3.0`, `rdflib==7.6.0`, `smmap==5.0.3`, `sse-starlette==3.5.0`, `starlette==1.7.0`, `uvicorn==0.54.0`, `websockets==16.1.1` |
+| Apache-2.0 | `opentelemetry-api==1.45.0`, `pyarrow==24.0.0`, `pydeck==0.9.3`, `python-multipart==0.0.32`, `requests==2.34.2`, `streamlit==1.60.0`, `tenacity==9.1.4`, `tzdata==2026.4`, `watchdog==6.0.0`, `websocket-client==1.9.0` |
+| MIT-0 | `cffi==2.1.1` |
 | MPL-2.0 (Mozilla CA bundle) | `certifi==2026.7.22` |
 | Matplotlib license; package carries separately licensed font/test material | `matplotlib==3.11.1` |
-| BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | `numpy==2.5.1` |
-| Apache-2.0 OR BSD-2-Clause | `packaging==26.2` |
+| BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | `numpy==2.5.3` |
+| Apache-2.0 OR BSD-2-Clause | `packaging==26.3` |
 | MIT-CMU | `pillow==12.3.0` |
 | Apache-2.0 OR BSD-3-Clause | `python-dateutil==2.9.0.post0` |
 | PSF-2.0 | `typing_extensions==4.16.0` |
+| Apache-2.0 OR BSD-3-Clause | `cryptography==50.0.2` |
+| PSF metadata; wheel contains separate LGPL-2.1, BSD, and MIT component notices | `pywin32==312` |
 
 This repository only declares and resolves those packages. `setup.bat` installs
 them into a local `.venv`; no third-party source, wheel, binary, font, or
 license text is copied into the Git source tree. Some installed distributions
 carry their own component notices (notably Matplotlib, NumPy, PyArrow, Requests,
-and the `streamlit-agraph` frontend); those obligations travel with the
-distribution if it is redistributed. An optional archive that bundles
+pywin32, cryptography, and the `streamlit-agraph` frontend); those obligations
+travel with the distribution if it is redistributed. An optional archive that bundles
 dependencies must preserve each package's license and notice files and is
 separately owned by the archive gate. They do not require a repository-level
 notice for the source-only model.
@@ -204,7 +209,7 @@ Human QA evidence: <release-candidate QA record>
 ```
 
 The current runtime-lock baseline digest is
-`EA7628D4C4059FAB5D9ADE168B2A567E68035721B8692B22F3638A69ED769C66`.
+`C7778182B7F6958A9404A23C8533ACBDBA22F4888F7CDA21A8C7FF6D7A085E31`.
 The bootstrap and QA records recalculate it from the exact selected trees.
 
 ### Public source-tree selection audit
