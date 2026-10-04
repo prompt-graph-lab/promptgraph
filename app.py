@@ -1,4 +1,5 @@
 from core.project_save_as_safety import normalize_project_save_as_path
+from ui.project_capture_safety import begin_project_capture_run
 from ui.project_save_as_lifecycle import (
     PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY,
     PROJECT_SAVE_AS_OVERWRITE_ACK_KEY,
@@ -569,6 +570,7 @@ MANAGEMENT_WORKSPACE_TARGETS = {
         ),
     },
 }
+_PROJECT_CAPTURE_RUN_TOKEN = begin_project_capture_run(st.session_state)
 _APP_RERUN_STARTED_AT = time.perf_counter()
 
 def default_projects_dir() -> str:
