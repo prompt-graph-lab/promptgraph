@@ -109,6 +109,16 @@ contract check, and starts Streamlit. It never invokes pip and never falls back
 to global Python. If `.venv` is missing, it exits nonzero with `Run setup.bat
 first` guidance.
 
+The launcher starts from the application directory, where the repository-owned
+`.streamlit/config.toml` sets `runner.fastReruns = false` for serialized
+full-app reruns. Run the equivalent manual `streamlit run app.py` command from
+the repository root to load the same per-project configuration. Streamlit
+environment variables and command-line flags can override this default; the
+Project capture safety gate will reject capture if the effective option is
+`true`. Restart Streamlit after changing this non-theme setting. See the
+[Project capture safety contract](architecture/mcp-project-capture.md) for the
+reason and tested boundary.
+
 Equivalent manual commands are:
 
 ```bat

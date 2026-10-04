@@ -30,6 +30,27 @@ The inspected upstream sources are [AppSession 1.60.0](https://github.com/stream
 [SafeSessionState 1.60.0](https://github.com/streamlit/streamlit/blob/1.60.0/lib/streamlit/runtime/state/safe_session_state.py#L98-L118),
 and the [fast-rerun default and warning](https://github.com/streamlit/streamlit/blob/1.60.0/lib/streamlit/config.py#L752-L762).
 
+## Supported PromptGraph rerun mode
+
+The repository-owned `.streamlit/config.toml` sets
+`runner.fastReruns = false`. `run.bat` changes the working directory to the
+repository root before launching Streamlit, so this per-project setting is
+loaded for the supported launcher and for the documented manual command run
+from that root. The setting establishes the supported default; it is not a
+universal transaction guarantee and does not rule out every possible form of
+concurrency. The tested statement is limited to the pinned Streamlit 1.60.0
+normal full-app rerun path characterized above.
+
+Streamlit merges configuration sources and permits environment variables and
+command-line flags to override the project file. In particular, setting
+`STREAMLIT_RUNNER_FAST_RERUNS=true` restores the overlapping-rerun mode. The
+application does not force or mutate this option after startup, and
+`ui.project_capture_safety` continues to check the effective runtime value at
+each capture. An override to `True` therefore keeps capture fail-closed. A
+change to this non-theme startup option takes effect after restarting the
+Streamlit process. This runtime contract does not activate an MCP Project
+provider or bridge.
+
 ## Capture contract
 
 `ui.project_capture_safety` owns the narrow capture gate. At the beginning of
