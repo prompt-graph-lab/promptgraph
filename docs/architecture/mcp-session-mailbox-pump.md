@@ -105,8 +105,10 @@ reply. It does not rewrite bridge contract fields, retain response history, or
 allow Apply. The request id remains correlation only; `plan_id` remains
 content identity, not authorization.
 
-The next local named-pipe broker must only submit and consume through the
-session mailbox. It must not call the Project bridge, read Streamlit state,
-capture a Project, or change target epochs. Pairing credentials, external
-process identity, named-pipe transport, and any Apply approval flow are outside
-this slice.
+Process-local session registration and one-use pairing are defined in
+[MCP session registration and pairing](mcp-session-registration-pairing.md).
+The next local named-pipe broker must receive only the paired route handle and
+submit/consume through that handle. It must not call the Project bridge, read
+Streamlit state, capture a Project, access the raw mailbox, or change target
+epochs. Named-pipe transport, external process identity verification, and any
+Apply approval flow remain outside this slice.
