@@ -474,15 +474,22 @@ class ProjectAgentSessionMailbox:
         with self._lock:
             if self._closed:
                 return MailboxOutcome("session_closed")
-            # Consumers may present only the target they submitted against;
-            # only the session-owned app runtime synchronizes the current
-            # target. A stale producer must never roll the epoch backwards.
-            if type(target_epoch) is not str or target_epoch != self._target_epoch:
+            if type(target_epoch) is not str or not target_epoch:
                 return MailboxOutcome("stale_target")
             if self._state != _REPLY_READY:
                 if self._state == _IDLE:
-                    return MailboxOutcome("idle")
+                    return MailboxOutcome(
+                        "idle" if target_epoch == self._target_epoch else "stale_target"
+                    )
+                if target_epoch != self._target_epoch:
+                    return MailboxOutcome("stale_target")
                 return MailboxOutcome("busy")
+            # An outcome belongs to the submitted request epoch, which may be
+            # older than the current session target after invalidation. Only
+            # that request's producer may consume it; consumption never
+            # synchronizes or rewinds the session-owned target epoch.
+            if target_epoch != self._request_epoch:
+                return MailboxOutcome("stale_target")
             if self._is_expired_locked(now) and self._reply_status == "completed":
                 self._set_terminal_locked("expired")
             generation = self._reply_generation
@@ -504,11 +511,16 @@ class ProjectAgentSessionMailbox:
                 if self._state == _REPLY_READY and self._reply_status in (
                     "stale_target", "expired", "internal_error",
                 ):
+                    if target_epoch != self._request_epoch:
+                        return MailboxOutcome("stale_target")
                     outcome = MailboxOutcome(self._reply_status)
                     self._clear_outcome_locked()
                     return outcome
                 return MailboxOutcome("busy")
-            if (self._request_epoch is not None
+            if target_epoch != self._request_epoch:
+                return MailboxOutcome("stale_target")
+            if (status == "completed"
+                    and self._request_epoch is not None
                     and self._target_epoch != self._request_epoch):
                 self._set_terminal_locked("stale_target")
                 status = "stale_target"

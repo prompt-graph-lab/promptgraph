@@ -144,6 +144,9 @@ def test_target_change_invalidates_pending_wake_due_and_unconsumed_reply():
             mailbox.begin_full_app_run("target-a")
         mailbox.synchronize_target_epoch("target-b")
         assert mailbox.consume_reply("target-b").status == "stale_target"
+        assert mailbox.state == "reply_ready"
+        assert mailbox.consume_reply("target-a").status == "stale_target"
+        assert mailbox.state == "idle"
         assert mailbox.submit("target-b", {}).status == "accepted"
 
     mailbox = make_mailbox()
@@ -153,6 +156,10 @@ def test_target_change_invalidates_pending_wake_due_and_unconsumed_reply():
     mailbox.complete(claim, {"ok": True}, "target-a")
     mailbox.synchronize_target_epoch("target-b")
     assert mailbox.consume_reply("target-b").status == "stale_target"
+    assert mailbox.state == "reply_ready"
+    assert mailbox.consume_reply("target-a").status == "stale_target"
+    assert mailbox.state == "idle"
+    assert mailbox.submit("target-b", {}).status == "accepted"
 
 
 def test_target_change_while_executing_discards_reply_after_dispatch():
@@ -164,9 +171,13 @@ def test_target_change_while_executing_discards_reply_after_dispatch():
 
     assert mailbox.complete(claim, {"ok": True}, "target-b").status == "stale_target"
     assert mailbox.consume_reply("target-b").status == "stale_target"
+    assert mailbox.state == "reply_ready"
+    assert mailbox.consume_reply("target-a").status == "stale_target"
+    assert mailbox.state == "idle"
+    assert mailbox.submit("target-b", {}).status == "accepted"
 
 
-def test_old_reply_consumer_cannot_roll_back_current_target_epoch():
+def test_original_consumer_clears_stale_outcome_without_rolling_back_epoch():
     mailbox = make_mailbox()
     mailbox.submit("target-a", {"request_id": "req", "tool": "x", "arguments": {}})
     mailbox.begin_full_app_run("target-a")
@@ -174,11 +185,44 @@ def test_old_reply_consumer_cannot_roll_back_current_target_epoch():
     mailbox.complete(claim, {"ok": True}, "target-a")
     mailbox.synchronize_target_epoch("target-b")
 
+    # The unrelated new-target consumer cannot release the old request.
+    assert mailbox.consume_reply("target-b").status == "stale_target"
+    assert mailbox.state == "reply_ready"
+
+    # The original producer can consume its stale terminal result.
     assert mailbox.consume_reply("target-a").status == "stale_target"
     assert mailbox.target_epoch == "target-b"
-    assert mailbox.state == "reply_ready"
-    assert mailbox.consume_reply("target-b").status == "stale_target"
-    assert mailbox.target_epoch == "target-b"
+    assert mailbox.state == "idle"
+    assert mailbox.submit(
+        "target-b",
+        {"request_id": "new-target", "tool": "x", "arguments": {}},
+    ).status == "accepted"
+
+
+def test_expired_or_internal_error_outcome_remains_consumable_by_original_epoch():
+    for outcome_kind in ("expired", "internal_error"):
+        clock = FakeClock()
+        mailbox = make_mailbox(clock)
+        mailbox.submit(
+            "target-a",
+            {"request_id": "req", "tool": "x", "arguments": {}},
+            timeout_seconds=1,
+        )
+        if outcome_kind == "expired":
+            clock.advance(1)
+            mailbox.begin_full_app_run("target-a")
+        else:
+            mailbox.begin_full_app_run("target-a")
+            claim = mailbox._claim_for_service("target-a")
+            assert mailbox.complete(claim, object(), "target-a").status == "internal_error"
+
+        mailbox.synchronize_target_epoch("target-b")
+        assert mailbox.consume_reply("target-b").status == "stale_target"
+        assert mailbox.state == "reply_ready"
+        assert mailbox.consume_reply("target-a").status == outcome_kind
+        assert mailbox.target_epoch == "target-b"
+        assert mailbox.state == "idle"
+        assert mailbox.submit("target-b", {}).status == "accepted"
 
 
 def test_deadline_rejects_before_service_during_execution_and_before_consumption():
