@@ -16,14 +16,33 @@ from ui.project_agent_session_mailbox import (
     ProjectAgentSessionMailbox,
     ProjectTargetTracker,
 )
+from ui.project_agent_session_registry import (
+    PairingOperation,
+    ProjectAgentSessionRegistration,
+    ProjectAgentSessionRegistry,
+    get_process_project_agent_session_registry,
+)
 
 
 @dataclass
 class ProjectAgentSessionRuntime:
-    """Session resource holding only route metadata and its capacity-one mailbox."""
+    """Session resource holding its mailbox, target tracker, and route authority."""
 
     mailbox: ProjectAgentSessionMailbox = field(default_factory=ProjectAgentSessionMailbox)
     target_tracker: ProjectTargetTracker = field(default_factory=ProjectTargetTracker)
+    _registry: ProjectAgentSessionRegistry = field(
+        default_factory=get_process_project_agent_session_registry,
+        repr=False,
+    )
+    _registration: ProjectAgentSessionRegistration | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self):
+        self._registration = self._registry.register_session(self.mailbox)
 
     def synchronize_target(self, project, project_path):
         epoch = self.target_tracker.observe(project, project_path)
@@ -34,7 +53,21 @@ class ProjectAgentSessionRuntime:
         epoch = self.synchronize_target(project, project_path)
         self.mailbox.begin_full_app_run(epoch)
 
+    def arm_local_pairing(self):
+        """Arm one short-lived offer for this session's own registered route."""
+
+        if self._closed or self._registration is None:
+            return PairingOperation("session_unavailable")
+        return self._registration.arm_pairing()
+
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        if self._registration is not None:
+            # Remove external addressability before closing the mailbox. Any
+            # in-flight paired operation is serialized with unregister.
+            self._registration.unregister()
         self.mailbox.close()
         self.target_tracker.close()
 
