@@ -152,12 +152,14 @@ evidence for Preview content. Each new bridge call captures independently;
 no Project or capture is retained between requests, and no response history
 is kept.
 
-This boundary has no session pairing or IPC. It adds no gateway connection,
-socket, named pipe, HTTP server, process launch, filesystem loading, Project
-discovery, or persistence. The trusted app caller must explicitly provide its
-session state and run token; local session pairing and request transport to the
-client-launched stdio gateway remain a later boundary. The run token is never
-part of the request or reply.
+The capture and synchronous bridge boundaries have no session pairing or IPC.
+They add no gateway connection, socket, named pipe, HTTP server, process
+launch, filesystem loading, Project discovery, or persistence. The trusted app
+caller must explicitly provide its session state and run token; the run token
+is never part of the request or reply. PR #121 adds a session-scoped mailbox
+and Streamlit request pump above this bridge; see [MCP session mailbox and
+request pump](mcp-session-mailbox-pump.md). Local process pairing and request
+transport to the client-launched stdio gateway remain deferred.
 
 The private release-engineering export manifest remains outside this public
 repository. Before the next private public-tree export, release engineering

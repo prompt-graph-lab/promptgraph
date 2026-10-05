@@ -1,5 +1,10 @@
 from core.project_save_as_safety import normalize_project_save_as_path
 from ui.project_capture_safety import begin_project_capture_run
+from ui.project_agent_session_pump import (
+    begin_project_agent_session_run,
+    render_project_agent_request_pump,
+    service_project_agent_session_request,
+)
 from ui.project_save_as_lifecycle import (
     PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY,
     PROJECT_SAVE_AS_OVERWRITE_ACK_KEY,
@@ -20665,6 +20670,12 @@ def show_image_dialog(image_path: str, prompt_text: str):
 st.set_page_config(page_title=get_edition_title(), layout="wide")
 auto_open_last_project_on_startup()
 
+_PROJECT_AGENT_SESSION_RUNTIME = begin_project_agent_session_run(
+    st.session_state,
+    _PROJECT_CAPTURE_RUN_TOKEN,
+)
+render_project_agent_request_pump()
+
 if is_free() and st.session_state.show_tutorial:
     st.title("🎉 PromptGraph Liteへようこそ！")
 
@@ -20721,6 +20732,11 @@ if is_free() and st.session_state.show_tutorial:
         st.session_state.show_tutorial = False
         st.rerun()
 
+    service_project_agent_session_request(
+        _PROJECT_AGENT_SESSION_RUNTIME,
+        st.session_state,
+        _PROJECT_CAPTURE_RUN_TOKEN,
+    )
     st.stop()
 
 st.sidebar.title(f"{get_edition_title()} {__version__}")
@@ -20934,14 +20950,30 @@ render_management_workspace_launchers()
 active_management_workspace = get_active_management_workspace()
 if active_management_workspace:
     render_management_workspace_shell(active_management_workspace)
+    service_project_agent_session_request(
+        _PROJECT_AGENT_SESSION_RUNTIME,
+        st.session_state,
+        _PROJECT_CAPTURE_RUN_TOKEN,
+    )
     render_ui_profile_panel()
     st.stop()
 
 if not st.session_state.project:
     st.info("プロジェクトを作成・読み込みするか、下の「読み込み・書き出し」からプロンプト一覧を読み込んでください。")
     render_gallery_import_export_section(None)
+    service_project_agent_session_request(
+        _PROJECT_AGENT_SESSION_RUNTIME,
+        st.session_state,
+        _PROJECT_CAPTURE_RUN_TOKEN,
+    )
     render_ui_profile_panel()
     st.stop()
+
+service_project_agent_session_request(
+    _PROJECT_AGENT_SESSION_RUNTIME,
+    st.session_state,
+    _PROJECT_CAPTURE_RUN_TOKEN,
+)
 
 project = st.session_state.project
 production_mode_context = get_production_mode_context(project)
