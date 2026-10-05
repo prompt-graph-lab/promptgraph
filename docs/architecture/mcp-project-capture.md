@@ -75,13 +75,11 @@ are enabled. Failures have bounded reason codes; clone/config/session errors
 do not expose exception text or paths. There is no fallback to saved Project
 JSON.
 
-The app's current default is `runner.fastReruns=True`, so captures fail closed
-by default. This PR does not change that application behavior or add a setting
-control. A future host that needs live capture must explicitly launch with
-`runner.fastReruns=false`, or first provide a shared serialization protocol
-that every concurrent Project writer participates in. A capture is
-request-scoped and represents the Project at the clone point; it is not a
-durable Project identity or content revision.
+Upstream Streamlit's own default remains `runner.fastReruns=True`; PromptGraph's
+repository-owned supported default is `False`, as documented above. An
+environment or command-line override that enables fast reruns makes capture
+fail closed. A capture is request-scoped and represents the Project at the
+clone point; it is not a durable Project identity or content revision.
 
 The clone uses the existing `Project.clone()` deep-copy semantics. Facade
 summary, Scene, Illustration/detail, and Batch Replace Preview operations run
@@ -89,15 +87,90 @@ against the snapshot only. They do not mutate the source Project or publish a
 Project change. Existing Agent Facade fingerprints and Preview validation
 remain authoritative for later freshness checks.
 
+## App-side request/reply bridge
+
+`ui.project_agent_request_bridge.dispatch_project_agent_request(...)` is the
+synchronous host-side dispatcher. A caller supplies the current Streamlit
+session state, its trusted app-run token, and exactly one JSON request:
+
+```json
+{"request_id":"req-1","tool":"promptgraph_project_summary","arguments":{}}
+```
+
+The outer object has exactly `request_id`, `tool`, and `arguments` keys.
+`request_id` is a bounded non-empty correlation string only; it is not a
+session or Project identity, revision, approval, authorization, capability, or
+replay token. Arguments must be a bounded tree of ordinary JSON values. The
+bridge rejects custom objects, non-string object keys, cycles, non-finite
+numbers, and overlarge/deep values without invoking coercion hooks.
+
+A completed bridge reply preserves the adapter result as-is:
+
+```json
+{"bridge_contract_version":"promptgraph.app-agent-request-bridge.v1","request_id":"req-1","status":"completed","result":{}}
+```
+
+Host failures use a distinct bounded rejection reply with
+`status: "rejected"`, a bounded `reason`, and short `diagnostics`; raw
+exception text, paths, reprs, Streamlit internals, and stack traces are not
+returned. An adapter/domain result with `ok: false` is still a completed
+bridge request because dispatch succeeded.
+
+The bridge does not own the logical tool list or tool-specific argument rules.
+`agent_adapters.mcp_adapter` remains the owner of exactly these six tools:
+
+- `promptgraph_capabilities`
+- `promptgraph_project_summary`
+- `promptgraph_list_scenes`
+- `promptgraph_list_illustrations`
+- `promptgraph_get_illustration`
+- `promptgraph_preview_batch_replace`
+
+The bridge always delegates to `PromptGraphMCPAdapter.call_tool(...)`; the
+adapter retains transport validation and tool dispatch, while
+`core.agent_facade` retains observation and Preview semantics. There is no
+agent-callable Apply or approval path.
+
+The bridge supplies the adapter a request-local lazy Project provider rather
+than maintaining a second list of Project-dependent tools. Capabilities,
+unknown tools (including attempted Apply), and tool arguments rejected by the
+adapter before provider access do not capture a Project. When the adapter asks
+for a Project, the provider calls `capture_active_project(...)` on first
+access, retains that successful capture only for this dispatch, and returns
+the same isolated snapshot for any further provider calls in the request. The
+snapshot is fixed for that request and current adapter/facade operations treat
+it as read-only; the underlying `Project` type is not frozen. The provider
+never recaptures midway. Capture failures become bounded host-level rejections
+with the capture owner's bounded reason in diagnostics. The bridge checks
+`is_capture_current(...)` after dispatch and rejects the result if run or
+active-Project ownership changed before reply release.
+
+Capture currentness proves only run ownership and active Project object
+ownership. It does not detect arbitrary in-place Project edits as a content
+revision. The Agent Facade's Preview fingerprint/digest remains the freshness
+evidence for Preview content. Each new bridge call captures independently;
+no Project or capture is retained between requests, and no response history
+is kept.
+
+This boundary has no session pairing or IPC. It adds no gateway connection,
+socket, named pipe, HTTP server, process launch, filesystem loading, Project
+discovery, or persistence. The trusted app caller must explicitly provide its
+session state and run token; local session pairing and request transport to the
+client-launched stdio gateway remain a later boundary. The run token is never
+part of the request or reply.
+
+The private release-engineering export manifest remains outside this public
+repository. Before the next private public-tree export, release engineering
+must classify the already-added `.streamlit/config.toml`; this note does not
+create or replace that private manifest.
+
 ## Still deferred
 
-There is no MCP Project provider, IPC, Project discovery/load/save, Apply,
-approval custody, history, or publication in this boundary. Before any future
-bridge is activated, its host must keep the Streamlit session as the active
-Project owner, obtain an isolated request-scoped capture under the proven
-serialization precondition, and separately preserve the exact approved
-Preview envelope for any future host-owned Apply. `plan_id` remains content
-identity, not authorization.
+There is no external MCP Project provider, session pairing, IPC, Project
+discovery/load/save, Apply, approval custody, history, or publication in this
+boundary. If a future host-owned Apply is designed, that host must preserve the
+exact approved Preview envelope. `plan_id` remains content identity, not
+authorization.
 
 The characterization intentionally uses Streamlit 1.60.0 test-only internals
 to drive the real AppSession/ScriptRunner overlap. Production code uses only
