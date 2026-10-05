@@ -459,9 +459,9 @@ def test_target_epoch_changes_do_not_destroy_paired_session_route():
     assert route.consume_reply("target-a").status == "stale_target"
     assert route.current_target_epoch == "target-b"
     assert route.submit("target-b", {"request_id": "b"}).status == "accepted"
-    assert route.release().status == "released"
-    assert route.current_target_epoch is None
-    assert registration.arm_pairing().status == "armed"
+    assert route.release().status == "in_flight"
+    assert route.current_target_epoch == "target-b"
+    assert registration.arm_pairing().status == "already_paired"
     mailbox.close()
 
 
@@ -581,7 +581,7 @@ def test_claim_pairing_racing_unregister_leaves_no_usable_route():
     mailbox.close()
 
 
-def test_submit_racing_release_cannot_succeed_after_release_completes():
+def test_submit_racing_release_preserves_in_flight_pairing():
     registry = ProjectAgentSessionRegistry()
     mailbox = ProjectAgentSessionMailbox()
     mailbox.synchronize_target_epoch("target-a")
@@ -599,9 +599,82 @@ def test_submit_racing_release_cannot_succeed_after_release_completes():
         },
     )
 
-    assert outcomes["release"].status == "released"
-    assert outcomes["submit"].status in {"accepted", "session_unavailable"}
-    assert route.submit(
+    if outcomes["submit"].status == "accepted":
+        assert outcomes["release"].status == "in_flight"
+        assert route.current_target_epoch == "target-a"
+        assert registration.arm_pairing().status == "already_paired"
+    else:
+        assert outcomes["submit"].status == "session_unavailable"
+        assert outcomes["release"].status == "released"
+        assert route.submit(
+            "target-a", {"request_id": "after-release"}
+        ).status == "session_unavailable"
+    mailbox.close()
+
+
+def test_release_is_blocked_until_outcome_is_consumed_then_new_pair_is_clean():
+    registry = ProjectAgentSessionRegistry()
+    mailbox = ProjectAgentSessionMailbox()
+    mailbox.synchronize_target_epoch("target-a")
+    registration = registry.register_session(mailbox)
+    bootstrap, route = _arm_and_claim(registry, registration)
+
+    assert route.submit("target-a", {"request_id": "old-client"}).status == (
+        "accepted"
+    )
+    assert route.release().status == "in_flight"
+    assert registration.arm_pairing().status == "already_paired"
+    assert registry.claim_pairing(
+        bootstrap.process_incarnation,
+        bootstrap.route_id,
+        bootstrap.capability,
+    ).status == "invalid_pairing"
+
+    mailbox.begin_full_app_run("target-a")
+    claim = mailbox._claim_for_service("target-a")
+    assert claim is not None
+    assert mailbox.complete(
+        claim, {"result": "old-client-result"}, "target-a"
+    ).status == "completed"
+    assert mailbox.state == "reply_ready"
+    assert route.release().status == "in_flight"
+    assert registration.arm_pairing().status == "already_paired"
+
+    consumed = route.consume_reply("target-a")
+    assert consumed.status == "completed"
+    assert consumed.reply == {"result": "old-client-result"}
+    assert mailbox.state == "idle"
+    assert route.release().status == "released"
+
+    fresh_bootstrap = registration.arm_pairing().bootstrap
+    new_route = registry.claim_pairing(
+        fresh_bootstrap.process_incarnation,
+        fresh_bootstrap.route_id,
+        fresh_bootstrap.capability,
+    ).paired_route
+    assert new_route.current_target_epoch == "target-a"
+    assert new_route.consume_reply("target-a").status == "idle"
+    mailbox.close()
+
+
+def test_release_before_submit_invalidates_old_route_and_requires_new_pair():
+    registry = ProjectAgentSessionRegistry()
+    mailbox = ProjectAgentSessionMailbox()
+    mailbox.synchronize_target_epoch("target-a")
+    registration = registry.register_session(mailbox)
+    _bootstrap, old_route = _arm_and_claim(registry, registration)
+
+    assert old_route.release().status == "released"
+    assert old_route.submit(
         "target-a", {"request_id": "after-release"}
     ).status == "session_unavailable"
+
+    fresh_bootstrap = registration.arm_pairing().bootstrap
+    new_route = registry.claim_pairing(
+        fresh_bootstrap.process_incarnation,
+        fresh_bootstrap.route_id,
+        fresh_bootstrap.capability,
+    ).paired_route
+    assert new_route.current_target_epoch == "target-a"
+    assert new_route.consume_reply("target-a").status == "idle"
     mailbox.close()

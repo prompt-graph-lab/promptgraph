@@ -344,7 +344,7 @@ class ProjectAgentSessionRegistry:
                 return True
 
     def release_pairing(self, paired_route):
-        """Invalidate one paired generation while leaving registration alive."""
+        """Release an idle paired route without transferring mailbox work."""
 
         record = self._record_for_paired_route(paired_route)
         if record is None:
@@ -353,6 +353,18 @@ class ProjectAgentSessionRegistry:
             with self._lock:
                 if not self._paired_route_matches_locked(paired_route, record):
                     return PairingOperation("already_released")
+                mailbox = record.mailbox_ref()
+                if mailbox is None:
+                    self._clear_bootstrap_locked(record)
+                    self._routes.pop(record.route_id, None)
+                    return PairingOperation("session_unavailable")
+                mailbox_state = mailbox.state
+                if mailbox_state == "closed":
+                    self._clear_bootstrap_locked(record)
+                    self._routes.pop(record.route_id, None)
+                    return PairingOperation("session_unavailable")
+                if mailbox_state != "idle":
+                    return PairingOperation("in_flight")
                 record.pairing_generation = None
                 return PairingOperation("released")
 

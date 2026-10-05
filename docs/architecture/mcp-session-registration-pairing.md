@@ -75,9 +75,14 @@ The successful claimant receives only `ProjectAgentPairedRoute`, never the
 mailbox or registration authority. It can read the current target epoch,
 submit one JSON request against an explicit epoch, consume that request's
 reply, and release its own pairing. Every operation is generation-checked.
-Release invalidates that handle but keeps the session route and mailbox alive;
-a new client requires a new session-side arm. Session cleanup unregisters the
-route first, which invalidates offers and handles before the mailbox closes.
+Release succeeds only while the mailbox is idle. If a request is pending,
+executing, or has an unconsumed outcome, it returns bounded `in_flight` and
+keeps the current pairing active; work is never canceled or transferred to a
+later client. After the same client consumes its outcome and the mailbox is
+idle, release invalidates that handle but keeps the session route and mailbox
+alive. A new client then requires a fresh session-side arm. Session cleanup
+unregisters the route first, which invalidates offers and handles before the
+mailbox closes.
 
 Pairing is between one client and one browser-session route, not between a
 client and a Project. A Project switch or successful Save As changes the
