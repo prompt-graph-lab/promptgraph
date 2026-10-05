@@ -68,6 +68,12 @@ def _assert_json_only(value):
     json.dumps(value, allow_nan=False)
 
 
+def _cyclic_json_result():
+    result = {}
+    result["self"] = result
+    return result
+
+
 class _Hostile:
     def __str__(self):
         raise AssertionError("bridge must not stringify hostile values")
@@ -180,6 +186,28 @@ def test_cyclic_and_overdeep_arguments_are_rejected_safely(monkeypatch):
         assert reply["reason"] == "invalid_request"
         assert reply["diagnostics"] == [{"code": "invalid_json_arguments"}]
         _assert_json_only(reply)
+    assert capture_calls == []
+
+
+def test_outer_request_string_and_node_budgets_remain_enforced(monkeypatch):
+    capture_calls = []
+    monkeypatch.setattr(
+        bridge,
+        "capture_active_project",
+        lambda *args: capture_calls.append(args),
+    )
+    session, token = _session(_project())
+
+    oversized_string = {"payload": "x" * 500_001}
+    oversized_node_list = {"payload": [None] * 20_000}
+    for arguments in (oversized_string, oversized_node_list):
+        reply = bridge.dispatch_project_agent_request(
+            session, token, _request("promptgraph_project_summary", arguments)
+        )
+        assert reply["reason"] == "invalid_request"
+        assert reply["diagnostics"] == [{"code": "invalid_json_arguments"}]
+        _assert_json_only(reply)
+
     assert capture_calls == []
 
 
@@ -597,3 +625,65 @@ def test_adapter_result_must_be_json_safe(monkeypatch):
     assert reply["reason"] == "invalid_adapter_result"
     assert reply["diagnostics"] == [{"code": "adapter_result_not_json"}]
     _assert_json_only(reply)
+
+
+@pytest.mark.parametrize(
+    "result_factory",
+    [
+        pytest.param(lambda: {"unsafe": _Hostile()}, id="custom-object"),
+        pytest.param(lambda: {"unsafe": float("nan")}, id="non-finite"),
+        pytest.param(_cyclic_json_result, id="cycle"),
+    ],
+)
+def test_adapter_custom_non_finite_and_cyclic_results_are_rejected(
+        monkeypatch, result_factory):
+    monkeypatch.setattr(
+        mcp_adapter.PromptGraphMCPAdapter,
+        "call_tool",
+        lambda self, name, arguments: result_factory(),
+    )
+
+    reply = bridge.dispatch_project_agent_request(
+        {}, None, _request("promptgraph_capabilities", {})
+    )
+
+    assert reply["status"] == "rejected"
+    assert reply["reason"] == "invalid_adapter_result"
+    assert reply["diagnostics"] == [{"code": "adapter_result_not_json"}]
+    _assert_json_only(reply)
+
+
+def test_large_real_illustration_result_passes_unchanged_through_bridge(monkeypatch):
+    _fast_reruns(monkeypatch)
+    long_text = "x" * 4_000
+    lines = [_line("baseline", "baseline prompt"),
+             _line("scene-1", long_text, line_type="separator",
+                   separator_label=long_text)]
+    for index in range(100):
+        lines.append(_line(
+            f"illustration-{index}", long_text,
+            negative_prompt=long_text,
+            image_path=long_text,
+            generated_image_path=long_text,
+            selected_candidate_path=long_text,
+        ))
+    project = build_graph(Project(prompt_lines=lines))
+    request = _request("promptgraph_list_illustrations", {"limit": 100})
+    direct_result = mcp_adapter.PromptGraphMCPAdapter(
+        lambda: project
+    ).call_tool(request["tool"], request["arguments"])
+    direct_payload_size = len(json.dumps(
+        direct_result, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    ))
+
+    assert direct_result["ok"] is True
+    assert direct_payload_size > 500_000
+
+    session, token = _session(project)
+    reply = bridge.dispatch_project_agent_request(session, token, request)
+
+    assert reply["status"] == "completed"
+    assert reply["result"] == direct_result
+    assert len(json.dumps(
+        reply["result"], ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )) == direct_payload_size

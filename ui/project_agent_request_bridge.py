@@ -42,8 +42,8 @@ class _CaptureProviderUnavailable(Exception):
     """Internal signal; the adapter deliberately receives no host detail."""
 
 
-def _is_plain_json_value(value):
-    """Check a bounded JSON value without coercion or custom-object hooks."""
+def _is_bounded_plain_json_value(value):
+    """Check untrusted request JSON within the bridge's input budget."""
 
     remaining_nodes = _MAX_JSON_NODES
     total_string_chars = 0
@@ -106,6 +106,62 @@ def _is_plain_json_value(value):
         return False
 
 
+def _is_plain_json_result(value):
+    """Check adapter output shape without adding a bridge payload budget.
+
+    The existing adapter/facade own output bounds. This boundary only ensures
+    their returned value can cross the JSON bridge as finite built-in data.
+    An iterative walk avoids imposing a separate recursion-depth contract.
+    """
+
+    active_containers = set()
+    pending = [(value, False)]
+    try:
+        while pending:
+            item, leaving = pending.pop()
+            item_type = type(item)
+
+            if leaving:
+                active_containers.remove(id(item))
+                continue
+
+            if (item_type is type(None) or item_type is bool
+                    or item_type is int or item_type is str):
+                continue
+            if item_type is float:
+                if not isfinite(item):
+                    return False
+                continue
+
+            if item_type is dict:
+                identity = id(item)
+                if identity in active_containers:
+                    return False
+                active_containers.add(identity)
+                pending.append((item, True))
+                for key, child in item.items():
+                    if type(key) is not str:
+                        return False
+                    pending.append((child, False))
+                continue
+
+            if item_type is list:
+                identity = id(item)
+                if identity in active_containers:
+                    return False
+                active_containers.add(identity)
+                pending.append((item, True))
+                pending.extend((child, False) for child in item)
+                continue
+
+            return False
+    except Exception:
+        # Adapter output is expected to use exact built-in containers, but the
+        # host boundary still fails closed if that contract is ever violated.
+        return False
+    return True
+
+
 def _parse_request(request):
     if type(request) is not dict:
         return None, None, "invalid_envelope"
@@ -134,7 +190,7 @@ def _parse_request(request):
     arguments = request.get("arguments")
     if type(arguments) is not dict:
         return None, request_id_value, "invalid_arguments"
-    if not _is_plain_json_value(arguments):
+    if not _is_bounded_plain_json_value(arguments):
         return None, request_id_value, "invalid_json_arguments"
 
     return (tool, arguments), request_id_value, ""
@@ -247,7 +303,7 @@ def dispatch_project_agent_request(session_state, run_token, request):
                 return _rejected_reply(request_id, "project_capture_invalidated",
                                        "capture_no_longer_current")
 
-        if not _is_plain_json_value(result):
+        if not _is_plain_json_result(result):
             return _rejected_reply(request_id, "invalid_adapter_result",
                                    "adapter_result_not_json")
 
