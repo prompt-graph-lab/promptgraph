@@ -29,6 +29,85 @@ class FakeClock:
         self.now += seconds
 
 
+class _ContendedOperationLock:
+    """Hold a route lock until all race participants are waiting to enter."""
+
+    def __init__(self, expected_waiters):
+        self._lock = threading.RLock()
+        self._attempts_lock = threading.Lock()
+        self._expected_waiters = expected_waiters
+        self._attempts = 0
+        self.all_waiting = threading.Event()
+
+    def hold(self):
+        self._lock.acquire()
+
+    def release_hold(self):
+        self._lock.release()
+
+    def __enter__(self):
+        if self._lock.acquire(blocking=False):
+            return self
+        with self._attempts_lock:
+            self._attempts += 1
+            if self._attempts >= self._expected_waiters:
+                self.all_waiting.set()
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._lock.release()
+
+
+def _run_contended_route_operations(record, operations):
+    """Start all operations together and release their shared route lock."""
+
+    operation_lock = _ContendedOperationLock(len(operations))
+    record.operation_lock = operation_lock
+    operation_lock.hold()
+    start = threading.Barrier(len(operations) + 1)
+    results = queue.Queue()
+
+    def run(name, operation):
+        try:
+            start.wait(timeout=5)
+            result = operation()
+        except BaseException as error:
+            result = error
+        results.put((name, result))
+
+    threads = [
+        threading.Thread(target=run, args=(name, operation))
+        for name, operation in operations.items()
+    ]
+    for thread in threads:
+        thread.start()
+
+    coordination_error = None
+    try:
+        start.wait(timeout=5)
+        if not operation_lock.all_waiting.wait(timeout=5):
+            coordination_error = AssertionError(
+                "race participants did not contend on the route operation lock"
+            )
+    except BaseException as error:
+        coordination_error = error
+    finally:
+        operation_lock.release_hold()
+
+    for thread in threads:
+        thread.join(timeout=5)
+    assert all(not thread.is_alive() for thread in threads)
+    assert coordination_error is None, repr(coordination_error)
+
+    outcomes = dict(results.get_nowait() for _ in threads)
+    for name, outcome in outcomes.items():
+        assert not isinstance(outcome, BaseException), (
+            f"{name} raised unexpectedly: {outcome!r}"
+        )
+    return outcomes
+
+
 def _arm_and_claim(registry, registration):
     armed = registration.arm_pairing()
     assert armed.status == "armed"
@@ -468,3 +547,61 @@ def test_registry_holds_only_weak_mailbox_reference_and_dead_route_fails_closed(
         bootstrap.route_id,
         bootstrap.capability,
     ).status == "invalid_pairing"
+
+
+def test_claim_pairing_racing_unregister_leaves_no_usable_route():
+    registry = ProjectAgentSessionRegistry()
+    mailbox = ProjectAgentSessionMailbox()
+    mailbox.synchronize_target_epoch("target-a")
+    registration = registry.register_session(mailbox)
+    bootstrap = registration.arm_pairing().bootstrap
+    record = registry._routes[registration.route_id]
+
+    outcomes = _run_contended_route_operations(
+        record,
+        {
+            "claim": lambda: registry.claim_pairing(
+                bootstrap.process_incarnation,
+                bootstrap.route_id,
+                bootstrap.capability,
+            ),
+            "unregister": lambda: registry.unregister_session(registration),
+        },
+    )
+
+    assert outcomes["unregister"] is True
+    claim = outcomes["claim"]
+    if claim.status == "paired":
+        assert claim.paired_route.current_target_epoch is None
+        assert claim.paired_route.submit(
+            "target-a", {"request_id": "after-unregister"}
+        ).status == "session_unavailable"
+    else:
+        assert claim.status == "invalid_pairing"
+    mailbox.close()
+
+
+def test_submit_racing_release_cannot_succeed_after_release_completes():
+    registry = ProjectAgentSessionRegistry()
+    mailbox = ProjectAgentSessionMailbox()
+    mailbox.synchronize_target_epoch("target-a")
+    registration = registry.register_session(mailbox)
+    bootstrap, route = _arm_and_claim(registry, registration)
+    record = registry._routes[bootstrap.route_id]
+
+    outcomes = _run_contended_route_operations(
+        record,
+        {
+            "submit": lambda: route.submit(
+                "target-a", {"request_id": "racing-submit"}
+            ),
+            "release": route.release,
+        },
+    )
+
+    assert outcomes["release"].status == "released"
+    assert outcomes["submit"].status in {"accepted", "session_unavailable"}
+    assert route.submit(
+        "target-a", {"request_id": "after-release"}
+    ).status == "session_unavailable"
+    mailbox.close()
