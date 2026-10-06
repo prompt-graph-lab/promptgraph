@@ -81,7 +81,24 @@ the route remains unavailable rather than transferring work to another
 session or pairing generation. Delete-on-close also releases the slot when the
 PromptGraph process exits.
 
-This boundary adds no MCP SDK, runtime dependency, server daemon, UI, install
-flow, Apply tool, or approval behavior. Human-facing Connect/Waiting/Connected/
-Disconnect controls and client configuration guidance remain the next UI
-boundary.
+## Human-facing connection surface
+
+The Streamlit sidebar's **MCP Connection** expander uses only the current
+session runtime's `arm_launcher_rendezvous()`, `launcher_rendezvous_status()`,
+and `disarm_launcher_rendezvous()` methods. It presents available, waiting,
+connected, expired/disconnected, another-session-owned, and unavailable states.
+The status fragment refreshes every two seconds without requesting a full-app
+rerun and does not read Project state, capture state, the mailbox, or the
+request bridge.
+
+The setup values come from the running PromptGraph installation: Python
+executable (`sys.executable`), arguments `['-m',
+'agent_adapters.mcp_named_pipe_launcher']`, and the repository root as the
+working directory. The UI shows these generic values separately so a person
+can map them to their MCP client's fields without assuming a client-specific
+configuration schema. It does not display a descriptor path, capability,
+route identifier, or other pairing secret.
+
+This boundary adds no launcher or pairing mechanism, client-specific config
+automation, Apply tool, or approval behavior. Session cleanup remains the
+owner of final cleanup.
