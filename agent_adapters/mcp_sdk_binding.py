@@ -1,12 +1,13 @@
-"""Official MCP SDK binding for the SDK-independent PromptGraph adapter.
+"""Official MCP SDK binding for the PromptGraph logical tool surface.
 
-This module constructs an in-memory low-level SDK ``Server`` only. A host
-retains Project ownership and decides whether, where, and how to run transport.
+This module constructs an in-memory low-level SDK ``Server`` only. It accepts
+the existing exact adapter or a host-supplied explicit tool-caller seam; it
+does not own Project state or choose a transport.
 """
 
 from copy import deepcopy
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from mcp.server import Server, ServerRequestContext
 from mcp.types import (
@@ -25,6 +26,12 @@ from core.version import PRODUCT_NAME, __version__
 
 SDK_BINDING_CONTRACT_VERSION = "promptgraph.mcp-sdk-binding.v1"
 _EFFECT_META_KEY = "promptgraph/effect"
+
+
+class MCPToolCaller(Protocol):
+    """Narrow synchronous call seam consumed by the SDK binding."""
+
+    def call_tool(self, name: str, arguments: object) -> dict[str, Any]: ...
 
 
 def _failure(reason: str) -> dict[str, Any]:
@@ -70,16 +77,29 @@ def _tool_result(payload: dict[str, Any]) -> CallToolResult:
     )
 
 
-def build_mcp_server(adapter: mcp_adapter.PromptGraphMCPAdapter) -> Server:
-    """Bind the adapter to the SDK's low-level public Server API.
+def build_mcp_server(
+    adapter: mcp_adapter.PromptGraphMCPAdapter | None = None,
+    *,
+    tool_caller: MCPToolCaller | None = None,
+) -> Server:
+    """Bind the exact adapter or explicit caller to the public SDK Server API.
 
     The adapter catalog remains the only source of PromptGraph tool names,
-    schemas, descriptions, and effect classification. This function does not
-    retain a Project or any Preview/approval state.
+    schemas, descriptions, and effect classification. The selected caller
+    owns dispatch; this function retains no Project, Preview, or approval
+    state.
     """
 
-    if type(adapter) is not mcp_adapter.PromptGraphMCPAdapter:
-        raise TypeError("A PromptGraphMCPAdapter instance is required.")
+    if adapter is not None:
+        if tool_caller is not None:
+            raise TypeError("Pass an adapter or a tool caller, not both.")
+        if type(adapter) is not mcp_adapter.PromptGraphMCPAdapter:
+            raise TypeError("A PromptGraphMCPAdapter instance is required.")
+        caller = adapter
+    elif tool_caller is not None and callable(getattr(tool_caller, "call_tool", None)):
+        caller = tool_caller
+    else:
+        raise TypeError("A PromptGraphMCPAdapter or explicit MCP tool caller is required.")
 
     catalog = mcp_adapter.get_tool_catalog()
 
@@ -97,7 +117,7 @@ def build_mcp_server(adapter: mcp_adapter.PromptGraphMCPAdapter) -> Server:
     ) -> CallToolResult:
         try:
             arguments = {} if params.arguments is None else params.arguments
-            payload = adapter.call_tool(params.name, arguments)
+            payload = caller.call_tool(params.name, arguments)
             if type(payload) is not dict:
                 payload = _failure("invalid_adapter_result")
             return _tool_result(payload)

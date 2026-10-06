@@ -1,4 +1,4 @@
-# PromptGraph MCP stdio transport (PoC-1c)
+# PromptGraph MCP stdio transport (PoC-1c and PoC-1d)
 
 PoC-1c connects the existing PromptGraph MCP SDK binding to the official SDK's
 stdio transport. It establishes a real subprocess-capable transport entry point
@@ -49,11 +49,52 @@ Streamable HTTP/SSE, authentication, or an internal LLM harness. The SDK's
 runtime dependency and exact lock are unchanged from PoC-1b; no requirements,
 license, supported-environment, or release-lock files are updated.
 
-The subprocess integration test runs a test-only host with a synthetic Project
-and uses the official SDK stdio client. It checks registered tools and schemas,
-all six operations, bounded errors, Preview-only behavior, JSON results, no
-Project mutation, protocol stdout integrity, and graceful subprocess exit. The
-test host's synthetic Project and PID/report markers are test fixtures, not
-production Project discovery or transport configuration.
+The PoC-1c subprocess integration test runs a test-only host with a synthetic
+Project and uses the official SDK stdio client. It checks registered tools and
+schemas, all six operations, bounded errors, Preview-only behavior, JSON
+results, no Project mutation, protocol stdout integrity, and graceful
+subprocess exit. The test host's synthetic Project and PID/report markers are
+test fixtures, not production Project discovery or transport configuration.
+
+## Named Pipe gateway (PoC-1d)
+
+`agent_adapters.mcp_sdk_binding.build_mcp_server(adapter)` preserves the
+original exact `PromptGraphMCPAdapter` contract. A separate explicit
+`tool_caller=` keyword accepts the small `MCPToolCaller` protocol for a
+transport proxy. Both paths use the same `mcp_adapter.get_tool_catalog()` and
+the same SDK result mapping; the adapter's domain semantics and schemas remain
+authoritative.
+
+`agent_adapters.mcp_named_pipe_gateway.serve_stdio_over_named_pipe(path)`
+connects one protected pairing descriptor through
+`LocalNamedPipeClient.connect_from_descriptor_file()`, binds that single
+client as the tool caller, runs the existing stdio runner, then attempts an
+explicit release on shutdown. It does not read a Project, access Streamlit or
+session state, capture a Project, choose a session, or own Apply/approval. If a
+call is still in flight at shutdown, the existing release rule refuses release
+and closing the pipe leaves cleanup to the endpoint's #123 caretaker. No
+request or reply is transferred to a later pairing.
+
+Each tool call reads the route's current target epoch once, submits the
+existing `{request_id, tool, arguments}` bridge envelope once, and waits for
+that epoch's mailbox outcome. A stale result is returned as a bounded MCP
+error; the gateway does not retry, switch routes, or resubmit against a newer
+target. A completed bridge result is returned unchanged. Bridge rejection
+reasons are reduced to a small allowlist, while arbitrary transport and host
+exception details are not returned to the MCP client. The gateway adds no
+response-size limit beyond the existing transport framing contract.
+
+The PoC-1d integration test uses the official MCP stdio client against a
+test-only gateway subprocess, a real authenticated Windows Named Pipe, and a
+test host pump calling the existing full-run service boundary. It covers
+tool/schema discovery, a Project-independent capability call, Project summary
+and Batch Replace Preview against the active host Project, unchanged results,
+Project immutability, and graceful gateway shutdown/re-pairability. The
+fixture's host loop and Project are test-only and do not add production
+launcher, pairing UI, or Project loading behavior.
+
+PoC-1d adds no SDK/runtime dependency or production process/CLI entry point.
+Gateway launcher/configuration, pairing UI, automatic reconnect, and any
+broader host lifecycle integration remain separate work.
 
 For SDK API details, see the official [v2.2.0 stdio server API](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/src/mcp/server/stdio.py), [stdio client API](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/src/mcp/client/stdio.py), and [low-level server guide](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/docs/advanced/low-level-server.md).
