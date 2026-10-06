@@ -68,6 +68,12 @@ def test_versioned_capability_discovery_is_fresh_and_json_only():
     first = facade.discover_capabilities()
     json_only(first)
     assert first["contract_version"] == facade.CONTRACT_VERSION
+    assert first["capabilities"]["illustration_search"] == {
+        "modes": ["exact_token", "contains_token", "literal"],
+        "max_results": facade.MAX_ITEMS,
+        "query_text_chars": facade.MAX_REQUEST_TEXT,
+    }
+    assert "illustration_search" in first["capabilities"]["observations"]
     mutation, = first["capabilities"]["mutations"]
     assert mutation["operation"] == "batch_replace"
     assert mutation["modes"] == ["exact_token", "contains_token", "literal", "token_set"]
@@ -98,6 +104,76 @@ def test_read_only_observations_preserve_gallery_baseline_and_active_scene_seman
     detail["illustration"]["tokens"].clear()
     assert proj == before
     assert identities(proj) == identity
+
+
+def test_read_only_illustration_search_counts_matches_in_list_order_and_scene_scope(monkeypatch):
+    proj = project()
+    # Make every special row contain the query to characterize the shared
+    # active-Illustration filter without relying on their other text.
+    for line_id in ("s1", "scratch", "trash", "deleted-scene"):
+        next(line for line in proj.prompt_lines if line.id == line_id).current_text = "red"
+    before, identity = copy.deepcopy(proj), identities(proj)
+
+    def unexpected_preview(*_args, **_kwargs):
+        raise AssertionError("Illustration search must not build a Batch Replace Preview")
+
+    monkeypatch.setattr(operations, "preview_batch_text_edit", unexpected_preview)
+    monkeypatch.setattr(facade, "preview_batch_replace", unexpected_preview)
+
+    exact = facade.search_illustrations(proj, "red", limit=2)
+    assert exact["ok"] is True
+    assert exact["match_mode"] == "exact_token"
+    assert exact["total_count"] == 3
+    assert exact["truncated"] is True
+    assert exact["matches"] == [
+        {"illustration_id": "baseline", "scene_id": None, "sequence_index": 0},
+        {"illustration_id": "one", "scene_id": "s1", "sequence_index": 1},
+    ]
+
+    contains = facade.search_illustrations(proj, "re", match_mode="contains_token")
+    assert contains["total_count"] == 4
+    assert [row["illustration_id"] for row in contains["matches"]] == [
+        "baseline", "one", "two", "three",
+    ]
+
+    literal = facade.search_illustrations(
+        proj, "red, blue", match_mode="literal", scene_id="s1")
+    assert literal["total_count"] == 1
+    assert [row["illustration_id"] for row in literal["matches"]] == ["one"]
+    empty_scene = facade.search_illustrations(proj, "red", scene_id="s2")
+    assert empty_scene["total_count"] == 0 and empty_scene["matches"] == []
+    assert all(row["illustration_id"] not in {"scratch", "trash", "s1", "deleted-scene"}
+               for row in exact["matches"] + contains["matches"] + literal["matches"])
+    for result in (exact, contains, literal, empty_scene):
+        json_only(result)
+    assert proj == before and identities(proj) == identity
+
+
+def test_illustration_search_literal_can_find_module_marker_but_token_modes_skip_it():
+    proj = build_graph(Project(prompt_lines=[line("module", "<mod:outfit>")],
+                               module_library={"outfit": {"body": "red"}},
+                               attribute_groups={}))
+    exact = facade.search_illustrations(proj, "outfit", match_mode="exact_token")
+    contains = facade.search_illustrations(proj, "outfit", match_mode="contains_token")
+    literal = facade.search_illustrations(
+        proj, "<mod:outfit>", match_mode="literal")
+    assert exact["total_count"] == contains["total_count"] == 0
+    assert literal["total_count"] == 1
+    assert literal["matches"][0]["illustration_id"] == "module"
+
+
+@pytest.mark.parametrize(("kwargs", "reason"), [
+    ({"query_text": ""}, "invalid_search_query"),
+    ({"query_text": " "}, "invalid_search_query"),
+    ({"query_text": "x" * (facade.MAX_REQUEST_TEXT + 1)}, "invalid_search_query"),
+    ({"query_text": "red", "match_mode": "token_set"}, "invalid_search_mode"),
+    ({"query_text": "red", "limit": 0}, "invalid_limit"),
+    ({"query_text": "red", "scene_id": "missing"}, "unknown_scene_id"),
+])
+def test_illustration_search_rejects_invalid_domain_arguments(kwargs, reason):
+    result = facade.search_illustrations(project(), **kwargs)
+    assert result["ok"] is False and result["reason"] == reason
+    json_only(result)
 
 
 def test_observation_limits_bound_rows_text_and_tokens():
@@ -154,7 +230,8 @@ def test_orientation_fields_are_bounded_read_only_and_module_values_stay_opaque(
                                  Project(prompt_lines=None), Project(prompt_lines=[None])])
 def test_missing_and_malformed_project_observations_fail_with_json_diagnostics(proj):
     for result in (facade.summarize_project(proj), facade.observe_scenes(proj),
-                   facade.list_illustrations(proj), facade.get_illustration(proj, "one")):
+                   facade.list_illustrations(proj), facade.search_illustrations(proj, "red"),
+                   facade.get_illustration(proj, "one")):
         assert not result["ok"] and result["diagnostics"]
         json_only(result)
 

@@ -88,7 +88,7 @@ def test_sdk_registration_uses_exact_adapter_catalog_and_excludes_apply():
     assert provider_calls == []
 
 
-def test_real_sdk_call_path_delegates_all_six_tools_without_project_mutation():
+def test_real_sdk_call_path_delegates_all_seven_tools_without_project_mutation():
     value = _project()
     before = copy.deepcopy(value)
     provider_calls = []
@@ -102,6 +102,7 @@ def test_real_sdk_call_path_delegates_all_six_tools_without_project_mutation():
         ("promptgraph_project_summary", {}),
         ("promptgraph_list_scenes", {"limit": 1}),
         ("promptgraph_list_illustrations", {}),
+        ("promptgraph_search_illustrations", {"query_text": "red"}),
         ("promptgraph_get_illustration", {"illustration_id": "illustration-1"}),
         ("promptgraph_preview_batch_replace", _request()),
     ]
@@ -123,7 +124,7 @@ def test_real_sdk_call_path_delegates_all_six_tools_without_project_mutation():
     assert actual == expected
     # Capabilities is provider-free; all other calls resolve the host Project
     # separately for each invocation.
-    assert len(provider_calls) == 5
+    assert len(provider_calls) == 6
     assert expected[3]["illustrations"][0]["illustration_id"] == "baseline"
     assert expected[3]["illustrations"][0]["scene_id"] is None
     assert value == before

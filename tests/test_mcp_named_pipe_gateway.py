@@ -415,7 +415,7 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 assert [tool.name for tool in listed.tools] == [
                     entry["name"] for entry in catalog
                 ]
-                assert len(listed.tools) == 6
+                assert len(listed.tools) == 7
                 assert all("apply" not in tool.name.casefold() for tool in listed.tools)
                 for tool, entry in zip(listed.tools, catalog, strict=True):
                     assert tool.description == entry["description"]
@@ -439,6 +439,19 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 ).call_tool("promptgraph_project_summary", {})
                 assert summary.is_error is False
                 assert summary.structured_content == expected_summary
+
+                search = await client.call_tool(
+                    "promptgraph_search_illustrations",
+                    {"query_text": "red"},
+                )
+                expected_search = mcp_adapter.PromptGraphMCPAdapter(
+                    lambda: project
+                ).call_tool(
+                    "promptgraph_search_illustrations",
+                    {"query_text": "red"},
+                )
+                assert search.is_error is False
+                assert search.structured_content == expected_search
 
                 preview = await client.call_tool(
                     "promptgraph_preview_batch_replace",
@@ -483,6 +496,6 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
 
     assert not pump_thread.is_alive()
     assert project == original
-    assert service_results == ["completed", "completed", "completed"]
-    assert len(capture_calls) == 2
+    assert service_results == ["completed", "completed", "completed", "completed"]
+    assert len(capture_calls) == 3
     assert shutdown_pairing_status == "released"

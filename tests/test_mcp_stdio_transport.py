@@ -155,7 +155,7 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
                 assert [tool.name for tool in listed.tools] == [
                     entry["name"] for entry in catalog
                 ]
-                assert len({tool.name for tool in listed.tools}) == 6
+                assert len({tool.name for tool in listed.tools}) == 7
                 assert all("apply" not in tool.name.casefold() for tool in listed.tools)
                 for registered, entry in zip(listed.tools, catalog, strict=True):
                     assert registered.description == entry["description"]
@@ -167,6 +167,7 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
                     ("promptgraph_project_summary", {}),
                     ("promptgraph_list_scenes", {"limit": 10}),
                     ("promptgraph_list_illustrations", {}),
+                    ("promptgraph_search_illustrations", {"query_text": "red"}),
                     (
                         "promptgraph_get_illustration",
                         {"illustration_id": "illustration-1"},
@@ -200,13 +201,13 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
                     "First Scene",
                     "Empty Scene",
                 ]
-                assert results[5] == expected_results[5]
+                assert results[6] == expected_results[6]
 
                 repeated_preview = await client.call_tool(
                     "promptgraph_preview_batch_replace",
                     request,
                 )
-                assert repeated_preview.structured_content == expected_results[5]
+                assert repeated_preview.structured_content == expected_results[6]
 
                 # Low-level SDK transport reaches the adapter's bounded shape
                 # error; this malformed request does not become a Project call.
@@ -250,7 +251,7 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
     assert report["pid"] == pid
     assert report["shutdown"] == "returned"
     assert report["project_unchanged"] is True
-    assert report["provider_calls"] == 8
+    assert report["provider_calls"] == 9
     assert report["line_texts"] == [
         {"id": "baseline", "text": "baseline prompt"},
         {"id": "scene-1", "text": "First Scene"},

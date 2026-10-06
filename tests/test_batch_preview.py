@@ -3,6 +3,7 @@ import copy
 import unittest
 
 from core import batch_preview
+from core import operations
 
 F = vars(batch_preview)
 
@@ -30,6 +31,31 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(f("sky", "sk", "contains_token"), "<span style='background-color:#fff3a3;'><span style='background-color:#ffb3b3;color:#7a0000;'>sk</span>y</span>")
         self.assertEqual(f("sky", "sk", "unknown"), "<span style='background-color:#fff3a3;'>sky</span>")
         self.assertEqual(f("a,  b &", "", "exact_token"), "a,  b &amp;")
+
+    def test_read_only_prompt_matcher_tracks_batch_replace_predicate(self):
+        cases = [
+            ("(red:1.2), reddish, <mod:outfit>", "red", "exact_token"),
+            ("(red:1.2), reddish, <mod:outfit>", "re", "contains_token"),
+            ("red, blue", "red, blue", "literal"),
+            ("red, blue", " red", "literal"),
+            ("<mod:outfit>", "<mod:outfit>", "literal"),
+        ]
+        for text, query, mode in cases:
+            after = operations._batch_transform_text(
+                text,
+                "replace",
+                edit_text="zzsearchmarker",
+                search_text=query,
+                replace_match_mode=mode,
+                preserve_replace_weights=False,
+            )
+            self.assertEqual(
+                operations.prompt_text_matches(text, query, mode),
+                after != text,
+                (text, query, mode),
+            )
+        self.assertFalse(operations.prompt_text_matches("red, blue", "red, blue", "exact_token"))
+        self.assertFalse(operations.prompt_text_matches("<mod:outfit>", "outfit", "exact_token"))
 
     def test_replacement_highlights_all_matching_bases(self):
         f = F["_highlight_replace_result_tokens"]

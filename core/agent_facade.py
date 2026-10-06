@@ -24,6 +24,7 @@ MAX_TEXT = 4000
 MAX_REQUEST_TEXT = 10000
 EXAMPLE_LIMIT = 5
 REPLACE_MODES = ("exact_token", "contains_token", "literal", "token_set")
+SEARCH_MODES = ("exact_token", "contains_token", "literal")
 
 
 class _Invalid(ValueError):
@@ -187,7 +188,10 @@ def _record_count(records, *, variants=False):
 def discover_capabilities():
     """Return a fresh, versioned, JSON-safe capability document."""
     return _response(capabilities={
-        "observations": ["project_summary", "scenes", "illustrations", "illustration"],
+        "observations": ["project_summary", "scenes", "illustrations", "illustration",
+                         "illustration_search"],
+        "illustration_search": {"modes": list(SEARCH_MODES), "max_results": MAX_ITEMS,
+                                "query_text_chars": MAX_REQUEST_TEXT},
         "mutations": [{"operation": OPERATION, "modes": list(REPLACE_MODES),
                        "requires_explicit_illustration_ids": True,
                        "requires_reviewed_plan": True}],
@@ -263,21 +267,59 @@ def _illustration(line, ownership, sequence_index, *, detail=False):
     return row
 
 
+def _illustration_targets(project, lines, scene_id=None):
+    ownership = _scene_map(project)
+    if scene_id is not None:
+        scene_id = _id(scene_id)
+        if scene_id not in {scene["route_id"] for scene in _scenes(project)}:
+            raise _Invalid("unknown_scene_id")
+    normal = [line for line in lines if _normal(line)]
+    targets = [(index, line) for index, line in enumerate(normal)
+               if scene_id is None or ownership.get(line.id, {}).get("route_id") == scene_id]
+    return ownership, targets
+
+
 def list_illustrations(project: Project, *, scene_id=None, limit=MAX_ITEMS):
     try:
         lines = _lines(project)
         _limit(limit)
-        ownership = _scene_map(project)
-        if scene_id is not None:
-            scene_id = _id(scene_id)
-            if scene_id not in {scene["route_id"] for scene in _scenes(project)}:
-                raise _Invalid("unknown_scene_id")
-        normal = [line for line in lines if _normal(line)]
-        targets = [(index, line) for index, line in enumerate(normal)
-                   if scene_id is None or ownership.get(line.id, {}).get("route_id") == scene_id]
+        ownership, targets = _illustration_targets(project, lines, scene_id)
         return _response(illustrations=[_illustration(line, ownership, index)
                                        for index, line in targets[:limit]],
                          total_count=len(targets), truncated=len(targets) > limit)
+    except _Invalid as error:
+        return _response(False, error.args[0])
+    except (AttributeError, TypeError, ValueError):
+        return _response(False, "invalid_project_state")
+
+
+def search_illustrations(project: Project, query_text, *, match_mode="exact_token",
+                         scene_id=None, limit=MAX_ITEMS):
+    """Count and list bounded matches among active Illustrations, read-only."""
+    try:
+        lines = _lines(project)
+        if (type(query_text) is not str or len(query_text) > MAX_REQUEST_TEXT
+                or not query_text.strip()):
+            raise _Invalid("invalid_search_query")
+        if type(match_mode) is not str or match_mode not in SEARCH_MODES:
+            raise _Invalid("invalid_search_mode")
+        _limit(limit)
+        ownership, targets = _illustration_targets(project, lines, scene_id)
+        matches = []
+        total_count = 0
+        for sequence_index, line in targets:
+            if not operations.prompt_text_matches(line.current_text, query_text, match_mode):
+                continue
+            total_count += 1
+            if len(matches) < limit:
+                scene = ownership.get(line.id)
+                matches.append({
+                    "illustration_id": line.id,
+                    "scene_id": scene["route_id"] if scene else None,
+                    "sequence_index": sequence_index,
+                })
+        return _response(match_mode=match_mode, matches=matches,
+                         total_count=total_count, truncated=total_count > limit)
     except _Invalid as error:
         return _response(False, error.args[0])
     except (AttributeError, TypeError, ValueError):
