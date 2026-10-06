@@ -48,7 +48,7 @@ def main() -> None:
     def project_provider() -> Project:
         nonlocal provider_calls
         provider_calls += 1
-        if provider_calls == 8:
+        if provider_calls == 9:
             raise RuntimeError("private stdio fixture diagnostic")
         return project
 

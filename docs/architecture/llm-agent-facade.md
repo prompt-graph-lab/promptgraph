@@ -33,6 +33,7 @@ All agent results use `contract_version: "promptgraph.agent-facade.v1"`.
 | `summarize_project(project)` | Illustration, Scene, baseline, deleted-line, Workbench and active Candidate/Variant counts; bounded Module and Attribute Group names |
 | `observe_scenes(project, limit=100)` | Active separator-backed Scenes in Project order, explicit order, labels, color and bounded Illustration IDs |
 | `list_illustrations(project, scene_id=None, limit=100)` | Normal active Illustrations in Project order, optionally filtered by Scene; filename, sequence index, Scene label, edited state, prompt text, stored image references and active Candidate/Variant counts |
+| `search_illustrations(project, query_text, match_mode="exact_token", scene_id=None, limit=100)` | Read-only count and bounded ID/Scene/sequence results for active Illustration prompt matches |
 | `get_illustration(project, illustration_id)` | One stable-ID Illustration's observation plus bounded tokens |
 
 Scene IDs are the existing separator PromptLine IDs. Scene observation reuses
@@ -182,6 +183,7 @@ The stable logical tool names and effects are:
 | `promptgraph_project_summary` | Read-only | `summarize_project(project)` |
 | `promptgraph_list_scenes` | Read-only | `observe_scenes(project, ...)` |
 | `promptgraph_list_illustrations` | Read-only | `list_illustrations(project, ...)` |
+| `promptgraph_search_illustrations` | Read-only | `search_illustrations(project, ...)` |
 | `promptgraph_get_illustration` | Read-only | `get_illustration(project, illustration_id)` |
 | `promptgraph_preview_batch_replace` | Reviewed Preview | `preview_batch_replace(project, request)` |
 
@@ -189,7 +191,14 @@ The catalog is a deterministic, inspectable JSON description with explicit
 schemas. It contains no Apply tool. Batch Replace targets remain explicit
 Illustration IDs; the adapter adds no semantic scopes or target inference. The
 facade Preview envelope is returned as-is rather than reconstructed by the
-adapter.
+adapter. Illustration search supports `exact_token`, `contains_token`, and
+`literal`; its result list is capped at 100 while `total_count` covers every
+matching active Illustration. It shares the list operation's active target,
+Scene ownership, and baseline `scene_id: null` rules, and returns no prompt text.
+The token modes reuse the parser-backed Batch Replace matcher: exact mode uses
+one token base, contains mode searches within token bases, and both skip
+structural Module markers. Literal mode searches the raw prompt substring,
+including marker text and any query whitespace.
 
 The host supplies the active Project through a provider callback when it creates
 the adapter. Capabilities discovery does not need a Project; each other tool
@@ -231,12 +240,13 @@ facade behavior. The SDK wrapper delegates every tool call to
 shape before asking the host Project provider, and `core.agent_facade` remains
 the owner of domain validation and observations.
 
-The binding registers exactly the six PoC-1a tools:
+The binding registers the same seven logical tools from the adapter catalog:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
 - `promptgraph_list_scenes`
 - `promptgraph_list_illustrations`
+- `promptgraph_search_illustrations`
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
 

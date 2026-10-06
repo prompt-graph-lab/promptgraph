@@ -117,12 +117,13 @@ returned. An adapter/domain result with `ok: false` is still a completed
 bridge request because dispatch succeeded.
 
 The bridge does not own the logical tool list or tool-specific argument rules.
-`agent_adapters.mcp_adapter` remains the owner of exactly these six tools:
+`agent_adapters.mcp_adapter` remains the owner of exactly these seven tools:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
 - `promptgraph_list_scenes`
 - `promptgraph_list_illustrations`
+- `promptgraph_search_illustrations`
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
 

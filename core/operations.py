@@ -2691,6 +2691,20 @@ def _line_contains_prompt(text: str, add_text: str, match_mode: str = "exact_tok
             return True
     return False
 
+def prompt_text_matches(text: str, search_text: str, match_mode: str = "exact_token") -> bool:
+    """Check one prompt using the existing Batch Replace match semantics.
+
+    Token modes delegate to the same parser-backed matcher used by prompt
+    operations. Literal mode follows Batch Replace's raw substring behavior.
+    """
+    if type(text) is not str or type(search_text) is not str:
+        return False
+    if match_mode == "literal":
+        return bool(search_text) and search_text in text
+    if match_mode in ("exact_token", "contains_token"):
+        return _line_contains_prompt(text, search_text, match_mode)
+    return False
+
 def _normalize_prompt_commas(text: str) -> str:
     parts = [part.strip() for part in text.split(",") if part.strip()]
     return ", ".join(parts)

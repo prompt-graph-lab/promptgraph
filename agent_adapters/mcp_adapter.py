@@ -22,7 +22,7 @@ _EMPTY_OBJECT = {
 _TOOL_CATALOG = (
     {
         "name": "promptgraph_capabilities",
-        "description": "List PromptGraph observations and the agent-facing Batch Replace Preview tool. Apply is not exposed.",
+        "description": "List PromptGraph observations, search Illustrations, and create a Batch Replace Preview. Apply is not exposed.",
         "inputSchema": _EMPTY_OBJECT,
         "effect": "read_only",
     },
@@ -51,6 +51,24 @@ _TOOL_CATALOG = (
                 "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             },
+            "additionalProperties": False,
+        },
+        "effect": "read_only",
+    },
+    {
+        "name": "promptgraph_search_illustrations",
+        "description": "Count and return a bounded list of active Illustration prompt matches.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query_text": {"type": "string", "minLength": 1,
+                               "maxLength": agent_facade.MAX_REQUEST_TEXT},
+                "match_mode": {"type": "string", "enum": list(agent_facade.SEARCH_MODES),
+                               "default": "exact_token"},
+                "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "limit": {"type": "integer", "minimum": 1, "maximum": agent_facade.MAX_ITEMS},
+            },
+            "required": ["query_text"],
             "additionalProperties": False,
         },
         "effect": "read_only",
@@ -94,10 +112,12 @@ _CAPABILITIES_TOOL = "promptgraph_capabilities"
 _SUMMARY_TOOL = "promptgraph_project_summary"
 _SCENES_TOOL = "promptgraph_list_scenes"
 _ILLUSTRATIONS_TOOL = "promptgraph_list_illustrations"
+_SEARCH_ILLUSTRATIONS_TOOL = "promptgraph_search_illustrations"
 _ILLUSTRATION_TOOL = "promptgraph_get_illustration"
 _PREVIEW_TOOL = "promptgraph_preview_batch_replace"
 _PREVIEW_REQUIRED_ARGUMENTS = ("illustration_ids", "find_text", "replace_text")
 _PREVIEW_OPTIONAL_ARGUMENTS = ("match_mode", "preserve_weights")
+_SEARCH_OPTIONAL_ARGUMENTS = ("match_mode", "scene_id", "limit")
 
 
 def _error(reason: str):
@@ -143,15 +163,39 @@ def _preview_transport_arguments(arguments):
     return args
 
 
+def _search_transport_arguments(arguments):
+    """Validate the bounded search schema before resolving the host Project."""
+    args = _object_arguments(arguments, required=("query_text",),
+                             optional=_SEARCH_OPTIONAL_ARGUMENTS)
+    if args is None or not _arguments_have_types(args, {
+            "query_text": str, "match_mode": str, "scene_id": str, "limit": int}):
+        return None
+    query = args["query_text"]
+    if not 1 <= len(query) <= agent_facade.MAX_REQUEST_TEXT:
+        return None
+    try:
+        query.encode("utf-8")
+    except UnicodeError:
+        return None
+    if "match_mode" in args and args["match_mode"] not in agent_facade.SEARCH_MODES:
+        return None
+    if "scene_id" in args and not 1 <= len(args["scene_id"]) <= 200:
+        return None
+    if "limit" in args and not 1 <= args["limit"] <= agent_facade.MAX_ITEMS:
+        return None
+    return args
+
+
 def get_tool_catalog():
     """Return a fresh deterministic logical catalog for later SDK registration."""
     return deepcopy(list(_TOOL_CATALOG))
 
 
 def get_adapter_capabilities():
-    """Map the facade's modes to the smaller agent-callable MCP surface."""
+    """Map facade capabilities to the smaller agent-callable MCP surface."""
     facade_result = agent_facade.discover_capabilities()
     batch, = facade_result["capabilities"]["mutations"]
+    search = facade_result["capabilities"]["illustration_search"]
     return {
         "adapter_contract_version": ADAPTER_CONTRACT_VERSION,
         "facade_contract_version": facade_result["contract_version"],
@@ -161,6 +205,9 @@ def get_adapter_capabilities():
         ],
         "batch_replace_preview_modes": list(batch["modes"]),
         "batch_replace_requires_explicit_illustration_ids": True,
+        "illustration_search_modes": list(search["modes"]),
+        "illustration_search_max_results": search["max_results"],
+        "illustration_search_query_text_chars": search["query_text_chars"],
         "agent_callable_apply": False,
     }
 
@@ -203,6 +250,10 @@ class PromptGraphMCPAdapter:
             arguments = _object_arguments(arguments, required=("illustration_id",))
             if arguments is None or not _arguments_have_types(arguments, {"illustration_id": str}):
                 return _error("invalid_arguments")
+        elif name == _SEARCH_ILLUSTRATIONS_TOOL:
+            arguments = _search_transport_arguments(arguments)
+            if arguments is None:
+                return _error("invalid_arguments")
         elif name == _PREVIEW_TOOL:
             arguments = _preview_transport_arguments(arguments)
             if arguments is None:
@@ -226,6 +277,9 @@ class PromptGraphMCPAdapter:
 
             if name == _ILLUSTRATIONS_TOOL:
                 return agent_facade.list_illustrations(project, **arguments)
+
+            if name == _SEARCH_ILLUSTRATIONS_TOOL:
+                return agent_facade.search_illustrations(project, **arguments)
 
             if name == _ILLUSTRATION_TOOL:
                 return agent_facade.get_illustration(project, arguments["illustration_id"])

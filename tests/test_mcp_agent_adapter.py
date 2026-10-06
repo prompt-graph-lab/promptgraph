@@ -20,6 +20,7 @@ TOOL_NAMES = [
     "promptgraph_project_summary",
     "promptgraph_list_scenes",
     "promptgraph_list_illustrations",
+    "promptgraph_search_illustrations",
     "promptgraph_get_illustration",
     "promptgraph_preview_batch_replace",
 ]
@@ -86,7 +87,19 @@ def test_tool_catalog_is_deterministic_unique_and_preview_only():
     assert names == TOOL_NAMES and len(names) == len(set(names))
     assert not any("apply" in name.lower() for name in names)
     assert [tool["effect"] for tool in first] == [
-        "read_only", "read_only", "read_only", "read_only", "read_only", "reviewed_preview"]
+        "read_only", "read_only", "read_only", "read_only", "read_only", "read_only",
+        "reviewed_preview"]
+    search_tool = first[4]
+    assert search_tool["inputSchema"]["required"] == ["query_text"]
+    assert search_tool["inputSchema"]["additionalProperties"] is False
+    assert search_tool["inputSchema"]["properties"] == {
+        "query_text": {"type": "string", "minLength": 1,
+                       "maxLength": agent_facade.MAX_REQUEST_TEXT},
+        "match_mode": {"type": "string", "enum": [
+            "exact_token", "contains_token", "literal"], "default": "exact_token"},
+        "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "limit": {"type": "integer", "minimum": 1, "maximum": agent_facade.MAX_ITEMS},
+    }
     assert "illustration_ids" in first[-1]["inputSchema"]["required"]
     first[-1]["inputSchema"]["properties"].clear()
     assert "illustration_ids" in mcp_adapter.get_tool_catalog()[-1]["inputSchema"]["properties"]
@@ -99,6 +112,10 @@ def test_capability_mapping_is_facade_derived_and_does_not_need_a_project():
     facade_mutation, = agent_facade.discover_capabilities()["capabilities"]["mutations"]
     assert capabilities["facade_contract_version"] == agent_facade.CONTRACT_VERSION
     assert capabilities["batch_replace_preview_modes"] == facade_mutation["modes"]
+    assert capabilities["illustration_search_modes"] == [
+        "exact_token", "contains_token", "literal"]
+    assert capabilities["illustration_search_max_results"] == agent_facade.MAX_ITEMS
+    assert capabilities["illustration_search_query_text_chars"] == agent_facade.MAX_REQUEST_TEXT
     assert capabilities["batch_replace_requires_explicit_illustration_ids"] is True
     assert capabilities["agent_callable_apply"] is False
     assert [tool["name"] for tool in capabilities["tools"]] == TOOL_NAMES
@@ -121,6 +138,8 @@ def test_observations_and_preview_delegate_exactly_without_mutating_project():
         ("promptgraph_project_summary", {}, agent_facade.summarize_project(value)),
         ("promptgraph_list_scenes", {"limit": 2}, agent_facade.observe_scenes(value, limit=2)),
         ("promptgraph_list_illustrations", {}, agent_facade.list_illustrations(value)),
+        ("promptgraph_search_illustrations", {"query_text": "red"},
+         agent_facade.search_illustrations(value, "red")),
         ("promptgraph_list_illustrations", {"scene_id": "scene-1"},
          agent_facade.list_illustrations(value, scene_id="scene-1")),
         ("promptgraph_get_illustration", {"illustration_id": "one"},
@@ -170,6 +189,28 @@ def test_preview_is_a_direct_facade_envelope_and_repeated_calls_retain_no_approv
     assert not hasattr(adapter, "apply_batch_replace")
 
 
+def test_search_tool_answers_dogfood_count_without_constructing_a_preview(monkeypatch):
+    value = project()
+    before = copy.deepcopy(value)
+    provider_calls = []
+
+    def unexpected_preview(*_args, **_kwargs):
+        raise AssertionError("search count must not construct a Batch Replace Preview")
+
+    monkeypatch.setattr(agent_facade, "preview_batch_replace", unexpected_preview)
+    adapter = mcp_adapter.PromptGraphMCPAdapter(
+        lambda: provider_calls.append(True) or value)
+    result = adapter.call_tool("promptgraph_search_illustrations", {"query_text": "red"})
+    assert result["ok"] is True
+    assert result["total_count"] == 3
+    assert [item["illustration_id"] for item in result["matches"]] == [
+        "baseline", "one", "two",
+    ]
+    assert provider_calls == [True]
+    assert value == before
+    json_only(result)
+
+
 @pytest.mark.parametrize("provider,reason", [
     (None, "missing_project_provider"),
     ("not callable", "invalid_project_provider"),
@@ -198,6 +239,8 @@ def test_provider_failure_does_not_leak_exception_details():
 @pytest.mark.parametrize("tool_name,arguments,facade_call", [
     ("promptgraph_list_illustrations", {"scene_id": "missing"},
      lambda value: agent_facade.list_illustrations(value, scene_id="missing")),
+    ("promptgraph_search_illustrations", {"query_text": "red", "scene_id": "missing"},
+     lambda value: agent_facade.search_illustrations(value, "red", scene_id="missing")),
     ("promptgraph_get_illustration", {"illustration_id": "missing"},
      lambda value: agent_facade.get_illustration(value, "missing")),
     ("promptgraph_get_illustration", {"illustration_id": "scene-1"},
@@ -263,6 +306,27 @@ def test_preview_transport_invalid_shapes_do_not_invoke_project_provider(argumen
     calls = []
     adapter = mcp_adapter.PromptGraphMCPAdapter(lambda: calls.append(True) or project())
     result = adapter.call_tool("promptgraph_preview_batch_replace", arguments)
+    assert result["ok"] is False and result["reason"] == "invalid_arguments"
+    assert not calls
+    json_only(result)
+
+
+@pytest.mark.parametrize("arguments", [
+    None,
+    {},
+    {"query_text": HostileValue()},
+    {"query_text": "red", "unknown": True},
+    {"query_text": "red", "match_mode": 1},
+    {"query_text": "red", "match_mode": "token_set"},
+    {"query_text": "x" * (agent_facade.MAX_REQUEST_TEXT + 1)},
+    {"query_text": "red", "scene_id": "x" * 201},
+    {"query_text": "red", "limit": 101},
+    {"query_text": "red", "limit": True},
+])
+def test_search_transport_invalid_shapes_do_not_invoke_project_provider(arguments):
+    calls = []
+    adapter = mcp_adapter.PromptGraphMCPAdapter(lambda: calls.append(True) or project())
+    result = adapter.call_tool("promptgraph_search_illustrations", arguments)
     assert result["ok"] is False and result["reason"] == "invalid_arguments"
     assert not calls
     json_only(result)

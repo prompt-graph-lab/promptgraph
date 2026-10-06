@@ -25,12 +25,13 @@ reserved for MCP protocol messages.
 
 The SDK server delegates to the existing SDK-independent adapter, which
 continues to source its exact catalog and dispatch domain work through
-`core.agent_facade`. The stdio server advertises the same six logical tools:
+`core.agent_facade`. The stdio server advertises the same seven logical tools:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
 - `promptgraph_list_scenes`
 - `promptgraph_list_illustrations`
+- `promptgraph_search_illustrations`
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
 
@@ -51,7 +52,7 @@ license, supported-environment, or release-lock files are updated.
 
 The PoC-1c subprocess integration test runs a test-only host with a synthetic
 Project and uses the official SDK stdio client. It checks registered tools and
-schemas, all six operations, bounded errors, Preview-only behavior, JSON
+schemas, all seven operations, bounded errors, Preview-only behavior, JSON
 results, no Project mutation, protocol stdout integrity, and graceful
 subprocess exit. The test host's synthetic Project and PID/report markers are
 test fixtures, not production Project discovery or transport configuration.
