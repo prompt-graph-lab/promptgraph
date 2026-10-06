@@ -1,9 +1,10 @@
 # MCP session registration and pairing
 
 This boundary registers the live session mailboxes introduced by the MCP
-session pump and gives a future local gateway a one-use way to address one
-explicit browser session. It adds no external transport, listener, pairing UI,
-Project access, or persistence.
+session pump and gives a local client a one-use way to address one explicit
+browser session. The protected Windows Named Pipe implementation is described
+in [MCP local named-pipe transport](mcp-local-named-pipe-transport.md). It
+adds no Project access or persistence.
 
 ## Ownership
 
@@ -91,12 +92,12 @@ continues to reject old-epoch work and accepts new work only for the current
 epoch. The paired handle cannot synchronize epochs, claim full-app service,
 complete replies, close the mailbox, or access Project/Streamlit state.
 
-## Deferred boundary
+## Transport boundary
 
 This module uses only Python standard-library synchronization, randomness,
 hashing, and weak references plus the existing mailbox abstraction. It adds no
-MCP SDK, socket, Windows named pipe, filesystem descriptor, subprocess, HTTP
-server, process lifecycle, or pairing UI. A later transport task must decide
-how the user initiates pairing and how the one-use offer is delivered through
-a protected local descriptor; this pairing lifecycle does not by itself
-authenticate a Windows pipe endpoint or implement transport security.
+MCP SDK, subprocess, HTTP server, process lifecycle, or pairing UI. The
+separate transport owner creates a protected local descriptor and authenticates
+its one-instance pipe endpoint. Pairing lifecycle and transport remain separate
+owners: the registry validates the capability and returns the restricted route
+handle; it does not implement wire framing or access Project state.

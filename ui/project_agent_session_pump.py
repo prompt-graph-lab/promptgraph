@@ -39,6 +39,7 @@ class ProjectAgentSessionRuntime:
         init=False,
         repr=False,
     )
+    _named_pipe_broker: object = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
@@ -60,14 +61,41 @@ class ProjectAgentSessionRuntime:
             return PairingOperation("session_unavailable")
         return self._registration.arm_pairing()
 
+    def publish_local_pairing_descriptor(self, broker=None):
+        """Create a protected local descriptor for this session's exact route."""
+
+        from ui.project_agent_named_pipe import (
+            PairingDescriptorDelivery,
+            WindowsNamedPipeBroker,
+            get_process_project_agent_named_pipe_broker,
+        )
+
+        if self._closed or self._registration is None:
+            return PairingDescriptorDelivery("session_unavailable")
+        if broker is None:
+            try:
+                broker = get_process_project_agent_named_pipe_broker()
+            except Exception:
+                return PairingDescriptorDelivery("broker_unavailable")
+        if type(broker) is not WindowsNamedPipeBroker:
+            return PairingDescriptorDelivery("invalid_broker")
+        result = broker.prepare_pairing_descriptor(self._registration)
+        if result.status == "armed":
+            self._named_pipe_broker = broker
+        return result
+
     def close(self):
         if self._closed:
             return
         self._closed = True
+        route_id = None
         if self._registration is not None:
+            route_id = self._registration.route_id
             # Remove external addressability before closing the mailbox. Any
             # in-flight paired operation is serialized with unregister.
             self._registration.unregister()
+        if self._named_pipe_broker is not None and route_id is not None:
+            self._named_pipe_broker.close_session_route(route_id)
         self.mailbox.close()
         self.target_tracker.close()
 
