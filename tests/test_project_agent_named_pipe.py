@@ -1,4 +1,5 @@
 import ast
+import ctypes
 from dataclasses import replace
 import json
 import os
@@ -16,6 +17,7 @@ from ui.project_agent_named_pipe import (
     _MAX_REQUEST_FRAME_BYTES,
     _read_client_frame,
     _win32,
+    read_local_launcher_rendezvous,
     read_local_pairing_descriptor,
 )
 from ui.project_agent_session_mailbox import ProjectAgentSessionMailbox
@@ -49,6 +51,14 @@ def _new_session(registry, broker, path):
     delivery = runtime.publish_local_pairing_descriptor(broker)
     assert delivery.status == "armed"
     return runtime, mailbox, project, epoch, delivery
+
+
+def _new_unpaired_runtime(registry, path):
+    mailbox = ProjectAgentSessionMailbox()
+    runtime = ProjectAgentSessionRuntime(mailbox=mailbox, _registry=registry)
+    project = _ProjectToken()
+    epoch = runtime.synchronize_target(project, path)
+    return runtime, mailbox, project, epoch
 
 
 def _finish_request(mailbox, epoch, reply):
@@ -493,6 +503,220 @@ def test_named_pipe_policy_rejects_remote_clients_and_uses_single_instance_per_r
     finally:
         runtime.close()
         broker.close()
+
+
+def test_launcher_rendezvous_is_one_explicit_user_scoped_target_and_recovers_after_disarm(
+    monkeypatch,
+):
+    registry = ProjectAgentSessionRegistry()
+    first_broker = WindowsNamedPipeBroker(registry)
+    second_broker = None
+    first, _mailbox_a, _project_a, _epoch_a = _new_unpaired_runtime(
+        registry, "private-project-a.json",
+    )
+    second, _mailbox_b, _project_b, _epoch_b = _new_unpaired_runtime(
+        registry, "private-project-b.json",
+    )
+    try:
+        rendezvous_api = first_broker._api
+        native_create_file = rendezvous_api.kernel32.CreateFileW
+        rendezvous_path = rendezvous_api.launcher_rendezvous_path()
+        create_configuration = []
+
+        def capture_rendezvous_file(
+            path, desired_access, share_mode, security, disposition, flags, template,
+        ):
+            if path == rendezvous_path and disposition == 1 and security is not None:
+                attributes = ctypes.cast(
+                    security,
+                    ctypes.POINTER(named_pipe._SecurityAttributes),
+                ).contents
+                create_configuration.append((
+                    desired_access,
+                    share_mode,
+                    attributes.lpSecurityDescriptor,
+                    disposition,
+                    flags,
+                ))
+            return native_create_file(
+                path,
+                desired_access,
+                share_mode,
+                security,
+                disposition,
+                flags,
+                template,
+            )
+
+        monkeypatch.setattr(
+            rendezvous_api.kernel32,
+            "CreateFileW",
+            capture_rendezvous_file,
+        )
+        armed = first.arm_launcher_rendezvous(first_broker)
+        assert armed.status == "ready"
+        first_path = rendezvous_api.launcher_rendezvous_path()
+        assert create_configuration
+        desired_access, share_mode, descriptor_ptr, disposition, flags = (
+            create_configuration[0]
+        )
+        assert desired_access & 0x00010000  # DELETE
+        assert share_mode & 0x00000004  # FILE_SHARE_DELETE
+        assert ctypes.cast(descriptor_ptr, ctypes.c_void_p).value == ctypes.cast(
+            first_broker._security_descriptor,
+            ctypes.c_void_p,
+        ).value
+        assert disposition == 1  # CREATE_NEW
+        assert flags & 0x04000000  # FILE_FLAG_DELETE_ON_CLOSE
+        payload = json.loads(first_broker._api.read_launcher_rendezvous_file(first_path))
+        descriptor = read_local_pairing_descriptor(payload["descriptor_path"])
+
+        assert set(payload) == {
+            "contract_version", "status", "server_pid", "process_incarnation",
+            "descriptor_path", "expires_at",
+        }
+        assert payload["status"] == "ready"
+        assert "capability" not in payload
+        assert "route_id" not in payload
+        assert "private-project-a.json" not in json.dumps(payload)
+        assert descriptor.capability not in json.dumps(payload)
+        assert payload["descriptor_path"] not in repr(armed)
+        assert payload["descriptor_path"] not in repr(first.launcher_rendezvous_status())
+
+        second_broker = WindowsNamedPipeBroker(registry)
+        contender = second.arm_launcher_rendezvous(second_broker)
+        assert contender.status == "already_owned"
+        assert first.launcher_rendezvous_status().status == "ready"
+        assert read_local_launcher_rendezvous().descriptor_file_path == (
+            payload["descriptor_path"]
+        )
+
+        assert first.disarm_launcher_rendezvous().status == "disarmed"
+        assert not os.path.exists(first_path)
+        assert second.arm_launcher_rendezvous(second_broker).status == "ready"
+        second_path = second_broker._api.launcher_rendezvous_path()
+        second.close()
+        assert not os.path.exists(second_path)
+    finally:
+        first.close()
+        second.close()
+        first_broker.close()
+        if second_broker is not None:
+            second_broker.close()
+
+
+def test_expired_launcher_rendezvous_is_cleared_and_another_session_can_arm():
+    registry = ProjectAgentSessionRegistry()
+    broker = WindowsNamedPipeBroker(registry)
+    first, _mailbox, _project, _epoch = _new_unpaired_runtime(
+        registry, "expired-launcher.json",
+    )
+    second, _mailbox_b, _project_b, _epoch_b = _new_unpaired_runtime(
+        registry, "recovery-launcher.json",
+    )
+    try:
+        assert first.arm_launcher_rendezvous(broker).status == "ready"
+        rendezvous_path = broker._api.launcher_rendezvous_path()
+        lease = broker._leases[first._registration.route_id]
+        broker._expire_lease(lease)
+
+        assert first.launcher_rendezvous_status().status == "expired"
+        assert not os.path.exists(rendezvous_path)
+        assert second.arm_launcher_rendezvous(broker).status == "ready"
+    finally:
+        first.close()
+        second.close()
+        broker.close()
+
+
+def test_session_cleanup_removes_its_unclaimed_launcher_rendezvous():
+    registry = ProjectAgentSessionRegistry()
+    broker = WindowsNamedPipeBroker(registry)
+    runtime, _mailbox, _project, _epoch = _new_unpaired_runtime(
+        registry, "cleanup-launcher.json",
+    )
+    assert runtime.arm_launcher_rendezvous(broker).status == "ready"
+    rendezvous_path = broker._api.launcher_rendezvous_path()
+    runtime.close()
+    try:
+        assert not os.path.exists(rendezvous_path)
+        assert read_local_launcher_rendezvous().status == "rendezvous_unavailable"
+    finally:
+        broker.close()
+
+
+def test_stale_rendezvous_file_can_be_removed_while_owner_handle_is_open():
+    registry = ProjectAgentSessionRegistry()
+    broker = WindowsNamedPipeBroker(registry)
+    payload = named_pipe._launcher_rendezvous_payload(
+        status="expired",
+        server_pid=os.getpid(),
+        process_incarnation=registry.process_incarnation,
+    )
+    rendezvous_path, owner_handle = broker._api.create_launcher_rendezvous_file(
+        payload,
+    )
+    try:
+        assert os.path.exists(rendezvous_path)
+        assert broker._api.remove_launcher_rendezvous_file(rendezvous_path)
+    finally:
+        broker._api.close_handle(owner_handle)
+        broker.close()
+    assert not os.path.exists(rendezvous_path)
+
+
+@pytest.mark.parametrize(
+    ("status", "alive", "expired", "expected", "removed"),
+    [
+        ("ready", False, False, "stale_rendezvous", True),
+        ("ready", True, False, "ready", False),
+        ("claimed", False, False, "stale_rendezvous", True),
+        ("ready", True, True, "expired_rendezvous", True),
+        ("preparing", True, True, "rendezvous_not_ready", False),
+        ({"unexpected": "object"}, True, False, "invalid_rendezvous", False),
+    ],
+)
+def test_launcher_rendezvous_rejects_dead_restarted_or_expired_owner(
+    status, alive, expired, expected, removed, monkeypatch,
+):
+    path = r"C:\Users\test\AppData\Local\Temp\promptgraph-mcp-rendezvous-test.json"
+    descriptor_path = r"C:\Users\test\AppData\Local\Temp\promptgraph-pairing-test.json"
+    payload = named_pipe._launcher_rendezvous_payload(
+        status=status,
+        server_pid=1234,
+        process_incarnation="opaque-process-incarnation",
+        descriptor_path=descriptor_path if status == "ready" else "",
+        expires_at=(named_pipe.time.monotonic() + (-1 if expired else 60)
+                    if status in ("ready", "preparing") else None),
+    )
+
+    class FakeApi:
+        removed = False
+
+        def launcher_rendezvous_path(self):
+            return path
+
+        def read_launcher_rendezvous_file(self, _path):
+            return named_pipe._encode_json(payload)
+
+        def process_is_alive(self, _process_id):
+            return alive
+
+        def remove_launcher_rendezvous_file(self, _path):
+            self.removed = True
+
+    api = FakeApi()
+    monkeypatch.setattr(named_pipe, "_win32", lambda: api)
+    result = read_local_launcher_rendezvous()
+    assert result.status == expected
+    assert path not in repr(result)
+    assert descriptor_path not in repr(result)
+    assert "opaque-process-incarnation" not in repr(result)
+    if expected == "ready":
+        assert result.descriptor_file_path == descriptor_path
+    else:
+        assert result.descriptor_file_path == ""
+    assert api.removed is removed
 
 
 def test_transport_module_does_not_import_streamlit_project_capture_or_bridge():

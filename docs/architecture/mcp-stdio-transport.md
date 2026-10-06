@@ -93,8 +93,10 @@ Project immutability, and graceful gateway shutdown/re-pairability. The
 fixture's host loop and Project are test-only and do not add production
 launcher, pairing UI, or Project loading behavior.
 
-PoC-1d adds no SDK/runtime dependency or production process/CLI entry point.
-Gateway launcher/configuration, pairing UI, automatic reconnect, and any
-broader host lifecycle integration remain separate work.
+PoC-1d added no SDK/runtime dependency or production process/CLI entry point.
+PoC-1e adds a stable fixed-command launcher and per-logon explicit-session
+rendezvous; see [MCP stable launcher and session rendezvous](mcp-stable-launcher.md).
+Pairing UI, client configuration guidance, automatic reconnect, and broader
+host lifecycle integration remain separate work.
 
 For SDK API details, see the official [v2.2.0 stdio server API](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/src/mcp/server/stdio.py), [stdio client API](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/src/mcp/client/stdio.py), and [low-level server guide](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/docs/advanced/low-level-server.md).
