@@ -5,6 +5,7 @@ from ui.project_agent_session_pump import (
     render_project_agent_request_pump,
     service_project_agent_session_request,
 )
+from ui.mcp_connection_ui import render_mcp_connection_sidebar
 from ui.project_save_as_lifecycle import (
     PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY,
     PROJECT_SAVE_AS_OVERWRITE_ACK_KEY,
@@ -20675,6 +20676,7 @@ _PROJECT_AGENT_SESSION_RUNTIME = begin_project_agent_session_run(
     _PROJECT_CAPTURE_RUN_TOKEN,
 )
 render_project_agent_request_pump()
+render_mcp_connection_sidebar()
 
 if is_free() and st.session_state.show_tutorial:
     st.title("🎉 PromptGraph Liteへようこそ！")
