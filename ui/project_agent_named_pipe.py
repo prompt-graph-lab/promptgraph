@@ -37,7 +37,7 @@ _MAX_ACTIVE_ROUTES = 32
 _PIPE_BUFFER_BYTES = 64 * 1024
 _PAIRING_CONNECT_TIMEOUT_SECONDS = 10.0
 _PAIRING_RESPONSE_CLOSE_TIMEOUT_SECONDS = 2.0
-_PIPE_READ_TIMEOUT_SECONDS = 30.0
+_PIPE_PARTIAL_FRAME_TIMEOUT_SECONDS = 30.0
 _ORPHAN_DRAIN_TIMEOUT_SECONDS = 130.0
 _ORPHAN_POLL_SECONDS = 0.05
 
@@ -712,7 +712,12 @@ class _PipeEndpoint:
         outstanding_epoch = None
         while not self._stop_event.is_set():
             try:
-                request = _decode_json_object(self._read_frame(_PIPE_READ_TIMEOUT_SECONDS))
+                request = _decode_json_object(
+                    self._read_frame(
+                        _PIPE_PARTIAL_FRAME_TIMEOUT_SECONDS,
+                        allow_idle=True,
+                    )
+                )
             except LocalPipeError as error:
                 if error.reason not in ("pipe_timeout", "pipe_disconnected"):
                     self._try_write_response({"status": "invalid_request"})
@@ -801,15 +806,26 @@ class _PipeEndpoint:
             time.sleep(_ORPHAN_POLL_SECONDS)
         return "stuck_in_flight"
 
-    def _read_frame(self, timeout_seconds):
-        deadline = time.monotonic() + timeout_seconds
-        prefix = self._read_exact(4, deadline)
+    def _read_frame(self, timeout_seconds, *, allow_idle=False):
+        if allow_idle:
+            # A paired client may remain connected without sending requests.
+            # Wait indefinitely for a frame to begin, then bound completion of
+            # its header and body so a partial frame cannot pin the endpoint.
+            prefix = self._read_exact(
+                4,
+                None,
+                timeout_after_first_byte=timeout_seconds,
+            )
+            deadline = time.monotonic() + timeout_seconds
+        else:
+            deadline = time.monotonic() + timeout_seconds
+            prefix = self._read_exact(4, deadline)
         size = struct.unpack(">I", prefix)[0]
         if size <= 0 or size > _MAX_REQUEST_FRAME_BYTES:
             raise LocalPipeError("invalid_frame")
         return self._read_exact(size, deadline)
 
-    def _read_exact(self, size, deadline):
+    def _read_exact(self, size, deadline, *, timeout_after_first_byte=None):
         parts = []
         remaining = size
         while remaining:
@@ -817,15 +833,22 @@ class _PipeEndpoint:
             if available <= 0:
                 if self._stop_event.is_set():
                     raise LocalPipeError("pipe_disconnected")
+                if deadline is None:
+                    self._stop_event.wait(0.05)
+                    continue
                 time_left = deadline - time.monotonic()
                 if time_left <= 0:
                     raise LocalPipeError("pipe_timeout")
                 self._stop_event.wait(min(0.05, time_left))
                 continue
+            if deadline is not None and time.monotonic() >= deadline:
+                raise LocalPipeError("pipe_timeout")
             chunk_size = min(remaining, available, _PIPE_BUFFER_BYTES)
             chunk = self._api.read_file_chunk(self._handle, chunk_size)
             if not chunk:
                 raise LocalPipeError("pipe_disconnected")
+            if deadline is None and timeout_after_first_byte is not None:
+                deadline = time.monotonic() + timeout_after_first_byte
             parts.append(chunk)
             remaining -= len(chunk)
             if time.monotonic() >= deadline and remaining:

@@ -4,9 +4,11 @@ import json
 import os
 from pathlib import Path
 import struct
+import threading
 
 import pytest
 
+import ui.project_agent_named_pipe as named_pipe
 from ui.project_agent_named_pipe import (
     LOCAL_PIPE_CONTRACT,
     LocalNamedPipeClient,
@@ -106,6 +108,66 @@ def test_real_named_pipe_round_trip_uses_exact_mailbox_reply_and_redacts_descrip
         if endpoint is not None:
             endpoint.endpoint._thread.join(timeout=2)
     finally:
+        runtime.close()
+        broker.close()
+
+
+def test_paired_connection_remains_usable_after_idle_longer_than_frame_timeout(
+    monkeypatch,
+):
+    partial_frame_timeout = 0.02
+    monkeypatch.setattr(
+        named_pipe,
+        "_PIPE_PARTIAL_FRAME_TIMEOUT_SECONDS",
+        partial_frame_timeout,
+    )
+    idle_read_started = threading.Event()
+    original_read_frame = named_pipe._PipeEndpoint._read_frame
+
+    def observe_paired_idle(endpoint, timeout_seconds, *, allow_idle=False):
+        if allow_idle:
+            idle_read_started.set()
+        return original_read_frame(
+            endpoint,
+            timeout_seconds,
+            allow_idle=allow_idle,
+        )
+
+    monkeypatch.setattr(
+        named_pipe._PipeEndpoint,
+        "_read_frame",
+        observe_paired_idle,
+    )
+    registry = ProjectAgentSessionRegistry()
+    broker = WindowsNamedPipeBroker(registry)
+    runtime, _mailbox, _project, epoch, delivery = _new_session(
+        registry, broker, "paired-idle.json",
+    )
+    client = None
+    try:
+        connection = LocalNamedPipeClient.connect_from_descriptor_file(
+            delivery.descriptor_file.path,
+        )
+        assert connection.status == "paired"
+        client = connection.client
+        endpoint = broker._leases[runtime._registration.route_id].endpoint
+
+        assert idle_read_started.wait(timeout=3)
+        # Exercise the same boundary as the old read timeout without a
+        # wall-clock 30-second wait.
+        threading.Event().wait(partial_frame_timeout * 3)
+        assert not endpoint._orphan_cleanup_started.is_set()
+        assert client.current_target_epoch() == {
+            "status": "ok",
+            "target_epoch": epoch,
+        }
+        assert client.release() == {"status": "released"}
+        endpoint._thread.join(timeout=2)
+        assert not endpoint._thread.is_alive()
+        assert not endpoint._orphan_cleanup_started.is_set()
+    finally:
+        if client is not None:
+            client.close()
         runtime.close()
         broker.close()
 
