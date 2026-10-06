@@ -121,6 +121,13 @@ class ProjectAgentSessionRegistration:
             return PairingOperation("session_unavailable")
         return self._registry.arm_pairing(self)
 
+    def disarm_pairing_offer(self):
+        """Revoke this route's unclaimed offer without closing the session."""
+
+        if self._closed:
+            return PairingOperation("session_unavailable")
+        return self._registry.disarm_pairing_offer(self)
+
     def unregister(self):
         if self._closed:
             return False
@@ -274,6 +281,25 @@ class ProjectAgentSessionRegistry:
                     expires_in_seconds=self._pairing_lifetime_seconds,
                 )
                 return PairingOperation("armed", bootstrap=bootstrap)
+
+    def disarm_pairing_offer(self, registration):
+        """Revoke an unclaimed capability owned by this exact registration."""
+
+        record = self._record_for_registration(registration)
+        if record is None:
+            return PairingOperation("session_unavailable")
+
+        with record.operation_lock:
+            with self._lock:
+                if (not self._registration_matches_locked(registration, record)
+                        or self._closed):
+                    return PairingOperation("session_unavailable")
+                if record.pairing_generation is not None:
+                    return PairingOperation("already_paired")
+                if record.bootstrap_verifier is None:
+                    return PairingOperation("not_armed")
+                self._clear_bootstrap_locked(record)
+                return PairingOperation("disarmed")
 
     def claim_pairing(self, process_incarnation, route_id, capability):
         """Atomically consume an offer and return one restricted route handle."""

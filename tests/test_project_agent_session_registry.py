@@ -281,6 +281,34 @@ def test_route_id_alone_cannot_arm_pairing_and_stale_authority_fails():
     mailbox.close()
 
 
+def test_registration_can_disarm_only_its_unclaimed_offer_and_rearm():
+    registry = ProjectAgentSessionRegistry()
+    mailbox = ProjectAgentSessionMailbox()
+    registration = registry.register_session(mailbox)
+
+    first = registration.arm_pairing().bootstrap
+    assert registration.disarm_pairing_offer().status == "disarmed"
+    assert registry.claim_pairing(
+        first.process_incarnation,
+        first.route_id,
+        first.capability,
+    ).status == "invalid_pairing"
+
+    second = registration.arm_pairing().bootstrap
+    assert second.capability != first.capability
+    claimed = registry.claim_pairing(
+        second.process_incarnation,
+        second.route_id,
+        second.capability,
+    )
+    assert claimed.status == "paired"
+    assert registration.disarm_pairing_offer().status == "already_paired"
+    assert claimed.paired_route.current_target_epoch is None
+    assert claimed.paired_route.release().status == "released"
+    assert registration.unregister()
+    mailbox.close()
+
+
 def test_wrong_route_capability_and_process_incarnation_do_not_consume_offer():
     registry = ProjectAgentSessionRegistry()
     mailbox_a = ProjectAgentSessionMailbox()

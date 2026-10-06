@@ -33,7 +33,6 @@ from ui.project_capture_safety import begin_project_capture_run
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_TEST_GATEWAY = _REPO_ROOT / "tests" / "fixtures" / "mcp_named_pipe_stdio_gateway.py"
 
 
 class _FakePipeClient:
@@ -347,8 +346,18 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
     runtime = ProjectAgentSessionRuntime(_registry=registry)
     broker = WindowsNamedPipeBroker(registry)
     runtime.synchronize_target(project, state["current_project_path"])
-    delivery = runtime.publish_local_pairing_descriptor(broker)
-    assert delivery.status == "armed"
+    endpoint_released = threading.Event()
+    original_endpoint_finished = broker._endpoint_finished
+
+    def observe_endpoint_finished(lease, outcome):
+        original_endpoint_finished(lease, outcome)
+        if outcome == "released":
+            endpoint_released.set()
+
+    broker._endpoint_finished = observe_endpoint_finished
+    armed = runtime.arm_launcher_rendezvous(broker)
+    assert armed.status == "ready"
+    rendezvous_path = broker._api.launcher_rendezvous_path()
 
     capture_calls = []
     original_capture = project_agent_request_bridge.capture_active_project
@@ -386,14 +395,12 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
 
     pump_thread = threading.Thread(target=host_run_pump, daemon=True)
     pump_thread.start()
-    report_path = tmp_path / "gateway-report.json"
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=[str(_TEST_GATEWAY), delivery.descriptor_file.path],
+        args=["-m", "agent_adapters.mcp_named_pipe_launcher"],
         cwd=str(_REPO_ROOT),
         env={
             "PYTHONPATH": str(_REPO_ROOT),
-            "PROMPTGRAPH_TEST_GATEWAY_REPORT": str(report_path),
         },
     )
 
@@ -453,14 +460,24 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 )
                 assert preview.is_error is False
                 assert preview.structured_content == expected_preview
+                rendezvous_payload = json.loads(
+                    broker._api.read_launcher_rendezvous_file(rendezvous_path)
+                )
+                assert rendezvous_payload["status"] == "claimed"
+                assert rendezvous_payload["descriptor_path"] == ""
 
     try:
         with patch_config_options({"runner.fastReruns": False}):
             _run(exercise())
+        assert endpoint_released.wait(timeout=5)
+        shutdown_pairing_status = runtime.launcher_rendezvous_status().status
+        assert shutdown_pairing_status == "released"
+        assert not os.path.exists(rendezvous_path)
+        assert runtime.arm_launcher_rendezvous(broker).status == "ready"
+        assert runtime.disarm_launcher_rendezvous().status == "disarmed"
     finally:
         stop_pump.set()
         pump_thread.join(timeout=5)
-        shutdown_pairing_status = runtime.arm_local_pairing().status
         runtime.close()
         broker.close()
 
@@ -468,7 +485,4 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
     assert project == original
     assert service_results == ["completed", "completed", "completed"]
     assert len(capture_calls) == 2
-    assert json.loads(report_path.read_text(encoding="utf-8")) == {
-        "shutdown": "returned",
-    }
-    assert shutdown_pairing_status == "armed"
+    assert shutdown_pairing_status == "released"

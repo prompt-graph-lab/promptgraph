@@ -101,3 +101,9 @@ separate transport owner creates a protected local descriptor and authenticates
 its one-instance pipe endpoint. Pairing lifecycle and transport remain separate
 owners: the registry validates the capability and returns the restricted route
 handle; it does not implement wire framing or access Project state.
+
+The fixed MCP launcher uses a separate protected per-logon rendezvous to find
+the descriptor for one session that was explicitly armed. This rendezvous does
+not change route identity or add a current/last-session selector. Its ownership,
+status, expiry, and cleanup contract is documented in
+[MCP stable launcher and session rendezvous](mcp-stable-launcher.md).

@@ -84,6 +84,69 @@ class ProjectAgentSessionRuntime:
             self._named_pipe_broker = broker
         return result
 
+    def arm_launcher_rendezvous(self, broker=None):
+        """Arm this exact browser session for the fixed local launcher."""
+
+        from ui.project_agent_named_pipe import (
+            LauncherRendezvousOperation,
+            WindowsNamedPipeBroker,
+            get_process_project_agent_named_pipe_broker,
+        )
+
+        if self._closed or self._registration is None:
+            return LauncherRendezvousOperation("session_unavailable")
+        if broker is None:
+            current = self._named_pipe_broker
+            if (type(current) is WindowsNamedPipeBroker
+                    and current._registry is self._registry):
+                broker = current
+            else:
+                try:
+                    broker = get_process_project_agent_named_pipe_broker()
+                except Exception:
+                    return LauncherRendezvousOperation("broker_unavailable")
+        if (type(broker) is not WindowsNamedPipeBroker
+                or broker._registry is not self._registry):
+            return LauncherRendezvousOperation("invalid_broker")
+        try:
+            result = broker.arm_launcher_rendezvous(self._registration)
+        except Exception:
+            return LauncherRendezvousOperation("rendezvous_unavailable")
+        if result.status in ("ready", "already_armed", "already_paired"):
+            self._named_pipe_broker = broker
+        return result
+
+    def launcher_rendezvous_status(self):
+        """Return bounded status for this session's exact launcher route."""
+
+        from ui.project_agent_named_pipe import LauncherRendezvousOperation
+
+        if self._closed or self._registration is None:
+            return LauncherRendezvousOperation("session_unavailable")
+        broker = self._named_pipe_broker
+        if broker is None:
+            return LauncherRendezvousOperation("unavailable")
+        try:
+            status = broker.launcher_rendezvous_status(self._registration)
+        except Exception:
+            status = "unavailable"
+        return LauncherRendezvousOperation(status)
+
+    def disarm_launcher_rendezvous(self):
+        """Disarm this session's pending/claimed fixed-launcher route."""
+
+        from ui.project_agent_named_pipe import LauncherRendezvousOperation
+
+        if self._closed or self._registration is None:
+            return LauncherRendezvousOperation("session_unavailable")
+        broker = self._named_pipe_broker
+        if broker is None:
+            return LauncherRendezvousOperation("unavailable")
+        try:
+            return broker.disarm_launcher_rendezvous(self._registration)
+        except Exception:
+            return LauncherRendezvousOperation("unavailable")
+
     def close(self):
         if self._closed:
             return
@@ -96,6 +159,10 @@ class ProjectAgentSessionRuntime:
             self._registration.unregister()
         if self._named_pipe_broker is not None and route_id is not None:
             self._named_pipe_broker.close_session_route(route_id)
+            if self._registration is not None:
+                self._named_pipe_broker.forget_launcher_rendezvous(
+                    self._registration,
+                )
         self.mailbox.close()
         self.target_tracker.close()
 

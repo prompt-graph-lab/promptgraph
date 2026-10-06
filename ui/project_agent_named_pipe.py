@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import ctypes
 import ctypes.wintypes as wintypes
 import functools
+import hashlib
 import json
 import math
 import os
@@ -20,6 +21,7 @@ import time
 
 from ui.project_agent_session_registry import (
     PAIRING_BOOTSTRAP_CONTRACT,
+    DEFAULT_PAIRING_LIFETIME_SECONDS,
     ProjectAgentPairedRoute,
     ProjectAgentSessionRegistration,
     ProjectAgentSessionRegistry,
@@ -28,9 +30,12 @@ from ui.project_agent_session_registry import (
 
 
 LOCAL_PIPE_CONTRACT = "promptgraph.local-named-pipe.v1"
+LAUNCHER_RENDEZVOUS_CONTRACT = "promptgraph.mcp-launcher-rendezvous.v1"
 _PIPE_PREFIX = "\\\\.\\pipe\\PromptGraph-"
 _DESCRIPTOR_PREFIX = "promptgraph-pairing-"
+_LAUNCHER_RENDEZVOUS_PREFIX = "promptgraph-mcp-rendezvous-"
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
+_MAX_LAUNCHER_RENDEZVOUS_BYTES = 64 * 1024
 _MAX_REQUEST_FRAME_BYTES = 16 * 1024 * 1024
 _MAX_PIPE_INSTANCES_PER_ROUTE = 1
 _MAX_ACTIVE_ROUTES = 32
@@ -81,6 +86,30 @@ class PairingDescriptorDelivery:
 
 
 @dataclass(frozen=True, repr=False)
+class LauncherRendezvousOperation:
+    """Bounded session-owned launcher rendezvous result."""
+
+    status: str
+    expires_in_seconds: float | None = None
+
+    def __repr__(self):
+        return f"LauncherRendezvousOperation(status={self.status!r})"
+
+
+@dataclass(frozen=True, repr=False)
+class LocalLauncherRendezvous:
+    """Validated local launcher target; protected paths are redacted."""
+
+    status: str
+    descriptor_file_path: str = field(default="", repr=False)
+    server_pid: int = 0
+    process_incarnation: str = field(default="", repr=False)
+
+    def __repr__(self):
+        return f"LocalLauncherRendezvous(status={self.status!r})"
+
+
+@dataclass(frozen=True, repr=False)
 class LocalPairingDescriptor:
     """Validated descriptor loaded from the protected one-use local file."""
 
@@ -114,6 +143,10 @@ class _SecurityAttributes(ctypes.Structure):
         ("lpSecurityDescriptor", wintypes.LPVOID),
         ("bInheritHandle", wintypes.BOOL),
     ]
+
+
+class _FileDispositionInfo(ctypes.Structure):
+    _fields_ = [("DeleteFile", wintypes.BYTE)]
 
 
 class _SidAndAttributes(ctypes.Structure):
@@ -190,6 +223,18 @@ class _WindowsApi:
         k.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, dword]
         k.GetFileSizeEx.restype = wintypes.BOOL
         k.GetFileSizeEx.argtypes = [handle, ctypes.POINTER(ctypes.c_longlong)]
+        k.SetFilePointerEx.restype = wintypes.BOOL
+        k.SetFilePointerEx.argtypes = [
+            handle, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong), dword,
+        ]
+        k.SetEndOfFile.restype = wintypes.BOOL
+        k.SetEndOfFile.argtypes = [handle]
+        k.SetFileInformationByHandle.restype = wintypes.BOOL
+        k.SetFileInformationByHandle.argtypes = [handle, ctypes.c_int, lpvoid, dword]
+        k.OpenProcess.restype = handle
+        k.OpenProcess.argtypes = [dword, wintypes.BOOL, dword]
+        k.WaitForSingleObject.restype = dword
+        k.WaitForSingleObject.argtypes = [handle, dword]
 
         a.OpenProcessToken.restype = wintypes.BOOL
         a.OpenProcessToken.argtypes = [handle, dword, ctypes.POINTER(handle)]
@@ -210,6 +255,25 @@ class _WindowsApi:
 
     def process_id(self):
         return int(self.kernel32.GetCurrentProcessId())
+
+    def process_is_alive(self, process_id):
+        if type(process_id) is not int or process_id <= 0:
+            return False
+        handle = self.kernel32.OpenProcess(0x00100000, False, process_id)  # SYNCHRONIZE
+        if not handle:
+            error = ctypes.get_last_error()
+            if error in (87, 1168):  # INVALID_PARAMETER / NOT_FOUND
+                return False
+            return None
+        try:
+            result = self.kernel32.WaitForSingleObject(handle, 0)
+            if result == 0:
+                return False
+            if result == 0x00000102:  # WAIT_TIMEOUT
+                return True
+            return None
+        finally:
+            self.close_handle(handle)
 
     def current_logon_sid(self):
         token = wintypes.HANDLE()
@@ -393,6 +457,131 @@ class _WindowsApi:
                 raise
         raise LocalPipeError("descriptor_unavailable")
 
+    def launcher_rendezvous_path(self):
+        temp_dir = tempfile.gettempdir()
+        if type(temp_dir) is not str or not os.path.isabs(temp_dir):
+            raise LocalPipeError("rendezvous_unavailable")
+        drive, _ = os.path.splitdrive(temp_dir)
+        root = (drive + os.sep) if drive else temp_dir
+        if self.kernel32.GetDriveTypeW(root) in (0, 1, 4):  # UNKNOWN, NO_ROOT_DIR, REMOTE
+            raise LocalPipeError("rendezvous_unavailable")
+        logon_sid = self.current_logon_sid()
+        sid_hash = hashlib.sha256(logon_sid.encode("ascii")).hexdigest()[:24]
+        return os.path.join(
+            temp_dir,
+            f"{_LAUNCHER_RENDEZVOUS_PREFIX}{sid_hash}.json",
+        )
+
+    def create_launcher_rendezvous_file(self, payload):
+        path = self.launcher_rendezvous_path()
+        raw = _encode_json(payload)
+        if len(raw) > _MAX_LAUNCHER_RENDEZVOUS_BYTES:
+            raise LocalPipeError("rendezvous_unavailable")
+        security = self.security_attributes(self._security_descriptor)
+        handle = self.kernel32.CreateFileW(
+            path,
+            0x40000000 | 0x00010000,  # GENERIC_WRITE | DELETE
+            0x00000001 | 0x00000002 | 0x00000004,  # SHARE_READ | WRITE | DELETE
+            ctypes.byref(security),
+            1,  # CREATE_NEW
+            0x00000100 | 0x04000000,  # TEMPORARY | DELETE_ON_CLOSE
+            None,
+        )
+        if not handle or handle == _invalid_handle_value():
+            error = ctypes.get_last_error()
+            if error in (80, 183):  # FILE_EXISTS / ALREADY_EXISTS
+                raise LocalPipeError("rendezvous_owned")
+            raise LocalPipeError("rendezvous_unavailable")
+        try:
+            self._write_launcher_rendezvous_file(handle, raw)
+            return path, handle
+        except Exception:
+            self.close_handle(handle)
+            raise
+
+    def write_launcher_rendezvous_file(self, handle, payload):
+        raw = _encode_json(payload)
+        if len(raw) > _MAX_LAUNCHER_RENDEZVOUS_BYTES:
+            raise LocalPipeError("rendezvous_unavailable")
+        self._write_launcher_rendezvous_file(handle, raw)
+
+    def _write_launcher_rendezvous_file(self, handle, raw):
+        if not self.kernel32.SetFilePointerEx(handle, 0, None, 0):
+            raise LocalPipeError("rendezvous_unavailable")
+        if not self.kernel32.SetEndOfFile(handle):
+            raise LocalPipeError("rendezvous_unavailable")
+        self.write_all(handle, raw)
+        if not self.kernel32.FlushFileBuffers(handle):
+            raise LocalPipeError("rendezvous_unavailable")
+
+    def read_launcher_rendezvous_file(self, path):
+        if type(path) is not str or not path or len(path) > 32767:
+            raise LocalPipeError("invalid_rendezvous")
+        handle = self.kernel32.CreateFileW(
+            path,
+            0x80000000,  # GENERIC_READ
+            0x00000001 | 0x00000002 | 0x00000004,  # SHARE_READ | WRITE | DELETE
+            None,
+            3,  # OPEN_EXISTING
+            0x00000080,  # FILE_ATTRIBUTE_NORMAL
+            None,
+        )
+        if not handle or handle == _invalid_handle_value():
+            error = ctypes.get_last_error()
+            if error == 2:  # FILE_NOT_FOUND
+                raise LocalPipeError("rendezvous_unavailable")
+            raise LocalPipeError("rendezvous_owned")
+        try:
+            size = ctypes.c_longlong()
+            if not self.kernel32.GetFileSizeEx(handle, ctypes.byref(size)):
+                raise LocalPipeError("invalid_rendezvous")
+            if size.value <= 0 or size.value > _MAX_LAUNCHER_RENDEZVOUS_BYTES:
+                raise LocalPipeError("invalid_rendezvous")
+            chunks = []
+            remaining = int(size.value)
+            while remaining:
+                part = self.read_file_chunk(handle, min(remaining, _PIPE_BUFFER_BYTES))
+                if not part:
+                    raise LocalPipeError("invalid_rendezvous")
+                chunks.append(part)
+                remaining -= len(part)
+            return b"".join(chunks)
+        finally:
+            self.close_handle(handle)
+
+    def remove_launcher_rendezvous_file(self, path):
+        if type(path) is not str or not path or len(path) > 32767:
+            raise LocalPipeError("invalid_rendezvous")
+        handle = self.kernel32.CreateFileW(
+            path,
+            0x00010000,  # DELETE
+            0x00000001 | 0x00000002 | 0x00000004,  # SHARE_READ | WRITE | DELETE
+            None,
+            3,  # OPEN_EXISTING
+            0x00000080,  # FILE_ATTRIBUTE_NORMAL
+            None,
+        )
+        if not handle or handle == _invalid_handle_value():
+            error = ctypes.get_last_error()
+            if error == 2:
+                return False
+            raise LocalPipeError("rendezvous_cleanup_failed")
+        try:
+            self.mark_file_for_deletion(handle)
+            return True
+        finally:
+            self.close_handle(handle)
+
+    def mark_file_for_deletion(self, handle):
+        disposition = _FileDispositionInfo(True)
+        if not self.kernel32.SetFileInformationByHandle(
+            handle,
+            4,  # FileDispositionInfo
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            raise LocalPipeError("rendezvous_cleanup_failed")
+
     def read_descriptor_file(self, path):
         if type(path) is not str or not path or len(path) > 32767:
             raise LocalPipeError("invalid_descriptor")
@@ -535,6 +724,146 @@ def _descriptor_payload_valid(value):
     return True
 
 
+def _launcher_rendezvous_payload_valid(value):
+    expected = {
+        "contract_version",
+        "status",
+        "server_pid",
+        "process_incarnation",
+        "descriptor_path",
+        "expires_at",
+    }
+    if type(value) is not dict or set(value) != expected:
+        return False
+    if value["contract_version"] != LAUNCHER_RENDEZVOUS_CONTRACT:
+        return False
+    status = value["status"]
+    if type(status) is not str or status not in {
+        "preparing", "ready", "claimed", "expired", "disarmed", "released",
+        "unavailable",
+    }:
+        return False
+    if type(value["server_pid"]) is not int or value["server_pid"] <= 0:
+        return False
+    if not _valid_secret_field(value["process_incarnation"]):
+        return False
+    descriptor_path = value["descriptor_path"]
+    if status == "ready":
+        if (type(descriptor_path) is not str
+                or not descriptor_path
+                or len(descriptor_path) > 32767
+                or not os.path.isabs(descriptor_path)):
+            return False
+    elif descriptor_path != "":
+        return False
+    expires_at = value["expires_at"]
+    if status in ("preparing", "ready"):
+        return (
+            type(expires_at) in (int, float)
+            and math.isfinite(expires_at)
+            and expires_at > 0
+        )
+    return expires_at is None
+
+
+def _launcher_rendezvous_payload(
+    *, status, server_pid, process_incarnation, descriptor_path="", expires_at=None,
+):
+    return {
+        "contract_version": LAUNCHER_RENDEZVOUS_CONTRACT,
+        "status": status,
+        "server_pid": server_pid,
+        "process_incarnation": process_incarnation,
+        "descriptor_path": descriptor_path,
+        "expires_at": expires_at,
+    }
+
+
+def _remove_stale_launcher_rendezvous(api, path, payload):
+    """Remove only terminal, expired, or dead-process rendezvous records."""
+
+    if not _launcher_rendezvous_payload_valid(payload):
+        return False
+    if payload["status"] in ("preparing", "ready"):
+        expired = payload["expires_at"] <= time.monotonic()
+        alive = api.process_is_alive(payload["server_pid"])
+        stale = alive is False or (payload["status"] == "ready" and expired)
+    else:
+        alive = api.process_is_alive(payload["server_pid"])
+        stale = alive is False or payload["status"] in (
+            "expired", "disarmed", "released", "unavailable",
+        )
+    if not stale:
+        return False
+    api.remove_launcher_rendezvous_file(path)
+    return True
+
+
+def read_local_launcher_rendezvous():
+    """Read the one per-logon armed target without exposing its path in repr."""
+
+    try:
+        api = _win32()
+        path = api.launcher_rendezvous_path()
+        raw = api.read_launcher_rendezvous_file(path)
+        payload = _decode_json_object(raw)
+    except LocalPipeError as error:
+        return LocalLauncherRendezvous(error.reason)
+    except Exception:
+        return LocalLauncherRendezvous("rendezvous_unavailable")
+
+    if not _launcher_rendezvous_payload_valid(payload):
+        return LocalLauncherRendezvous("invalid_rendezvous")
+    status = payload["status"]
+    if status in ("expired", "disarmed", "released", "unavailable"):
+        try:
+            api.remove_launcher_rendezvous_file(path)
+        except LocalPipeError:
+            pass
+        return LocalLauncherRendezvous(status)
+    if status == "claimed":
+        if api.process_is_alive(payload["server_pid"]) is False:
+            try:
+                api.remove_launcher_rendezvous_file(path)
+            except LocalPipeError:
+                pass
+            return LocalLauncherRendezvous("stale_rendezvous")
+        return LocalLauncherRendezvous("already_owned")
+    if status == "preparing":
+        alive = api.process_is_alive(payload["server_pid"])
+        if alive is False:
+            try:
+                api.remove_launcher_rendezvous_file(path)
+            except LocalPipeError:
+                pass
+            return LocalLauncherRendezvous("stale_rendezvous")
+        if alive is not True or payload["expires_at"] <= time.monotonic():
+            return LocalLauncherRendezvous("rendezvous_not_ready")
+        return LocalLauncherRendezvous("rendezvous_not_ready")
+
+    if payload["expires_at"] <= time.monotonic():
+        try:
+            api.remove_launcher_rendezvous_file(path)
+        except LocalPipeError:
+            pass
+        return LocalLauncherRendezvous("expired_rendezvous")
+    alive = api.process_is_alive(payload["server_pid"])
+    if alive is False:
+        try:
+            api.remove_launcher_rendezvous_file(path)
+        except LocalPipeError:
+            pass
+        return LocalLauncherRendezvous("stale_rendezvous")
+    if alive is not True:
+        return LocalLauncherRendezvous("rendezvous_unavailable")
+    return LocalLauncherRendezvous(
+        "ready",
+        descriptor_file_path=payload["descriptor_path"],
+        server_pid=payload["server_pid"],
+        process_incarnation=payload["process_incarnation"],
+    )
+
+
 def read_local_pairing_descriptor(path):
     """Read and validate one protected local descriptor file."""
 
@@ -558,6 +887,15 @@ class _PairingLease:
     expiry_timer: object = field(default=None, repr=False)
     claimed: bool = False
     stuck_in_flight: bool = False
+
+
+@dataclass
+class _LauncherRendezvousLease:
+    route_id: str
+    path: str = field(repr=False)
+    file_handle: object = field(repr=False)
+    expires_at: float
+    status: str = "preparing"
 
 
 class _PipeEndpoint:
@@ -888,6 +1226,8 @@ class WindowsNamedPipeBroker:
         self._security_descriptor = self._api.create_security_descriptor_for_broker()
         self._lock = threading.RLock()
         self._leases = {}
+        self._launcher_rendezvous = None
+        self._launcher_statuses = {}
         self._closed = False
 
     @property
@@ -927,6 +1267,7 @@ class WindowsNamedPipeBroker:
                 expires_at=0.0,
             )
             endpoint = None
+            pairing_armed = False
             try:
                 endpoint = _PipeEndpoint(self, lease)
                 lease.endpoint = endpoint
@@ -937,6 +1278,7 @@ class WindowsNamedPipeBroker:
                     self._leases.pop(route_id, None)
                     endpoint.stop()
                     return PairingDescriptorDelivery(armed.status)
+                pairing_armed = True
                 bootstrap = armed.bootstrap
                 payload = {
                     "contract_version": LOCAL_PIPE_CONTRACT,
@@ -973,9 +1315,252 @@ class WindowsNamedPipeBroker:
                 if endpoint is not None:
                     endpoint.stop()
                 self._close_descriptor_handle(lease)
+                if pairing_armed:
+                    registration.disarm_pairing_offer()
                 if isinstance(error, LocalPipeError):
                     return PairingDescriptorDelivery(error.reason)
                 return PairingDescriptorDelivery("descriptor_unavailable")
+
+    def arm_launcher_rendezvous(self, registration):
+        """Arm one explicit session and publish only its protected descriptor path."""
+
+        if (
+            type(registration) is not ProjectAgentSessionRegistration
+            or registration._registry is not self._registry
+            or not _valid_secret_field(registration.route_id)
+        ):
+            return LauncherRendezvousOperation("invalid_registration")
+        route_id = registration.route_id
+        with self._lock:
+            if self._closed:
+                return LauncherRendezvousOperation("broker_unavailable")
+            current = self._launcher_rendezvous
+            if current is not None:
+                if (current.status in ("preparing", "ready")
+                        and current.expires_at <= time.monotonic()):
+                    self._expire_launcher_rendezvous_locked(current)
+                    current = self._launcher_rendezvous
+            if current is not None:
+                if current.route_id != route_id:
+                    return LauncherRendezvousOperation("already_owned")
+                return LauncherRendezvousOperation(
+                    "already_armed" if current.status in ("preparing", "ready")
+                    else "already_paired",
+                    expires_in_seconds=max(0.0, current.expires_at - time.monotonic())
+                    if current.expires_at else None,
+                )
+
+            expires_at = time.monotonic() + DEFAULT_PAIRING_LIFETIME_SECONDS
+            pending_payload = _launcher_rendezvous_payload(
+                status="preparing",
+                server_pid=self._server_pid,
+                process_incarnation=self._process_incarnation,
+                expires_at=expires_at,
+            )
+            try:
+                path, file_handle = self._create_launcher_rendezvous_file(
+                    pending_payload
+                )
+            except Exception as error:
+                reason = error.reason if isinstance(error, LocalPipeError) else None
+                return LauncherRendezvousOperation(
+                    "already_owned" if reason == "rendezvous_owned"
+                    else "rendezvous_unavailable"
+                )
+
+            rendezvous = _LauncherRendezvousLease(
+                route_id=route_id,
+                path=path,
+                file_handle=file_handle,
+                expires_at=expires_at,
+                status="preparing",
+            )
+            self._launcher_rendezvous = rendezvous
+            self._launcher_statuses[route_id] = "preparing"
+
+            delivery = self.prepare_pairing_descriptor(registration)
+            if delivery.status != "armed" or delivery.descriptor_file is None:
+                self._launcher_rendezvous = None
+                self._launcher_statuses[route_id] = delivery.status
+                self._api.close_handle(rendezvous.file_handle)
+                rendezvous.file_handle = None
+                self._launcher_statuses.pop(route_id, None)
+                return LauncherRendezvousOperation(delivery.status)
+
+            pipe_lease = self._leases.get(route_id)
+            if pipe_lease is None:
+                self._launcher_rendezvous = None
+                self._launcher_statuses[route_id] = "unavailable"
+                self._api.close_handle(rendezvous.file_handle)
+                rendezvous.file_handle = None
+                registration.disarm_pairing_offer()
+                self._launcher_rendezvous = None
+                return LauncherRendezvousOperation("rendezvous_unavailable")
+
+            rendezvous.expires_at = pipe_lease.expires_at
+            try:
+                self._write_launcher_rendezvous_state(
+                    rendezvous,
+                    "ready",
+                    descriptor_file_path=delivery.descriptor_file.path,
+                    expires_at=pipe_lease.expires_at,
+                )
+            except Exception:
+                self._launcher_statuses[route_id] = "unavailable"
+                self._launcher_rendezvous = None
+                self._api.close_handle(rendezvous.file_handle)
+                rendezvous.file_handle = None
+                self.close_session_route(route_id)
+                registration.disarm_pairing_offer()
+                return LauncherRendezvousOperation("rendezvous_unavailable")
+
+            rendezvous.status = "ready"
+            self._launcher_statuses[route_id] = "ready"
+            return LauncherRendezvousOperation(
+                "ready",
+                expires_in_seconds=max(0.0, pipe_lease.expires_at - time.monotonic()),
+            )
+
+    def launcher_rendezvous_status(self, registration):
+        if (
+            type(registration) is not ProjectAgentSessionRegistration
+            or registration._registry is not self._registry
+        ):
+            return "unavailable"
+        with self._lock:
+            lease = self._launcher_rendezvous
+            if (lease is not None and lease.route_id == registration.route_id
+                    and lease.status in ("preparing", "ready")
+                    and lease.expires_at <= time.monotonic()):
+                self._expire_launcher_rendezvous_locked(lease)
+                lease = self._launcher_rendezvous
+            if lease is not None and lease.route_id == registration.route_id:
+                return lease.status
+            return self._launcher_statuses.get(registration.route_id, "unavailable")
+
+    def disarm_launcher_rendezvous(self, registration):
+        """Disarm only the calling session's own launcher target and route."""
+
+        if (
+            type(registration) is not ProjectAgentSessionRegistration
+            or registration._registry is not self._registry
+        ):
+            return LauncherRendezvousOperation("session_unavailable")
+        route_id = registration.route_id
+        with self._lock:
+            rendezvous = self._launcher_rendezvous
+            if rendezvous is None or rendezvous.route_id != route_id:
+                status = self._launcher_statuses.get(route_id, "unavailable")
+                return LauncherRendezvousOperation(status)
+            write_failed = False
+            try:
+                self._write_launcher_rendezvous_state(
+                    rendezvous,
+                    "disarmed",
+                    descriptor_file_path="",
+                    expires_at=None,
+                )
+            except Exception:
+                write_failed = True
+            rendezvous.status = "disarmed"
+            self._launcher_statuses[route_id] = "disarmed"
+            has_pipe_lease = route_id in self._leases
+
+        pairing = registration.disarm_pairing_offer()
+        if has_pipe_lease:
+            self.close_session_route(route_id)
+        else:
+            self._finish_launcher_rendezvous(route_id, "disarmed")
+        if write_failed or pairing.status not in ("disarmed", "already_paired", "not_armed"):
+            return LauncherRendezvousOperation("unavailable")
+        return LauncherRendezvousOperation("disarmed")
+
+    def forget_launcher_rendezvous(self, registration):
+        """Drop terminal per-session status after its session is cleaned up."""
+
+        if (
+            type(registration) is not ProjectAgentSessionRegistration
+            or registration._registry is not self._registry
+        ):
+            return False
+        with self._lock:
+            lease = self._launcher_rendezvous
+            if lease is not None and lease.route_id == registration.route_id:
+                return False
+            self._launcher_statuses.pop(registration.route_id, None)
+            return True
+
+    def _create_launcher_rendezvous_file(self, initial_payload):
+        try:
+            return self._api.create_launcher_rendezvous_file(initial_payload)
+        except LocalPipeError as error:
+            if error.reason != "rendezvous_owned":
+                raise
+        except Exception:
+            raise LocalPipeError("rendezvous_unavailable") from None
+        path = self._api.launcher_rendezvous_path()
+        try:
+            payload = _decode_json_object(
+                self._api.read_launcher_rendezvous_file(path)
+            )
+        except Exception:
+            raise LocalPipeError("rendezvous_owned") from None
+        if not _remove_stale_launcher_rendezvous(self._api, path, payload):
+            raise LocalPipeError("rendezvous_owned")
+        return self._api.create_launcher_rendezvous_file(initial_payload)
+
+    def _write_launcher_rendezvous_state(
+        self,
+        rendezvous,
+        status,
+        *,
+        descriptor_file_path="",
+        expires_at=None,
+    ):
+        if rendezvous.file_handle is None:
+            return
+        payload = _launcher_rendezvous_payload(
+            status=status,
+            server_pid=self._server_pid,
+            process_incarnation=self._process_incarnation,
+            descriptor_path=descriptor_file_path,
+            expires_at=expires_at,
+        )
+        self._api.write_launcher_rendezvous_file(rendezvous.file_handle, payload)
+
+    def _finish_launcher_rendezvous(self, route_id, status):
+        with self._lock:
+            rendezvous = self._launcher_rendezvous
+            if rendezvous is None or rendezvous.route_id != route_id:
+                self._launcher_statuses[route_id] = status
+                return
+            try:
+                self._write_launcher_rendezvous_state(
+                    rendezvous,
+                    status,
+                    descriptor_file_path="",
+                    expires_at=None,
+                )
+            except Exception:
+                status = "unavailable"
+            rendezvous.status = status
+            self._launcher_statuses[route_id] = status
+            if rendezvous.file_handle is not None:
+                self._api.close_handle(rendezvous.file_handle)
+                rendezvous.file_handle = None
+            self._launcher_rendezvous = None
+
+    def _expire_launcher_rendezvous_locked(self, rendezvous):
+        route_id = rendezvous.route_id
+        lease = self._leases.get(route_id)
+        if lease is not None and not lease.claimed:
+            self._leases.pop(route_id, None)
+            if lease.expiry_timer is not None:
+                lease.expiry_timer.cancel()
+                lease.expiry_timer = None
+            self._close_descriptor_handle(lease)
+            lease.endpoint.stop()
+        self._finish_launcher_rendezvous(route_id, "expired")
 
     def close_session_route(self, route_id):
         """Stop transport for one session without altering another route."""
@@ -984,13 +1569,19 @@ class WindowsNamedPipeBroker:
             return False
         with self._lock:
             lease = self._leases.pop(route_id, None)
-            if lease is None:
-                return False
-            if lease.expiry_timer is not None:
-                lease.expiry_timer.cancel()
-            self._close_descriptor_handle(lease)
-        lease.endpoint.stop()
-        return True
+            if lease is not None:
+                if lease.expiry_timer is not None:
+                    lease.expiry_timer.cancel()
+                self._close_descriptor_handle(lease)
+            rendezvous = self._launcher_rendezvous
+            if rendezvous is not None and rendezvous.route_id == route_id:
+                terminal = rendezvous.status
+                if terminal not in ("disarmed", "expired"):
+                    terminal = "unavailable"
+                self._finish_launcher_rendezvous(route_id, terminal)
+        if lease is not None:
+            lease.endpoint.stop()
+        return lease is not None
 
     def close(self):
         """Close all route endpoints and descriptor handles owned by this broker."""
@@ -1005,6 +1596,12 @@ class WindowsNamedPipeBroker:
                 if lease.expiry_timer is not None:
                     lease.expiry_timer.cancel()
                 self._close_descriptor_handle(lease)
+            rendezvous = self._launcher_rendezvous
+            if rendezvous is not None:
+                self._finish_launcher_rendezvous(
+                    rendezvous.route_id,
+                    "unavailable" if rendezvous.status != "disarmed" else "disarmed",
+                )
         for lease in leases:
             lease.endpoint.stop()
         self._api.close_security_descriptor(self._security_descriptor)
@@ -1019,6 +1616,22 @@ class WindowsNamedPipeBroker:
                 lease.expiry_timer.cancel()
                 lease.expiry_timer = None
             self._close_descriptor_handle(lease)
+            rendezvous = self._launcher_rendezvous
+            if rendezvous is not None and rendezvous.route_id == lease.route_id:
+                rendezvous.status = "claimed"
+                rendezvous.expires_at = 0.0
+                self._launcher_statuses[lease.route_id] = "claimed"
+                try:
+                    self._write_launcher_rendezvous_state(
+                        rendezvous,
+                        "claimed",
+                        descriptor_file_path="",
+                        expires_at=None,
+                    )
+                except Exception:
+                    # The file lock remains held; the paired route itself is
+                    # already authenticated and does not depend on status IO.
+                    pass
 
     def _expire_lease(self, lease):
         with self._lock:
@@ -1026,6 +1639,9 @@ class WindowsNamedPipeBroker:
                 return
             self._leases.pop(lease.route_id, None)
             self._close_descriptor_handle(lease)
+            rendezvous = self._launcher_rendezvous
+            if rendezvous is not None and rendezvous.route_id == lease.route_id:
+                self._finish_launcher_rendezvous(lease.route_id, "expired")
         lease.endpoint.stop()
 
     def _endpoint_finished(self, lease, outcome):
@@ -1040,6 +1656,10 @@ class WindowsNamedPipeBroker:
                 lease.expiry_timer.cancel()
                 lease.expiry_timer = None
             self._close_descriptor_handle(lease)
+            if (self._launcher_rendezvous is not None
+                    and self._launcher_rendezvous.route_id == lease.route_id):
+                status = "released" if outcome == "released" else "unavailable"
+                self._finish_launcher_rendezvous(lease.route_id, status)
 
     def _close_descriptor_handle(self, lease):
         if lease.descriptor_handle:
