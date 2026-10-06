@@ -107,8 +107,9 @@ content identity, not authorization.
 
 Process-local session registration and one-use pairing are defined in
 [MCP session registration and pairing](mcp-session-registration-pairing.md).
-The next local named-pipe broker must receive only the paired route handle and
-submit/consume through that handle. It must not call the Project bridge, read
-Streamlit state, capture a Project, access the raw mailbox, or change target
-epochs. Named-pipe transport, external process identity verification, and any
-Apply approval flow remain outside this slice.
+The Windows local transport is described in
+[MCP local named-pipe transport](mcp-local-named-pipe-transport.md). It
+receives only the paired route handle and submits/consumes through that handle;
+it does not call the Project bridge, read Streamlit state, capture a Project,
+access the raw mailbox, or change target epochs. Any Apply approval flow
+remains outside these slices.
