@@ -6,6 +6,10 @@ reviewed mutation family, Batch Replace. PoC-1a adds the SDK-independent logical
 tool adapter; PoC-1b binds it to the official SDK without starting a transport
 process or integrating a model. `app.py` remains the terminal application shell.
 
+The near-term workflow direction for these primitives is documented in the
+[Pixiv Publish Skill plan](pixiv-publish-skill-plan.md). That roadmap does not
+expand the current MCP tool surface or change the host-owned approval boundary.
+
 ## Layering and trust boundary
 
 An adapter supplies the host's active `Project` to facade functions. Agent-facing
