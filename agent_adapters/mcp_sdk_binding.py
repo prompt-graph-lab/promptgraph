@@ -9,6 +9,7 @@ from copy import deepcopy
 import json
 from typing import Any, Protocol
 
+import anyio
 from mcp.server import Server, ServerRequestContext
 from mcp.types import (
     CallToolRequestParams,
@@ -96,8 +97,10 @@ def build_mcp_server(
         if type(adapter) is not mcp_adapter.PromptGraphMCPAdapter:
             raise TypeError("A PromptGraphMCPAdapter instance is required.")
         caller = adapter
+        offload_tool_calls = False
     elif tool_caller is not None and callable(getattr(tool_caller, "call_tool", None)):
         caller = tool_caller
+        offload_tool_calls = True
     else:
         raise TypeError("A PromptGraphMCPAdapter or explicit MCP tool caller is required.")
 
@@ -117,7 +120,20 @@ def build_mcp_server(
     ) -> CallToolResult:
         try:
             arguments = {} if params.arguments is None else params.arguments
-            payload = caller.call_tool(params.name, arguments)
+            if offload_tool_calls:
+                # Remote callers may wait for a mailbox reply for many
+                # seconds. Keep that synchronous wait off the MCP event loop,
+                # and retain the worker until its bounded call completes if
+                # the SDK request is cancelled.
+                payload = await anyio.to_thread.run_sync(
+                    caller.call_tool,
+                    params.name,
+                    arguments,
+                    abandon_on_cancel=False,
+                )
+            else:
+                # Preserve the established in-process adapter path.
+                payload = caller.call_tool(params.name, arguments)
             if type(payload) is not dict:
                 payload = _failure("invalid_adapter_result")
             return _tool_result(payload)
