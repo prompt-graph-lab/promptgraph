@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import json
+import threading
 
 from mcp import Client
 
@@ -221,3 +222,71 @@ def test_binding_rejects_other_adapter_implementations():
         pass
     else:
         raise AssertionError("the SDK binding must preserve the exact adapter owner")
+
+
+def test_explicit_tool_caller_wait_does_not_block_sdk_protocol_requests():
+    class BlockingCaller:
+        def __init__(self):
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.call_thread_id = None
+
+        def call_tool(self, name, arguments):
+            self.call_thread_id = threading.get_ident()
+            self.entered.set()
+            if not self.release.wait(timeout=10):
+                raise AssertionError("test did not release the blocked tool call")
+            return {"ok": True, "name": name, "arguments": arguments}
+
+    caller = BlockingCaller()
+    server = mcp_sdk_binding.build_mcp_server(tool_caller=caller)
+    list_tools_completed = threading.Event()
+    outcomes = {}
+
+    async def exercise():
+        outcomes["event_loop_thread_id"] = threading.get_ident()
+        async with Client(server) as client:
+            tool_task = asyncio.create_task(
+                client.call_tool("promptgraph_project_summary", {})
+            )
+            entered = await asyncio.to_thread(caller.entered.wait, 10)
+            assert entered, "the explicit tool caller was never invoked"
+
+            listed = await asyncio.wait_for(client.list_tools(), timeout=10)
+            outcomes["tool_names"] = [tool.name for tool in listed.tools]
+            list_tools_completed.set()
+
+            outcomes["tool_result"] = await asyncio.wait_for(tool_task, timeout=10)
+
+    def run_client():
+        try:
+            asyncio.run(exercise())
+        except BaseException as exc:
+            outcomes["error"] = exc
+
+    client_thread = threading.Thread(target=run_client)
+    client_thread.start()
+    try:
+        assert caller.entered.wait(timeout=10), "the tool call did not start"
+        completed_while_caller_blocked = list_tools_completed.wait(timeout=5)
+        assert not caller.release.is_set()
+    finally:
+        # Always unblock the worker so a regression produces a test failure,
+        # rather than stranding the in-process SDK task.
+        caller.release.set()
+        client_thread.join(timeout=15)
+
+    assert not client_thread.is_alive(), "the in-process MCP client did not finish"
+    if "error" in outcomes:
+        raise outcomes["error"]
+
+    assert completed_while_caller_blocked is True
+    assert outcomes["tool_names"] == [
+        entry["name"] for entry in mcp_adapter.get_tool_catalog()
+    ]
+    assert outcomes["tool_result"].structured_content == {
+        "ok": True,
+        "name": "promptgraph_project_summary",
+        "arguments": {},
+    }
+    assert caller.call_thread_id != outcomes["event_loop_thread_id"]
