@@ -52,12 +52,13 @@ The current logical MCP surface contains:
 - `promptgraph_search_illustrations`
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
+- `promptgraph_preview_scene_module_swap`
 
 This is useful for read-only Project, Scene, Illustration, and prompt
-inspection, plus a reviewed Batch Replace Preview. Batch Replace Apply is not
-available to the agent. The current MCP surface does not provide the complete
-Scene recast, image audit, cover, or byte-budget export workflow described
-above.
+inspection, plus reviewed Batch Replace and single-Scene Module Swap Previews.
+Neither operation exposes Apply to the agent. The current MCP surface does not
+provide the complete Scene recast, image audit, cover, or byte-budget export
+workflow described above.
 
 MCP dogfooding showed that prompt-match counts had been approximated with
 Batch Replace Preview. The merged Illustration search tool gives that read-only
@@ -66,9 +67,13 @@ publication workflow, not another reason to use a mutation Preview as search.
 
 PromptGraph already has separate application/domain owners for operations such
 as Module Swap, Gallery generation, Candidate review/adoption, and Final Images
-Export. Their existence does not mean the current MCP Skill workflow can call
-or safely compose them; future agent-facing access should reuse those owners
-and preserve their existing Preview, review, and persistence behavior.
+Export. The agent can now inspect a bounded single-Scene Module Swap Preview
+through the existing core planner and safe Agent Facade projection. It still
+cannot Apply the swap; human approval, Project publication, Undo/history, and
+save remain host-owned. Other operations are not agent-callable merely because
+they have application/domain owners; future agent-facing access should reuse
+those owners and preserve their existing Preview, review, and persistence
+behavior.
 
 Several existing PromptGraph terms have specific meanings that this plan keeps:
 
@@ -223,9 +228,13 @@ against current owners and product boundaries before implementation.
    and normal host autosave. The transfer uses fresh target identities and
    excludes source images, Candidates, Variants, Workbench, Trash, and
    generation state. Agent-facing Scene Import is not implemented.
-3. **Agent access to existing operations.** Reuse appropriate existing
-   Scene-scoped Module Swap and related operations through reviewed
-   agent-facing contracts; do not duplicate domain logic in the adapter.
+3. **Agent access to existing operations.** Started / partially implemented:
+   the agent can inspect a bounded reviewed Preview for an explicit Scene,
+   source Module, and target Module through
+   `promptgraph_preview_scene_module_swap` in `strict` or `loose` mode. No
+   Module Swap Apply tool is exposed. Continue only by reusing existing
+   operation owners and preserving host-only approval and publication; do not
+   duplicate domain logic in the adapter.
 4. **Generation and Candidate review.** Let the agent request supported
    generation work, observe job/results, and propose Candidate review or
    adoption through explicit Preview/approval boundaries.

@@ -23,6 +23,7 @@ TOOL_NAMES = [
     "promptgraph_search_illustrations",
     "promptgraph_get_illustration",
     "promptgraph_preview_batch_replace",
+    "promptgraph_preview_scene_module_swap",
 ]
 
 
@@ -39,7 +40,11 @@ def project():
         line("deleted", deleted=True),
         line("deleted-scene", "Removed", line_type="separator", deleted=True),
         line("two", "blue, red"), line("scene-2", "Empty", line_type="separator"),
-    ], module_library={"opaque": {"reference_assets": {"unknown": [1, 2]}}},
+    ], module_library={
+        "opaque": {"reference_assets": {"unknown": [1, 2]}},
+        "source": {"body": "red, blue", "core_tokens": ["red", "blue"]},
+        "target": {"body": "gold, green"},
+    },
         project_metadata={"future": {"keep": True}}))
 
 
@@ -88,7 +93,7 @@ def test_tool_catalog_is_deterministic_unique_and_preview_only():
     assert not any("apply" in name.lower() for name in names)
     assert [tool["effect"] for tool in first] == [
         "read_only", "read_only", "read_only", "read_only", "read_only", "read_only",
-        "reviewed_preview"]
+        "reviewed_preview", "reviewed_preview"]
     search_tool = first[4]
     assert search_tool["inputSchema"]["required"] == ["query_text"]
     assert search_tool["inputSchema"]["additionalProperties"] is False
@@ -100,16 +105,24 @@ def test_tool_catalog_is_deterministic_unique_and_preview_only():
         "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
         "limit": {"type": "integer", "minimum": 1, "maximum": agent_facade.MAX_ITEMS},
     }
-    assert "illustration_ids" in first[-1]["inputSchema"]["required"]
-    first[-1]["inputSchema"]["properties"].clear()
-    assert "illustration_ids" in mcp_adapter.get_tool_catalog()[-1]["inputSchema"]["properties"]
+    assert first[-1]["name"] == "promptgraph_preview_scene_module_swap"
+    assert first[-1]["inputSchema"]["required"] == [
+        "scene_id", "source_module_name", "target_module_name"]
+    assert first[-1]["inputSchema"]["additionalProperties"] is False
+    assert first[-1]["inputSchema"]["properties"]["match_mode"]["enum"] == ["strict", "loose"]
+    assert "illustration_ids" in first[-2]["inputSchema"]["required"]
+    first[-2]["inputSchema"]["properties"].clear()
+    assert "illustration_ids" in mcp_adapter.get_tool_catalog()[-2]["inputSchema"]["properties"]
     json_only(second)
 
 
 def test_capability_mapping_is_facade_derived_and_does_not_need_a_project():
     adapter = mcp_adapter.PromptGraphMCPAdapter(None)
     capabilities = adapter.call_tool("promptgraph_capabilities", {})
-    facade_mutation, = agent_facade.discover_capabilities()["capabilities"]["mutations"]
+    facade_mutations = {item["operation"]: item for item in
+                        agent_facade.discover_capabilities()["capabilities"]["mutations"]}
+    facade_mutation = facade_mutations["batch_replace"]
+    scene_swap = facade_mutations["scene_module_swap"]
     assert capabilities["facade_contract_version"] == agent_facade.CONTRACT_VERSION
     assert capabilities["batch_replace_preview_modes"] == facade_mutation["modes"]
     assert capabilities["illustration_search_modes"] == [
@@ -117,9 +130,16 @@ def test_capability_mapping_is_facade_derived_and_does_not_need_a_project():
     assert capabilities["illustration_search_max_results"] == agent_facade.MAX_ITEMS
     assert capabilities["illustration_search_query_text_chars"] == agent_facade.MAX_REQUEST_TEXT
     assert capabilities["batch_replace_requires_explicit_illustration_ids"] is True
+    assert capabilities["scene_module_swap_preview_modes"] == ["strict", "loose"]
+    assert capabilities["scene_module_swap_requires_explicit_scene_id"] is True
+    assert capabilities["scene_module_swap_requires_explicit_source_module_name"] is True
+    assert capabilities["scene_module_swap_requires_explicit_target_module_name"] is True
+    assert capabilities["scene_module_swap_requires_explicit_module_names"] is True
+    assert capabilities["scene_module_swap_requires_reviewed_preview_before_host_apply"] is True
     assert capabilities["agent_callable_apply"] is False
     assert [tool["name"] for tool in capabilities["tools"]] == TOOL_NAMES
     assert capabilities["tools"][-1]["effect"] == "reviewed_preview"
+    assert scene_swap["requires_explicit_target_module_name"] is True
     json_only(capabilities)
 
 
@@ -146,6 +166,11 @@ def test_observations_and_preview_delegate_exactly_without_mutating_project():
          agent_facade.get_illustration(value, "one")),
         ("promptgraph_preview_batch_replace", request(),
          agent_facade.preview_batch_replace(value, request())),
+        ("promptgraph_preview_scene_module_swap",
+         {"scene_id": "scene-1", "source_module_name": "source", "target_module_name": "target"},
+         agent_facade.preview_scene_module_swap(value, {
+             "scene_id": "scene-1", "source_module_name": "source", "target_module_name": "target",
+         })),
     ]
     for name, arguments, expected in calls:
         result = adapter.call_tool(name, arguments)
@@ -187,6 +212,23 @@ def test_preview_is_a_direct_facade_envelope_and_repeated_calls_retain_no_approv
     assert adapter.call_tool("promptgraph_preview_batch_replace", request()) is envelope
     json_only(envelope)
     assert not hasattr(adapter, "apply_batch_replace")
+
+
+def test_scene_module_swap_preview_delegates_exact_facade_envelope_without_retaining_state(monkeypatch):
+    value = project()
+    adapter = mcp_adapter.PromptGraphMCPAdapter(lambda: value)
+    args = {"scene_id": "scene-1", "source_module_name": "source", "target_module_name": "target"}
+    expected = agent_facade.preview_scene_module_swap(value, args)
+    assert expected["valid"] is True
+    assert adapter.call_tool("promptgraph_preview_scene_module_swap", args) == expected
+    assert adapter.call_tool("promptgraph_preview_scene_module_swap", args) == expected
+
+    envelope = {"contract_version": "facade-test", "operation": "scene_module_swap",
+                "plan_id": "opaque", "result": [1, True]}
+    monkeypatch.setattr(agent_facade, "preview_scene_module_swap",
+                        lambda _project, _request: envelope)
+    assert adapter.call_tool("promptgraph_preview_scene_module_swap", args) is envelope
+    assert not hasattr(adapter, "apply_scene_module_swap")
 
 
 def test_search_tool_answers_dogfood_count_without_constructing_a_preview(monkeypatch):
@@ -286,7 +328,32 @@ def test_adapter_rejects_hostile_arguments_without_invoking_hooks_or_project_pro
     assert result["reason"] == "invalid_arguments"
     assert HostileKey.hash_calls == 0 and not provider_calls
     assert adapter.call_tool("promptgraph_get_illustration", HostileValue())["reason"] == "invalid_arguments"
+    assert adapter.call_tool("promptgraph_preview_scene_module_swap", {
+        "scene_id": HostileValue(), "source_module_name": "source", "target_module_name": "target",
+    })["reason"] == "invalid_arguments"
     assert not provider_calls
+
+
+@pytest.mark.parametrize("arguments", [
+    None,
+    HostileValue(),
+    {},
+    {"scene_id": "scene-1", "source_module_name": "source"},
+    {"scene_id": "scene-1", "source_module_name": "source",
+     "target_module_name": "target", "extra": True},
+    {"scene_id": HostileValue(), "source_module_name": "source", "target_module_name": "target"},
+    {"scene_id": "scene-1", "source_module_name": "source", "target_module_name": 3},
+    {"scene_id": "s" * 201, "source_module_name": "source", "target_module_name": "target"},
+    {"scene_id": "scene-1", "source_module_name": "source", "target_module_name": "target",
+     "match_mode": "token_set"},
+])
+def test_scene_module_swap_transport_invalid_shapes_do_not_invoke_project_provider(arguments):
+    calls = []
+    adapter = mcp_adapter.PromptGraphMCPAdapter(lambda: calls.append(True) or project())
+    result = adapter.call_tool("promptgraph_preview_scene_module_swap", arguments)
+    assert result["ok"] is False and result["reason"] == "invalid_arguments"
+    assert not calls
+    json_only(result)
 
 
 @pytest.mark.parametrize("arguments", [
@@ -351,6 +418,7 @@ def test_invalid_transport_shape_and_unknown_tool_do_not_access_host_project():
     assert adapter.call_tool("promptgraph_list_scenes", {"limit": True})["reason"] == "invalid_arguments"
     assert adapter.call_tool("promptgraph_project_summary", {"unused": True})["reason"] == "invalid_arguments"
     assert adapter.call_tool("promptgraph_apply_batch_replace", {})["reason"] == "unknown_tool"
+    assert adapter.call_tool("promptgraph_apply_scene_module_swap", {})["reason"] == "unknown_tool"
     assert not calls
 
 

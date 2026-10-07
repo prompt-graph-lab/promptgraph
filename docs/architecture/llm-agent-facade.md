@@ -174,7 +174,7 @@ reviewed-intent and host-only publication responsibilities.
 `agent_adapters.mcp_adapter` owns the small MCP-facing logical tool catalog,
 transport argument shape checks, host Project-provider boundary, and bounded
 adapter errors. It is deliberately outside `core`: it delegates every domain
-observation and Batch Replace Preview to `core.agent_facade`, which continues to
+observation and reviewed Preview to `core.agent_facade`, which continues to
 own Scene/Illustration semantics, prompt validation, explicit target resolution,
 transforms, freshness, fingerprints, digests, and reviewed-envelope construction.
 The adapter is not a generic plugin registry or service container.
@@ -190,12 +190,21 @@ The stable logical tool names and effects are:
 | `promptgraph_search_illustrations` | Read-only | `search_illustrations(project, ...)` |
 | `promptgraph_get_illustration` | Read-only | `get_illustration(project, illustration_id)` |
 | `promptgraph_preview_batch_replace` | Reviewed Preview | `preview_batch_replace(project, request)` |
+| `promptgraph_preview_scene_module_swap` | Reviewed Preview | `preview_scene_module_swap(project, request)` |
 
 The catalog is a deterministic, inspectable JSON description with explicit
 schemas. It contains no Apply tool. Batch Replace targets remain explicit
-Illustration IDs; the adapter adds no semantic scopes or target inference. The
-facade Preview envelope is returned as-is rather than reconstructed by the
-adapter. Illustration search supports `exact_token`, `contains_token`, and
+Illustration IDs; Scene Module Swap requires one explicit active Scene and
+explicit source and target Module names. The adapter adds no semantic scopes
+or target inference. The facade Preview envelope is returned as-is rather than
+reconstructed by the adapter. Scene Module Swap delegates to the existing
+Selected Routes Module Swap planner, then returns a bounded safe projection:
+the full projection digest covers every target while visible prompt rows cap
+at 100. Module snapshots/bodies, Module metadata, reference assets, Project
+and image paths, and raw planner diagnostics do not cross the agent boundary.
+The tool supports the existing `strict` and `loose` match modes and explicitly
+reports that Negative Prompts remain unchanged. It creates no Apply or host
+approval authority. Illustration search supports `exact_token`, `contains_token`, and
 `literal`; its result list is capped at 100 while `total_count` covers every
 matching active Illustration. It shares the list operation's active target,
 Scene ownership, and baseline `scene_id: null` rules, and returns no prompt text.
@@ -214,9 +223,9 @@ reprs, stack traces, or type details. Argument and result boundaries contain
 ordinary JSON primitives and containers; Project, PromptLine, graph/session
 objects, callables, and arbitrary metadata never enter agent-facing results.
 
-Preview is the only mutation-related capability exposed to an agent. The host
-owns human approval and must retain the exact envelope approved for later
-host-only Apply. A `plan_id` is a content identifier and integrity check, not an
+Reviewed Previews are the only mutation-related capabilities exposed to an
+agent. The host owns human approval and must retain the exact envelope approved
+for any later host-only Apply. A `plan_id` is a content identifier and integrity check, not an
 authorization token. The model cannot prove approval by echoing an envelope,
 setting an `approved` flag, or supplying a plan ID. PoC-1a adds no Apply wrapper,
 approval registry, or mutable adapter-global Preview store. Until a real
@@ -244,7 +253,7 @@ facade behavior. The SDK wrapper delegates every tool call to
 shape before asking the host Project provider, and `core.agent_facade` remains
 the owner of domain validation and observations.
 
-The binding registers the same seven logical tools from the adapter catalog:
+The binding registers the same eight logical tools from the adapter catalog:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
@@ -253,6 +262,7 @@ The binding registers the same seven logical tools from the adapter catalog:
 - `promptgraph_search_illustrations`
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
+- `promptgraph_preview_scene_module_swap`
 
 Read-only versus reviewed-Preview effects are carried as MCP tool annotations
 and PromptGraph metadata. Results preserve the adapter's JSON object as MCP

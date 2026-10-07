@@ -117,7 +117,7 @@ returned. An adapter/domain result with `ok: false` is still a completed
 bridge request because dispatch succeeded.
 
 The bridge does not own the logical tool list or tool-specific argument rules.
-`agent_adapters.mcp_adapter` remains the owner of exactly these seven tools:
+`agent_adapters.mcp_adapter` remains the owner of exactly these eight tools:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
@@ -126,6 +126,7 @@ The bridge does not own the logical tool list or tool-specific argument rules.
 - `promptgraph_search_illustrations`
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
+- `promptgraph_preview_scene_module_swap`
 
 The bridge always delegates to `PromptGraphMCPAdapter.call_tool(...)`; the
 adapter retains transport validation and tool dispatch, while

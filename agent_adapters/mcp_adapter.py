@@ -106,6 +106,26 @@ _TOOL_CATALOG = (
         },
         "effect": "reviewed_preview",
     },
+    {
+        "name": "promptgraph_preview_scene_module_swap",
+        "description": "Create a bounded reviewed Module Swap Preview for one explicit Scene. This tool does not Apply the plan.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "source_module_name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "target_module_name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "match_mode": {
+                    "type": "string",
+                    "enum": list(agent_facade.SCENE_MODULE_SWAP_MODES),
+                    "default": "strict",
+                },
+            },
+            "required": ["scene_id", "source_module_name", "target_module_name"],
+            "additionalProperties": False,
+        },
+        "effect": "reviewed_preview",
+    },
 )
 
 _CAPABILITIES_TOOL = "promptgraph_capabilities"
@@ -115,9 +135,14 @@ _ILLUSTRATIONS_TOOL = "promptgraph_list_illustrations"
 _SEARCH_ILLUSTRATIONS_TOOL = "promptgraph_search_illustrations"
 _ILLUSTRATION_TOOL = "promptgraph_get_illustration"
 _PREVIEW_TOOL = "promptgraph_preview_batch_replace"
+_SCENE_MODULE_SWAP_PREVIEW_TOOL = "promptgraph_preview_scene_module_swap"
 _PREVIEW_REQUIRED_ARGUMENTS = ("illustration_ids", "find_text", "replace_text")
 _PREVIEW_OPTIONAL_ARGUMENTS = ("match_mode", "preserve_weights")
 _SEARCH_OPTIONAL_ARGUMENTS = ("match_mode", "scene_id", "limit")
+_SCENE_MODULE_SWAP_REQUIRED_ARGUMENTS = (
+    "scene_id", "source_module_name", "target_module_name",
+)
+_SCENE_MODULE_SWAP_OPTIONAL_ARGUMENTS = ("match_mode",)
 
 
 def _error(reason: str):
@@ -186,6 +211,30 @@ def _search_transport_arguments(arguments):
     return args
 
 
+def _scene_module_swap_transport_arguments(arguments):
+    """Validate the fixed scene-swap wire shape before resolving the host Project."""
+    args = _object_arguments(
+        arguments,
+        required=_SCENE_MODULE_SWAP_REQUIRED_ARGUMENTS,
+        optional=_SCENE_MODULE_SWAP_OPTIONAL_ARGUMENTS,
+    )
+    if args is None or not _arguments_have_types(args, {
+            "scene_id": str, "source_module_name": str,
+            "target_module_name": str, "match_mode": str}):
+        return None
+    for field_name in _SCENE_MODULE_SWAP_REQUIRED_ARGUMENTS:
+        value = args[field_name]
+        if not 1 <= len(value) <= 200:
+            return None
+        try:
+            value.encode("utf-8")
+        except UnicodeError:
+            return None
+    if "match_mode" in args and args["match_mode"] not in agent_facade.SCENE_MODULE_SWAP_MODES:
+        return None
+    return args
+
+
 def get_tool_catalog():
     """Return a fresh deterministic logical catalog for later SDK registration."""
     return deepcopy(list(_TOOL_CATALOG))
@@ -194,7 +243,11 @@ def get_tool_catalog():
 def get_adapter_capabilities():
     """Map facade capabilities to the smaller agent-callable MCP surface."""
     facade_result = agent_facade.discover_capabilities()
-    batch, = facade_result["capabilities"]["mutations"]
+    mutation_capabilities = {
+        item["operation"]: item for item in facade_result["capabilities"]["mutations"]
+    }
+    batch = mutation_capabilities[agent_facade.OPERATION]
+    scene_swap = mutation_capabilities[agent_facade.SCENE_MODULE_SWAP_OPERATION]
     search = facade_result["capabilities"]["illustration_search"]
     return {
         "adapter_contract_version": ADAPTER_CONTRACT_VERSION,
@@ -205,6 +258,21 @@ def get_adapter_capabilities():
         ],
         "batch_replace_preview_modes": list(batch["modes"]),
         "batch_replace_requires_explicit_illustration_ids": True,
+        "scene_module_swap_preview_modes": list(scene_swap["modes"]),
+        "scene_module_swap_requires_explicit_scene_id": scene_swap["requires_explicit_scene_id"],
+        "scene_module_swap_requires_explicit_source_module_name": (
+            scene_swap["requires_explicit_source_module_name"]
+        ),
+        "scene_module_swap_requires_explicit_target_module_name": (
+            scene_swap["requires_explicit_target_module_name"]
+        ),
+        "scene_module_swap_requires_explicit_module_names": (
+            scene_swap["requires_explicit_source_module_name"]
+            and scene_swap["requires_explicit_target_module_name"]
+        ),
+        "scene_module_swap_requires_reviewed_preview_before_host_apply": (
+            scene_swap["requires_reviewed_preview_before_host_apply"]
+        ),
         "illustration_search_modes": list(search["modes"]),
         "illustration_search_max_results": search["max_results"],
         "illustration_search_query_text_chars": search["query_text_chars"],
@@ -258,6 +326,10 @@ class PromptGraphMCPAdapter:
             arguments = _preview_transport_arguments(arguments)
             if arguments is None:
                 return _error("invalid_arguments")
+        elif name == _SCENE_MODULE_SWAP_PREVIEW_TOOL:
+            arguments = _scene_module_swap_transport_arguments(arguments)
+            if arguments is None:
+                return _error("invalid_arguments")
 
         if self._project_provider is None:
             return _error("missing_project_provider")
@@ -288,6 +360,11 @@ class PromptGraphMCPAdapter:
                 # The facade owns the complete JSON/request validation and
                 # returns the exact Preview envelope; the adapter only routes it.
                 return agent_facade.preview_batch_replace(project, arguments)
+
+            if name == _SCENE_MODULE_SWAP_PREVIEW_TOOL:
+                # The facade owns all Module Swap request semantics and returns
+                # the exact safe Preview envelope; the adapter only routes it.
+                return agent_facade.preview_scene_module_swap(project, arguments)
         except Exception:
             return _error("adapter_call_failed")
 
