@@ -109,9 +109,10 @@ The fingerprint is SHA-256 over canonical JSON containing the contract version, 
 1. Pure source Scene portability projection (implemented above).
 2. Pure Project-A→Project-B Scene Import Preview (implemented below).
 3. In-memory core Scene Import Apply (implemented below).
-4. Host Scene Import lifecycle for source reload, Preview custody, successful Undo/Gallery publication, and autosave (implemented below); visible UI wiring remains future work.
-5. Agent-facing exposure only after the human approval/custody boundary is defined; keep Module Swap as its existing operation.
-6. Pixiv Publish Skill workflow only after the deterministic primitives and review boundaries exist.
+4. Host Scene Import lifecycle for source reload, Preview custody, successful Undo/Gallery publication, and autosave (implemented below).
+5. Human Scene Import panel in Gallery Operations (implemented below); agent-facing exposure remains future work and must preserve the human review boundary.
+6. Agent-facing exposure only after its approval/custody boundary is defined; keep Module Swap as its existing operation.
+7. Pixiv Publish Skill workflow only after the deterministic primitives and review boundaries exist.
 
 This audit did not implement agent-facing exposure or the Pixiv Publish Skill workflow.
 
@@ -154,4 +155,12 @@ The Apply result is bounded JSON-safe evidence of an in-memory operation. It doe
 
 `apply_and_publish_scene_import(...)` requires the same complete Preview object held in the session operation state, rechecks the explicit source/target path boundary, clones the active target before core Apply, and reloads the source Project immediately before calling `core.scene_import.apply_scene_import`. Core stale/non-applied outcomes and host failures clear the one-shot Preview and publish bounded feedback/result state without adding Undo history, synchronizing Gallery state, or saving. Changing the source path or separator invalidates the stored Preview.
 
-After core Apply succeeds, the lifecycle appends the pre-Apply clone to the existing Undo history with the app's 20-entry cap, synchronizes existing Gallery selected-Route state, restores/sanitizes prior focus through the existing app callback, stores the unchanged core result, clears the consumed Preview, and calls the existing save callback exactly once with `Scene Import applied`. Core Apply already rebuilds the graph, so the lifecycle does not rebuild it again. A later autosave failure does not roll back the successful in-memory operation or its Undo entry. The visible Scene Import panel and `app.py` dispatch remain a separate follow-on slice; no MCP surface or agent approval path is added here.
+After core Apply succeeds, the lifecycle appends the pre-Apply clone to the existing Undo history with the app's 20-entry cap, synchronizes existing Gallery selected-Route state, restores/sanitizes prior focus through the existing app callback, stores the unchanged core result, clears the consumed Preview, and calls the existing save callback exactly once with `Scene Import applied`. Core Apply already rebuilds the graph, so the lifecycle does not rebuild it again. A later autosave failure does not roll back the successful in-memory operation or its Undo entry.
+
+## Implemented human Scene Import panel
+
+`ui.scene_import_panel` is wired into the `scene_import` single-active operation in Gallery Operations under `1. Prompt／構造を編集`. It accepts an explicit source Project JSON path, discovers active non-deleted source separators through `core.operations.get_gallery_route_options`, and displays each Scene label with its Illustration count, including empty Scenes. The Project used for selector discovery is transient and is never stored in session state; Fresh Preview and Apply reload their own source Project through `ui.scene_import_lifecycle`.
+
+The panel uses separate Streamlit widget mirrors for source path, source separator, and human confirmation. Path or Scene changes synchronize through the lifecycle setters and clear the confirmation; a fresh Preview also clears confirmation. It renders the stored Preview's Scene summary, planned Module actions, ordered positive/negative prompts, append position, blockers, and optional technical content identities. Apply is available only for a stored valid and eligible Preview with the explicit one-Scene confirmation. The panel delegates Apply, Undo publication, Gallery synchronization, focus sanitation, and autosave to the lifecycle; it does not repeat those operations.
+
+Successful Apply feedback describes the in-memory operation and directs the user to the app's existing autosave feedback for persistence status. The new Scene is appended to the current Project tail while the lifecycle preserves and sanitizes existing Gallery selection/focus; pagination and collapse state are not changed. The public panel provides no MCP/agent mutation surface or approval token.

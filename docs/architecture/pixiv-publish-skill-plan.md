@@ -155,9 +155,12 @@ Project schema. Before implementation, decide how source-to-target
 Illustration correspondence can support later comparison when target IDs are
 fresh, without treating source IDs as target identity. The repository-backed
 [Scene Portability Foundation Audit](scene-portability-foundation.md) records
-the current owner comparison, a persistence-compatible correspondence
-recommendation, and the first pure implementation boundary; Scene Import
-remains unimplemented.
+the owner comparison, persistence-compatible correspondence, and current
+implementation boundaries. Human Project-to-Project image-less Scene Import
+is implemented through Gallery Operations, from Preview and explicit
+confirmation through in-memory Apply and host publication. Agent-facing Scene
+Import remains unimplemented; this does not change the existing MCP mutation
+restriction.
 
 ## Prompt and visual audit
 
@@ -210,14 +213,16 @@ This is a recommended sequence, not a commitment that every item will ship.
 Each phase should remain a separately reviewable slice and be re-evaluated
 against current owners and product boundaries before implementation.
 
-1. **Scene portability foundation.** Audit current Derived Project /
-   Lightweight Fork and Global Scene Template behavior. Define structure-only
-   transfer/materialization, Module-reference handling, source/target mapping,
-   and preservation boundaries. Keep existing final-image Derived Project
-   semantics intact.
-2. **Scene import between Projects.** Add a Preview-first transfer into an
-   explicit target Project, with fresh target identity and no accidental
-   image, Candidate, Variant, Workbench, Trash, or generation-state transfer.
+1. **Scene portability foundation.** Implemented. The audit and source-side
+   pure projection define structure-only transfer/materialization,
+   Module-reference handling, source/target mapping, and preservation
+   boundaries while keeping existing final-image Derived Project semantics.
+2. **Human Scene import between Projects.** Implemented through Gallery
+   Operations: explicit source Project and Scene selection, Fresh Preview,
+   human confirmation, stale-safe in-memory Apply, Undo/Gallery publication,
+   and normal host autosave. The transfer uses fresh target identities and
+   excludes source images, Candidates, Variants, Workbench, Trash, and
+   generation state. Agent-facing Scene Import is not implemented.
 3. **Agent access to existing operations.** Reuse appropriate existing
    Scene-scoped Module Swap and related operations through reviewed
    agent-facing contracts; do not duplicate domain logic in the adapter.
@@ -236,9 +241,8 @@ against current owners and product boundaries before implementation.
    required primitives are reliable enough that the Skill does not need to
    fill product gaps with direct file operations.
 
-The Scene portability phase should start with an implementation/design audit
-of current owners, not by changing the existing image-carrying Derived Project
-operation into a different product behavior.
+The implemented Scene portability foundation began with an audit of current
+owners and keeps the existing image-carrying Derived Project operation intact.
 
 ## Future Skill set
 

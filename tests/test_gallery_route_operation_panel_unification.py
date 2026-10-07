@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
+from ui.scene_import_panel import SCENE_IMPORT_OPERATION_KEY
+
 
 class SessionState(dict):
     def __getattr__(self, key):
@@ -54,7 +56,10 @@ class GalleryRouteOperationPanelUnificationTests(unittest.TestCase):
 
     def _state_namespace(self, initial=None):
         state = SessionState(initial or {})
-        namespace = {"st": SimpleNamespace(session_state=state)}
+        namespace = {
+            "st": SimpleNamespace(session_state=state),
+            "SCENE_IMPORT_OPERATION_KEY": SCENE_IMPORT_OPERATION_KEY,
+        }
         for name in (
             "_prepare_gallery_operation_widget_state",
             "_sync_gallery_operation_widget_state",

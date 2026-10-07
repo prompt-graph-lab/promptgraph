@@ -3,6 +3,11 @@ import ast
 from types import SimpleNamespace
 import unittest
 
+from ui.scene_import_panel import (
+    SCENE_IMPORT_OPERATION_ACTION,
+    SCENE_IMPORT_OPERATION_KEY,
+)
+
 
 class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
     @classmethod
@@ -151,6 +156,8 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
 
         namespace = {
             "st": FakeStreamlit(),
+            "SCENE_IMPORT_OPERATION_ACTION": SCENE_IMPORT_OPERATION_ACTION,
+            "SCENE_IMPORT_OPERATION_KEY": SCENE_IMPORT_OPERATION_KEY,
             "get_visible_prompt_lines": lambda _project: [SimpleNamespace(id="one")],
             "is_gallery_operation_prompt_line": lambda _line: True,
             "_render_gallery_operation_buttons": lambda actions: events.append(
@@ -171,7 +178,7 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
         namespace["render_gallery_operations_launcher"](object())
 
         assert [event for event in events if event[1] != "heading"] == [
-            (1, "buttons", ("module_swap", "attribute_group_swap", "batch_edit", "lightweight_fork")),
+            (1, "buttons", ("module_swap", "attribute_group_swap", "batch_edit", "lightweight_fork", "scene_import")),
             (1, "active", "route"),
             (1, "buttons", ("gallery_generation",)),
             (1, "active", "generation"),
@@ -230,8 +237,10 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
             "attribute_group_swap",
             "batch_edit",
             "lightweight_fork",
+            "scene_import",
         ):
-            self.assertIn(f'"{action_key}"', group_source)
+            expected = "SCENE_IMPORT_OPERATION_KEY" if action_key == "scene_import" else f'"{action_key}"'
+            self.assertIn(expected, group_source)
         for action_key in (
             "candidate_route_creation",
             "prompt_revert",
@@ -280,15 +289,14 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
             maxsplit=1,
         )[0]
 
-        route_positions = [
-            route_actions.index(f'"{action_key}"')
-            for action_key in (
-                "module_swap",
-                "attribute_group_swap",
-                "batch_edit",
-                "lightweight_fork",
-            )
-        ]
+        route_action_tokens = (
+            '"module_swap"',
+            '"attribute_group_swap"',
+            '"batch_edit"',
+            '"lightweight_fork"',
+            "SCENE_IMPORT_OPERATION_ACTION",
+        )
+        route_positions = [route_actions.index(token) for token in route_action_tokens]
         line_positions = [
             line_actions.index(f'"{action_key}"')
             for action_key in (
