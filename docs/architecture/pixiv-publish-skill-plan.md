@@ -153,7 +153,11 @@ Projects. A first template or transfer version may be image-less and use fresh
 identities, but this plan does not settle slot/binding rules or prescribe a new
 Project schema. Before implementation, decide how source-to-target
 Illustration correspondence can support later comparison when target IDs are
-fresh, without treating source IDs as target identity.
+fresh, without treating source IDs as target identity. The repository-backed
+[Scene Portability Foundation Audit](scene-portability-foundation.md) records
+the current owner comparison, a persistence-compatible correspondence
+recommendation, and the first pure implementation boundary; Scene Import
+remains unimplemented.
 
 ## Prompt and visual audit
 
