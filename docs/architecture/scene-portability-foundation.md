@@ -1,6 +1,6 @@
 # Scene Portability Foundation Audit
 
-Status: repository-backed design audit at `6534b35dadebdcf049c75654744bf9796e1d3917` (PR #128 merge). The audit records current owners and the first implementation boundary for image-less Project-to-Project Scene transfer. The pure source projection in that boundary is now implemented in [`core.scene_portability`](../../core/scene_portability.py); Scene Import and Global Scene Template remain unimplemented.
+Status: repository-backed design audit at `6534b35dadebdcf049c75654744bf9796e1d3917` (PR #128 merge). The audit records current owners and the first implementation boundary for image-less Project-to-Project Scene transfer. The pure source projection, target Preview, and in-memory core Apply are implemented in [`core.scene_portability`](../../core/scene_portability.py) and [`core.scene_import`](../../core/scene_import.py). The user-facing Scene Import workflow and Global Scene Template remain unimplemented.
 
 ## Decision
 
@@ -33,7 +33,7 @@ Relevant characterization is in [`tests/test_route_duplicate_baseline.py`](../..
 | Modules | Copies the Project Module library through the prompt-only container policy; strips `reference_assets`. | Leaves the same Project Module library in place; does not copy Modules. | Proposed portable snapshots, unresolved-source blockers, and same-name definition conflict blockers. | Carry prompt-only snapshots needed to resolve positive-prompt Module references. Reuse identical target definitions, import missing definitions, and block unresolved source references or differing same-name definitions. Never copy Module asset files or `reference_assets`. |
 | Provenance | External `manifest.json` records source/fork line correspondence and source paths; fork PromptLines begin with empty lineage. | Existing `duplicated_from` plus additive `lineage_info`; `project_metadata` stays unchanged. | Source Project name is descriptive design metadata; Add does not create an ongoing link. | Persist a namespaced transfer receipt in existing target Project metadata, with an operation id, source Scene fingerprint, and per-line source→fresh-target map. Treat it as a receipt, never as Scene ownership or an authority to load the source. |
 | Ordering / destination | Creates a separate Project and preserves source physical order for selected materializable rows; append extends only a same-source Derived Project. | Inserts the new block immediately after the source block. | Add position is a design choice, normally end of Scene list or an explicit position. | V1 should append one new block at the physical end of the target `prompt_lines`; no implicit reordering or replacement. |
-| Preview and side effects | Preview is read-only; Apply stages image copies, Project JSON, and manifest then commits a new directory. | No separate reviewed Preview envelope; mutation inserts rows in memory. No files are copied. | Save/Add previews and user-level Template file are design-only. | Source projection and target Preview are pure/read-only. A separately reviewed Apply will own target mutation, freshness revalidation, history, and persistence. No operation described here writes a target Project. |
+| Preview and side effects | Preview is read-only; Apply stages image copies, Project JSON, and manifest then commits a new directory. | No separate reviewed Preview envelope; mutation inserts rows in memory. No files are copied. | Save/Add previews and user-level Template file are design-only. | Source projection and target Preview are pure/read-only. The reviewed core Apply revalidates and mutates the target in memory; normal host approval, history/undo, and persistence integration remain future work. |
 
 The closest existing *structural* behavior is `resolve_route_block`; the closest existing *fresh-ID, ordered separator/member construction* is the duplicate preparer, but it intentionally copies all rows and their resolved image references. The closest existing *portable, fresh-ID Project materialization* is Lightweight Fork, but it requires final images and makes a new Project. There is no existing shared Scene-import materializer to extract without changing those operations' contracts.
 
@@ -92,7 +92,7 @@ Implement one pure domain seam before any cross-Project Apply:
 | Tests | Source projection tests cover explicit separator resolution, empty Scene, source physical ordering, verbatim positive/negative prompts, exclusion of deleted/Workbench/image/Candidate/Variant/generation state, required Module snapshot closure and portability filtering, unresolved source Module and unsafe metadata blockers, JSON-safe output, source Project immutability, and stable fingerprint sensitivity to transferred content. Target same-name compatibility and target-side freshness are covered by the Preview tests below. |
 | Risk rationale | This proves exactly what crosses the Project boundary before introducing target mutation, review custody, history, or persistence. It prevents accidental reuse of the richer image-carrying or final-sequence operations. |
 
-The pure target Preview implemented below adds target conflict analysis, fresh target ID planning, target freshness binding, and a planned correspondence receipt without applying it. A separately reviewed Scene Import Apply must revalidate the source and target before receipt persistence, normal app history/save integration, and user approval. The existing `duplicate_route_as_baseline` and Derived Project callers should not be migrated to the new owner unless a later behavior-preserving audit proves a common contract.
+The pure target Preview implemented below adds target conflict analysis, fresh target ID planning, target freshness binding, and a planned correspondence receipt without applying it. The core Apply below revalidates the complete reviewed Preview and performs an atomic in-memory mutation. Normal app approval, history/undo publication, and save integration remain host responsibilities. The existing `duplicate_route_as_baseline` and Derived Project callers should not be migrated to the new owner unless a later behavior-preserving audit proves a common contract.
 
 ### Implemented source projection contract
 
@@ -108,11 +108,11 @@ The fingerprint is SHA-256 over canonical JSON containing the contract version, 
 
 1. Pure source Scene portability projection (implemented above).
 2. Pure Project-A→Project-B Scene Import Preview (implemented below).
-3. A separately reviewed Scene Import Apply with stale-source/target revalidation, durable advisory correspondence, and normal host-owned history/save.
+3. In-memory core Scene Import Apply (implemented below); normal host-owned approval, history/save, and durable publication integration remain future work.
 4. Agent-facing exposure only after the human approval/custody boundary is defined; keep Module Swap as its existing operation.
 5. Pixiv Publish Skill workflow only after the deterministic primitives and review boundaries exist.
 
-This audit did not implement Scene Import Apply, agent-facing exposure, or the Pixiv Publish Skill workflow.
+This audit did not implement agent-facing exposure or the Pixiv Publish Skill workflow.
 
 ## Evidence index
 
@@ -137,4 +137,12 @@ The `target_freshness_fingerprint` hashes physical target PromptLine order and t
 
 The planned advisory receipt contains a deterministic `transfer_id`, source Scene fingerprint and separator provenance id, fresh target separator id, ordered source-to-target Illustration pairs, and an optional source display label. It contains no Project reference or path and is returned with the append index; it is not persisted. A malformed existing receipt namespace blocks Preview so a later Apply cannot silently replace it.
 
-`projection_digest` covers the complete materialization projection: insertion position, every planned row, Module actions, correspondence map, and receipt. `plan_id` hashes the complete deterministic Preview envelope excluding only its own `plan_id` field. Both are content identities, not approval or authorization. Apply, history/undo publication, Project mutation, receipt persistence, UI, and MCP exposure remain unimplemented.
+`projection_digest` covers the complete materialization projection: insertion position, every planned row, Module actions, correspondence map, and receipt. `plan_id` hashes the complete deterministic Preview envelope excluding only its own `plan_id` field. Both are content identities, not approval or authorization. The Preview remains read-only.
+
+## Implemented Scene Import Apply (core)
+
+`core.scene_import.apply_scene_import(source_project, separator_id, target_project, reviewed_preview)` implements contract `promptgraph.scene-import-apply.v1`. It requires the complete JSON-safe v1 Preview envelope, validates its contract and digest fields, and recomputes the Preview from the current explicit source and target. Apply proceeds only when the complete reviewed and recomputed envelopes are equal; IDs or digests alone never authorize an operation. A stale, malformed, tampered, conflicted, or otherwise ineligible Preview returns a bounded failure without changing either Project.
+
+After review equality, Apply uses only the recomputed plan. It deep-copies the target, constructs exact `PromptLine` instances from the planned rows, applies only the planned Module actions, appends the planned receipt at its reviewed index, rebuilds the staged Project graph with `core.graph_builder.build_graph`, and verifies rows, Modules, receipt, and graph postconditions. Only then does it commit the staged state to the existing target object. A failed stage or postcondition leaves the target unchanged. Existing target row objects and physical order are retained; graph-derived `node_path` values may be refreshed by the graph rebuild. A second Apply of the same Preview is stale and does not duplicate the Scene.
+
+The Apply result is bounded JSON-safe evidence of an in-memory operation. It does not prove persistence. Apply does not save the Project, publish history/undo, decide human approval, or expose an agent/MCP tool. No UI, autosave, filesystem, or Skill caller exists yet, so the user-facing Scene Import workflow and its approval/persistence lifecycle remain unimplemented.
