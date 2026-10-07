@@ -284,6 +284,88 @@ def _validate_raw_module_graph(graph: Any) -> None:
             raise _ProjectionIssue("malformed_referenced_module")
 
 
+def _normalized_portable_module_definition(module_name: str, raw_entry: Any) -> dict[str, Any]:
+    """Build one normalized portable definition without mutating a Project.
+
+    Both source closure projection and target same-name comparison use this
+    exact sanitizer/normalizer path so portability equality cannot drift.
+    """
+    if type(module_name) is not str or not module_name or _LOCAL_PATH_RE.search(
+        _NETWORK_URL_RE.sub("", module_name)
+    ):
+        raise _ProjectionIssue("unsafe_module_metadata")
+    if type(raw_entry) not in (dict, str):
+        raise _ProjectionIssue("malformed_referenced_module")
+    if type(raw_entry) is dict:
+        for field_name in ("body", "type", "category"):
+            value = raw_entry.get(field_name)
+            if value is not None and type(value) is not str:
+                raise _ProjectionIssue("malformed_referenced_module")
+
+    entry_copy = _portable_copy(raw_entry, strict_text=type(raw_entry) is str)
+    if entry_copy is _DROP:
+        raise _ProjectionIssue("malformed_referenced_module")
+    if type(entry_copy) is dict:
+        body = entry_copy.get("body")
+        if body is not None and type(body) is not str:
+            raise _ProjectionIssue("malformed_referenced_module")
+        module_type = entry_copy.get("type")
+        if module_type is not None and type(module_type) is not str:
+            raise _ProjectionIssue("malformed_referenced_module")
+        category = entry_copy.get("category")
+        if category is not None and type(category) is not str:
+            raise _ProjectionIssue("malformed_referenced_module")
+        core_tokens = entry_copy.get("core_tokens")
+        if core_tokens is not None and (
+            type(core_tokens) is not list or any(type(token) is not str for token in core_tokens)
+        ):
+            raise _ProjectionIssue("malformed_referenced_module")
+        graph = entry_copy.get("graph")
+        if graph is not None:
+            _validate_raw_module_graph(graph)
+
+    try:
+        # normalize_module_library mutates Project objects, but this isolated
+        # one-entry dictionary is safe to pass to its library-only path.
+        normalized_library = normalize_module_library({module_name: entry_copy})
+        normalized_entry = normalized_library.get(module_name)
+        if type(normalized_entry) is not dict:
+            raise _ProjectionIssue("malformed_referenced_module")
+        effective_body = get_module_body(normalized_library, module_name)
+        if type(effective_body) is not str:
+            raise _ProjectionIssue("malformed_referenced_module")
+        if validate_library_module_body(module_name, effective_body):
+            raise _ProjectionIssue("malformed_referenced_module")
+        normalized_entry = dict(normalized_entry)
+        normalized_entry["body"] = effective_body
+        definition = _portable_copy(normalized_entry)
+    except _ProjectionIssue:
+        raise
+    except Exception:
+        # Keep malformed persisted data failures bounded and deterministic.
+        raise _ProjectionIssue("malformed_referenced_module") from None
+
+    if type(definition) is not dict:
+        raise _ProjectionIssue("malformed_referenced_module")
+    return definition
+
+
+def project_portable_module_definition(module_name: str, raw_entry: Any) -> dict[str, Any]:
+    """Project one Module using the source Scene's portable snapshot policy.
+
+    This is intentionally a single-definition projection; callers that need
+    transitive dependencies should use ``project_scene_portability_payload``.
+    """
+    try:
+        definition = _normalized_portable_module_definition(module_name, raw_entry)
+        json.dumps(definition, ensure_ascii=False, allow_nan=False)
+    except _ProjectionIssue as issue:
+        return {"valid": False, "definition": None, "blocker": issue.code}
+    except (TypeError, ValueError, OverflowError):
+        return {"valid": False, "definition": None, "blocker": "unsupported_module_content"}
+    return {"valid": True, "definition": definition, "blocker": None}
+
+
 def _portable_module_snapshots(
     root_prompts: list[str], raw_library: Any
 ) -> list[dict[str, Any]]:
@@ -323,73 +405,14 @@ def _portable_module_snapshots(
             raise _ProjectionIssue("unresolved_module_reference")
 
         raw_entry = raw_library[module_name]
-        if type(raw_entry) not in (dict, str):
-            raise _ProjectionIssue("malformed_referenced_module")
-        if type(raw_entry) is dict:
-            raw_body = raw_entry.get("body")
-            if raw_body is not None and type(raw_body) is not str:
-                raise _ProjectionIssue("malformed_referenced_module")
-            raw_type = raw_entry.get("type")
-            if raw_type is not None and type(raw_type) is not str:
-                raise _ProjectionIssue("malformed_referenced_module")
-            raw_category = raw_entry.get("category")
-            if raw_category is not None and type(raw_category) is not str:
-                raise _ProjectionIssue("malformed_referenced_module")
-
-        try:
-            entry_copy = _portable_copy(raw_entry, strict_text=type(raw_entry) is str)
-        except _ProjectionIssue:
-            raise
-        if entry_copy is _DROP:
-            raise _ProjectionIssue("malformed_referenced_module")
-        if type(entry_copy) is dict:
-            body = entry_copy.get("body")
-            if body is not None and type(body) is not str:
-                raise _ProjectionIssue("malformed_referenced_module")
-            module_type = entry_copy.get("type")
-            if module_type is not None and type(module_type) is not str:
-                raise _ProjectionIssue("malformed_referenced_module")
-            category = entry_copy.get("category")
-            if category is not None and type(category) is not str:
-                raise _ProjectionIssue("malformed_referenced_module")
-            core_tokens = entry_copy.get("core_tokens")
-            if core_tokens is not None and (
-                type(core_tokens) is not list or any(type(token) is not str for token in core_tokens)
-            ):
-                raise _ProjectionIssue("malformed_referenced_module")
-            graph = entry_copy.get("graph")
-            if graph is not None:
-                _validate_raw_module_graph(graph)
-
-        try:
-            normalized_library = normalize_module_library({module_name: entry_copy})
-            normalized_entry = normalized_library.get(module_name)
-            if type(normalized_entry) is not dict:
-                raise _ProjectionIssue("malformed_referenced_module")
-            effective_body = get_module_body(normalized_library, module_name)
-            if type(effective_body) is not str:
-                raise _ProjectionIssue("malformed_referenced_module")
-            if validate_library_module_body(module_name, effective_body):
-                raise _ProjectionIssue("malformed_referenced_module")
-            normalized_entry = dict(normalized_entry)
-            normalized_entry["body"] = effective_body
-            definition = _portable_copy(normalized_entry)
-        except _ProjectionIssue:
-            raise
-        except Exception:
-            # Normalization details are internal; keep failures bounded and
-            # avoid exposing malformed metadata or exception text.
-            raise _ProjectionIssue("malformed_referenced_module") from None
-
-        if type(definition) is not dict:
-            raise _ProjectionIssue("malformed_referenced_module")
+        definition = _normalized_portable_module_definition(module_name, raw_entry)
 
         # Record before following child references so recursive graphs terminate.
         snapshots[module_name] = {
             "name": module_name,
             "definition": definition,
         }
-        for child_name in _module_references(effective_body):
+        for child_name in _module_references(definition["body"]):
             enqueue(child_name, depth + 1)
     return [snapshots[name] for name in sorted(snapshots)]
 
