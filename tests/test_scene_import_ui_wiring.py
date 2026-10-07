@@ -1,4 +1,5 @@
 import ast
+from contextlib import nullcontext
 from pathlib import Path
 import unittest
 
@@ -11,7 +12,12 @@ from ui.scene_import_lifecycle import (
     set_scene_import_source_path,
     set_scene_import_source_separator_id,
 )
-from ui.scene_import_panel import reset_scene_import_panel_state
+from ui.scene_import_panel import (
+    SCENE_IMPORT_OPERATION_ACTION,
+    SCENE_IMPORT_OPERATION_KEY,
+    SCENE_IMPORT_OPERATION_LABEL,
+    reset_scene_import_panel_state,
+)
 
 
 def function_source(source: str, name: str) -> str:
@@ -24,6 +30,36 @@ def function_source(source: str, name: str) -> str:
     return ast.get_source_segment(source, node)
 
 
+class PreviewRenderRecorder:
+    def __init__(self):
+        self.captions = []
+        self.infos = []
+        self.warnings = []
+        self.writes = []
+        self.dataframes = []
+
+    def markdown(self, value, **_kwargs):
+        self.writes.append(value)
+
+    def write(self, value, **_kwargs):
+        self.writes.append(value)
+
+    def caption(self, value, **_kwargs):
+        self.captions.append(value)
+
+    def info(self, value, **_kwargs):
+        self.infos.append(value)
+
+    def warning(self, value, **_kwargs):
+        self.warnings.append(value)
+
+    def dataframe(self, rows, **_kwargs):
+        self.dataframes.append(rows)
+
+    def expander(self, *_args, **_kwargs):
+        return nullcontext()
+
+
 class SceneImportUIWiringTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -32,25 +68,82 @@ class SceneImportUIWiringTests(unittest.TestCase):
         cls.panel_source = (root / "ui" / "scene_import_panel.py").read_text(encoding="utf-8")
         cls.panel_module = ast.parse(cls.panel_source)
         cls.launcher_source = function_source(cls.app_source, "render_gallery_operations_launcher")
+        cls.scene_import_entry_source = function_source(
+            cls.app_source,
+            "_render_gallery_scene_import_entry",
+        )
         cls.active_panel_source = function_source(cls.app_source, "render_gallery_active_operation_panel")
         cls.group_source = function_source(cls.app_source, "_gallery_operation_workflow_group")
+        cls.gallery_mode_source = function_source(cls.app_source, "render_pro_gallery_mode")
         cls.reset_source = function_source(cls.app_source, "reset_gallery_route_action_session_state")
         cls.render_source = function_source(cls.panel_source, "render_scene_import_panel")
         cls.discovery_source = function_source(cls.panel_source, "_discover_source_routes")
         cls.input_sync_source = function_source(cls.panel_source, "_sync_source_inputs")
         cls.review_source = function_source(cls.panel_source, "_render_preview_review")
+        cls.blockers_source = function_source(cls.panel_source, "_render_preview_blockers")
         cls.apply_result_source = function_source(cls.panel_source, "_render_apply_result")
 
     def test_operation_is_in_structural_edit_group_and_route_workflow(self):
-        self.assertIn('"scene_import"', self.group_source)
-        self.assertIn('"scene_import",\n                    "Scene Import / シーンを取り込む"', self.launcher_source)
-        self.assertIn("Source画像・Candidates・Variantsはコピーせず", self.launcher_source)
-        self.assertIn("現在のProject末尾へ追加します", self.launcher_source)
+        self.assertIn("SCENE_IMPORT_OPERATION_KEY", self.group_source)
+        self.assertIn("SCENE_IMPORT_OPERATION_ACTION", self.launcher_source)
+        self.assertIn("SCENE_IMPORT_OPERATION_ACTION", self.scene_import_entry_source)
+        self.assertEqual("scene_import", SCENE_IMPORT_OPERATION_KEY)
+        self.assertEqual("Scene Import / シーンを取り込む", SCENE_IMPORT_OPERATION_LABEL)
+        self.assertEqual(SCENE_IMPORT_OPERATION_KEY, SCENE_IMPORT_OPERATION_ACTION[0])
+        self.assertEqual(SCENE_IMPORT_OPERATION_LABEL, SCENE_IMPORT_OPERATION_ACTION[1])
+        self.assertIn("Source画像・Candidates・Variantsはコピーせず", SCENE_IMPORT_OPERATION_ACTION[2])
+        self.assertIn("現在のProject末尾へ追加します", SCENE_IMPORT_OPERATION_ACTION[2])
         self.assertIn('_render_gallery_active_operation_for_workflow(project, "route")', self.launcher_source)
 
+    def test_empty_gallery_exposes_only_scene_import_before_return(self):
+        tree = ast.parse(self.gallery_mode_source)
+        empty_branch = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name)
+            and node.test.operand.id == "active_lines"
+        )
+        branch_source = ast.get_source_segment(self.gallery_mode_source, empty_branch)
+        entry_index = branch_source.index("_render_gallery_scene_import_entry(project)")
+        return_index = branch_source.index("return")
+
+        self.assertLess(entry_index, return_index)
+        self.assertIn('st.markdown("### Gallery Operations")', branch_source)
+        self.assertIn("まだイラストがありません。", branch_source)
+        self.assertNotIn("render_gallery_operations_launcher(project)", branch_source)
+        self.assertNotIn("render_gallery_selected_routes_controls(", branch_source)
+
+    def test_empty_gallery_entry_opens_only_the_scene_import_panel(self):
+        rendered_actions = []
+        rendered_panels = []
+        state = {"gallery_operations_active": SCENE_IMPORT_OPERATION_KEY}
+        namespace = {
+            "SCENE_IMPORT_OPERATION_ACTION": SCENE_IMPORT_OPERATION_ACTION,
+            "SCENE_IMPORT_OPERATION_KEY": SCENE_IMPORT_OPERATION_KEY,
+            "st": type("Streamlit", (), {"session_state": state})(),
+            "_render_gallery_operation_buttons": lambda actions: rendered_actions.append(actions),
+            "render_gallery_active_operation_panel": lambda project: rendered_panels.append(project),
+        }
+        exec(self.scene_import_entry_source, namespace)
+
+        empty_project = object()
+        namespace["_render_gallery_scene_import_entry"](empty_project)
+
+        self.assertEqual([[SCENE_IMPORT_OPERATION_ACTION]], rendered_actions)
+        self.assertEqual([empty_project], rendered_panels)
+
+        state["gallery_operations_active"] = "module_swap"
+        rendered_panels.clear()
+        namespace["_render_gallery_scene_import_entry"](empty_project)
+        self.assertEqual([SCENE_IMPORT_OPERATION_ACTION], rendered_actions[-1])
+        self.assertEqual([], rendered_panels)
+
     def test_active_panel_labels_dispatches_and_closes_scene_import(self):
-        self.assertIn('"scene_import": "Scene Import / シーンを取り込む"', self.active_panel_source)
-        self.assertIn('elif active_operation == "scene_import":', self.active_panel_source)
+        self.assertIn("SCENE_IMPORT_OPERATION_KEY: SCENE_IMPORT_OPERATION_LABEL", self.active_panel_source)
+        self.assertIn("elif active_operation == SCENE_IMPORT_OPERATION_KEY:", self.active_panel_source)
         self.assertIn("render_scene_import_panel(", self.active_panel_source)
         self.assertIn("synchronize_selected_routes=_set_gallery_selected_route_ids_after_structure_change", self.active_panel_source)
         self.assertIn("restore_focus_after_graph_update=restore_focus_after_graph_update", self.active_panel_source)
@@ -59,7 +152,7 @@ class SceneImportUIWiringTests(unittest.TestCase):
         close_source = self.active_panel_source.split('if header_cols[1].button("閉じる"', 1)[1].split(
             "st.caption(", 1
         )[0]
-        self.assertIn('elif active_operation == "scene_import":', close_source)
+        self.assertIn("elif active_operation == SCENE_IMPORT_OPERATION_KEY:", close_source)
         self.assertIn("reset_scene_import_panel_state(st.session_state)", close_source)
 
     def test_broad_gallery_project_reset_clears_scene_import_state(self):
@@ -224,6 +317,73 @@ class SceneImportUIWiringTests(unittest.TestCase):
         self.assertIn("Candidates", self.review_source)
         self.assertIn("Gallery Variants", self.review_source)
         self.assertNotIn('action.get("import_definition")', self.review_source)
+
+    def _render_review(self, preview):
+        recorder = PreviewRenderRecorder()
+        namespace = {
+            "st": recorder,
+            "_bounded_code": lambda value, fallback="invalid_preview": value if type(value) is str else fallback,
+            "_BLOCKER_MESSAGES": {
+                "source_projection_failed": "Source projection failed.",
+                "module_name_conflict": "同名Moduleの定義が異なるためApplyできません。",
+            },
+        }
+        exec(self.blockers_source, namespace)
+        exec(self.review_source, namespace)
+        namespace["_render_preview_review"](preview)
+        return recorder
+
+    def test_valid_explicitly_empty_scene_shows_separator_only_message(self):
+        recorder = self._render_review(
+            {
+                "valid": True,
+                "eligible": True,
+                "planned_separator": {"id": "separator-empty"},
+                "planned_illustrations": [],
+            }
+        )
+
+        self.assertIn("Source Sceneは空です。Separatorのみ追加されます。", recorder.captions)
+        self.assertEqual([], recorder.infos)
+
+    def test_invalid_empty_plan_is_neutral_and_keeps_blockers_visible(self):
+        recorder = self._render_review(
+            {
+                "valid": False,
+                "eligible": False,
+                "planned_separator": None,
+                "planned_illustrations": [],
+                "blockers": ["source_projection_failed"],
+            }
+        )
+
+        self.assertNotIn("Source Sceneは空です。Separatorのみ追加されます。", recorder.captions)
+        self.assertIn("Illustration planを作成できませんでした。Blockerを確認してください。", recorder.infos)
+        self.assertTrue(recorder.warnings)
+        self.assertTrue(any("Source projection failed." in value for value in recorder.writes))
+
+    def test_valid_module_conflict_keeps_planned_rows_and_conflict_evidence(self):
+        recorder = self._render_review(
+            {
+                "valid": True,
+                "eligible": False,
+                "planned_separator": {"id": "separator-planned"},
+                "planned_illustrations": [
+                    {"id": "line-planned", "current_text": "positive", "negative_prompt": "negative"}
+                ],
+                "module_actions": [
+                    {"name": "Outfit", "action": "conflict", "reason": "module_name_conflict"}
+                ],
+                "blockers": ["module_name_conflict"],
+            }
+        )
+
+        self.assertEqual(2, len(recorder.dataframes))
+        self.assertEqual("positive", recorder.dataframes[-1][0]["Positive Prompt"])
+        self.assertNotIn("Source Sceneは空です。Separatorのみ追加されます。", recorder.captions)
+        self.assertTrue(
+            any("同名Moduleの定義が異なるためApplyできません。" in value for value in recorder.writes)
+        )
 
     def test_apply_requires_valid_eligible_preview_and_explicit_one_scene_confirmation(self):
         self.assertIn('preview.get("valid") is True and preview.get("eligible") is True', self.render_source)

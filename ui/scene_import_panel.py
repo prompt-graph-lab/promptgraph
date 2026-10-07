@@ -25,6 +25,14 @@ SCENE_IMPORT_SOURCE_PATH_WIDGET_KEY = "_scene_import_source_path_widget"
 SCENE_IMPORT_SOURCE_SEPARATOR_WIDGET_KEY = "_scene_import_source_separator_widget"
 SCENE_IMPORT_CONFIRM_WIDGET_KEY = "_scene_import_confirm_widget"
 
+SCENE_IMPORT_OPERATION_KEY = "scene_import"
+SCENE_IMPORT_OPERATION_LABEL = "Scene Import / シーンを取り込む"
+SCENE_IMPORT_OPERATION_ACTION = (
+    SCENE_IMPORT_OPERATION_KEY,
+    SCENE_IMPORT_OPERATION_LABEL,
+    "別のPromptGraph ProjectからSceneを1つ取り込みます。Promptと構造のみを移し、Source画像・Candidates・Variantsはコピーせず、現在のProject末尾へ追加します。",
+)
+
 _FEEDBACK_MESSAGES = {
     "preview_ready": "Fresh Previewを作成しました。内容を確認してください。",
     "preview_ineligible": "Previewに確認が必要です。Blockerを確認してください。",
@@ -277,8 +285,15 @@ def _render_preview_review(preview: dict[str, Any]) -> None:
         )
     if illustration_rows:
         st.dataframe(illustration_rows, hide_index=True, width="stretch")
-    else:
+    elif (
+        preview.get("valid") is True
+        and type(separator) is dict
+        and type(separator_id) is str
+        and bool(separator_id.strip())
+    ):
         st.caption("Source Sceneは空です。Separatorのみ追加されます。")
+    else:
+        st.info("Illustration planを作成できませんでした。Blockerを確認してください。")
 
     if preview.get("valid") is not True or preview.get("eligible") is not True:
         _render_preview_blockers(preview)

@@ -317,7 +317,13 @@ from ui.gallery_variant_promotion_lifecycle import apply_and_publish_batch_galle
 from ui.gallery_scene_restore_lifecycle import apply_and_publish_gallery_scene_restore
 from ui.project_directory_duplication_lifecycle import duplicate_project_directory
 from ui.selected_routes_candidate_adoption_lifecycle import apply_and_publish_selected_routes_candidate_adoption
-from ui.scene_import_panel import render_scene_import_panel, reset_scene_import_panel_state
+from ui.scene_import_panel import (
+    SCENE_IMPORT_OPERATION_ACTION,
+    SCENE_IMPORT_OPERATION_KEY,
+    SCENE_IMPORT_OPERATION_LABEL,
+    render_scene_import_panel,
+    reset_scene_import_panel_state,
+)
 from ui.project_assets_copy_lifecycle import (
     PROJECT_ASSETS_PREVIEW_KEY,
     PROJECT_ASSETS_CONFIRM_KEY,
@@ -11471,7 +11477,7 @@ def render_lightweight_fork_preview_section(project) -> None:
 
 
 def _gallery_operation_workflow_group(action_key: str) -> str:
-    if action_key in {"module_swap", "attribute_group_swap", "batch_edit", "lightweight_fork", "scene_import"}:
+    if action_key in {"module_swap", "attribute_group_swap", "batch_edit", "lightweight_fork", SCENE_IMPORT_OPERATION_KEY}:
         return "route"
     if action_key == "gallery_generation":
         return "generation"
@@ -11551,6 +11557,12 @@ def _render_gallery_active_operation_for_workflow(project, workflow_group: str) 
         render_gallery_active_operation_panel(project)
 
 
+def _render_gallery_scene_import_entry(project) -> None:
+    _render_gallery_operation_buttons([SCENE_IMPORT_OPERATION_ACTION])
+    if st.session_state.get("gallery_operations_active") == SCENE_IMPORT_OPERATION_KEY:
+        render_gallery_active_operation_panel(project)
+
+
 def render_gallery_operations_launcher(project) -> None:
     active_lines = get_visible_prompt_lines(project)
     operation_selected_line_ids = [
@@ -11590,11 +11602,7 @@ def render_gallery_operations_launcher(project) -> None:
                     "派生Project",
                     "確定した最終シーケンスから、元Projectを変更せずに派生Projectを作成します。",
                 ),
-                (
-                    "scene_import",
-                    "Scene Import / シーンを取り込む",
-                    "別のPromptGraph ProjectからSceneを1つ取り込みます。Promptと構造のみを移し、Source画像・Candidates・Variantsはコピーせず、現在のProject末尾へ追加します。",
-                ),
+                SCENE_IMPORT_OPERATION_ACTION,
             ]
         )
         _render_gallery_active_operation_for_workflow(project, "route")
@@ -11677,7 +11685,7 @@ def render_gallery_active_operation_panel(project) -> None:
         "module_candidates": "モジュール候補検索",
         "candidate_route_creation": "候補から別案シーンを作成",
         "lightweight_fork": "派生Project / 最終シーケンスPreview",
-        "scene_import": "Scene Import / シーンを取り込む",
+        SCENE_IMPORT_OPERATION_KEY: SCENE_IMPORT_OPERATION_LABEL,
     }
     if active_operation not in labels:
         return
@@ -11688,7 +11696,7 @@ def render_gallery_active_operation_panel(project) -> None:
         if header_cols[1].button("閉じる", key="gallery_operations_close"):
             if active_operation == "lightweight_fork":
                 reset_lightweight_fork_session_state()
-            elif active_operation == "scene_import":
+            elif active_operation == SCENE_IMPORT_OPERATION_KEY:
                 reset_scene_import_panel_state(st.session_state)
             _clear_gallery_operation_safety_confirmation()
             st.session_state.pop("gallery_operation_focus", None)
@@ -11741,7 +11749,7 @@ def render_gallery_active_operation_panel(project) -> None:
             render_candidate_route_creation_section(project)
         elif active_operation == "lightweight_fork":
             render_lightweight_fork_preview_section(project)
-        elif active_operation == "scene_import":
+        elif active_operation == SCENE_IMPORT_OPERATION_KEY:
             render_scene_import_panel(
                 project,
                 load_project_from_json=load_project_from_json,
@@ -13175,6 +13183,9 @@ def render_pro_gallery_mode(project):
     render_gallery_prompt_line_creator(project, expanded=not active_lines)
     render_gallery_import_export_section(project)
     if not active_lines:
+        st.divider()
+        st.markdown("### Gallery Operations")
+        _render_gallery_scene_import_entry(project)
         st.divider()
         st.markdown("### Gallery")
         st.info("まだイラストがありません。生成ソース（プロンプト）を入力するか、「読み込み・書き出し」から読み込んでください。")
