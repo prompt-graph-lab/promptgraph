@@ -171,7 +171,7 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
         namespace["render_gallery_operations_launcher"](object())
 
         assert [event for event in events if event[1] != "heading"] == [
-            (1, "buttons", ("module_swap", "attribute_group_swap", "batch_edit", "lightweight_fork")),
+            (1, "buttons", ("module_swap", "attribute_group_swap", "batch_edit", "lightweight_fork", "scene_import")),
             (1, "active", "route"),
             (1, "buttons", ("gallery_generation",)),
             (1, "active", "generation"),
@@ -230,6 +230,7 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
             "attribute_group_swap",
             "batch_edit",
             "lightweight_fork",
+            "scene_import",
         ):
             self.assertIn(f'"{action_key}"', group_source)
         for action_key in (
@@ -287,6 +288,7 @@ class GalleryOperationsWorkflowGroupingTests(unittest.TestCase):
                 "attribute_group_swap",
                 "batch_edit",
                 "lightweight_fork",
+                "scene_import",
             )
         ]
         line_positions = [
