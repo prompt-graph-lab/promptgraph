@@ -177,6 +177,38 @@ class ScenePortabilityTests(unittest.TestCase):
                 self.assertFalse(result["valid"])
                 self.assertEqual([expected], result["blockers"])
 
+    def test_rejects_project_wide_duplicate_ids_for_projected_illustrations(self):
+        duplicate_rows = [
+            ("another_scene", _line("illustration-a", "duplicate in another Scene")),
+            ("deleted", _line("illustration-a", "deleted duplicate", deleted=True)),
+            ("workbench", _line("illustration-a", "Workbench duplicate", line_type="workbench")),
+            ("separator", _line("illustration-a", "separator duplicate", line_type="separator")),
+        ]
+        for location, duplicate in duplicate_rows:
+            with self.subTest(location=location):
+                project = _source_project()
+                project.prompt_lines.append(duplicate)
+
+                result = project_scene_portability_payload(project, "scene-source")
+
+                self.assertFalse(result["valid"])
+                self.assertEqual(["ambiguous_illustration_id"], result["blockers"])
+
+    def test_unrelated_duplicate_ids_do_not_block_scene_projection(self):
+        project = _source_project()
+        project.prompt_lines.extend([
+            _line("unrelated-duplicate", "outside the selected Scene"),
+            _line("unrelated-duplicate", "another outside row"),
+        ])
+
+        result = project_scene_portability_payload(project, "scene-source")
+
+        self.assertTrue(result["valid"])
+        self.assertEqual(
+            ["illustration-a", "illustration-b"],
+            [record["source_line_id"] for record in result["illustrations"]],
+        )
+
     def test_discovers_transitive_positive_prompt_module_closure_and_filters_local_metadata(self):
         result = project_scene_portability_payload(_source_project(), "scene-source")
 
@@ -194,6 +226,74 @@ class ScenePortabilityTests(unittest.TestCase):
         serialized = json.dumps(result, ensure_ascii=False)
         self.assertNotIn("C:\\\\machine", serialized)
         self.assertNotIn("unrelated", serialized)
+
+    def test_module_closure_depth_boundary_blocks_without_recursion_error(self):
+        module_library = {
+            f"module-{index}": {"body": f"<mod:module-{index + 1}>"}
+            for index in range(1, 20)
+        }
+        module_library["module-20"] = {"body": "last module"}
+        project = Project(
+            prompt_lines=[
+                _line("scene", "S", line_type="separator"),
+                _line("line", "<mod:module-1>"),
+            ],
+            module_library=module_library,
+        )
+
+        at_limit = project_scene_portability_payload(project, "scene")
+        self.assertTrue(at_limit["valid"])
+        self.assertEqual(20, len(at_limit["module_snapshots"]))
+
+        module_library["module-20"]["body"] = "<mod:module-21>"
+        module_library["module-21"] = {"body": "beyond the limit"}
+        too_deep_project = Project(prompt_lines=project.prompt_lines, module_library=module_library)
+        before = copy.deepcopy(too_deep_project)
+
+        result = project_scene_portability_payload(too_deep_project, "scene")
+
+        self.assertFalse(result["valid"])
+        self.assertEqual(["module_closure_limit_exceeded"], result["blockers"])
+        self.assertEqual(before, too_deep_project)
+
+    def test_blocks_module_closure_over_snapshot_count(self):
+        module_count = 257
+        module_library = {
+            f"module-{index:03d}": {"body": f"token-{index}"}
+            for index in range(module_count)
+        }
+        prompt = ", ".join(f"<mod:module-{index:03d}>" for index in range(module_count))
+        project = Project(
+            prompt_lines=[
+                _line("scene", "S", line_type="separator"),
+                _line("line", prompt),
+            ],
+            module_library=module_library,
+        )
+
+        result = project_scene_portability_payload(project, "scene")
+
+        self.assertFalse(result["valid"])
+        self.assertEqual(["module_closure_limit_exceeded"], result["blockers"])
+
+    def test_module_cycles_remain_deterministic(self):
+        project = Project(
+            prompt_lines=[
+                _line("scene", "S", line_type="separator"),
+                _line("line", "<mod:module-a>"),
+            ],
+            module_library={
+                "module-a": {"body": "<mod:module-b>"},
+                "module-b": {"body": "<mod:module-a>"},
+            },
+        )
+
+        first = project_scene_portability_payload(project, "scene")
+        repeated = project_scene_portability_payload(project, "scene")
+
+        self.assertTrue(first["valid"])
+        self.assertEqual(["module-a", "module-b"], [item["name"] for item in first["module_snapshots"]])
+        self.assertEqual(first, repeated)
 
     def test_negative_module_markers_do_not_add_module_snapshots(self):
         project = Project(

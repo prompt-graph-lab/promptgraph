@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import hashlib
 import json
@@ -26,6 +27,8 @@ SCENE_PORTABILITY_CONTRACT_VERSION = "promptgraph.scene-portability.v1"
 _MAX_DIAGNOSTICS = 16
 _MAX_ID_CHARS = 1024
 _MAX_NESTING = 128
+_MAX_PORTABLE_MODULE_CLOSURE_DEPTH = 20
+_MAX_PORTABLE_MODULE_SNAPSHOT_COUNT = 256
 _KNOWN_PATH_KEYS = {"path"}
 _STRICT_TEXT_KEYS = {"body", "text", "token", "tokens", "core_tokens", "module_name", "name"}
 _LOCAL_PATH_RE = re.compile(
@@ -293,10 +296,27 @@ def _portable_module_snapshots(
         raise _ProjectionIssue("malformed_module_library")
 
     snapshots: dict[str, dict[str, Any]] = {}
+    discovered: set[str] = set()
+    pending: deque[tuple[str, int]] = deque()
 
-    def visit(module_name: str) -> None:
-        if module_name in snapshots:
+    def enqueue(module_name: str, depth: int) -> None:
+        if module_name in discovered:
             return
+        if depth > _MAX_PORTABLE_MODULE_CLOSURE_DEPTH:
+            raise _ProjectionIssue("module_closure_limit_exceeded")
+        if len(discovered) >= _MAX_PORTABLE_MODULE_SNAPSHOT_COUNT:
+            raise _ProjectionIssue("module_closure_limit_exceeded")
+        discovered.add(module_name)
+        pending.append((module_name, depth))
+
+    for root in roots:
+        enqueue(root, 1)
+
+    # Breadth-first traversal bounds depth while ensuring shared references are
+    # first discovered along their shortest path. Recording before children
+    # keeps ordinary cycles deterministic and complete.
+    while pending:
+        module_name, depth = pending.popleft()
         if _LOCAL_PATH_RE.search(_NETWORK_URL_RE.sub("", module_name)):
             raise _ProjectionIssue("unsafe_module_metadata")
         if module_name not in raw_library:
@@ -370,10 +390,7 @@ def _portable_module_snapshots(
             "definition": definition,
         }
         for child_name in _module_references(effective_body):
-            visit(child_name)
-
-    for root in roots:
-        visit(root)
+            enqueue(child_name, depth + 1)
     return [snapshots[name] for name in sorted(snapshots)]
 
 
@@ -415,6 +432,7 @@ def project_scene_portability_payload(project: Project, separator_id: str) -> di
 
     resolver_lines: list[_ResolverLine] = []
     source_lines: list[PromptLine] = []
+    source_id_counts: dict[str, int] = {}
     for index, line in enumerate(project.prompt_lines):
         if type(line) is not PromptLine:
             return _failure("invalid_project_lines", separator_id)
@@ -428,6 +446,7 @@ def project_scene_portability_payload(project: Project, separator_id: str) -> di
             return _failure("unsupported_source_line", separator_id)
         if type(deleted) is not bool:
             return _failure("unsupported_source_line", separator_id)
+        source_id_counts[line_id] = source_id_counts.get(line_id, 0) + 1
         source_lines.append(line)
         resolver_lines.append(
             _ResolverLine(
@@ -483,7 +502,12 @@ def project_scene_portability_payload(project: Project, separator_id: str) -> di
         line = source_lines[source_index]
         values = vars(line)
         line_id = values.get("id")
-        if type(line_id) is not str or not line_id or line_id in selected_ids:
+        if (
+            type(line_id) is not str
+            or not line_id
+            or line_id in selected_ids
+            or source_id_counts.get(line_id) != 1
+        ):
             return _failure("ambiguous_illustration_id", separator_id)
         if _LOCAL_PATH_RE.search(_NETWORK_URL_RE.sub("", line_id)):
             return _failure("unsafe_source_identity", separator_id)
