@@ -32,6 +32,10 @@ def _line(line_id, text="", *, line_type=None, deleted=False, **fields):
     return PromptLine(**values)
 
 
+def _without_planned_id(value):
+    return {key: item for key, item in value.items() if key != "id"}
+
+
 def _source_project(*, module=None, text="  <mod:hero>, exact positive  ", empty=False):
     lines = [
         _line("source-before", "outside"),
@@ -131,7 +135,9 @@ class SceneImportPreviewTests(unittest.TestCase):
     def test_deterministic_id_collisions_advance_the_bounded_counter(self):
         source = _source_project(module={"body": "red hair"})
         target = _target_project()
-        target.prompt_lines.append(_line("separator_import_" + "a" * 32, "collision"))
+        target.prompt_lines.append(
+            _line("separator_import_" + "a" * 32, "collision", current_index=2)
+        )
         original_digest = scene_import_module._digest
 
         def collide_first_separator(value):
@@ -361,6 +367,62 @@ class SceneImportPreviewTests(unittest.TestCase):
         self.assertEqual(["source_projection_invalid"], result["blockers"])
         self.assertIn("ambiguous_illustration_id", result["source_projection_blockers"])
         self.assertLessEqual(len(result["diagnostics"]), 16)
+
+    def test_target_current_index_must_match_physical_prompt_line_order(self):
+        cases = {
+            "duplicate": [0, 0],
+            "stale": [0, 10],
+            "out_of_order": [1, 0],
+        }
+        for name, indexes in cases.items():
+            with self.subTest(name=name):
+                target = _target_project()
+                for line, index in zip(target.prompt_lines, indexes):
+                    line.current_index = index
+                before = copy.deepcopy(target)
+
+                result = preview_scene_import(_source_project(), "source-separator", target)
+
+                self.assertFalse(result["valid"])
+                self.assertIn("stale_target_current_index", result["blockers"])
+                self.assertEqual(before, target)
+
+    def test_target_merge_mode_is_exact_bool_and_freshness_input_only(self):
+        source = _source_project(module={"body": "red hair, blue eyes"})
+        target = _target_project()
+        target.module_library = {"hero": {"body": "red hair, blue eyes"}}
+        baseline = preview_scene_import(source, "source-separator", target)
+        before = copy.deepcopy(target)
+
+        target.merge_by_word_only = False
+        changed = preview_scene_import(source, "source-separator", target)
+
+        self.assertTrue(baseline["valid"])
+        self.assertTrue(changed["valid"])
+        self.assertNotEqual(
+            baseline["target_freshness_fingerprint"],
+            changed["target_freshness_fingerprint"],
+        )
+        self.assertNotEqual(baseline["plan_id"], changed["plan_id"])
+        self.assertEqual(
+            [_without_planned_id(row) for row in baseline["planned_illustrations"]],
+            [_without_planned_id(row) for row in changed["planned_illustrations"]],
+        )
+        self.assertEqual(
+            _without_planned_id(baseline["planned_separator"]),
+            _without_planned_id(changed["planned_separator"]),
+        )
+        self.assertEqual(baseline["module_actions"], changed["module_actions"])
+        after_previews = copy.deepcopy(target)
+        after_previews.merge_by_word_only = True
+        self.assertEqual(before, after_previews)
+
+        target.merge_by_word_only = 1
+        invalid_mode_before = copy.deepcopy(target)
+        invalid = preview_scene_import(source, "source-separator", target)
+        self.assertFalse(invalid["valid"])
+        self.assertIn("invalid_target_merge_by_word_only", invalid["blockers"])
+        self.assertEqual(invalid_mode_before, target)
 
     def test_invalid_path_shaped_source_handle_is_not_echoed(self):
         result = preview_scene_import(_source_project(), r"C:\private\source.json", _target_project())

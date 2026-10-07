@@ -128,7 +128,7 @@ def _target_line_state(project: Project) -> tuple[list[dict[str, Any]] | None, s
         return None, set(), "malformed_target_lines"
     state: list[dict[str, Any]] = []
     ids: set[str] = set()
-    for line in lines:
+    for physical_index, line in enumerate(lines):
         if type(line) is not PromptLine:
             return None, set(), "malformed_target_lines"
         values = vars(line)
@@ -152,6 +152,8 @@ def _target_line_state(project: Project) -> tuple[list[dict[str, Any]] | None, s
         current_index = values.get("current_index")
         if any(value is not None and type(value) is not int for value in (original_index, current_index)):
             return None, set(), "malformed_target_line_state"
+        if current_index != physical_index:
+            return None, set(), "stale_target_current_index"
         original_text = values.get("original_text")
         current_text = values.get("current_text")
         negative_prompt = values.get("negative_prompt", "")
@@ -295,6 +297,9 @@ def preview_scene_import(
     result["source_separator_id"] = source.get("source_separator_id")
     if type(target_project) is not Project:
         return _fail(result, "invalid_target_project")
+    merge_by_word_only = target_project.merge_by_word_only
+    if type(merge_by_word_only) is not bool:
+        return _fail(result, "invalid_target_merge_by_word_only")
 
     target_lines, existing_ids, line_error = _target_line_state(target_project)
     if line_error:
@@ -402,6 +407,7 @@ def preview_scene_import(
     target_freshness_payload = {
         "contract_version": SCENE_IMPORT_PREVIEW_CONTRACT_VERSION,
         "prompt_lines": target_lines,
+        "merge_by_word_only": merge_by_word_only,
         "relevant_modules": relevant_module_state,
         "scene_transfers": receipts,
     }
