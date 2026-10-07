@@ -1,6 +1,6 @@
 # Scene Portability Foundation Audit
 
-Status: repository-backed design audit at `6534b35dadebdcf049c75654744bf9796e1d3917` (PR #128 merge). This note records the current owners and recommends the first implementation boundary for image-less Project-to-Project Scene transfer. Scene Import, Global Scene Template, and the proposed transfer payload below are not implemented by this note.
+Status: repository-backed design audit at `6534b35dadebdcf049c75654744bf9796e1d3917` (PR #128 merge). The audit records current owners and the first implementation boundary for image-less Project-to-Project Scene transfer. The pure source projection in that boundary is now implemented in [`core.scene_portability`](../../core/scene_portability.py); Scene Import and Global Scene Template remain unimplemented.
 
 ## Decision
 
@@ -94,9 +94,17 @@ Implement one pure domain seam before any cross-Project Apply:
 
 Only after this seam is reviewed should a separate Scene Import Preview/Apply slice add target conflict analysis, fresh-ID allocation, staleness checks, correspondence receipt persistence, normal app history/save integration, and user approval. The existing `duplicate_route_as_baseline` and Derived Project callers should not be migrated to the new owner unless a later behavior-preserving audit proves a common contract.
 
+### Implemented source projection contract
+
+The test-only entry point is `project_scene_portability_payload(project, separator_id)`. It returns contract version `promptgraph.scene-portability.v1`. A valid result contains the resolved source separator id, Scene label/color and physical index, Illustration records, portable Module snapshots, and a `sha256:` fingerprint. Each Illustration record carries its source line id as provenance, the zero-based physical `prompt_lines` index, its zero-based order among included Illustrations, and the exact current positive and negative prompt strings. An explicitly selected empty Scene is valid.
+
+The Module closure is discovered from positive prompts with the existing prompt parser and Module matching rules, then normalized through the existing Module library helpers. Unresolved or malformed referenced Modules block the projection. Snapshots omit `reference_assets` and known local path fields recursively; unknown metadata containing local absolute paths is filtered, and a path in semantic Module body text or Scene metadata blocks the projection. Portable URLs and other JSON-safe extension metadata are retained. Negative prompts are copied verbatim but are not used to discover Modules.
+
+The fingerprint is SHA-256 over canonical JSON containing the contract version, source separator id, Scene label/color/physical index, ordered projected Illustration records, and portable Module snapshots. Image/Candidate/Variant/generation state and other excluded Project data do not affect it. Failure results contain bounded reason-code diagnostics without exception details. This projection allocates no target ids, has no target compatibility or Apply behavior, and is not yet called by production code.
+
 ## Follow-on order
 
-1. Pure source Scene portability projection (the FIRST-SAFE-BOUNDARY above).
+1. Pure source Scene portability projection (implemented above; no production caller yet).
 2. Preview/apply for explicit Project-A→Project-B Scene Import, including target Module conflicts, fresh target IDs, durable advisory correspondence, stale-source/target checks, and normal host-owned history/save.
 3. Agent-facing exposure only after the human approval/custody boundary is defined; keep Module Swap as its existing operation.
 4. Pixiv Publish Skill workflow only after the deterministic primitives and review boundaries exist.
