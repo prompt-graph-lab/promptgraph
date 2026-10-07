@@ -74,11 +74,18 @@ def test_versioned_capability_discovery_is_fresh_and_json_only():
         "query_text_chars": facade.MAX_REQUEST_TEXT,
     }
     assert "illustration_search" in first["capabilities"]["observations"]
-    mutation, = first["capabilities"]["mutations"]
-    assert mutation["operation"] == "batch_replace"
-    assert mutation["modes"] == ["exact_token", "contains_token", "literal", "token_set"]
+    mutations = first["capabilities"]["mutations"]
+    by_operation = {item["operation"]: item for item in mutations}
+    assert by_operation["batch_replace"]["modes"] == [
+        "exact_token", "contains_token", "literal", "token_set"]
+    scene_swap = by_operation["scene_module_swap"]
+    assert scene_swap["modes"] == ["strict", "loose"]
+    assert scene_swap["requires_explicit_scene_id"] is True
+    assert scene_swap["requires_explicit_source_module_name"] is True
+    assert scene_swap["requires_explicit_target_module_name"] is True
+    assert scene_swap["requires_reviewed_preview_before_host_apply"] is True
     first["capabilities"]["mutations"].clear()
-    assert len(facade.discover_capabilities()["capabilities"]["mutations"]) == 1
+    assert len(facade.discover_capabilities()["capabilities"]["mutations"]) == 2
 
 
 def test_read_only_observations_preserve_gallery_baseline_and_active_scene_semantics():
@@ -569,3 +576,214 @@ def test_no_op_plan_is_visible_but_apply_does_not_clone_or_call_core(monkeypatch
     assert result.agent_result["reason"] == "no_changes"
     assert result.updated_project is None
     assert proj == before and identities(proj) == identity
+
+
+def scene_module_swap_project(prompts=("red, blue",), *, scene_id="scene"):
+    rows = [line(scene_id, "Scene Label", line_type="separator")]
+    rows.extend(line(f"swap-{index}", text, negative_prompt="unchanged negative")
+                for index, text in enumerate(prompts))
+    return build_graph(Project(
+        prompt_lines=rows,
+        module_library={
+            "source": {"body": "red, blue, source-body-secret",
+                       "core_tokens": ["red", "blue"],
+                       "private_metadata": {"secret": "module-metadata-secret"},
+                       "reference_assets": {"private": r"C:\private\reference.png"}},
+            "target": {"body": "gold, green", "reference_assets": ["target-reference-secret"]},
+        },
+        source_directory=r"C:\private\source-directory",
+    ))
+
+
+def scene_module_swap_request(**updates):
+    return {"scene_id": "scene", "source_module_name": "source",
+            "target_module_name": "target", **updates}
+
+
+def test_scene_module_swap_preview_reuses_core_planner_and_is_deterministic(monkeypatch):
+    proj = scene_module_swap_project(("red, blue", "green, red, blue"))
+    before, identity = copy.deepcopy(proj), identities(proj)
+    calls = []
+    original = facade.module_swap_selected_routes.build_selected_routes_module_swap_plan
+
+    def track(value, route_ids, **kwargs):
+        calls.append((route_ids, kwargs))
+        return original(value, route_ids, **kwargs)
+
+    monkeypatch.setattr(facade.module_swap_selected_routes,
+                        "build_selected_routes_module_swap_plan", track)
+    first = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+    second = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+    assert first == second
+    assert calls and all(route_ids == ["scene"] for route_ids, _ in calls)
+    assert all(kwargs["project_path"] == "" and kwargs["disabled_modules"] is None
+               and kwargs["match_mode"] == "strict" for _, kwargs in calls)
+    assert first["valid"] is True
+    assert first["operation"] == "scene_module_swap"
+    assert first["request"]["match_mode"] == "strict"
+    assert first["scene_id"] == "scene"
+    assert first["scene_label"]["text"] == "Scene Label"
+    assert first["target_ids"] == ["swap-0", "swap-1"]
+    assert first["target_count"] == first["changed_count"] == 2
+    assert first["no_op_count"] == 0
+    assert first["prompt_only"] is True
+    assert first["negative_prompt_semantics"] == "unchanged_by_module_swap"
+    assert first["review_rows"][0]["before_positive_prompt"]["text"] == "red, blue"
+    assert first["review_rows"][0]["after_positive_prompt"]["text"] == "gold, green"
+    assert first["review_rows"][0]["token_delta"]["removed_count"] == 2
+    assert first["source_fingerprint"] and first["projection_digest"] and first["plan_id"]
+    assert first["plan_id"] == facade._digest({key: value for key, value in first.items()
+                                               if key != "plan_id"})
+    json_only(first)
+    assert proj == before and identities(proj) == identity
+
+
+def test_scene_module_swap_loose_mode_allows_partial_core_match():
+    proj = scene_module_swap_project(("red, other",))
+    strict = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+    loose = facade.preview_scene_module_swap(
+        proj, scene_module_swap_request(match_mode="loose"))
+    assert strict["valid"] and strict["changed_count"] == 0
+    assert loose["valid"] and loose["request"]["match_mode"] == "loose"
+    assert loose["changed_count"] == 1
+    assert loose["review_rows"][0]["after_positive_prompt"]["text"] == "gold, green, other"
+
+
+def test_scene_module_swap_rejects_non_explicit_invalid_scene_and_module_inputs():
+    proj = scene_module_swap_project()
+    cases = [
+        ({"source_module_name": "source", "target_module_name": "target"},
+         "invalid_request_shape"),
+        (scene_module_swap_request(scene_id="missing"), "unknown_scene_id"),
+        (scene_module_swap_request(scene_id="swap-0"), "invalid_scene_id"),
+        (scene_module_swap_request(source_module_name="missing"), "unknown_source_module"),
+        (scene_module_swap_request(target_module_name="missing"), "unknown_target_module"),
+        (scene_module_swap_request(target_module_name="source"), "same_module"),
+        (scene_module_swap_request(source_module_name=" source"), "invalid_source_module_name"),
+        (scene_module_swap_request(match_mode="wide"), "invalid_match_mode"),
+    ]
+    for value, reason in cases:
+        result = facade.preview_scene_module_swap(proj, value)
+        assert result["valid"] is False and result["reason"] == reason
+        json_only(result)
+    deleted = copy.deepcopy(proj)
+    deleted.prompt_lines[0].deleted = True
+    assert facade.preview_scene_module_swap(
+        deleted, scene_module_swap_request())["reason"] == "invalid_scene_id"
+    empty = scene_module_swap_project(())
+    assert facade.preview_scene_module_swap(
+        empty, scene_module_swap_request())["reason"] == "no_scene_targets"
+
+
+@pytest.mark.parametrize("record,reason", [
+    ("not a Module record", "malformed_module"),
+    ({"body": ["not", "text"]}, "malformed_module"),
+])
+def test_scene_module_swap_rejects_malformed_module_records(record, reason):
+    proj = scene_module_swap_project()
+    proj.module_library["source"] = record
+    result = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+    assert result["valid"] is False and result["reason"] == reason
+    json_only(result)
+
+
+def test_scene_module_swap_rejects_target_over_limit_without_truncating():
+    proj = scene_module_swap_project(tuple("red, blue" for _ in range(facade.MAX_TARGETS + 1)))
+    result = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+    assert result["valid"] is False and result["reason"] == "target_limit_exceeded"
+    assert result["target_ids"] == [] and result["target_count"] == 0
+    json_only(result)
+
+
+def test_scene_module_swap_valid_no_op_is_visible_without_claiming_a_change():
+    proj = scene_module_swap_project(("purple, orange",))
+    result = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+    assert result["valid"] is True
+    assert result["changed_count"] == 0 and result["no_op_count"] == 1
+    assert result["skipped_count"] == 1
+    assert result["review_rows"][0]["no_op"] is True
+    json_only(result)
+
+
+def test_scene_module_swap_identity_tracks_prompts_modules_order_and_image_refs():
+    proj = scene_module_swap_project(("red, blue", "red, blue"))
+    base = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+
+    changed_prompt = copy.deepcopy(proj)
+    changed_prompt.prompt_lines[1].current_text = "red, blue, extra"
+    prompt_plan = facade.preview_scene_module_swap(changed_prompt, scene_module_swap_request())
+    assert prompt_plan["source_fingerprint"] != base["source_fingerprint"]
+    assert prompt_plan["projection_digest"] != base["projection_digest"]
+
+    changed_module = copy.deepcopy(proj)
+    changed_module.module_library["target"]["body"] = "silver, violet"
+    module_plan = facade.preview_scene_module_swap(changed_module, scene_module_swap_request())
+    assert module_plan["source_fingerprint"] != base["source_fingerprint"]
+
+    reordered = copy.deepcopy(proj)
+    reordered.prompt_lines[1], reordered.prompt_lines[2] = (
+        reordered.prompt_lines[2], reordered.prompt_lines[1])
+    order_plan = facade.preview_scene_module_swap(reordered, scene_module_swap_request())
+    assert order_plan["source_fingerprint"] != base["source_fingerprint"]
+    assert order_plan["projection_digest"] != base["projection_digest"]
+
+    changed_image = copy.deepcopy(proj)
+    changed_image.prompt_lines[1].image_path = r"C:\private\changed.png"
+    image_plan = facade.preview_scene_module_swap(changed_image, scene_module_swap_request())
+    assert image_plan["source_fingerprint"] != base["source_fingerprint"]
+
+
+def test_scene_module_swap_digest_covers_non_visible_targets_and_bounds_rows_and_text():
+    many = scene_module_swap_project(tuple("red, blue" for _ in range(101)))
+    all_rows = facade.preview_scene_module_swap(many, scene_module_swap_request())
+    changed_last = copy.deepcopy(many)
+    changed_last.prompt_lines[-1].current_text = "red, blue, last-only"
+    later = facade.preview_scene_module_swap(changed_last, scene_module_swap_request())
+    assert len(all_rows["review_rows"]) == facade.MAX_ITEMS
+    assert all_rows["review_rows_truncated"] is True
+    assert all_rows["review_rows_omitted"] == 1
+    assert later["review_rows"] == all_rows["review_rows"]
+    assert later["projection_digest"] != all_rows["projection_digest"]
+
+    long = scene_module_swap_project(("red, " + "x" * (facade.MAX_TEXT + 10),))
+    long.module_library["target"]["body"] = "gold, " + "y" * (facade.MAX_TEXT + 10)
+    bounded = facade.preview_scene_module_swap(long, scene_module_swap_request())
+    assert bounded["valid"] is True
+    row = bounded["review_rows"][0]
+    assert row["before_positive_prompt"]["truncated"]
+    assert row["after_positive_prompt"]["truncated"]
+    json_only(bounded)
+
+
+def test_scene_module_swap_never_exposes_module_metadata_paths_or_exception_text(monkeypatch):
+    proj = scene_module_swap_project()
+    proj.prompt_lines[1].image_path = r"C:\private\original.png"
+    proj.prompt_lines[1].generated_image_path = r"C:\private\generated.png"
+    proj.prompt_lines[1].selected_candidate_path = r"C:\private\candidate.png"
+    result = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+    encoded = json.dumps(result, ensure_ascii=False)
+    for secret in (
+        "source-body-secret", "module-metadata-secret", "reference.png",
+        "target-reference-secret", "source-directory", "private\\source-directory",
+        "original.png", "generated.png", "candidate.png",
+    ):
+        assert secret not in encoded
+
+    def fail_with_private_detail(*_args, **_kwargs):
+        raise RuntimeError(r"private C:\private\stack\do-not-leak")
+
+    monkeypatch.setattr(facade.module_swap_selected_routes,
+                        "build_selected_routes_module_swap_plan", fail_with_private_detail)
+    failed = facade.preview_scene_module_swap(proj, scene_module_swap_request())
+    assert failed["reason"] == "module_swap_preview_failed"
+    assert "private" not in json.dumps(failed)
+    assert "RuntimeError" not in json.dumps(failed)
+
+
+def test_scene_module_swap_hostile_request_values_fail_without_custom_hooks():
+    proj = scene_module_swap_project()
+    result = facade.preview_scene_module_swap(proj, {
+        "scene_id": Hostile(), "source_module_name": "source", "target_module_name": "target",
+    })
+    assert result["valid"] is False and result["reason"] == "non_json_value"
+    json_only(result)

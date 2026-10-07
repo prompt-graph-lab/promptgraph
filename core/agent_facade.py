@@ -11,7 +11,7 @@ import json
 import math
 from typing import Any
 
-from core import operations
+from core import module_swap_selected_routes, operations
 from core.parser import parse_prompt
 from core.project import Project, PromptLine
 
@@ -25,6 +25,16 @@ MAX_REQUEST_TEXT = 10000
 EXAMPLE_LIMIT = 5
 REPLACE_MODES = ("exact_token", "contains_token", "literal", "token_set")
 SEARCH_MODES = ("exact_token", "contains_token", "literal")
+SCENE_MODULE_SWAP_MODES = ("strict", "loose")
+SCENE_MODULE_SWAP_OPERATION = "scene_module_swap"
+_SCENE_MODULE_SWAP_KIND_CODES = {"body_tokens": "body_tokens", "reference": "module_reference"}
+_SCENE_MODULE_SWAP_DRIFT_CODES = {
+    "no prompt change": "no_prompt_change",
+    "image reference unavailable": "image_reference_unavailable",
+    "prompt changed, no representative image": "no_representative_image",
+    "positive and negative changed while main image remains unchanged": "prompt_changed_image_unchanged",
+    "prompt changed while main image remains unchanged": "prompt_changed_image_unchanged",
+}
 
 
 class _Invalid(ValueError):
@@ -192,9 +202,17 @@ def discover_capabilities():
                          "illustration_search"],
         "illustration_search": {"modes": list(SEARCH_MODES), "max_results": MAX_ITEMS,
                                 "query_text_chars": MAX_REQUEST_TEXT},
-        "mutations": [{"operation": OPERATION, "modes": list(REPLACE_MODES),
-                       "requires_explicit_illustration_ids": True,
-                       "requires_reviewed_plan": True}],
+        "mutations": [
+            {"operation": OPERATION, "modes": list(REPLACE_MODES),
+             "requires_explicit_illustration_ids": True,
+             "requires_reviewed_plan": True},
+            {"operation": SCENE_MODULE_SWAP_OPERATION,
+             "modes": list(SCENE_MODULE_SWAP_MODES),
+             "requires_explicit_scene_id": True,
+             "requires_explicit_source_module_name": True,
+             "requires_explicit_target_module_name": True,
+             "requires_reviewed_preview_before_host_apply": True},
+        ],
         "limits": {"items": MAX_ITEMS, "targets": MAX_TARGETS,
                    "text_chars": MAX_TEXT, "request_text_chars": MAX_REQUEST_TEXT,
                    "examples": EXAMPLE_LIMIT},
@@ -464,6 +482,290 @@ def preview_batch_replace(project: Project, request):
             "unchanged_count": 0, "examples": [], "examples_truncated": False}
     plan["plan_id"] = _digest(plan)
     return plan
+
+
+def _scene_module_swap_invalid(reason, *, request=None, scene_id=None, scene_label=None):
+    plan = {
+        "contract_version": CONTRACT_VERSION,
+        "operation": SCENE_MODULE_SWAP_OPERATION,
+        "valid": False,
+        "reason": reason,
+        "diagnostics": [{"code": reason}],
+        "request": request,
+        "source_fingerprint": None,
+        "projection_digest": None,
+        "plan_id": "",
+        "scene_id": scene_id,
+        "scene_label": _text(scene_label) if type(scene_label) is str else None,
+        "target_ids": [],
+        "target_count": 0,
+        "changed_count": 0,
+        "no_op_count": 0,
+        "skipped_count": 0,
+        "blocked_count": 0,
+        "drift_count": 0,
+        "prompt_only": True,
+        "negative_prompt_semantics": "unchanged_by_module_swap",
+        "review_rows": [],
+        "review_rows_truncated": False,
+        "review_rows_omitted": 0,
+    }
+    plan["plan_id"] = _digest({key: value for key, value in plan.items() if key != "plan_id"})
+    return plan
+
+
+def _scene_module_swap_request(value):
+    copied = _json_copy(value)
+    required = {"scene_id", "source_module_name", "target_module_name"}
+    optional = {"match_mode"}
+    if type(copied) is not dict or not required <= copied.keys() or copied.keys() - required - optional:
+        raise _Invalid("invalid_request_shape")
+    normalized = {}
+    for field_name in ("scene_id", "source_module_name", "target_module_name"):
+        field_value = copied[field_name]
+        if (type(field_value) is not str or not field_value or len(field_value) > 200
+                or field_value != field_value.strip()):
+            raise _Invalid("invalid_" + field_name)
+        try:
+            field_value.encode("utf-8")
+        except UnicodeError:
+            raise _Invalid("invalid_" + field_name) from None
+        normalized[field_name] = field_value
+    if normalized["source_module_name"] == normalized["target_module_name"]:
+        raise _Invalid("same_module")
+    mode = copied.get("match_mode", "strict")
+    if type(mode) is not str or mode not in SCENE_MODULE_SWAP_MODES:
+        raise _Invalid("invalid_match_mode")
+    normalized["match_mode"] = mode
+    return normalized
+
+
+def _scene_module_swap_project_state(project):
+    lines = _lines(project)
+    if type(project.source_directory) not in (str, type(None)):
+        raise _Invalid("invalid_project_state")
+    for line in lines:
+        if line.line_type == "separator" and any(
+                type(value) not in (str, type(None))
+                for value in (line.separator_label, line.separator_color)):
+            raise _Invalid("invalid_project_state")
+    library = project.module_library
+    if type(library) is not dict:
+        raise _Invalid("invalid_project_state")
+    try:
+        library = _json_copy(library)
+    except _Invalid:
+        raise _Invalid("invalid_project_state") from None
+    return lines, library
+
+
+def _scene_module_swap_module(library, name, reason):
+    if name not in library:
+        raise _Invalid(reason)
+    record = library[name]
+    if type(record) is not dict:
+        raise _Invalid("malformed_module")
+    if ("body" in record and type(record["body"]) is not str) or (
+            "type" in record and type(record["type"]) is not str):
+        raise _Invalid("malformed_module")
+
+
+def _scene_module_swap_projection(plan, target_ids):
+    entries = plan.get("entries")
+    if type(entries) is not list or len(entries) != len(target_ids):
+        raise _Invalid("module_swap_preview_failed")
+    projection = []
+    for order, (target_id, entry) in enumerate(zip(target_ids, entries, strict=True)):
+        if type(entry) is not dict or entry.get("line_id") != target_id:
+            raise _Invalid("module_swap_preview_failed")
+        before = entry.get("before_positive_prompt")
+        after = entry.get("after_positive_prompt")
+        after_tokens = entry.get("after_tokens")
+        added = entry.get("positive_added_tokens")
+        removed = entry.get("positive_removed_tokens")
+        if (type(before) is not str or type(after) is not str
+                or type(after_tokens) is not list
+                or any(type(token) is not str for token in after_tokens)
+                or type(added) is not list or any(type(token) is not str for token in added)
+                or type(removed) is not list or any(type(token) is not str for token in removed)
+                or type(entry.get("positive_changed")) is not bool
+                or type(entry.get("negative_changed")) is not bool
+                or type(entry.get("no_op")) is not bool
+                or type(entry.get("match_count")) is not int):
+            raise _Invalid("invalid_project_state")
+        swap_kind = entry.get("swap_kind", "")
+        if type(swap_kind) is not str:
+            raise _Invalid("module_swap_preview_failed")
+        drift_risk = entry.get("drift_risk", "")
+        if type(drift_risk) is not str:
+            raise _Invalid("module_swap_preview_failed")
+        projection.append({
+            "illustration_id": target_id,
+            "scene_order": order,
+            "before_positive_prompt": before,
+            "after_positive_prompt": after,
+            "after_tokens": after_tokens,
+            "changed": entry["positive_changed"] or entry["negative_changed"],
+            "no_op": entry["no_op"],
+            "match_count": entry["match_count"],
+            "swap_kind": _SCENE_MODULE_SWAP_KIND_CODES.get(swap_kind, "unknown"),
+            "positive_added_tokens": added,
+            "positive_removed_tokens": removed,
+            "negative_prompt_unchanged": True,
+            "drift_risk": _SCENE_MODULE_SWAP_DRIFT_CODES.get(drift_risk, "unknown"),
+        })
+    try:
+        return _json_copy(projection)
+    except _Invalid:
+        raise _Invalid("invalid_project_state") from None
+
+
+def _scene_module_swap_review_row(row):
+    added = row["positive_added_tokens"]
+    removed = row["positive_removed_tokens"]
+    return {
+        "illustration_id": row["illustration_id"],
+        "scene_order": row["scene_order"],
+        "before_positive_prompt": _text(row["before_positive_prompt"]),
+        "after_positive_prompt": _text(row["after_positive_prompt"]),
+        "changed": row["changed"],
+        "no_op": row["no_op"],
+        "token_delta": {
+            "added": [_text(token) for token in added[:MAX_ITEMS]],
+            "removed": [_text(token) for token in removed[:MAX_ITEMS]],
+            "added_count": len(added),
+            "removed_count": len(removed),
+            "added_truncated": len(added) > MAX_ITEMS,
+            "removed_truncated": len(removed) > MAX_ITEMS,
+        },
+        "match_count": row["match_count"],
+        "swap_kind": row["swap_kind"],
+        "drift_risk": row["drift_risk"],
+    }
+
+
+def preview_scene_module_swap(project: Project, request):
+    """Create a safe, bounded single-Scene Module Swap review Preview."""
+    normalized = None
+    scene_id = None
+    scene_label = None
+    try:
+        normalized = _scene_module_swap_request(request)
+        scene_id = normalized["scene_id"]
+        lines, library = _scene_module_swap_project_state(project)
+        by_id = {line.id: line for line in lines}
+        selected_separator = by_id.get(scene_id)
+        if selected_separator is None:
+            raise _Invalid("unknown_scene_id")
+        if selected_separator.deleted or selected_separator.line_type != "separator":
+            raise _Invalid("invalid_scene_id")
+        scene = next((item for item in _scenes(project) if item["route_id"] == scene_id), None)
+        if scene is None:
+            raise _Invalid("invalid_scene_id")
+        scene_label = scene["route_label"]
+        if type(scene_label) is not str:
+            raise _Invalid("invalid_project_state")
+        target_ids = scene["line_ids"]
+        if type(target_ids) is not list or any(type(item) is not str for item in target_ids):
+            raise _Invalid("invalid_project_state")
+        if len(target_ids) > MAX_TARGETS:
+            raise _Invalid("target_limit_exceeded")
+        if not target_ids:
+            raise _Invalid("no_scene_targets")
+        _scene_module_swap_module(library, normalized["source_module_name"],
+                                  "unknown_source_module")
+        _scene_module_swap_module(library, normalized["target_module_name"],
+                                  "unknown_target_module")
+        for target_id in target_ids:
+            line = by_id.get(target_id)
+            if line is None or line.deleted or line.line_type in ("separator", "workbench"):
+                raise _Invalid("invalid_project_state")
+            if (type(line.current_text) is not str or type(line.negative_prompt) is not str
+                    or type(line.tokens) is not list
+                    or any(type(token) is not str for token in line.tokens)
+                    or type(line.original_file_name) is not str
+                    or type(line.original_index) is not int
+                    or type(line.current_index) is not int
+                    or any(type(getattr(line, field)) not in (str, type(None))
+                           for field in ("selected_candidate_path", "generated_image_path", "image_path"))):
+                raise _Invalid("invalid_project_state")
+        plan = module_swap_selected_routes.build_selected_routes_module_swap_plan(
+            project,
+            [scene_id],
+            source_module_name=normalized["source_module_name"],
+            target_module_name=normalized["target_module_name"],
+            match_mode=normalized["match_mode"],
+            project_path="",
+            disabled_modules=None,
+            preview_func=operations.preview_module_swap,
+        )
+        if type(plan) is not dict:
+            raise _Invalid("module_swap_preview_failed")
+        if plan.get("valid") is not True:
+            planner_reason = plan.get("reason")
+            if planner_reason == "Source or replacement Module is empty":
+                raise _Invalid("module_without_usable_tokens")
+            if planner_reason == "Selected Routes have no Module Swap target Lines":
+                raise _Invalid("no_scene_targets")
+            raise _Invalid("module_swap_preview_failed")
+        if (plan.get("selected_route_ids") != [scene_id]
+                or plan.get("selected_route_count") != 1):
+            raise _Invalid("module_swap_preview_failed")
+        planner_target_ids = plan.get("target_line_ids")
+        if (type(planner_target_ids) is not list
+                or any(type(item) is not str for item in planner_target_ids)
+                or len(planner_target_ids) > MAX_TARGETS
+                or any(item not in target_ids for item in planner_target_ids)):
+            raise _Invalid("module_swap_preview_failed")
+        if not planner_target_ids:
+            raise _Invalid("no_scene_targets")
+        projection = _scene_module_swap_projection(plan, planner_target_ids)
+        source_fingerprint = plan.get("source_fingerprint")
+        if (type(source_fingerprint) is not str or len(source_fingerprint) != 64
+                or any(char not in "0123456789abcdef" for char in source_fingerprint)):
+            raise _Invalid("module_swap_preview_failed")
+        changed_count = sum(item["changed"] for item in projection)
+        no_op_count = sum(item["no_op"] for item in projection)
+        if (changed_count != plan.get("changed_line_count")
+                or no_op_count != plan.get("no_op_count")
+                or changed_count + no_op_count != len(projection)):
+            raise _Invalid("module_swap_preview_failed")
+        projection_digest = _digest(projection)
+        envelope = {
+            "contract_version": CONTRACT_VERSION,
+            "operation": SCENE_MODULE_SWAP_OPERATION,
+            "valid": True,
+            "reason": "",
+            "diagnostics": [],
+            "request": normalized,
+            "source_fingerprint": source_fingerprint,
+            "projection_digest": projection_digest,
+            "plan_id": "",
+            "scene_id": scene_id,
+            "scene_label": _text(scene_label),
+            "target_ids": list(planner_target_ids),
+            "target_count": len(projection),
+            "changed_count": changed_count,
+            "no_op_count": no_op_count,
+            "skipped_count": int(plan.get("skipped_count", 0)),
+            "blocked_count": int(plan.get("blocked_count", 0)),
+            "drift_count": int(plan.get("drift_count", 0)),
+            "prompt_only": True,
+            "negative_prompt_semantics": "unchanged_by_module_swap",
+            "review_rows": [_scene_module_swap_review_row(row)
+                            for row in projection[:MAX_ITEMS]],
+            "review_rows_truncated": len(projection) > MAX_ITEMS,
+            "review_rows_omitted": max(0, len(projection) - MAX_ITEMS),
+        }
+        envelope["plan_id"] = _digest({key: value for key, value in envelope.items()
+                                       if key != "plan_id"})
+        return envelope
+    except _Invalid as error:
+        return _scene_module_swap_invalid(error.args[0], request=normalized,
+                                          scene_id=scene_id, scene_label=scene_label)
+    except Exception:
+        return _scene_module_swap_invalid("module_swap_preview_failed", request=normalized,
+                                          scene_id=scene_id, scene_label=scene_label)
 
 
 @dataclass(frozen=True)

@@ -32,7 +32,10 @@ def _project():
         _line("scene-1", "First Scene", line_type="separator"),
         _line("illustration-1", "red, blue"),
         _line("scene-2", "Empty Scene", line_type="separator"),
-    ], module_library={}, attribute_groups={}))
+    ], module_library={
+        "source": {"body": "red, blue", "core_tokens": ["red", "blue"]},
+        "target": {"body": "gold, green"},
+    }, attribute_groups={}))
 
 
 def _request(**updates):
@@ -83,12 +86,17 @@ def test_sdk_registration_uses_exact_adapter_catalog_and_excludes_apply():
             )
             assert denied.structured_content["reason"] == "unknown_tool"
             assert denied.is_error is True
+            denied_scene_swap = await client.call_tool(
+                "promptgraph_apply_scene_module_swap", {"plan": {"plan_id": "x"}}
+            )
+            assert denied_scene_swap.structured_content["reason"] == "unknown_tool"
+            assert denied_scene_swap.is_error is True
 
     _run(exercise())
     assert provider_calls == []
 
 
-def test_real_sdk_call_path_delegates_all_seven_tools_without_project_mutation():
+def test_real_sdk_call_path_delegates_all_eight_tools_without_project_mutation():
     value = _project()
     before = copy.deepcopy(value)
     provider_calls = []
@@ -105,6 +113,9 @@ def test_real_sdk_call_path_delegates_all_seven_tools_without_project_mutation()
         ("promptgraph_search_illustrations", {"query_text": "red"}),
         ("promptgraph_get_illustration", {"illustration_id": "illustration-1"}),
         ("promptgraph_preview_batch_replace", _request()),
+        ("promptgraph_preview_scene_module_swap", {
+            "scene_id": "scene-1", "source_module_name": "source", "target_module_name": "target",
+        }),
     ]
     expected = [adapter.call_tool(name, arguments) for name, arguments in calls]
     provider_calls.clear()
@@ -124,7 +135,7 @@ def test_real_sdk_call_path_delegates_all_seven_tools_without_project_mutation()
     assert actual == expected
     # Capabilities is provider-free; all other calls resolve the host Project
     # separately for each invocation.
-    assert len(provider_calls) == 6
+    assert len(provider_calls) == 7
     assert expected[3]["illustrations"][0]["illustration_id"] == "baseline"
     assert expected[3]["illustrations"][0]["scene_id"] is None
     assert value == before
@@ -155,6 +166,13 @@ def test_transport_errors_and_provider_failures_remain_bounded_through_sdk():
             )
             assert invalid.structured_content["reason"] == "invalid_arguments"
             assert invalid.is_error is True
+            assert provider_calls == []
+
+            invalid_swap = await client.call_tool(
+                "promptgraph_preview_scene_module_swap", {"scene_id": "scene-1"}
+            )
+            assert invalid_swap.structured_content["reason"] == "invalid_arguments"
+            assert invalid_swap.is_error is True
             assert provider_calls == []
 
             # A transport-valid but domain-invalid target reaches the existing

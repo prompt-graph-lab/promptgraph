@@ -35,7 +35,10 @@ def _project() -> Project:
             _line("illustration-1", "red, blue"),
             _line("scene-2", "Empty Scene", line_type="separator"),
         ],
-        module_library={},
+        module_library={
+            "source": {"body": "red, blue", "core_tokens": ["red", "blue"]},
+            "target": {"body": "gold, green"},
+        },
         attribute_groups={},
     ))
 
@@ -48,7 +51,7 @@ def main() -> None:
     def project_provider() -> Project:
         nonlocal provider_calls
         provider_calls += 1
-        if provider_calls == 9:
+        if provider_calls == 10:
             raise RuntimeError("private stdio fixture diagnostic")
         return project
 

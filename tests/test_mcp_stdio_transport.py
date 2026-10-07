@@ -44,7 +44,10 @@ def _project() -> Project:
             _line("illustration-1", "red, blue"),
             _line("scene-2", "Empty Scene", line_type="separator"),
         ],
-        module_library={},
+        module_library={
+            "source": {"body": "red, blue", "core_tokens": ["red", "blue"]},
+            "target": {"body": "gold, green"},
+        },
         attribute_groups={},
     ))
 
@@ -155,7 +158,7 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
                 assert [tool.name for tool in listed.tools] == [
                     entry["name"] for entry in catalog
                 ]
-                assert len({tool.name for tool in listed.tools}) == 7
+                assert len({tool.name for tool in listed.tools}) == 8
                 assert all("apply" not in tool.name.casefold() for tool in listed.tools)
                 for registered, entry in zip(listed.tools, catalog, strict=True):
                     assert registered.description == entry["description"]
@@ -173,6 +176,10 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
                         {"illustration_id": "illustration-1"},
                     ),
                     ("promptgraph_preview_batch_replace", request),
+                    ("promptgraph_preview_scene_module_swap", {
+                        "scene_id": "scene-1", "source_module_name": "source",
+                        "target_module_name": "target",
+                    }),
                 ]
                 expected_results = [
                     expected_adapter.call_tool(name, arguments)
@@ -202,6 +209,8 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
                     "Empty Scene",
                 ]
                 assert results[6] == expected_results[6]
+                assert results[7]["valid"] is True
+                assert results[7]["operation"] == "scene_module_swap"
 
                 repeated_preview = await client.call_tool(
                     "promptgraph_preview_batch_replace",
@@ -251,7 +260,7 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
     assert report["pid"] == pid
     assert report["shutdown"] == "returned"
     assert report["project_unchanged"] is True
-    assert report["provider_calls"] == 9
+    assert report["provider_calls"] == 10
     assert report["line_texts"] == [
         {"id": "baseline", "text": "baseline prompt"},
         {"id": "scene-1", "text": "First Scene"},
