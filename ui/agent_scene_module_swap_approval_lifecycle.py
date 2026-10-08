@@ -25,12 +25,12 @@ from core.agent_facade import MAX_TEXT
 PROPOSAL_CONTRACT_VERSION = "promptgraph.agent-scene-module-swap-review.v1"
 REVIEW_REQUEST_CONTRACT_VERSION = "promptgraph.agent-scene-module-swap-review-request.v1"
 DEFAULT_PROPOSAL_TTL_SECONDS = 15 * 60
-# The facade may display 100 rows, each with two 4,000-character prompt fields
-# and up to 100 added plus 100 removed 4,000-character token fields. UTF-8 JSON
-# may escape each source character to at most six ASCII bytes (control chars).
-# That is under 486 MB before bounded IDs and fixed schema overhead; 512 MiB
-# safely covers the maximal valid facade envelope without truncating it.
-MAX_PROPOSAL_ENCODED_BYTES = 512 * 1024 * 1024
+# One session proposal is retained for host review. Eight MiB leaves room for
+# a full 100-row review with ordinary prompts and token deltas while keeping
+# canonicalization, retained data, and later inspection copies bounded. The
+# facade's theoretical maximum can be much larger; oversized proposals fail
+# whole instead of being truncated or partially retained.
+MAX_PROPOSAL_ENCODED_BYTES = 8 * 1024 * 1024
 MAX_PREPARED_LIFETIME_SECONDS = 120
 MAX_TOMBSTONES = 64
 

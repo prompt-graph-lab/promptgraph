@@ -4,6 +4,8 @@ from copy import deepcopy
 import queue
 import threading
 
+import pytest
+
 from agent_adapters import mcp_adapter
 from core import agent_facade
 from core.agent_facade import preview_scene_module_swap
@@ -534,21 +536,48 @@ def test_proposal_size_is_bounded_without_truncating_the_safe_preview(monkeypatc
     assert reason == "" and accepted_size < MAX_PROPOSAL_ENCODED_BYTES
     assert len(accepted_digest) == 64
 
-    # Equality with the measured canonical byte count is accepted; one byte
-    # less rejects the complete envelope instead of truncating it.
-    monkeypatch.setattr(lifecycle, "MAX_PROPOSAL_ENCODED_BYTES", accepted_size)
+    # The configured operational limit accepts a complete ordinary
+    # 100-row review, retaining every visible row without truncation.
     custodian = AgentSceneModuleSwapApprovalCustodian()
     custodian.synchronize_target_epoch("epoch-a")
     intent = {**_intent(), "expected_plan_id": accepted_preview["plan_id"]}
-    decision = custodian.check_request("small", 1, "epoch-a", intent)
+    decision = custodian.check_request("normal", 1, "epoch-a", intent)
     prepared = custodian.prepare(
-        "small", 1, "epoch-a", intent, decision.revision, accepted_preview,
+        "normal", 1, "epoch-a", intent, decision.revision, accepted_preview,
     )
     assert prepared.status == "prepared"
     stored = custodian.inspect()
     assert stored["encoded_size_bytes"] == accepted_size
     assert stored["preview"] == accepted_preview
     assert stored["preview"] is not accepted_preview
+    assert stored["preview"]["review_rows_truncated"] is False
+    assert len(stored["preview"]["review_rows"]) == 100
+
+    # Equality with the measured canonical byte count is accepted; one byte
+    # less rejects the complete envelope instead of truncating it.
+    monkeypatch.setattr(lifecycle, "MAX_PROPOSAL_ENCODED_BYTES", accepted_size)
+    at_boundary = AgentSceneModuleSwapApprovalCustodian()
+    at_boundary.synchronize_target_epoch("epoch-a")
+    decision = at_boundary.check_request("boundary", 1, "epoch-a", intent)
+    prepared = at_boundary.prepare(
+        "boundary", 1, "epoch-a", intent, decision.revision, accepted_preview,
+    )
+    assert prepared.status == "prepared"
+    stored = at_boundary.inspect()
+    assert stored["encoded_size_bytes"] == accepted_size
+    assert stored["preview"] == accepted_preview
+    assert stored["preview"] is not accepted_preview
+
+    monkeypatch.setattr(lifecycle, "MAX_PROPOSAL_ENCODED_BYTES", accepted_size - 1)
+    above_boundary = AgentSceneModuleSwapApprovalCustodian()
+    above_boundary.synchronize_target_epoch("epoch-a")
+    decision = above_boundary.check_request("one-byte-over", 1, "epoch-a", intent)
+    rejected = above_boundary.prepare(
+        "one-byte-over", 1, "epoch-a", intent, decision.revision, accepted_preview,
+    )
+    assert rejected.status == "proposal_too_large"
+    assert rejected.result is None
+    assert above_boundary.inspect()["state"] == "absent"
 
     monkeypatch.setattr(
         lifecycle, "MAX_PROPOSAL_ENCODED_BYTES", MAX_PROPOSAL_ENCODED_BYTES,
@@ -556,21 +585,158 @@ def test_proposal_size_is_bounded_without_truncating_the_safe_preview(monkeypatc
     maximal = _maximal_facade_preview(preview)
     assert _valid_preview_envelope(maximal)
     maximal_digest, maximal_size, reason = _bounded_canonical_identity(maximal)
-    assert reason == ""
-    assert len(maximal_digest) == 64
-    assert maximal_size <= MAX_PROPOSAL_ENCODED_BYTES
+    assert maximal_digest is None
+    assert reason == "proposal_too_large"
+    assert maximal_size > MAX_PROPOSAL_ENCODED_BYTES
 
+    # A valid but oversized proposal is rejected before deepcopy, receives no
+    # positive acknowledgment, and leaves no partial/prepared/pending record.
     other = AgentSceneModuleSwapApprovalCustodian()
     other.synchronize_target_epoch("epoch-a")
-    large_intent = {**_intent(), "expected_plan_id": accepted_preview["plan_id"]}
-    large_decision = other.check_request("large", 1, "epoch-a", large_intent)
-    monkeypatch.setattr(lifecycle, "MAX_PROPOSAL_ENCODED_BYTES", accepted_size - 1)
+    large_intent = {**_intent(), "expected_plan_id": maximal["plan_id"]}
+    large_decision = other.check_request("maximal", 1, "epoch-a", large_intent)
+    monkeypatch.setattr(
+        lifecycle, "deepcopy",
+        lambda *_args, **_kwargs: pytest.fail("oversized proposal must not be copied"),
+    )
     rejected = other.prepare(
-        "large", 1, "epoch-a", large_intent,
-        large_decision.revision, accepted_preview,
+        "maximal", 1, "epoch-a", large_intent,
+        large_decision.revision, maximal,
     )
     assert rejected.status == "proposal_too_large"
+    assert rejected.result is None
     assert other.inspect()["state"] == "absent"
+
+    # The same maximal valid envelope is rejected as a whole; it remains
+    # intact and is never retained as a truncated review.
+    maximal_decision = other.check_request(
+        "maximal-valid", 1, "epoch-a",
+        {**_intent(), "expected_plan_id": maximal["plan_id"]},
+    )
+    maximal_rejected = other.prepare(
+        "maximal-valid", 1, "epoch-a",
+        {**_intent(), "expected_plan_id": maximal["plan_id"]},
+        maximal_decision.revision, maximal,
+    )
+    assert maximal_rejected.status == "proposal_too_large"
+    assert maximal_rejected.result is None
+    assert other.inspect()["state"] == "absent"
+    assert maximal["review_rows_truncated"] is True
+    assert len(maximal["review_rows"]) == 100
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"scene_id": "scene-1", "source_module_name": "source",
+         "target_module_name": "target"},
+        {"scene_id": "scene-1", "source_module_name": "source",
+         "target_module_name": "target", "expected_plan_id": 7},
+        {"scene_id": "scene-1", "source_module_name": "source",
+         "target_module_name": "target", "expected_plan_id": "0" * 63},
+        {"scene_id": "scene-1", "source_module_name": "source",
+         "target_module_name": "target", "expected_plan_id": "0" * 64,
+         "unexpected": True},
+        {"scene_id": "\ud800", "source_module_name": "source",
+         "target_module_name": "target", "expected_plan_id": "0" * 64},
+    ],
+    ids=("missing-plan-id", "wrong-plan-id-type", "wrong-plan-id-length",
+         "unknown-key", "invalid-unicode"),
+)
+def test_invalid_review_arguments_through_mailbox_pump_do_not_capture_or_create_custody(
+        monkeypatch, arguments):
+    project = _project()
+    session = {
+        "project": project,
+        "current_project_path": r"C:\Projects\active.json",
+    }
+    run_token = capture_safety.begin_project_capture_run(session)
+    registry = ProjectAgentSessionRegistry()
+    runtime = ProjectAgentSessionRuntime(_registry=registry)
+    epoch = runtime.synchronize_target(project, session["current_project_path"])
+    route = _arm_route(runtime, registry)
+    monkeypatch.setattr(
+        bridge,
+        "capture_active_project",
+        lambda *_args: pytest.fail("invalid review arguments must not capture"),
+    )
+    try:
+        assert route.submit(
+            epoch,
+            _request("invalid-through-pump", arguments),
+        ).status == "accepted"
+        assert service_project_agent_session_request(runtime, session, run_token) == "completed"
+        consumed = route.consume_reply(epoch)
+
+        assert consumed.status == "completed"
+        assert consumed.reply["result"]["reason"] == "invalid_arguments"
+        assert "proposal_id" not in consumed.reply["result"]
+        assert runtime.review_custodian.inspect()["state"] == "absent"
+        assert route.release().status == "released"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("commit_first", [False, True], ids=("close-first", "commit-first"))
+def test_session_close_racing_review_commit_never_leaves_deliverable_ack_or_custody(
+        commit_first):
+    _clock, custodian, mailbox, claim, carrier = _make_staged_review()
+    runtime = ProjectAgentSessionRuntime(
+        mailbox=mailbox,
+        review_custodian=custodian,
+        _registry=ProjectAgentSessionRegistry(),
+    )
+    observed_lock = ObservedRLock()
+    mailbox._lock = observed_lock
+    results = queue.Queue()
+
+    if commit_first:
+        commit_entered = threading.Event()
+        allow_commit_return = threading.Event()
+        original_commit = custodian._commit_prepared_locked
+
+        def pause_after_commit(token, **kwargs):
+            committed = original_commit(token, **kwargs)
+            commit_entered.set()
+            if not allow_commit_return.wait(5):
+                raise TimeoutError("test did not release committed review")
+            return committed
+
+        custodian._commit_prepared_locked = pause_after_commit
+
+        def complete():
+            results.put(mailbox.complete_with_review(
+                claim, carrier, "epoch-a", custodian,
+            ))
+
+        completion_thread = threading.Thread(target=complete)
+        completion_thread.start()
+        assert commit_entered.wait(5)
+        close_thread = threading.Thread(target=runtime.close)
+        close_thread.start()
+        assert observed_lock.contended.wait(5)
+        allow_commit_return.set()
+        completion_thread.join(5)
+        close_thread.join(5)
+        assert not completion_thread.is_alive()
+        assert not close_thread.is_alive()
+        assert results.get_nowait().status == "completed"
+    else:
+        observed_lock.lock.acquire()
+        close_thread = threading.Thread(target=runtime.close)
+        close_thread.start()
+        assert observed_lock.contended.wait(5)
+        observed_lock.lock.release()
+        close_thread.join(5)
+        assert not close_thread.is_alive()
+        assert mailbox.complete_with_review(
+            claim, carrier, "epoch-a", custodian,
+        ).status == "session_closed"
+
+    assert mailbox.state == "closed"
+    assert custodian.inspect()["state"] == "absent"
+    assert mailbox.consume_reply("epoch-a").status == "session_closed"
+    runtime.close()
 
 
 def test_target_epoch_and_proposal_ttl_invalidate_only_the_session_record():

@@ -32,15 +32,15 @@ not part of the request or acknowledgment. Exact same-generation retries
 return the same acknowledgment without extending expiry; cross-generation
 replay does not disclose the old proposal ID.
 
-The custodian's canonical JSON size cap is 512 MiB. The facade can return at
-most 100 review rows; each row includes two prompt text values and up to 100
-added plus 100 removed token-delta text values, each capped at 4,000
-characters. Even if each character needs six bytes in JSON escaping, that is
-484,800,000 bytes of text, plus bounded IDs and envelope structure. A maximal
-control-character fixture measures 485,969,128 bytes, below the 536,870,912
-byte cap. The custodian streams canonical JSON chunks into a byte counter and
-SHA-256 digest, rejects over-cap envelopes whole, and never truncates the
-reviewed payload.
+The custodian's canonical JSON size cap is 8 MiB per session proposal. This
+allows a complete 100-row review with ordinary prompt and token-delta content,
+while keeping the retained envelope and its later inspection copies within a
+practical per-session memory budget. The facade's theoretical maximum is much
+larger (a maximal control-character fixture is about 486 MB), so an unusually
+large but otherwise valid preview may be refused with `proposal_too_large`.
+The custodian streams canonical JSON chunks into a byte counter and SHA-256
+digest before copying the envelope; it rejects over-cap proposals whole and
+never truncates or partially stores the reviewed payload.
 
 Focused characterization lives in
 `tests/test_agent_scene_module_swap_approval_custody.py`: it covers the real
@@ -365,10 +365,10 @@ correlation, pairing generation, normalized intent, content identity, session,
 epoch, and its own expiry, and that the one-pending-slot rule still holds. It
 rechecks that the same prepared token is not aborted, expired, replaced, or
 already committed, and that the bounded positive ack corresponds to that
-record. While both locks are held, the mailbox first writes the bounded reply
-and `reply_ready` state; the custodian then performs the `prepared → pending`
-assignment. That custodian assignment is the proposal acceptance
-linearization point. Releasing the custodian lock makes the proposal visible,
+record. While both locks are held, the custodian first performs the
+`prepared → pending` assignment. That custodian assignment is the proposal
+acceptance linearization point. The mailbox then writes the bounded reply and
+`reply_ready` state. Releasing the custodian lock makes the proposal visible,
 but the mailbox lock remains held until afterward, so `consume_reply()` cannot
 return the acknowledgment before the proposal is committed. The mailbox lock
 release is the acknowledgment's consumer-visibility point, strictly after the
@@ -376,14 +376,15 @@ proposal acceptance point. Both writes happen before either state is exposed
 through its owner; `consume_reply()` cannot race ahead by polling while the
 transaction holds the mailbox lock.
 
-Session cleanup marks the custodian closed under its lock before unregistering
-the route and closing the mailbox; it must release the custodian lock before
-waiting on registry or mailbox locks. The commit callback checks that closed
-marker while holding the custodian lock. If cleanup marks closed first, commit
-fails without a positive ack. If commit wins first, cleanup follows and
-removes the proposal before the session is released. Target synchronization
-continues to linearize through the mailbox lock; no code path may hold the
-custodian lock while acquiring the mailbox lock.
+Session cleanup closes the mailbox and marks the custodian closed together
+under the mailbox-then-custodian lock order, then releases both locks before
+unregistering the route or tearing down the pipe. It holds no registry or
+transport lock while waiting for either owner lock. The commit callback checks
+the closed marker while holding the custodian lock. If cleanup wins the
+mailbox lock first, commit fails without a positive ack. If commit wins first,
+cleanup clears the committed reply and proposal atomically before the route is
+unregistered, so no positive ack can be consumed after custody closes. No code
+path may hold the custodian lock while acquiring the mailbox lock.
 
 Failures before that boundary leave no actionable proposal and no successful
 ack. The mailbox alone decides stale target, expired deadline, session closed,
@@ -635,9 +636,10 @@ must remain free of Project/session/approval ownership.
 ## Open decisions and go/no-go
 
 The implemented defaults are one pending proposal per browser session, a
-15-minute monotonic expiry, and no asynchronous decision notification to the
-agent. PR-A derives and tests the encoded-byte ceiling against a maximal valid
-facade envelope: the 485,969,128-byte fixture fits beneath the 512 MiB cap.
+15-minute monotonic expiry, an 8 MiB canonical JSON size cap, and no
+asynchronous decision notification to the agent. The custodian rejects a
+larger valid facade envelope as a whole before copying or retaining it; the
+cap does not redefine facade preview semantics or truncate visible content.
 If the client needs the human's later decision, design a separate
 session-bound status/result operation; do not leave a synchronous MCP call
 blocked while a human considers the Preview or send a result through a new

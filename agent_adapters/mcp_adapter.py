@@ -181,6 +181,7 @@ _SCENE_MODULE_SWAP_REVIEW_REQUIRED_ARGUMENTS = (
 _SCENE_MODULE_SWAP_REVIEW_OPTIONAL_ARGUMENTS = ("match_mode",)
 
 SCENE_MODULE_SWAP_REVIEW_FAILURE_REASONS = frozenset({
+    "invalid_arguments",
     "host_review_unavailable",
     "stale_preview",
     "invalid_preview",

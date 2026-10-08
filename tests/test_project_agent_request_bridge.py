@@ -290,6 +290,54 @@ def test_unknown_apply_and_adapter_transport_invalid_calls_do_not_capture(
 
 
 @pytest.mark.parametrize(
+    "arguments",
+    [
+        {"scene_id": "scene-1", "source_module_name": "source",
+         "target_module_name": "target"},
+        {"scene_id": "scene-1", "source_module_name": "source",
+         "target_module_name": "target", "expected_plan_id": 7},
+        {"scene_id": "scene-1", "source_module_name": "source",
+         "target_module_name": "target", "expected_plan_id": "0" * 63},
+        {"scene_id": "scene-1", "source_module_name": "source",
+         "target_module_name": "target", "expected_plan_id": "0" * 64,
+         "unexpected": True},
+        {"scene_id": "\ud800", "source_module_name": "source",
+         "target_module_name": "target", "expected_plan_id": "0" * 64},
+    ],
+    ids=("missing-plan-id", "wrong-plan-id-type", "wrong-plan-id-length",
+         "unknown-key", "invalid-unicode"),
+)
+def test_invalid_scene_module_swap_review_arguments_return_bounded_failure_without_capture(
+        monkeypatch, arguments):
+    monkeypatch.setattr(
+        bridge,
+        "capture_active_project",
+        lambda *_args: pytest.fail("invalid review arguments must not capture"),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "PromptGraphMCPAdapter",
+        lambda *_args: pytest.fail("invalid review arguments must not instantiate adapter"),
+    )
+    session, token = _session(_project())
+
+    reply = bridge.dispatch_project_agent_request(
+        session,
+        token,
+        _request(
+            "promptgraph_request_scene_module_swap_review",
+            arguments,
+            request_id="invalid-review-arguments",
+        ),
+    )
+
+    assert reply["status"] == "completed"
+    assert reply["result"]["reason"] == "invalid_arguments"
+    assert reply["result"]["diagnostics"] == [{"code": "invalid_arguments"}]
+    _assert_json_only(reply)
+
+
+@pytest.mark.parametrize(
     ("tool", "arguments"),
     [
         ("promptgraph_project_summary", {}),

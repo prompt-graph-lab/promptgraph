@@ -227,13 +227,14 @@ def _dispatch_scene_module_swap_review_request(
         PreparedReviewReply,
     )
 
-    tool_name = "promptgraph_request_scene_module_swap_review"
     normalized = mcp_adapter.validate_scene_module_swap_review_request_arguments(
         arguments,
     )
     if normalized is None:
-        result = PromptGraphMCPAdapter().call_tool(tool_name, arguments)
-        return _completed_reply(request_id, result)
+        return _completed_reply(
+            request_id,
+            mcp_adapter.scene_module_swap_review_failure("invalid_arguments"),
+        )
 
     if (type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian
             or type(pairing_generation) is not int or pairing_generation <= 0

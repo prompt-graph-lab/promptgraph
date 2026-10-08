@@ -164,11 +164,16 @@ class ProjectAgentSessionRuntime:
         if self._closed:
             return
         self._closed = True
+        # Close review custody while atomically closing the mailbox under the
+        # mailbox-then-custodian lock order. This prevents a committed positive
+        # reply from being consumed after its proposal has been discarded.
+        self.mailbox.close(review_custodian=self.review_custodian)
         route_id = None
         if self._registration is not None:
             route_id = self._registration.route_id
-            # Remove external addressability before closing the mailbox. Any
-            # in-flight paired operation is serialized with unregister.
+            # The mailbox and custodian are already closed. Remove external
+            # addressability without holding either lock while registry/pipe
+            # teardown serializes with paired operations.
             self._registration.unregister()
         try:
             if self._named_pipe_broker is not None and route_id is not None:
@@ -178,7 +183,6 @@ class ProjectAgentSessionRuntime:
                         self._registration,
                     )
         finally:
-            self.mailbox.close(review_custodian=self.review_custodian)
             self.target_tracker.close()
 
 
