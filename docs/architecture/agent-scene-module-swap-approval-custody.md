@@ -22,8 +22,8 @@ Review** surface in normal full-app runs, with complete paginated
 Before/After prompts, session-custody freshness validation, a safe host display
 projection, and terminal Reject/Dismiss actions. Its checkbox records only a
 session-local acknowledgment that the human reviewed the proposal; it does
-not approve or apply anything. Host-only Apply, Undo/history, Project
-publication, and save remain separate PR-C work. No MCP Apply tool exists.
+not approve or apply anything. PR-C adds a direct human Approve and Apply
+action and host-only publication. No MCP Apply tool exists.
 
 The implemented owner is `ui.agent_scene_module_swap_approval_lifecycle`, one
 custodian per `ProjectAgentSessionRuntime`. It retains one exact detached safe
@@ -153,11 +153,11 @@ different intent or require changing shared selection state.
 
 PR-A implements the narrow
 `ui.agent_scene_module_swap_approval_lifecycle` session custodian and its
-prepare/commit/abort/expire transitions. Remaining UI work belongs to a
-separate review-panel owner; `app.py` should only wire that panel and the later
-host-Apply lifecycle into normal full-app runs. The mailbox pump coordinates
-proposal commit with its reply outcome but does not become the proposal store.
-`core.agent_facade` remains pure.
+prepare/commit/abort/expire transitions. PR-B owns the review panel, while
+`app.py` wires the panel and the PR-C Apply lifecycle into normal full-app
+runs. The mailbox pump coordinates proposal commit and one-shot Apply claims
+with reply state but does not become the proposal store. `core.agent_facade`
+remains pure.
 
 ## Proposal origin
 
@@ -637,32 +637,42 @@ the old proposal ID. Existing read-only and ordinary Preview calls must remain
 unchanged, and no Apply/history/save authority may appear on MCP or gateway
 owners.
 
-### PR-B: human review surface
+### PR-B: human review surface — implemented
 
-Add a dedicated host panel, complete paginated Before/After review, proposal
-states, Reject/Dismiss, and one-time confirmation binding. Do not Apply in this
-slice.
+The persistent Agent Review panel renders all target rows through pagination,
+shows only its safe display projection, and exposes Reject, Dismiss, and a
+proposal/plan-bound review acknowledgment. The acknowledgment checkbox is not
+approval. Stale content consumes the proposal and clears the staged state.
 
-Acceptance: every target row is inspectable, including Scenes over 100 rows and
-the full 1,000-target planner limit, with a boundary test proving all 1,000
-rows are addressable without omission. Raw paths and Module definitions are
-not rendered; normal Gallery selection, focus, connection state, and existing
-human Module Swap controls remain unchanged; confirmation resets on
-stale/changed proposal and cannot be set by an MCP argument.
+### PR-C: revalidation and host-only Apply/publication — implemented
 
-### PR-C: revalidation and host-only Apply/publication
+`ui.agent_scene_module_swap_apply_lifecycle` handles the direct host button
+action. It requires the exact staged acknowledgment identity and checked
+widget, synchronizes the active Project/path epoch, recomputes the facade
+Preview from the stored explicit intent, and requires complete envelope
+equality plus a valid changed result. It then takes a one-shot applying claim
+under the mailbox-then-custodian lock order. No lock is held through Project
+cloning, Preview, core Apply, history, Project replacement, sanitation, or
+autosave.
 
-Add a dedicated approval lifecycle that recomputes exact intent, invokes the
-core Apply owner, and publishes only its successful replacement Project.
+The lifecycle calls `core.module_swap_selected_routes` for exactly the named
+Scene, with the Preview's source fingerprint and the same empty project path
+and `disabled_modules=None` context used by the agent facade. It rechecks the
+active session Project/path, target epoch, and claim after core Apply before
+publishing. A stale target, expired/rejected proposal, content mismatch,
+no-op, failed core result, or lost claim publishes no history, Project,
+Gallery, or save state.
 
-Acceptance: stale envelope, epoch, or Project changes; replay; denied/expired
-proposal; no-op; and core failure make no history, Project, Gallery, or save
-publication. A success applies exactly one explicit Scene and publishes in the
-order: pre-Apply history, Project replacement, selection/focus sanitation,
-autosave, then terminal proposal/result state. Autosave failure keeps the
-successful in-memory Apply and history, reports save failure, consumes the
-proposal, and cannot repeat the mutation. Duplicate approval callbacks apply
-at most once.
+On success the lifecycle appends one pre-Apply Project clone to bounded Undo
+history, replaces the session Project, clears selected graph nodes, sanitizes
+Gallery selection and focus, refreshes editor mirrors, clears the stale human
+Module Swap Preview, attempts autosave, and only then stores a bounded
+terminal result. Autosave failure retains the successful in-memory Project
+and Undo snapshot, reports `applied_save_failed`, and consumes the proposal.
+Applying and terminal results remain host-only; a still-undelivered mailbox
+queue acknowledgment is replaced with the existing generic cancellation
+outcome, never with Apply details. Repeated approval callbacks cannot claim or
+apply a second time.
 
 ### PR-D: Streamlit/MCP end-to-end characterization
 
@@ -688,8 +698,8 @@ blocked while a human considers the Preview or send a result through a new
 pairing generation. Keep the existing 1,000-target planner cap and require the
 future human surface to render all targets.
 
-PR-B through PR-D remain separate future slices. **No-go:** do not combine
-custody, UI, and Apply into one change; do not reinterpret an exploratory
+PR-D remains a separate future slice. **No-go:** keep custody, UI, and Apply in
+their separately reviewed owners; do not reinterpret an exploratory
 Preview as a review request; do not route Apply through MCP; do not reuse
 shared Gallery selection as agent intent; and do not treat any identifier,
 digest, or agent assertion as human approval.

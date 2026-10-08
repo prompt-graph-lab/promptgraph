@@ -763,6 +763,9 @@ class ProjectAgentSessionMailbox:
                     "stale": "stale_target",
                     "rejected": "review_cancelled",
                     "dismissed": "review_cancelled",
+                    "applied": "review_cancelled",
+                    "applied_save_failed": "review_cancelled",
+                    "apply_failed": "review_cancelled",
                 }.get(review.get("state") if type(review) is dict else None)
                 identity = self._reply_review_identity
                 if status is not None and type(identity) is tuple and len(identity) == 5:
@@ -820,6 +823,75 @@ class ProjectAgentSessionMailbox:
                     }.get(state)
                     if status is not None:
                         self._discard_review_ack_locked(proposal_id, status)
+                return state
+
+    def claim_review_proposal_for_apply(
+        self,
+        review_custodian,
+        proposal_id,
+        target_epoch,
+        intent,
+        preview,
+    ):
+        """Claim one freshly reviewed proposal under mailbox-then-custodian order."""
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+            _apply_claim_identities,
+        )
+
+        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+            return "session_unavailable", None
+        identities = _apply_claim_identities(intent, preview)
+        if identities is None:
+            return "stale", None
+        intent_identity, content_identity = identities
+        with self._lock:
+            if self._closed:
+                return "session_unavailable", None
+            if type(target_epoch) is not str or target_epoch != self._target_epoch:
+                return "stale", None
+            with review_custodian._lock:
+                return review_custodian._claim_pending_for_apply_locked(
+                    proposal_id,
+                    target_epoch,
+                    intent_identity,
+                    content_identity,
+                    review_custodian._clock(),
+                )
+
+    def review_apply_claim_is_current(self, review_custodian, claim):
+        """Check a claim without exposing Project or proposal internals."""
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+        )
+
+        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+            return False
+        with self._lock:
+            if self._closed or self._target_epoch != getattr(claim, "target_epoch", None):
+                return False
+            with review_custodian._lock:
+                return review_custodian._apply_claim_is_current_locked(claim)
+
+    def finish_review_proposal_apply(self, review_custodian, claim, status, result):
+        """Terminalize one claimed Apply and suppress only its undelivered ACK."""
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+        )
+
+        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+            return "session_unavailable"
+        with self._lock:
+            if self._closed:
+                return "session_unavailable"
+            with review_custodian._lock:
+                state = review_custodian._finish_apply_locked(claim, status, result)
+                if state in {"applied", "applied_save_failed", "stale", "apply_failed"}:
+                    # Never expose the human Apply result through the MCP queue ACK.
+                    self._discard_review_ack_locked(claim.proposal_id, "review_cancelled")
                 return state
 
     def _discard_review_ack_locked(self, proposal_id, status):

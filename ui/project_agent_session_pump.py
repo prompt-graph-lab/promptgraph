@@ -12,6 +12,7 @@ import streamlit as st
 from ui.project_agent_request_bridge import dispatch_project_agent_request
 from ui.agent_scene_module_swap_approval_lifecycle import (
     AgentSceneModuleSwapApprovalCustodian,
+    ApplyProposalClaim,
     DuplicateReviewReply,
     PreparedReviewReply,
 )
@@ -81,6 +82,43 @@ class ProjectAgentSessionRuntime:
         return self.mailbox.mark_review_proposal_stale(
             self.review_custodian,
             proposal_id,
+        )
+
+    def claim_review_proposal_for_apply(
+        self,
+        proposal_id,
+        target_epoch,
+        intent,
+        preview,
+    ):
+        """Consume one pending approval and return its one-shot private claim."""
+
+        if self._closed:
+            return "session_unavailable", None
+        return self.mailbox.claim_review_proposal_for_apply(
+            self.review_custodian,
+            proposal_id,
+            target_epoch,
+            intent,
+            preview,
+        )
+
+    def review_apply_claim_is_current(self, claim):
+        if self._closed or type(claim) is not ApplyProposalClaim:
+            return False
+        return self.mailbox.review_apply_claim_is_current(
+            self.review_custodian,
+            claim,
+        )
+
+    def finish_review_proposal_apply(self, claim, status, result):
+        if self._closed or type(claim) is not ApplyProposalClaim:
+            return "session_unavailable"
+        return self.mailbox.finish_review_proposal_apply(
+            self.review_custodian,
+            claim,
+            status,
+            result,
         )
 
     def begin_full_app_run(self, project, project_path):

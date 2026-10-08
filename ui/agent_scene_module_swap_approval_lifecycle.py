@@ -94,6 +94,15 @@ class DuplicateReviewReply:
 
 
 @dataclass(frozen=True)
+class ApplyProposalClaim:
+    """Opaque one-shot claim authorizing one host Apply attempt."""
+
+    _value: str
+    proposal_id: str
+    target_epoch: str
+
+
+@dataclass(frozen=True)
 class ReviewRequestDecision:
     """Bounded result from proposal preflight or preparation."""
 
@@ -123,6 +132,7 @@ class _ProposalRecord:
     prepared_at: float
     prepared_expires_at: float
     expires_at: float | None = None
+    apply_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +230,16 @@ def _intent_digest(intent):
     except Exception:
         return None
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _apply_claim_identities(intent, preview):
+    """Hash exact intent and facade envelope before mailbox/custodian locking."""
+
+    intent_identity = _intent_digest(intent)
+    content_identity, _size, reason = _bounded_canonical_identity(preview)
+    if intent_identity is None or reason:
+        return None
+    return intent_identity, content_identity
 
 
 def _valid_preview_envelope(preview):
@@ -341,6 +361,7 @@ class AgentSceneModuleSwapApprovalCustodian:
         self._record = None
         self._tombstones = OrderedDict()
         self._human_review_state = "absent"
+        self._human_review_result = None
 
     def check_request(self, request_id, pairing_generation, target_epoch, intent):
         """Resolve same-generation retries and conflicts before Project capture."""
@@ -377,7 +398,7 @@ class AgentSceneModuleSwapApprovalCustodian:
                     if record.state == "pending":
                         return self._retry_pending_locked(record)
                     return ReviewRequestDecision("review_already_pending")
-                if record.state in ("prepared", "pending"):
+                if record.state in ("prepared", "pending", "applying"):
                     return ReviewRequestDecision("review_already_pending")
             return ReviewRequestDecision("new", revision=self._revision)
 
@@ -475,6 +496,7 @@ class AgentSceneModuleSwapApprovalCustodian:
                 prepared_expires_at=now + MAX_PREPARED_LIFETIME_SECONDS,
             )
             self._human_review_state = "prepared"
+            self._human_review_result = None
             return ReviewRequestDecision(
                 "prepared",
                 result=deepcopy(ack),
@@ -557,16 +579,24 @@ class AgentSceneModuleSwapApprovalCustodian:
                 "state": "session_unavailable",
             }
         if record is None:
-            return {
+            result = {
                 "contract_version": PROPOSAL_CONTRACT_VERSION,
                 "state": self._human_review_state,
             }
+            if self._human_review_result is not None:
+                result["result"] = dict(self._human_review_result)
+            return result
         if record.state == "prepared":
             # Prepared custody is deliberately invisible until the mailbox
             # reply and proposal commit complete together.
             return {
                 "contract_version": PROPOSAL_CONTRACT_VERSION,
                 "state": "prepared",
+            }
+        if record.state == "applying":
+            return {
+                "contract_version": PROPOSAL_CONTRACT_VERSION,
+                "state": "applying",
             }
         return {
             "contract_version": PROPOSAL_CONTRACT_VERSION,
@@ -628,7 +658,91 @@ class AgentSceneModuleSwapApprovalCustodian:
         self._record = None
         self._revision += 1
         self._human_review_state = "stale"
+        self._human_review_result = None
         return "stale"
+
+    def _claim_pending_for_apply_locked(
+        self,
+        proposal_id,
+        target_epoch,
+        expected_intent_digest,
+        expected_content_identity,
+        now,
+    ):
+        """Atomically consume human approval and mint one private Apply claim."""
+
+        self._expire_locked(now)
+        if self._closed:
+            return "session_unavailable", None
+        record = self._record
+        if record is None or record.state != "pending":
+            state = self._human_review_state
+            return (state if state in {
+                "expired", "stale", "rejected", "dismissed", "session_unavailable",
+            } else "not_pending"), None
+        if (type(proposal_id) is not str or record.proposal_id != proposal_id
+                or type(target_epoch) is not str or not target_epoch
+                or target_epoch != self._target_epoch
+                or target_epoch != record.target_epoch
+                or type(expected_intent_digest) is not str
+                or record.intent_digest != expected_intent_digest
+                or type(expected_content_identity) is not str
+                or record.content_identity != expected_content_identity):
+            return "stale", None
+
+        token = secrets.token_urlsafe(32)
+        record.state = "applying"
+        record.apply_token = token
+        self._revision += 1
+        self._human_review_state = "applying"
+        self._human_review_result = None
+        return "applying", ApplyProposalClaim(token, record.proposal_id, target_epoch)
+
+    def _apply_claim_is_current_locked(self, claim):
+        if self._closed or type(claim) is not ApplyProposalClaim:
+            return False
+        record = self._record
+        return bool(
+            record is not None
+            and record.state == "applying"
+            and record.apply_token == claim._value
+            and record.proposal_id == claim.proposal_id
+            and record.target_epoch == claim.target_epoch
+            and self._target_epoch == claim.target_epoch
+        )
+
+    def _finish_apply_locked(self, claim, status, result):
+        """Publish one bounded terminal outcome for the exact Apply claim."""
+
+        if status not in {"applied", "applied_save_failed", "stale", "apply_failed"}:
+            return "invalid_status"
+        if not self._apply_claim_is_current_locked(claim):
+            return "claim_unavailable"
+        if (type(result) is not dict
+                or set(result) - {"applied_count", "save_succeeded", "sync_warning"}
+                or ("applied_count" in result
+                    and (type(result["applied_count"]) is not int
+                         or not 0 < result["applied_count"] <= MAX_TARGETS))
+                or ("save_succeeded" in result
+                    and type(result["save_succeeded"]) is not bool)
+                or ("sync_warning" in result
+                    and type(result["sync_warning"]) is not bool)):
+            return "invalid_result"
+        record = self._record
+        reason = {
+            # Tombstones can influence a later request's bounded response.
+            # Keep the Apply decision/result private to the host UI.
+            "applied": "proposal_cancelled",
+            "applied_save_failed": "proposal_cancelled",
+            "stale": "proposal_cancelled",
+            "apply_failed": "proposal_cancelled",
+        }[status]
+        self._remember_record_locked(record, reason)
+        self._record = None
+        self._revision += 1
+        self._human_review_state = status
+        self._human_review_result = dict(result)
+        return status
 
     def cancel_pending(self):
         """Cancel host custody explicitly; ordinary pipe release never calls this."""
@@ -663,6 +777,7 @@ class AgentSceneModuleSwapApprovalCustodian:
             self._remember_record_locked(self._record, "stale_target")
             self._record = None
             self._human_review_state = "stale"
+            self._human_review_result = None
         return True
 
     def _commit_prepared_locked(self, token, *, request_id, pairing_generation,
@@ -750,6 +865,7 @@ class AgentSceneModuleSwapApprovalCustodian:
             self._remember_record_locked(self._record, reason)
             self._record = None
             self._human_review_state = "dismissed"
+            self._human_review_result = None
 
     def _close_locked(self):
         self._closed = True
@@ -757,6 +873,7 @@ class AgentSceneModuleSwapApprovalCustodian:
         self._record = None
         self._tombstones.clear()
         self._human_review_state = "session_unavailable"
+        self._human_review_result = None
 
     def _expire_locked(self, now):
         record = self._record

@@ -11,6 +11,9 @@ from ui.agent_scene_module_swap_review_panel import (
     render_agent_review_navigation,
     render_agent_scene_module_swap_review_panel,
 )
+from ui.agent_scene_module_swap_apply_lifecycle import (
+    apply_agent_scene_module_swap_approval,
+)
 from ui.project_save_as_lifecycle import (
     PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY,
     PROJECT_SAVE_AS_OVERWRITE_ACK_KEY,
@@ -6998,6 +7001,18 @@ def restore_focus_after_graph_update(previous_focused_line_id):
         st.session_state.focused_line_id = None
 
     validate_highlighted_line()
+
+
+def apply_agent_scene_module_swap_review(**approval):
+    """Wire host Project publication helpers into the dedicated Apply owner."""
+
+    return apply_agent_scene_module_swap_approval(
+        **approval,
+        synchronize_gallery_selection=_set_gallery_selected_route_ids_after_structure_change,
+        restore_focus=restore_focus_after_graph_update,
+        sync_text_areas=sync_text_areas,
+        save_project=save_current_project_if_possible,
+    )
 
 def get_line_by_id(project, line_id):
     if not project or not line_id:
@@ -20998,6 +21013,7 @@ if active_management_workspace:
             st.session_state.get("project"),
             _PROJECT_AGENT_SESSION_RUNTIME,
             st.session_state.get("current_project_path", ""),
+            apply_handler=apply_agent_scene_module_swap_review,
         )
         render_ui_profile_panel()
         st.stop()
@@ -21022,6 +21038,7 @@ if not st.session_state.project:
             None,
             _PROJECT_AGENT_SESSION_RUNTIME,
             st.session_state.get("current_project_path", ""),
+            apply_handler=apply_agent_scene_module_swap_review,
         )
         render_ui_profile_panel()
         st.stop()
@@ -21047,6 +21064,7 @@ if st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False):
         project,
         _PROJECT_AGENT_SESSION_RUNTIME,
         st.session_state.get("current_project_path", ""),
+        apply_handler=apply_agent_scene_module_swap_review,
     )
     render_ui_profile_panel()
     st.stop()
