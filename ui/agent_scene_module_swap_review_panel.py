@@ -216,8 +216,26 @@ def render_agent_scene_module_swap_review_panel(
             st.info(message[0])
         st.caption(message[1])
         terminal = review.get("result") if type(review) is dict else None
+        if type(terminal) is dict and type(terminal.get("scene_label")) is str:
+            st.text(f"Scene: {terminal['scene_label']}")
+        if (type(terminal) is dict
+                and type(terminal.get("source_module_name")) is str
+                and type(terminal.get("target_module_name")) is str):
+            st.text(
+                "Module swap: "
+                f"{terminal['source_module_name']} → {terminal['target_module_name']}"
+            )
         if type(terminal) is dict and type(terminal.get("applied_count")) is int:
             st.metric("Applied Illustrations", terminal["applied_count"])
+            st.caption("Apply: completed")
+            save_result = (
+                "saved" if terminal.get("save_succeeded") is True
+                else "save failed; manual save is available"
+            )
+            st.caption(f"Save: {save_result}")
+            history = st.session_state.get("history")
+            if type(history) is list and history:
+                st.caption("Undo: the pre-Apply Project is available in history.")
         if type(terminal) is dict and terminal.get("sync_warning") is True:
             st.warning("One or more local selection/editor views could not be refreshed.")
         return

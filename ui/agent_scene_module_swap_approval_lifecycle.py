@@ -133,6 +133,7 @@ class _ProposalRecord:
     prepared_expires_at: float
     expires_at: float | None = None
     apply_token: str | None = None
+    apply_published: bool = False
 
 
 @dataclass(frozen=True)
@@ -708,8 +709,29 @@ class AgentSceneModuleSwapApprovalCustodian:
             and record.apply_token == claim._value
             and record.proposal_id == claim.proposal_id
             and record.target_epoch == claim.target_epoch
-            and self._target_epoch == claim.target_epoch
+            and (record.apply_published or self._target_epoch == claim.target_epoch)
         )
+
+    def _mark_apply_published_locked(self, claim):
+        """Record the irreversible host Project replacement for one claim."""
+
+        if (not self._apply_claim_is_current_locked(claim)
+                or self._record.apply_published):
+            return False
+        self._record.apply_published = True
+        self._revision += 1
+        return True
+
+    def _rollback_apply_publication_locked(self, claim):
+        """Undo a publication marker only while the Project replacement failed."""
+
+        if (not self._apply_claim_is_current_locked(claim)
+                or not self._record.apply_published
+                or self._target_epoch != claim.target_epoch):
+            return False
+        self._record.apply_published = False
+        self._revision += 1
+        return True
 
     def _finish_apply_locked(self, claim, status, result):
         """Publish one bounded terminal outcome for the exact Apply claim."""
@@ -718,17 +740,31 @@ class AgentSceneModuleSwapApprovalCustodian:
             return "invalid_status"
         if not self._apply_claim_is_current_locked(claim):
             return "claim_unavailable"
+        record = self._record
+        if (status in {"applied", "applied_save_failed"}
+                and not record.apply_published):
+            return "publication_required"
+        if (status in {"stale", "apply_failed"}
+                and record.apply_published):
+            return "publication_already_committed"
         if (type(result) is not dict
-                or set(result) - {"applied_count", "save_succeeded", "sync_warning"}
+                or set(result) - {
+                    "applied_count", "save_succeeded", "sync_warning",
+                    "scene_label", "source_module_name", "target_module_name",
+                }
                 or ("applied_count" in result
                     and (type(result["applied_count"]) is not int
                          or not 0 < result["applied_count"] <= MAX_TARGETS))
                 or ("save_succeeded" in result
                     and type(result["save_succeeded"]) is not bool)
                 or ("sync_warning" in result
-                    and type(result["sync_warning"]) is not bool)):
+                    and type(result["sync_warning"]) is not bool)
+                or any(
+                    key in result
+                    and (type(result[key]) is not str or len(result[key]) > MAX_TEXT)
+                    for key in ("scene_label", "source_module_name", "target_module_name")
+                )):
             return "invalid_result"
-        record = self._record
         reason = {
             # Tombstones can influence a later request's bounded response.
             # Keep the Apply decision/result private to the host UI.
@@ -774,6 +810,10 @@ class AgentSceneModuleSwapApprovalCustodian:
         self._target_epoch = target_epoch
         self._revision += 1
         if self._record is not None:
+            # A Project replacement already committed by this exact host Apply
+            # is the expected target identity transition, not revocation.
+            if self._record.state == "applying" and self._record.apply_published:
+                return True
             self._remember_record_locked(self._record, "stale_target")
             self._record = None
             self._human_review_state = "stale"
@@ -860,6 +900,11 @@ class AgentSceneModuleSwapApprovalCustodian:
         return True
 
     def _cancel_locked(self, reason):
+        if (self._record is not None and self._record.state == "applying"
+                and self._record.apply_published):
+            # Disarm after the Project replacement cannot undo or relabel an
+            # already committed publication.
+            return
         self._revision += 1
         if self._record is not None:
             self._remember_record_locked(self._record, reason)

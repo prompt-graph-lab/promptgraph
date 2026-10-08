@@ -101,6 +101,7 @@ def apply_agent_scene_module_swap_approval(
             or not callable(getattr(runtime, "inspect_review_custody", None))
             or not callable(getattr(runtime, "claim_review_proposal_for_apply", None))
             or not callable(getattr(runtime, "review_apply_claim_is_current", None))
+            or not callable(getattr(runtime, "publish_review_apply", None))
             or not callable(getattr(runtime, "finish_review_proposal_apply", None))
             or not callable(getattr(runtime, "mark_review_proposal_stale", None))):
         return {"status": "session_unavailable"}
@@ -229,31 +230,34 @@ def apply_agent_scene_module_swap_approval(
             or updated_project is None or updated_project is project):
         return {"status": _finish_claim(runtime, claim, "apply_failed")}
 
-    # Core Apply only returns a replacement clone. Verify the exact active
-    # session/target and claim once more before publishing any host state.
+    # Core Apply worked on a clone, but the source Project may have been edited
+    # in place while that work ran. Recompute the exact approved facade context
+    # after Core returns and reject any change before history/publication.
     try:
-        current_epoch = runtime.synchronize_target(
-            session_state.get("project"),
-            session_state.get("current_project_path", ""),
-        )
-        claim_current = runtime.review_apply_claim_is_current(claim)
+        post_apply_preview = preview_scene_module_swap(project, request)
     except Exception:
-        return {"status": _terminal_review_state(runtime)}
-    if (not _current_target_matches(session_state, project, project_path)
-            or current_epoch != target_epoch or not claim_current):
-        return {"status": _terminal_review_state(runtime)}
+        post_apply_preview = None
+    if (type(post_apply_preview) is not dict
+            or post_apply_preview != stored_preview
+            or post_apply_preview != fresh_preview):
+        return {"status": _finish_claim(runtime, claim, "stale")}
 
-    history = session_state.get("history")
-    if type(history) is not list:
-        return {"status": _finish_claim(runtime, claim, "apply_failed")}
-    try:
-        history.append(history_snapshot)
-        if len(history) > 20:
-            history.pop(0)
-        previous_focus = session_state.get("focused_line_id")
-        session_state["project"] = updated_project
-    except Exception:
-        return {"status": _finish_claim(runtime, claim, "apply_failed")}
+    previous_focus = session_state.get("focused_line_id")
+    publication_status = runtime.publish_review_apply(
+        claim,
+        session_state=session_state,
+        source_project=project,
+        project_path=project_path,
+        target_epoch=target_epoch,
+        history_snapshot=history_snapshot,
+        updated_project=updated_project,
+    )
+    if publication_status != "published":
+        if publication_status == "apply_failed":
+            return {"status": _finish_claim(runtime, claim, "apply_failed")}
+        if publication_status == "publication_uncertain":
+            return {"status": publication_status}
+        return {"status": _terminal_review_state(runtime)}
 
     # The Project replacement is now successful and must not be rolled back
     # if persistence fails. Each publication helper is host-local and bounded.
@@ -280,12 +284,21 @@ def apply_agent_scene_module_swap_approval(
     terminal_result = {
         "applied_count": changed_count,
         "save_succeeded": save_succeeded,
+        "scene_label": (
+            fresh_preview.get("scene_label", {}).get("text", "")
+            if type(fresh_preview.get("scene_label")) is dict else ""
+        ),
+        "source_module_name": intent["source_module_name"],
+        "target_module_name": intent["target_module_name"],
     }
     if sync_warning:
         terminal_result["sync_warning"] = True
-    state = _finish_claim(runtime, claim, terminal_status, terminal_result)
+    # Publication is irreversible after runtime.publish_review_apply returns.
+    # A concurrent session close may discard ephemeral custody, but cannot turn
+    # the already committed host mutation into a failed/retryable Apply.
+    _finish_claim(runtime, claim, terminal_status, terminal_result)
     return {
-        "status": state,
+        "status": terminal_status,
         "applied_count": changed_count,
         "save_succeeded": save_succeeded,
         "sync_warning": sync_warning,

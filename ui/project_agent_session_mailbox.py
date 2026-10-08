@@ -875,6 +875,60 @@ class ProjectAgentSessionMailbox:
             with review_custodian._lock:
                 return review_custodian._apply_claim_is_current_locked(claim)
 
+    def mark_review_proposal_apply_published(self, review_custodian, claim):
+        """Commit one host publication marker under mailbox-then-custodian order."""
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+        )
+
+        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+            return False
+        with self._lock:
+            if (self._closed
+                    or self._target_epoch != getattr(claim, "target_epoch", None)):
+                return False
+            with review_custodian._lock:
+                return review_custodian._mark_apply_published_locked(claim)
+
+    def complete_review_proposal_apply_publication(self, review_custodian, claim):
+        """Suppress a queue ACK after the host Project replacement committed."""
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+        )
+
+        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+            return False
+        with self._lock:
+            if self._closed:
+                return False
+            with review_custodian._lock:
+                if (not review_custodian._apply_claim_is_current_locked(claim)
+                        or not review_custodian._record.apply_published):
+                    return False
+                self._discard_review_ack_locked(
+                    claim.proposal_id,
+                    "review_cancelled",
+                )
+                return True
+
+    def rollback_review_proposal_apply_publication(self, review_custodian, claim):
+        """Roll back a staged publication marker before Project replacement."""
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+        )
+
+        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+            return False
+        with self._lock:
+            if (self._closed
+                    or self._target_epoch != getattr(claim, "target_epoch", None)):
+                return False
+            with review_custodian._lock:
+                return review_custodian._rollback_apply_publication_locked(claim)
+
     def finish_review_proposal_apply(self, review_custodian, claim, status, result):
         """Terminalize one claimed Apply and suppress only its undelivered ACK."""
 

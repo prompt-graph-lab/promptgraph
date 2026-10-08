@@ -1,7 +1,7 @@
 """Host-only approval, Apply and Project publication for agent Scene Swap."""
 
 from copy import deepcopy
-from threading import Barrier
+from threading import Barrier, Event, Lock, Thread, current_thread
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -30,6 +30,24 @@ from ui.project_agent_session_registry import ProjectAgentSessionRegistry
 ACK_IDENTITY_KEY = "review_ack_identity"
 ACK_WIDGET_KEY = "review_ack_checked"
 ACTIVE_PATH = "active.json"
+
+
+class _ObservedGate:
+    """Lock wrapper exposing a deterministic contender-arrival event."""
+
+    def __init__(self, observed_thread_name):
+        self._lock = Lock()
+        self._observed_thread_name = observed_thread_name
+        self.observed_attempt = Event()
+
+    def __enter__(self):
+        if current_thread().name == self._observed_thread_name:
+            self.observed_attempt.set()
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *_exc_info):
+        self._lock.release()
 
 
 class FakeClock:
@@ -248,6 +266,7 @@ def test_success_revalidates_applies_one_scene_and_publishes_in_order():
     assert core_apply.call_args.kwargs["match_mode"] == "strict"
     assert core_apply.call_args.kwargs["project_path"] == ""
     assert core_apply.call_args.kwargs["disabled_modules"] is None
+    assert runtime.synchronize_target(state["project"], ACTIVE_PATH) != epoch
     assert state["selected_node_ids"] == []
     assert state["gallery_selected_route_ids"] == ["scene-a"]
     assert "module_swap_preview" not in state
@@ -256,6 +275,9 @@ def test_success_revalidates_applies_one_scene_and_publishes_in_order():
     assert runtime.inspect_review_custody()["result"] == {
         "applied_count": 1,
         "save_succeeded": True,
+        "scene_label": "Scene A",
+        "source_module_name": "source",
+        "target_module_name": "target",
     }
 
     # The undelivered MCP result remains a queue-only cancellation; it cannot
@@ -344,6 +366,287 @@ def test_stale_prompt_or_target_change_has_no_publication(stale_kind):
     assert state["history"] == []
     assert saved == []
     assert runtime.inspect_review_custody()["state"] == "stale"
+    runtime.close()
+
+
+@pytest.mark.parametrize("stale_kind", ["prompt", "module"])
+def test_in_place_edit_during_real_core_apply_survives_without_host_publication(stale_kind):
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+    state = _state(project, review)
+    saved = []
+    real_core_apply = core_module_swap.apply_selected_routes_module_swap
+
+    def edit_source_after_clone_is_built(*args, **kwargs):
+        result = real_core_apply(*args, **kwargs)
+        if stale_kind == "prompt":
+            line = project.prompt_lines[1]
+            line.current_text = "red, blue, edit made during Apply"
+            line.tokens = parse_prompt(line.current_text)
+        else:
+            project.module_library["source"]["body"] = "red, blue, edit during Apply"
+        return result
+
+    with patch(
+        "ui.agent_scene_module_swap_apply_lifecycle.apply_selected_routes_module_swap",
+        side_effect=edit_source_after_clone_is_built,
+    ) as core_apply:
+        result = _apply(
+            runtime,
+            state,
+            review,
+            project,
+            callbacks={"save": lambda reason: saved.append(reason) or True},
+        )
+
+    assert core_apply.call_count == 1
+    assert result["status"] == "stale"
+    assert state["project"] is project
+    assert state["history"] == []
+    assert saved == []
+    if stale_kind == "prompt":
+        assert project.prompt_lines[1].current_text == "red, blue, edit made during Apply"
+    else:
+        assert project.module_library["source"]["body"] == "red, blue, edit during Apply"
+    assert runtime.inspect_review_custody()["state"] == "stale"
+    runtime.close()
+
+
+def test_project_replacement_failure_rolls_back_the_staged_undo_entry():
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+
+    class RejectReplacement(dict):
+        def __setitem__(self, key, value):
+            if key == "project" and value is not project:
+                raise OSError("simulated session publication failure")
+            return super().__setitem__(key, value)
+
+    state = RejectReplacement(_state(project, review))
+    saved = []
+    result = _apply(
+        runtime,
+        state,
+        review,
+        project,
+        callbacks={"save": lambda reason: saved.append(reason) or True},
+    )
+
+    assert result["status"] == "apply_failed"
+    assert state["project"] is project
+    assert state["history"] == []
+    assert saved == []
+    assert runtime.inspect_review_custody()["state"] == "apply_failed"
+    runtime.close()
+
+
+@pytest.mark.parametrize("winner", ["disarm", "close", "target_switch"])
+def test_revocation_or_target_switch_winning_before_publication_prevents_commit(winner):
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+    state = _state(project, review)
+    saved = []
+    replacement = _project()
+    publication_ready = Event()
+    allow_publication = Event()
+    real_publish = runtime.publish_review_apply
+
+    def pause_before_publication_gate(*args, **kwargs):
+        publication_ready.set()
+        assert allow_publication.wait(timeout=5)
+        return real_publish(*args, **kwargs)
+
+    runtime.publish_review_apply = pause_before_publication_gate
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        attempt = pool.submit(
+            _apply,
+            runtime,
+            state,
+            review,
+            project,
+            callbacks={"save": lambda reason: saved.append(reason) or True},
+        )
+        assert publication_ready.wait(timeout=5)
+        if winner == "disarm":
+            class FakeBroker:
+                def disarm_launcher_rendezvous(self, _registration):
+                    return type("Operation", (), {"status": "disarmed"})()
+
+                def close_session_route(self, _route_id):
+                    return None
+
+                def forget_launcher_rendezvous(self, _registration):
+                    return None
+
+            runtime._named_pipe_broker = FakeBroker()
+            assert runtime.disarm_launcher_rendezvous().status == "disarmed"
+        elif winner == "close":
+            runtime.close()
+        else:
+            state["project"] = replacement
+            state["current_project_path"] = "replacement.json"
+            runtime.synchronize_target(replacement, "replacement.json")
+        allow_publication.set()
+        result = attempt.result(timeout=10)
+
+    expected_status = {
+        "disarm": "dismissed",
+        "close": "session_unavailable",
+        "target_switch": "stale",
+    }[winner]
+    assert result["status"] == expected_status
+    assert state["project"] is (replacement if winner == "target_switch" else project)
+    assert state["history"] == []
+    assert saved == []
+    if winner != "close":
+        assert runtime.inspect_review_custody()["state"] == expected_status
+        runtime.close()
+
+
+@pytest.mark.parametrize("winner", ["disarm", "close"])
+def test_publication_gate_winning_before_revocation_keeps_apply_success(winner):
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+    gate = _ObservedGate(f"{winner}-racer")
+    runtime._publication_gate = gate
+    entered_public_assignment = Event()
+    racer_done = Event()
+    saved = []
+
+    class CompetingState(dict):
+        def __setitem__(self, key, value):
+            if key == "project" and value is not project:
+                def revoke():
+                    try:
+                        if winner == "disarm":
+                            class FakeBroker:
+                                def disarm_launcher_rendezvous(self, _registration):
+                                    return type("Operation", (), {"status": "disarmed"})()
+
+                                def close_session_route(self, _route_id):
+                                    return None
+
+                                def forget_launcher_rendezvous(self, _registration):
+                                    return None
+
+                            runtime._named_pipe_broker = FakeBroker()
+                            runtime.disarm_launcher_rendezvous()
+                        else:
+                            runtime.close()
+                    finally:
+                        racer_done.set()
+
+                Thread(target=revoke, name=f"{winner}-racer").start()
+                assert gate.observed_attempt.wait(timeout=5)
+                entered_public_assignment.set()
+            return super().__setitem__(key, value)
+
+    state = CompetingState(_state(project, review))
+    result = _apply(
+        runtime,
+        state,
+        review,
+        project,
+        callbacks={"save": lambda reason: saved.append(reason) or True},
+    )
+    assert entered_public_assignment.is_set()
+    assert racer_done.wait(timeout=5)
+    assert result["status"] == "applied"
+    assert state["project"] is not project
+    assert len(state["history"]) == 1
+    assert saved == ["Agent Scene Module Swap applied"]
+    if winner == "disarm":
+        assert runtime.inspect_review_custody()["state"] == "applied"
+
+
+def test_immediate_newer_target_after_apply_publication_does_not_relabel_success():
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+    newer_project = _project()
+    gate = _ObservedGate("target-switch-racer")
+    runtime._publication_gate = gate
+    switch_done = Event()
+
+    class CompetingState(dict):
+        def __setitem__(self, key, value):
+            if key == "project" and value is not project:
+                def switch_after_commit():
+                    try:
+                        with runtime._publication_gate:
+                            dict.__setitem__(self, "project", newer_project)
+                            dict.__setitem__(self, "current_project_path", "newer.json")
+                            runtime._synchronize_target_locked(
+                                newer_project,
+                                "newer.json",
+                            )
+                    finally:
+                        switch_done.set()
+
+                Thread(target=switch_after_commit, name="target-switch-racer").start()
+                assert gate.observed_attempt.wait(timeout=5)
+            return super().__setitem__(key, value)
+
+    state = CompetingState(_state(project, review))
+    saved = []
+
+    def save_after_target_switch(reason):
+        assert reason == "Agent Scene Module Swap applied"
+        assert switch_done.wait(timeout=5)
+        saved.append(reason)
+        return True
+
+    result = _apply(
+        runtime,
+        state,
+        review,
+        project,
+        callbacks={"save": save_after_target_switch},
+    )
+
+    assert result["status"] == "applied"
+    assert state["project"] is newer_project
+    assert state["current_project_path"] == "newer.json"
+    assert len(state["history"]) == 1
+    assert saved == ["Agent Scene Module Swap applied"]
+    assert runtime.inspect_review_custody()["state"] == "applied"
+    runtime.close()
+
+
+def test_duplicate_approval_callback_waiting_during_publication_cannot_apply_twice():
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+    state = _state(project, review)
+    gate = _ObservedGate("duplicate-racer_1")
+    runtime._publication_gate = gate
+    publication_entered = Event()
+    allow_project_assignment = Event()
+
+    class PausingState(dict):
+        def __setitem__(self, key, value):
+            if key == "project" and value is not project:
+                publication_entered.set()
+                assert allow_project_assignment.wait(timeout=5)
+            return super().__setitem__(key, value)
+
+    state = PausingState(state)
+    with patch(
+        "ui.agent_scene_module_swap_apply_lifecycle.apply_selected_routes_module_swap",
+        wraps=core_module_swap.apply_selected_routes_module_swap,
+    ) as core_apply:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="duplicate-racer") as pool:
+            first = pool.submit(_apply, runtime, state, review, project)
+            assert publication_entered.wait(timeout=5)
+            second = pool.submit(_apply, runtime, state, review, project)
+            assert gate.observed_attempt.wait(timeout=5)
+            allow_project_assignment.set()
+            first_result = first.result(timeout=10)
+            second_result = second.result(timeout=10)
+
+    assert first_result["status"] == "applied"
+    assert second_result["status"] in {"applying", "applied"}
+    assert core_apply.call_count == 1
+    assert len(state["history"]) == 1
+    assert runtime.inspect_review_custody()["state"] == "applied"
     runtime.close()
 
 
@@ -512,6 +815,15 @@ def test_review_panel_requires_staged_ack_then_dispatches_direct_host_apply():
     assert app.session_state["project"].prompt_lines[1].current_text == "gold, green"
     assert len(app.session_state["history"]) == 1
     assert runtime.inspect_review_custody()["state"] == "applied"
+    assert any(element.value == "Scene: Scene A" for element in app.text)
+    assert any(
+        element.value == "Module swap: source → target"
+        for element in app.text
+    )
+    assert any(
+        "Undo: the pre-Apply Project is available in history." in element.value
+        for element in app.caption
+    )
     runtime.close()
 
 

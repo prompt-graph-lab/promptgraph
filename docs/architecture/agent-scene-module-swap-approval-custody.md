@@ -651,28 +651,45 @@ action. It requires the exact staged acknowledgment identity and checked
 widget, synchronizes the active Project/path epoch, recomputes the facade
 Preview from the stored explicit intent, and requires complete envelope
 equality plus a valid changed result. It then takes a one-shot applying claim
-under the mailbox-then-custodian lock order. No lock is held through Project
-cloning, Preview, core Apply, history, Project replacement, sanitation, or
-autosave.
+under the mailbox-then-custodian lock order. Mailbox/custodian locks are not
+held through Project cloning, Preview, core Apply, history, Project
+replacement, sanitation, or autosave. The publication gate is used only to
+serialize final authority validation with the in-memory replacement.
 
 The lifecycle calls `core.module_swap_selected_routes` for exactly the named
 Scene, with the Preview's source fingerprint and the same empty project path
 and `disabled_modules=None` context used by the agent facade. It rechecks the
-active session Project/path, target epoch, and claim after core Apply before
-publishing. A stale target, expired/rejected proposal, content mismatch,
-no-op, failed core result, or lost claim publishes no history, Project,
-Gallery, or save state.
+complete facade envelope again after core Apply from the original Project and
+the same explicit intent. This catches in-place Prompt and Module Library
+edits made while the core was producing its replacement clone; any mismatch
+consumes the claim as stale before history, Project replacement, or save.
+
+Final publication runs through the session runtime's narrow publication gate.
+Under that gate it observes the active session Project/path, validates the
+current epoch and exact Apply claim under the mailbox-then-custodian lock
+order, stages the bounded history append, marks the claim as publication-owned,
+and replaces the session Project. The Project assignment is the in-memory
+publication linearization point. If a revocation or target switch enters the
+gate first, publication fails without a history entry. If publication enters
+first, Disarm and close wait until the replacement is committed; later target
+observation recognizes the Apply-owned replacement, and later Disarm cannot
+reclassify it as dismissed. Mailbox/custodian locks are released around
+history and Project mutation. An assignment failure before replacement rolls
+back both the staged marker and history entry. The next normal app run can
+observe and synchronize a committed replacement without making its successful
+Apply appear stale.
 
 On success the lifecycle appends one pre-Apply Project clone to bounded Undo
 history, replaces the session Project, clears selected graph nodes, sanitizes
 Gallery selection and focus, refreshes editor mirrors, clears the stale human
-Module Swap Preview, attempts autosave, and only then stores a bounded
-terminal result. Autosave failure retains the successful in-memory Project
-and Undo snapshot, reports `applied_save_failed`, and consumes the proposal.
-Applying and terminal results remain host-only; a still-undelivered mailbox
-queue acknowledgment is replaced with the existing generic cancellation
-outcome, never with Apply details. Repeated approval callbacks cannot claim or
-apply a second time.
+Module Swap Preview, attempts autosave, and then stores a bounded terminal
+result including a safe Scene label, source/target Module names, changed count,
+and save outcome. The human surface reports whether Undo is available.
+Autosave failure retains the successful in-memory Project and Undo snapshot,
+reports `applied_save_failed`, and consumes the proposal. Applying and terminal
+results remain host-only; a still-undelivered mailbox queue acknowledgment is
+replaced with the existing generic cancellation outcome, never with Apply
+details. Repeated approval callbacks cannot claim or apply a second time.
 
 ### PR-D: Streamlit/MCP end-to-end characterization
 
