@@ -72,6 +72,28 @@ class PreparedReviewReply:
 
 
 @dataclass(frozen=True)
+class PendingReviewRetryToken:
+    """Internal identity snapshot for one same-generation pending retry."""
+
+    request_id: str
+    pairing_generation: int
+    target_epoch: str
+    intent: dict
+    intent_digest: str
+    proposal_id: str
+    acknowledgment_identity: str
+    acknowledgment: dict
+
+
+@dataclass(frozen=True)
+class DuplicateReviewReply:
+    """Internal retry carrier; completion must revalidate live custody."""
+
+    reply: dict
+    token: PendingReviewRetryToken
+
+
+@dataclass(frozen=True)
 class ReviewRequestDecision:
     """Bounded result from proposal preflight or preparation."""
 
@@ -79,6 +101,7 @@ class ReviewRequestDecision:
     result: dict | None = None
     token: PreparedProposalToken | None = None
     revision: int = 0
+    retry_token: PendingReviewRetryToken | None = None
 
 
 @dataclass
@@ -96,6 +119,7 @@ class _ProposalRecord:
     encoded_size_bytes: int
     preview: dict
     ack: dict
+    acknowledgment_identity: str
     prepared_at: float
     prepared_expires_at: float
     expires_at: float | None = None
@@ -350,9 +374,7 @@ class AgentSceneModuleSwapApprovalCustodian:
                     if record.intent_digest != digest:
                         return ReviewRequestDecision("request_id_conflict")
                     if record.state == "pending":
-                        return ReviewRequestDecision(
-                            "retry_pending", result=deepcopy(record.ack),
-                        )
+                        return self._retry_pending_locked(record)
                     return ReviewRequestDecision("review_already_pending")
                 if record.state in ("prepared", "pending"):
                     return ReviewRequestDecision("review_already_pending")
@@ -413,9 +435,7 @@ class AgentSceneModuleSwapApprovalCustodian:
                     if record.intent_digest != digest:
                         return ReviewRequestDecision("request_id_conflict")
                     if record.state == "pending":
-                        return ReviewRequestDecision(
-                            "retry_pending", result=deepcopy(record.ack),
-                        )
+                        return self._retry_pending_locked(record)
                 return ReviewRequestDecision("review_already_pending")
 
             if size_reason:
@@ -434,6 +454,7 @@ class AgentSceneModuleSwapApprovalCustodian:
                 "content_identity": content_identity,
                 "expires_in_seconds": DEFAULT_PROPOSAL_TTL_SECONDS,
             }
+            acknowledgment_identity = secrets.token_urlsafe(24)
             self._record = _ProposalRecord(
                 state="prepared",
                 token=token_value,
@@ -448,6 +469,7 @@ class AgentSceneModuleSwapApprovalCustodian:
                 encoded_size_bytes=encoded_size,
                 preview=detached,
                 ack=ack,
+                acknowledgment_identity=acknowledgment_identity,
                 prepared_at=now,
                 prepared_expires_at=now + MAX_PREPARED_LIFETIME_SECONDS,
             )
@@ -457,6 +479,24 @@ class AgentSceneModuleSwapApprovalCustodian:
                 token=PreparedProposalToken(token_value, expected_revision),
                 revision=expected_revision,
             )
+
+    def _retry_pending_locked(self, record):
+        """Return the exact ack plus identity needed for coordinated publish."""
+
+        return ReviewRequestDecision(
+            "retry_pending",
+            result=deepcopy(record.ack),
+            retry_token=PendingReviewRetryToken(
+                request_id=record.request_id,
+                pairing_generation=record.pairing_generation,
+                target_epoch=record.target_epoch,
+                intent=deepcopy(record.intent),
+                intent_digest=record.intent_digest,
+                proposal_id=record.proposal_id,
+                acknowledgment_identity=record.acknowledgment_identity,
+                acknowledgment=deepcopy(record.ack),
+            ),
+        )
 
     def remember_failure(self, request_id, pairing_generation, target_epoch, intent,
                          expected_revision, reason):

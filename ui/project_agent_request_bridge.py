@@ -224,6 +224,7 @@ def _dispatch_scene_module_swap_review_request(
     from core import agent_facade
     from ui.agent_scene_module_swap_approval_lifecycle import (
         AgentSceneModuleSwapApprovalCustodian,
+        DuplicateReviewReply,
         PreparedReviewReply,
     )
 
@@ -249,7 +250,15 @@ def _dispatch_scene_module_swap_review_request(
         request_id, pairing_generation, target_epoch, intent,
     )
     if decision.status == "retry_pending":
-        return _completed_reply(request_id, decision.result)
+        if decision.retry_token is None or type(decision.result) is not dict:
+            return _completed_reply(
+                request_id,
+                mcp_adapter.scene_module_swap_review_failure("review_unavailable"),
+            )
+        return DuplicateReviewReply(
+            _completed_reply(request_id, decision.result),
+            decision.retry_token,
+        )
     if decision.status != "new":
         return _completed_reply(
             request_id,
@@ -329,7 +338,15 @@ def _dispatch_scene_module_swap_review_request(
         preview,
     )
     if prepared.status == "retry_pending":
-        return _completed_reply(request_id, prepared.result)
+        if prepared.retry_token is None or type(prepared.result) is not dict:
+            return _completed_reply(
+                request_id,
+                mcp_adapter.scene_module_swap_review_failure("review_unavailable"),
+            )
+        return DuplicateReviewReply(
+            _completed_reply(request_id, prepared.result),
+            prepared.retry_token,
+        )
     if prepared.status != "prepared" or prepared.token is None:
         return _completed_reply(
             request_id,

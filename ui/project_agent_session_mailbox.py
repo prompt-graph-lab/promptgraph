@@ -595,6 +595,133 @@ class ProjectAgentSessionMailbox:
 
                 return MailboxOutcome("completed")
 
+    def complete_with_duplicate_review(self, claim, duplicate_review, target_epoch,
+                                       review_custodian, *, now=None):
+        """Publish a retry acknowledgement only while its exact proposal is pending.
+
+        Unlike first-time review completion, this does not create or transition
+        proposal custody. It revalidates the retry's original correlation,
+        pairing, intent, proposal, and acknowledgement under the same fixed
+        mailbox-then-custodian lock order before exposing the positive reply.
+        """
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+            DuplicateReviewReply,
+            PendingReviewRetryToken,
+        )
+
+        if (type(duplicate_review) is not DuplicateReviewReply
+                or type(duplicate_review.token) is not PendingReviewRetryToken
+                or type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian):
+            return MailboxOutcome("invalid_review_retry_carrier")
+
+        detached_reply = _copy_plain_json(duplicate_review.reply, bounded=False)
+        reply_is_valid = detached_reply is not None and type(detached_reply) is dict
+        self.synchronize_target_epoch(
+            target_epoch,
+            review_custodian=review_custodian,
+        )
+
+        token = duplicate_review.token
+        with self._lock:
+            with review_custodian._lock:
+                if self._closed or review_custodian._closed:
+                    if self._state == _EXECUTING:
+                        self._set_terminal_locked("session_closed")
+                    return MailboxOutcome("session_closed")
+
+                claim_is_current = (
+                    type(claim) is MailboxClaim
+                    and self._state == _EXECUTING
+                    and self._claim_id == claim._claim_id
+                    and claim.pairing_generation is not None
+                    and claim.pairing_generation == self._request_pairing_generation
+                    and claim.target_epoch == self._request_epoch
+                    and type(self._request) is dict
+                    and type(claim.request) is dict
+                    and claim.request == self._request
+                    and claim.request.get("request_id") == token.request_id
+                    and self._request.get("request_id") == token.request_id
+                )
+                if not claim_is_current:
+                    if self._state == _EXECUTING:
+                        self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("unavailable")
+
+                if (self._invalidated_while_executing
+                        or claim.target_epoch != target_epoch
+                        or self._target_epoch != target_epoch
+                        or token.target_epoch != target_epoch
+                        or review_custodian._target_epoch != target_epoch):
+                    self._set_terminal_locked("stale_target")
+                    return MailboxOutcome("stale_target")
+
+                mailbox_now = self._clock() if now is None else now
+                if self._is_expired_locked(mailbox_now):
+                    self._set_terminal_locked("expired")
+                    return MailboxOutcome("expired")
+                if not reply_is_valid:
+                    self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("internal_error")
+
+                custody_now = review_custodian._clock() if now is None else now
+                review_custodian._expire_locked(custody_now)
+                record = review_custodian._record
+                tombstone = review_custodian._tombstones.get(token.request_id)
+                if record is None:
+                    terminal_status = "review_cancelled"
+                    if (tombstone is not None
+                            and tombstone.pairing_generation == token.pairing_generation
+                            and tombstone.intent_digest == token.intent_digest):
+                        terminal_status = {
+                            "proposal_expired": "expired",
+                            "stale_target": "stale_target",
+                            "session_closed": "session_closed",
+                        }.get(tombstone.reason, "review_cancelled")
+                    self._set_terminal_locked(terminal_status)
+                    return MailboxOutcome(terminal_status)
+
+                expected_reply = detached_reply
+                identity_matches = (
+                    record.state == "pending"
+                    and record.expires_at is not None
+                    and custody_now < record.expires_at
+                    and record.request_id == token.request_id
+                    and record.pairing_generation == token.pairing_generation
+                    and record.pairing_generation == claim.pairing_generation
+                    and record.target_epoch == token.target_epoch
+                    and record.target_epoch == claim.target_epoch
+                    and record.target_epoch == review_custodian._target_epoch
+                    and record.intent == token.intent
+                    and record.intent_digest == token.intent_digest
+                    and record.proposal_id == token.proposal_id
+                    and record.acknowledgment_identity == token.acknowledgment_identity
+                    and record.ack == token.acknowledgment
+                    and type(expected_reply) is dict
+                    and set(expected_reply) == {
+                        "bridge_contract_version", "request_id", "status", "result",
+                    }
+                    and expected_reply.get("bridge_contract_version") == (
+                        "promptgraph.app-agent-request-bridge.v1"
+                    )
+                    and expected_reply.get("request_id") == token.request_id
+                    and expected_reply.get("status") == "completed"
+                    and expected_reply.get("result") == record.ack
+                )
+                if not identity_matches:
+                    self._set_terminal_locked("review_cancelled")
+                    return MailboxOutcome("review_cancelled")
+
+                # Retry publication does not change custody state or expiry.
+                self._reply_status = "completed"
+                self._reply = detached_reply
+                self._reply_is_review_request = True
+                self._state = _REPLY_READY
+                self._reply_generation += 1
+                self._clear_request_payload_locked()
+                return MailboxOutcome("completed")
+
     def cancel_review_custody(self, review_custodian):
         """Cancel custody and hide an unconsumed positive queue reply."""
 

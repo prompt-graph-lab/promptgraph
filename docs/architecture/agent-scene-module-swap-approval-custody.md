@@ -376,6 +376,18 @@ proposal acceptance point. Both writes happen before either state is exposed
 through its owner; `consume_reply()` cannot race ahead by polling while the
 transaction holds the mailbox lock.
 
+An exact same-generation retry uses a separate coordinated completion path.
+Preflight returns an internal identity snapshot rather than directly publishing
+the old positive acknowledgment. Under the same mailbox-then-custodian lock
+order, completion revalidates the active claim and deadline plus the exact
+request correlation, pairing generation, normalized intent, target epoch,
+proposal ID, acknowledgment identity, pending state, and proposal TTL. Only
+that still-pending original proposal may publish its unchanged acknowledgment.
+Cancellation, expiry, target change, or session close before this recheck yields
+a terminal non-success outcome. Retry completion never creates a proposal,
+changes custody state, or renews either expiry. Ordinary observation and
+Preview replies continue through ordinary mailbox completion.
+
 Session cleanup closes the mailbox and marks the custodian closed together
 under the mailbox-then-custodian lock order, then releases both locks before
 unregistering the route or tearing down the pipe. It holds no registry or
@@ -576,7 +588,9 @@ arguments are rejected before capture; standalone adapter calls cannot
 fabricate acceptance; no Project or raw planner object survives the request
 run. Target switch, explicit host disarm, and session cleanup isolate
 proposals. No UI, human decision, Apply, history, save, or publication was
-added.
+added. Same-generation retry acknowledgments revalidate the exact pending
+proposal during coordinated mailbox completion and cannot outlive cancellation
+or expiry.
 
 Concurrency acceptance for the commit protocol must use deterministic
 barriers/events, never sleep-based timing. Race `consume_reply()` against a

@@ -15,8 +15,10 @@ from core.project import Project, PromptLine
 from ui import project_agent_request_bridge as bridge
 from ui import project_capture_safety as capture_safety
 from ui.agent_scene_module_swap_approval_lifecycle import (
+    DEFAULT_PROPOSAL_TTL_SECONDS,
     MAX_PROPOSAL_ENCODED_BYTES,
     AgentSceneModuleSwapApprovalCustodian,
+    DuplicateReviewReply,
     PreparedProposalToken,
     PreparedReviewReply,
     _bounded_canonical_identity,
@@ -28,6 +30,7 @@ from ui.project_agent_session_pump import (
     ProjectAgentSessionRuntime,
     service_project_agent_session_request,
 )
+from ui import project_agent_session_pump as session_pump
 from ui.project_agent_session_registry import ProjectAgentSessionRegistry
 
 
@@ -161,6 +164,36 @@ def _make_staged_review(*, clock=None, preview=None):
     return clock, custodian, mailbox, claim, carrier
 
 
+def _make_live_pending_review(monkeypatch, *, clock=None):
+    monkeypatch.setattr(
+        capture_safety._streamlit_config,
+        "get_option",
+        lambda key: False if key == "runner.fastReruns" else None,
+    )
+    project = _project()
+    arguments, preview = _expected_arguments(project)
+    session = {"project": project, "current_project_path": r"C:\Projects\active.json"}
+    run_token = capture_safety.begin_project_capture_run(session)
+    registry = ProjectAgentSessionRegistry()
+    mailbox_kwargs = {} if clock is None else {"clock": clock}
+    custodian_kwargs = {} if clock is None else {"clock": clock}
+    runtime = ProjectAgentSessionRuntime(
+        mailbox=ProjectAgentSessionMailbox(**mailbox_kwargs),
+        review_custodian=AgentSceneModuleSwapApprovalCustodian(**custodian_kwargs),
+        _registry=registry,
+    )
+    epoch = runtime.synchronize_target(project, session["current_project_path"])
+    route = _arm_route(runtime, registry)
+    request = _request("request-a", arguments)
+    assert route.submit(epoch, request).status == "accepted"
+    assert service_project_agent_session_request(runtime, session, run_token) == "completed"
+    initial = route.consume_reply(epoch)
+    assert initial.status == "completed"
+    assert initial.reply["result"]["status"] == "queued_for_review"
+    assert runtime.review_custodian.inspect()["state"] == "pending"
+    return runtime, route, registry, session, run_token, epoch, request, preview
+
+
 def _expanded_preview(preview, *, token_count):
     expanded = deepcopy(preview)
     target_count = 100
@@ -269,13 +302,17 @@ def test_review_tool_round_trip_is_pair_generation_scoped_and_disconnect_safe(mo
 
         # An exact retry in this pairing generation returns the same bounded
         # acknowledgement without recapturing the Project or extending TTL.
-        expires_at = runtime.review_custodian.inspect()["expires_at"]
+        before_retry = runtime.review_custodian.inspect()
+        expires_at = before_retry["expires_at"]
         assert first_route.submit(target_epoch, request).status == "accepted"
         assert service_project_agent_session_request(runtime, session, run_token) == "completed"
         duplicate = first_route.consume_reply(target_epoch)
         assert duplicate.reply["result"] == ack
         assert len(capture_calls) == 1
-        assert runtime.review_custodian.inspect()["expires_at"] == expires_at
+        after_retry = runtime.review_custodian.inspect()
+        assert after_retry["expires_at"] == expires_at
+        assert after_retry["proposal_id"] == before_retry["proposal_id"]
+        assert after_retry["preview"] == before_retry["preview"]
 
         # Reusing the same correlation ID for a different normalized intent
         # is rejected before capture and cannot replace the pending proposal.
@@ -319,6 +356,145 @@ def test_review_tool_round_trip_is_pair_generation_scoped_and_disconnect_safe(mo
     finally:
         runtime._named_pipe_broker = None
         runtime.close()
+
+
+@pytest.mark.parametrize(
+    "transition",
+    ("disarm", "proposal_expiry", "target_switch", "session_close"),
+)
+def test_duplicate_review_ack_rechecks_live_custody_before_publish(
+        monkeypatch, transition):
+    clock = FakeClock() if transition == "proposal_expiry" else None
+    runtime, route, registry, session, run_token, epoch, request, _preview = (
+        _make_live_pending_review(monkeypatch, clock=clock)
+    )
+    if clock is not None:
+        # Leave more than the mailbox request timeout but less than the
+        # proposal TTL, so only proposal expiry changes before completion.
+        clock.advance(DEFAULT_PROPOSAL_TTL_SECONDS - 30)
+
+    assert route.submit(epoch, request).status == "accepted"
+
+    original_dispatch = session_pump.dispatch_project_agent_request
+    retry_preflight_complete = threading.Event()
+    allow_publication = threading.Event()
+
+    def pause_after_retry_preflight(*args, **kwargs):
+        reply = original_dispatch(*args, **kwargs)
+        assert type(reply) is DuplicateReviewReply
+        retry_preflight_complete.set()
+        if not allow_publication.wait(5):
+            raise TimeoutError("test did not resume duplicate completion")
+        return reply
+
+    monkeypatch.setattr(
+        session_pump,
+        "dispatch_project_agent_request",
+        pause_after_retry_preflight,
+    )
+    results = queue.Queue()
+    worker = threading.Thread(target=lambda: results.put(
+        service_project_agent_session_request(runtime, session, run_token)
+    ))
+    worker.start()
+    assert retry_preflight_complete.wait(5)
+
+    try:
+        if transition == "disarm":
+            class Broker:
+                def disarm_launcher_rendezvous(self, _registration):
+                    return type("Operation", (), {"status": "disarmed"})()
+
+            runtime._named_pipe_broker = Broker()
+            assert runtime.disarm_launcher_rendezvous().status == "disarmed"
+        elif transition == "proposal_expiry":
+            clock.advance(31)
+        elif transition == "target_switch":
+            session["project"] = _project()
+            session["current_project_path"] = r"C:\Projects\replacement.json"
+            runtime.synchronize_target(
+                session["project"],
+                session["current_project_path"],
+            )
+        elif transition == "session_close":
+            runtime.close()
+    finally:
+        allow_publication.set()
+        worker.join(5)
+
+    assert not worker.is_alive()
+    service_status = results.get_nowait()
+    assert service_status != "completed"
+    consumed = route.consume_reply(epoch)
+    assert not (
+        consumed.status == "completed"
+        and type(consumed.reply) is dict
+        and consumed.reply.get("result", {}).get("status") == "queued_for_review"
+    )
+
+    after = runtime.review_custodian.inspect()
+    assert after["state"] == "absent"
+    if transition == "disarm":
+        assert consumed.status == "review_cancelled"
+        assert "proposal_id" not in after
+    elif transition == "proposal_expiry":
+        assert consumed.status == "expired"
+    elif transition == "target_switch":
+        assert consumed.status == "stale_target"
+    else:
+        assert consumed.status in ("session_closed", "session_unavailable")
+
+    if transition == "disarm":
+        # A new pairing generation cannot retrieve the cancelled proposal's
+        # positive acknowledgement from its bounded tombstone.
+        assert route.release().status == "released"
+        replacement_route = _arm_route(runtime, registry)
+        assert replacement_route.submit(epoch, request).status == "accepted"
+        monkeypatch.setattr(
+            session_pump,
+            "dispatch_project_agent_request",
+            original_dispatch,
+        )
+        assert service_project_agent_session_request(
+            runtime, session, run_token,
+        ) == "completed"
+        replay = replacement_route.consume_reply(epoch)
+        assert replay.status == "completed"
+        assert replay.reply["result"]["reason"] == "replay_not_accepted"
+        assert "proposal_id" not in replay.reply["result"]
+        replacement_route.release()
+
+    runtime._named_pipe_broker = None
+    runtime.close()
+
+
+def test_observation_and_preview_completions_remain_ordinary_with_pending_review(
+        monkeypatch):
+    runtime, route, _registry, session, run_token, epoch, _review_request, _preview = (
+        _make_live_pending_review(monkeypatch)
+    )
+    before = runtime.review_custodian.inspect()
+
+    for request_id, tool, arguments in (
+        ("ordinary-summary", "promptgraph_project_summary", {}),
+        ("ordinary-preview", "promptgraph_preview_scene_module_swap", _intent()),
+    ):
+        request = _request(request_id, {**arguments})
+        request["tool"] = tool
+        assert route.submit(epoch, request).status == "accepted"
+        assert service_project_agent_session_request(runtime, session, run_token) == "completed"
+        delivered = route.consume_reply(epoch)
+        assert delivered.status == "completed"
+        assert type(delivered.reply["result"]) is dict
+        if tool == "promptgraph_preview_scene_module_swap":
+            assert delivered.reply["result"]["valid"] is True
+
+    after = runtime.review_custodian.inspect()
+    assert after["state"] == "pending"
+    assert after["proposal_id"] == before["proposal_id"]
+    assert after["expires_at"] == before["expires_at"]
+    route.release()
+    runtime.close()
 
 
 def test_review_bridge_without_trusted_session_custody_fails_before_capture(monkeypatch):

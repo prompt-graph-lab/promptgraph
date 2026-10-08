@@ -12,6 +12,7 @@ import streamlit as st
 from ui.project_agent_request_bridge import dispatch_project_agent_request
 from ui.agent_scene_module_swap_approval_lifecycle import (
     AgentSceneModuleSwapApprovalCustodian,
+    DuplicateReviewReply,
     PreparedReviewReply,
 )
 from ui.project_capture_safety import PROJECT_CAPTURE_RUN_TOKEN_KEY
@@ -280,6 +281,13 @@ def service_project_agent_session_request(
     )
     if type(bridge_reply) is PreparedReviewReply:
         outcome = runtime.mailbox.complete_with_review(
+            claim,
+            bridge_reply,
+            current_epoch,
+            runtime.review_custodian,
+        )
+    elif type(bridge_reply) is DuplicateReviewReply:
+        outcome = runtime.mailbox.complete_with_duplicate_review(
             claim,
             bridge_reply,
             current_epoch,
