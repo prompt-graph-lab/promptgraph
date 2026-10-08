@@ -32,10 +32,10 @@ unchanged and creates no pending item.
 | `core.module_swap_selected_routes.build_selected_routes_module_swap_plan` | Owns Module Swap semantics and freshness signature. The signature binds selected Scene/Illustration structure, target prompt and token state, relevant image-reference state, Module Library, Project source-directory value, mode, `project_path`, and `disabled_modules`. The agent facade deliberately calls it with `project_path=""` and `disabled_modules=None`. |
 | `core.module_swap_selected_routes.apply_selected_routes_module_swap` | Rebuilds the plan against the supplied Project and expected signature, then deep-copies the Project, rebuilds the plan on the clone, applies only planned target Illustration IDs, validates the result, and returns a replacement Project. A stale or failed operation returns no replacement Project. |
 | `ui.module_swap_selected_routes_lifecycle.apply_and_publish_selected_routes_module_swap` | Owns the existing human Selected Routes Apply publication. It reads the shared `gallery_selected_route_ids`, current path, and disabled Modules; after a successful core Apply it calls history, replaces the session Project, restores focus, saves, then consumes `module_swap_preview`. It is not an exact agent-Preview custodian and must not be reused by mutating Gallery selection to impersonate one. |
-| `agent_adapters.mcp_adapter` | Owns the catalog and request-shape boundary. `promptgraph_preview_scene_module_swap` is a reviewed Preview tool; there is no approval or Apply tool. The adapter delegates to the facade and does not retain the Project or Preview. |
-| `ui.project_agent_request_bridge.dispatch_project_agent_request` | Validates the request envelope, lazily obtains a request-scoped captured Project when needed, calls the adapter, confirms capture/run identity remains current, and returns the adapter result unchanged. It retains no result or human approval state. |
-| `ui.project_agent_session_mailbox.ProjectAgentSessionMailbox` | Holds at most one detached request and one reply/outcome for the explicit session target epoch. `complete()` publishes the bridge reply as `reply_ready`; the paired producer consumes it once through `consume_reply()`. A target switch or deadline before consumption can stale or expire the reply. The mailbox contains no Project, Streamlit state, Preview custody, or Apply state. |
-| `ui.project_agent_session_pump.service_project_agent_session_request` | Runs only at explicit points in a normal full-app run. It synchronizes target epoch, claims one request, calls the bridge, synchronizes again, and completes the mailbox. The public periodic fragment only wakes an app rerun. The pump does not currently publish an agent result into host session state. |
+| `agent_adapters.mcp_adapter` | Owns the catalog and request-shape boundary. `promptgraph_preview_scene_module_swap` is a reviewed Preview tool; there is no Apply tool. The adapter delegates to the facade and does not retain the Project or Preview. The proposed review-request tool's catalog schema and non-capturing transport validation also belong here; a direct adapter invocation cannot accept or retain a proposal. |
+| `ui.project_agent_request_bridge.dispatch_project_agent_request` | Validates the request envelope, lazily obtains a request-scoped captured Project when needed, calls the adapter, confirms capture/run identity remains current, and returns the adapter result unchanged. The proposed review-request path must dispatch to the host review lifecycle after adapter-owned argument validation; it must not use an adapter success result as proof of custody. |
+| `ui.project_agent_session_mailbox.ProjectAgentSessionMailbox` | Holds at most one detached request and one reply/outcome for the explicit session target epoch. `complete()` publishes the bridge reply as `reply_ready`; the paired producer consumes it once through `consume_reply()`. A target switch or deadline before consumption can stale or expire the reply. For a future review request only, a narrow completion primitive must coordinate reply visibility with a host callback while retaining mailbox ownership; the mailbox still contains no Project, Streamlit state, proposal, or Apply state. |
+| `ui.project_agent_session_pump.service_project_agent_session_request` | Runs only at explicit points in a normal full-app run. It synchronizes target epoch, claims one request, calls the bridge, synchronizes again, and completes the mailbox. The public periodic fragment only wakes an app rerun. For a prepared review request, the pump is the completion coordinator; proposal data stays in the host lifecycle and the mailbox receives only the bounded reply. |
 | `ui.project_agent_session_registry` / `ProjectAgentPairedRoute` | Addresses one explicitly paired mailbox and exposes only target lookup, submit, consume, and release. It does not retain a Project or expose session state or approval authority. |
 | `ui.project_capture_safety` | Captures a clone of the exact active Project using the current full-run token and serialized rerun configuration, then checks that the same active Project/run remains current. It is a request-safety gate, not a revision counter for in-place edits. |
 | `ui.mcp_connection_ui.render_mcp_connection_sidebar` | Shows and controls the current session's MCP connection. Its fragment is connection-only and intentionally does not own Project data or approval. |
@@ -112,9 +112,10 @@ Two origins were considered:
    `promptgraph_request_scene_module_swap_review`. This makes the human handoff
    intentional and idempotency/staleness rules explicit.
 
-Choose option 2. The review request repeats the explicit Scene, Module names,
-and mode, and includes the `plan_id` returned by the Preview as an
-`expected_plan_id` content precondition. During the normal full-app request,
+Choose option 2. The new MCP tool is
+`promptgraph_request_scene_module_swap_review`. It repeats the explicit Scene,
+Module names, and mode, and includes the `plan_id` returned by the Preview as
+an `expected_plan_id` content precondition. During the normal full-app request,
 the host recomputes `preview_scene_module_swap` from the current captured
 Project. If the fresh `plan_id` differs, return a bounded stale response and
 create no proposal. If it matches, the host stores its own freshly computed
@@ -123,6 +124,91 @@ is a compare-and-swap value only, never authorization.
 
 Normal Preview calls continue to have zero side effects. A no-op, invalid,
 over-limit, or stale review request cannot create an actionable proposal.
+
+## Proposed review-request dispatch path
+
+The catalog and the trusted host operation have different responsibilities.
+The catalog-driven MCP client sees the new tool, but the adapter itself cannot
+accept a proposal. Preserve the following single path:
+
+```text
+MCP client
+  → stdio gateway and exact paired route
+  → capacity-one mailbox submit
+  → periodic fragment wake only
+  → normal full-app run claims the request
+  → request bridge validates the outer envelope
+  → adapter-owned, non-capturing validation of the review tool arguments
+  → bridge-owned request provider captures the active Project for this run
+  → host review lifecycle asks the facade for a fresh safe Preview
+  → compare fresh plan_id with expected_plan_id; check capture is still current
+  → host lifecycle prepares a bounded session-local proposal record
+  → pump and mailbox coordinate proposal commit with bounded ack publication
+  → paired producer consumes the ack; MCP client receives queue status only
+```
+
+On successful preparation, the bridge returns a host-internal dispatch outcome
+containing only the bounded JSON acknowledgment and an opaque prepared-custody
+token. The pump recognizes that outcome for the review-request tool and passes
+the token to the mailbox's coordinated completion operation. This internal
+carrier is not the bridge reply envelope: it is never JSON-serialized,
+returned by `ProjectAgentPairedRoute`, or sent to the MCP client, and it
+contains no Project or raw planner data. Ordinary tool calls continue to return
+their existing JSON-safe result directly. Any bridge/capture validation error
+aborts the prepared token before the normal bounded failure reply is published.
+
+`agent_adapters.mcp_adapter.get_tool_catalog()` remains authoritative for the
+tool definition. Its strict object schema requires `scene_id`,
+`source_module_name`, `target_module_name`, and `expected_plan_id`; `match_mode`
+is optional with the same `strict` default and allowed values as the existing
+Preview. `expected_plan_id` must be the exact 64-character lowercase hex digest
+form returned by the existing facade. Unknown fields are rejected. The adapter
+owns a reusable non-capturing transport validator for this schema; the bridge
+calls it before any Project provider is accessed. Domain review semantics stay
+with `core.agent_facade.preview_scene_module_swap`; the new tool does not duplicate
+planner or facade validation. Capability metadata may advertise this explicit
+host-review request separately from a Preview, while `agent_callable_apply`
+remains `false`; the request does not create an agent mutation capability. The
+catalog description/effect must label a request for human review, not a Preview
+or mutation result.
+
+The bridge special-cases this tool after outer-envelope and adapter-schema
+validation, then dispatches to
+`ui.agent_scene_module_swap_approval_lifecycle`. That host owner uses the
+current run token and the bridge-owned request-local captured Project from the
+existing capture gate, recomputes the exact safe facade envelope, requires
+`valid is true`, an exact `expected_plan_id` match, and a non-zero
+`changed_count`, and verifies the capture remains current before preparing
+custody. `expected_plan_id` is
+checked separately and is not passed to the facade as planner input. The
+request is not sent through ordinary
+`PromptGraphMCPAdapter.call_tool()` after this point. A direct logical adapter
+or standalone SDK call has no session-local custodian and therefore returns a
+bounded `host_review_unavailable` refusal before calling its Project provider;
+it must never return `review_queued`. Ordinary read and Preview tools retain
+their existing adapter → facade → bridge behavior.
+
+Only a successful coordinated commit may return a bounded positive tool result,
+for example `status: queued_for_human_review` with an opaque `proposal_id` and
+fixed expiry summary. It states only that a human-review item is available; it
+does not mean viewed, approved, applied, or saved. Tool-level refusals such as
+`stale_preview`, `review_already_pending`, `request_id_conflict`, and
+`host_review_unavailable` remain bounded JSON failures. A mailbox-level stale,
+expired, closed, or unavailable outcome is not converted into a positive
+acknowledgment. No completion waits for the human decision.
+
+Pairing generation is host routing metadata, never an MCP argument. The paired
+route stamps its private generation onto the mailbox submission; the mailbox
+claim carries that internal metadata to the full-run pump without adding it to
+the JSON request. The proposal/tombstone records the originating route
+generation and bounded request correlation internally. An exact retry from that same generation may
+receive the same queued acknowledgment without extending expiry or creating a
+second proposal. A different pairing generation cannot retrieve that old
+acknowledgment or proposal ID; while the proposal is pending it receives only
+a generic bounded `review_already_pending` or replay refusal. Reusing a
+correlation ID with different normalized intent returns
+`request_id_conflict`. This preserves the session-owned human proposal without
+transferring its result to a later gateway pairing.
 
 ## Proposed versioned host record
 
@@ -135,6 +221,7 @@ contract, not a current persisted schema:
   "proposal_id": "<host-generated opaque identifier>",
   "state": "pending",
   "request_id": "<bounded correlation value>",
+  "origin_pairing_generation": 1,
   "target_epoch": "<opaque current session epoch>",
   "request": {
     "scene_id": "<explicit Scene separator id>",
@@ -152,27 +239,32 @@ contract, not a current persisted schema:
 ```
 
 `proposal_id` is an address for display and one-shot UI state, not a bearer
-secret. `request_id` is correlation only. `preview_envelope` is the exact
-safe facade envelope; it contains no raw Module definition or local image path.
+secret. `request_id` is correlation only. `origin_pairing_generation` is
+host-only routing metadata obtained from the exact paired route, never from an
+MCP field. `preview_envelope` is the exact safe facade envelope; it contains no
+raw Module definition or local image path.
 The custodian must validate its exact schema and JSON types before storage and
 must reject rather than truncate if its encoded byte size exceeds a documented
 custody cap. Determine that cap with a max-shape fixture against the facade's
 100 visible rows, per-text limits, and token-delta limits before implementation.
 
 Recommended initial limits are one active proposal per browser session and a
-15-minute monotonic expiry. A duplicate request for the same correlation and
-content precondition returns the existing pending acknowledgment without
-extending the expiry. A different review request while one is pending receives
-`review_already_pending`; it never replaces or transfers the record. After a
-terminal decision, retain only a small bounded tombstone/status record, not the
-envelope, so callbacks cannot replay the same proposal.
+15-minute monotonic expiry. An exact duplicate from the originating pairing
+generation may return the existing pending acknowledgment without extending
+the expiry. A duplicate from another generation never receives that
+acknowledgment. A different review request while one is pending receives
+`review_already_pending`; it never replaces or transfers the record. Reuse of
+a correlation ID with different normalized intent receives
+`request_id_conflict`. After a terminal decision, retain only a small bounded
+tombstone/status record, not the envelope, so callbacks cannot replay the same
+proposal.
 
 The record must not contain a `Project`, `PromptLine`, Module snapshot/body,
 graph, image path, Project path, capture token, raw mailbox, pairing
 capability, or general session object. Store no filesystem state and write no
 receipt to Project metadata.
 
-## State and mailbox completion boundary
+## Atomic proposal commitment and mailbox acknowledgment
 
 Recommended states:
 
@@ -185,21 +277,110 @@ absent → prepared → pending → applying → applied
                          └──→ apply_failed
 ```
 
-`prepared` is host-internal and cannot be rendered or approved. The full-run
-host dispatcher computes the candidate and verifies the capture is still
-current. It stages the candidate as `prepared`, then asks the mailbox to
-publish the bounded review-request acknowledgment. Only if
-`ProjectAgentSessionMailbox.complete()` returns `completed` for the same
-request, target epoch, and deadline does the host lifecycle promote that
-candidate to `pending` before the full-app run returns. Otherwise it discards
-the candidate. Thus mailbox completion is the proposal's authoritative
-creation boundary; later reply consumption by the gateway is not.
+`prepared` is host-internal and cannot be listed, rendered, approved, rejected,
+or applied. The host lifecycle computes and size-checks the candidate outside
+mailbox/custodian locks and stages it with the current request claim, pairing
+generation, target epoch, and monotonic deadline. No transport, Named Pipe, or
+registry operation lock is held during capture, Project cloning, facade
+Preview, or size calculation.
 
-This ordering makes a delivered acknowledgment follow a host-staged exact
-Preview while keeping an uncompleted, stale, expired, or malformed request
-non-actionable. If the app is interrupted with a `prepared` record, the next
-full run discards it; it must never be mistaken for a pending human decision.
-An ordinary Preview has no candidate and follows the existing bridge path.
+The current sequential proposal—call `complete()`, then separately promote the
+record—has a race: `consume_reply()` may acquire the mailbox lock and return the
+successful ack before the later promotion succeeds. Calling those methods
+sequentially is not an atomicity guarantee. PR-A must introduce one narrow
+mailbox completion operation (for example `complete_with_host_commit`) used
+only for this review-request result. Its exact owner is the mailbox for reply
+state and request/deadline validation, with a callback into the host lifecycle
+custodian for proposal state; it does not move proposal ownership into the
+mailbox.
+
+The operation follows one lock order: mailbox lock, then the session-local
+custodian lock. No custodian-held path may acquire the mailbox lock. UI reads
+and Apply eligibility checks acquire the custodian lock only; route release,
+target synchronization, and mailbox cleanup acquire mailbox/registry locks
+without nesting a custodian lock in reverse order. The commit callback performs
+only bounded in-memory state changes. It calls no Streamlit API, Project/core
+operation, capture, filesystem, transport, or user callback.
+
+Within that operation, the pump supplies the claim, current target epoch,
+detached/bounded reply, and prepared-record token. The reply is copied and
+JSON-validated before taking either lock. While holding the mailbox lock, the
+mailbox revalidates, in this order:
+
+1. the session is open and the exact claim is still `EXECUTING`;
+2. the request/claim/host target epochs match the mailbox's current epoch and
+   no execution-time invalidation was recorded;
+3. the original request deadline has not expired;
+4. the detached reply passed exact-JSON validation and fits the existing
+   mailbox/bridge reply contract.
+
+Only after these checks does it acquire the custodian lock. The host custodian,
+not the mailbox, then verifies that the prepared record matches the request
+correlation, pairing generation, normalized intent, content identity, session,
+epoch, and its own expiry, and that the one-pending-slot rule still holds. It
+rechecks that the same prepared token is not aborted, expired, replaced, or
+already committed, and that the bounded positive ack corresponds to that
+record. While both locks are held, the mailbox first writes the bounded reply
+and `reply_ready` state; the custodian then performs the `prepared → pending`
+assignment. That custodian assignment is the proposal acceptance
+linearization point. Releasing the custodian lock makes the proposal visible,
+but the mailbox lock remains held until afterward, so `consume_reply()` cannot
+return the acknowledgment before the proposal is committed. The mailbox lock
+release is the acknowledgment's consumer-visibility point, strictly after the
+proposal acceptance point. Both writes happen before either state is exposed
+through its owner; `consume_reply()` cannot race ahead by polling while the
+transaction holds the mailbox lock.
+
+Session cleanup marks the custodian closed under its lock before unregistering
+the route and closing the mailbox; it must release the custodian lock before
+waiting on registry or mailbox locks. The commit callback checks that closed
+marker while holding the custodian lock. If cleanup marks closed first, commit
+fails without a positive ack. If commit wins first, cleanup follows and
+removes the proposal before the session is released. Target synchronization
+continues to linearize through the mailbox lock; no code path may hold the
+custodian lock while acquiring the mailbox lock.
+
+Failures before that boundary leave no actionable proposal and no successful
+ack. The mailbox alone decides stale target, expired deadline, session closed,
+claim mismatch, and invalid/bounded-reply outcomes before invoking the commit
+callback. A conflict or lost prepared token returns a bounded non-success
+tool result or mailbox terminal outcome. After both locks are acquired, only
+non-throwing in-memory field assignments may remain. If an unexpected
+exception still occurs before both stores reach their committed states, roll
+back the mailbox reply/state and custodian record while both locks are held,
+then release them; no reader may observe the partial state. Never call
+`complete()` successfully first and hope a later `promote()` repairs custody.
+
+Interruption behavior is explicit:
+
+- Before preparation: no proposal state exists.
+- After `prepared` staging but before commit: `finally` aborts it. A later
+  full-run/UI sweep also removes expired or orphaned prepared records by
+  request claim and monotonic deadline. `prepared` is never actionable and
+  cannot occupy the active human-review slot after its request is no longer
+  live.
+- During the paired commit: both reader locks stay held until commit or
+  rollback. An exception before publication aborts the preparation and leaves
+  no successful ack. A hard process stop discards the ephemeral mailbox and
+  custodian together; no durable approval survives restart.
+- After commit but before `consume_reply()`: the proposal is already pending
+  for the same session's human. The ack remains subject to the mailbox's
+  original deadline, target epoch, pairing, and disconnect cleanup. If the
+  producer never consumes it, normal mailbox expiry/stale/caretaker handling
+  may clear or report that reply, but it does not roll back, recreate, or
+  extend the already committed proposal. The human proposal follows its own
+  15-minute TTL and target/session cancellation rules.
+
+A target switch that wins the mailbox lock, or session cleanup that marks the
+custodian closed before commit, causes the operation to fail without creating a
+proposal. If commit wins first,
+the later target/session transition invalidates or removes the proposal and
+may turn an unconsumed mailbox ack stale; a previously consumed queue ack still
+means only that the proposal was queued at its commit epoch. Human display and
+Apply recheck epoch and exact Preview, so that ordering cannot authorize a
+stale Apply. A normal paired-client disconnect after commit does not move the
+proposal to a later pairing generation. An ordinary Preview has no candidate
+and follows the existing bridge path.
 
 ## Identity and freshness
 
@@ -288,7 +469,12 @@ notification or decision-status tool is a separate protocol decision.
 
 These rules are additional host proposal semantics. They do not change existing
 mailbox deadlines, transport caretaker behavior, session pairing, or Project
-target epoch policy.
+target epoch policy. The mailbox request acknowledgment and the human proposal
+have separate lifetimes: consuming, expiring, staling, or caretaker-draining an
+unconsumed acknowledgment never makes the queue operation run again. The
+proposal remains bound to its originating session and pairing generation and
+is independently invalidated by proposal TTL, target change, explicit host
+disconnect/disarm, or session cleanup.
 
 ## UI placement
 
@@ -335,11 +521,32 @@ deduplication, expiry, prepare/commit/abort integration with full-run mailbox
 completion, and target-epoch invalidation. Do not add Apply or UI yet.
 
 Acceptance: ordinary Preview never creates state; matching expected plan ID
-stores the exact host-computed envelope only after successful mailbox
-completion; mismatch/expired/stale completion stores none; duplicate and
-second-request behavior is deterministic; size/TTL bounds reject without
-truncating; no Project or raw planner object survives the request run; target
-switch and session cleanup isolate proposals.
+stores the exact host-computed envelope only after the coordinated mailbox
+completion commits; mismatch/expired/stale/closed completion stores none and
+cannot publish a positive queue acknowledgment; duplicate and second-request
+behavior is deterministic and cannot transfer an acknowledgment across
+pairing generations; size/TTL bounds reject without truncating; malformed
+request arguments are rejected before capture; standalone adapter invocation
+cannot fabricate acceptance; no Project or raw planner object survives the
+request run; target switch and session cleanup isolate proposals.
+
+Concurrency acceptance for the commit protocol must use deterministic
+barriers/events, never sleep-based timing. Race `consume_reply()` against a
+prepared review commit and prove that a consumed positive acknowledgment
+always has a committed pending proposal first. Also prove that target epoch
+change, request expiry, session close, claim mismatch, reply validation
+failure, a lost prepared token, or a custodian commit exception cannot leave
+an actionable proposal paired with a positive acknowledgment. Exercise
+interruption before staging, after staging but before commit, during rollback,
+and after commit before reply consumption. In the last case the original
+mailbox outcome may become expired/stale, but the one committed proposal
+remains only in its originating browser session until its own TTL or an
+explicit host cancellation; retries do not create a second proposal or extend
+either expiry. A same-generation exact retry may return the same bounded ack;
+cross-generation replay must return a non-accepted result without revealing
+the old proposal ID. Existing read-only and ordinary Preview calls must remain
+unchanged, and no Apply/history/save authority may appear on MCP or gateway
+owners.
 
 ### PR-B: human review surface
 
