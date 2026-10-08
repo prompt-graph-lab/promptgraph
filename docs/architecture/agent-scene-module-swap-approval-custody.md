@@ -22,8 +22,8 @@ Review** surface in normal full-app runs, with complete paginated
 Before/After prompts, session-custody freshness validation, a safe host display
 projection, and terminal Reject/Dismiss actions. Its checkbox records only a
 session-local acknowledgment that the human reviewed the proposal; it does
-not approve or apply anything. Host-only Apply, Undo/history, Project
-publication, and save remain separate PR-C work. No MCP Apply tool exists.
+not approve or apply anything. PR-C adds a direct human Approve and Apply
+action and host-only publication. No MCP Apply tool exists.
 
 The implemented owner is `ui.agent_scene_module_swap_approval_lifecycle`, one
 custodian per `ProjectAgentSessionRuntime`. It retains one exact detached safe
@@ -153,11 +153,11 @@ different intent or require changing shared selection state.
 
 PR-A implements the narrow
 `ui.agent_scene_module_swap_approval_lifecycle` session custodian and its
-prepare/commit/abort/expire transitions. Remaining UI work belongs to a
-separate review-panel owner; `app.py` should only wire that panel and the later
-host-Apply lifecycle into normal full-app runs. The mailbox pump coordinates
-proposal commit with its reply outcome but does not become the proposal store.
-`core.agent_facade` remains pure.
+prepare/commit/abort/expire transitions. PR-B owns the review panel, while
+`app.py` wires the panel and the PR-C Apply lifecycle into normal full-app
+runs. The mailbox pump coordinates proposal commit and one-shot Apply claims
+with reply state but does not become the proposal store. `core.agent_facade`
+remains pure.
 
 ## Proposal origin
 
@@ -637,32 +637,78 @@ the old proposal ID. Existing read-only and ordinary Preview calls must remain
 unchanged, and no Apply/history/save authority may appear on MCP or gateway
 owners.
 
-### PR-B: human review surface
+### PR-B: human review surface — implemented
 
-Add a dedicated host panel, complete paginated Before/After review, proposal
-states, Reject/Dismiss, and one-time confirmation binding. Do not Apply in this
-slice.
+The persistent Agent Review panel renders all target rows through pagination,
+shows only its safe display projection, and exposes Reject, Dismiss, and a
+proposal/plan-bound review acknowledgment. The acknowledgment checkbox is not
+approval. Stale content consumes the proposal and clears the staged state.
 
-Acceptance: every target row is inspectable, including Scenes over 100 rows and
-the full 1,000-target planner limit, with a boundary test proving all 1,000
-rows are addressable without omission. Raw paths and Module definitions are
-not rendered; normal Gallery selection, focus, connection state, and existing
-human Module Swap controls remain unchanged; confirmation resets on
-stale/changed proposal and cannot be set by an MCP argument.
+### PR-C: revalidation and host-only Apply/publication — implemented
 
-### PR-C: revalidation and host-only Apply/publication
+`ui.agent_scene_module_swap_apply_lifecycle` handles the direct host button
+action. It requires the exact staged acknowledgment identity and checked
+widget, synchronizes the active Project/path epoch, recomputes the facade
+Preview from the stored explicit intent, and requires complete envelope
+equality plus a valid changed result. It then takes a one-shot applying claim
+under the mailbox-then-custodian lock order. Mailbox/custodian locks are not
+held through Project cloning, Preview, core Apply, history, Project
+replacement, sanitation, or autosave. The publication gate is used only to
+serialize final authority validation with the in-memory replacement.
 
-Add a dedicated approval lifecycle that recomputes exact intent, invokes the
-core Apply owner, and publishes only its successful replacement Project.
+The lifecycle calls `core.module_swap_selected_routes` for exactly the named
+Scene, with the Preview's source fingerprint and the same empty project path
+and `disabled_modules=None` context used by the agent facade. It rechecks the
+complete facade envelope again after core Apply from the original Project and
+the same explicit intent. This catches in-place Prompt and Module Library
+edits made while the core was producing its replacement clone; any mismatch
+consumes the claim as stale before history, Project replacement, or save.
 
-Acceptance: stale envelope, epoch, or Project changes; replay; denied/expired
-proposal; no-op; and core failure make no history, Project, Gallery, or save
-publication. A success applies exactly one explicit Scene and publishes in the
-order: pre-Apply history, Project replacement, selection/focus sanitation,
-autosave, then terminal proposal/result state. Autosave failure keeps the
-successful in-memory Apply and history, reports save failure, consumes the
-proposal, and cannot repeat the mutation. Duplicate approval callbacks apply
-at most once.
+Final publication runs through the session runtime's narrow publication gate.
+Under that gate it observes the active session Project/path, validates the
+current epoch and exact Apply claim under the mailbox-then-custodian lock
+order, stages the bounded history append, marks the claim as publication-owned,
+and replaces the session Project. The Project assignment is the in-memory
+publication linearization point. If a revocation or target switch enters the
+gate first, publication fails without a history entry. If publication enters
+first, Disarm and close wait until the replacement is committed; later target
+observation recognizes the Apply-owned replacement, and later Disarm cannot
+reclassify it as dismissed. Mailbox/custodian locks are released around
+history and Project mutation. An assignment failure before replacement rolls
+back both the staged marker and history entry. The next normal app run can
+observe and synchronize a committed replacement without making its successful
+Apply appear stale.
+
+After the core Apply and the second facade Preview pass, the final publication
+gate compares the complete source Project with the pre-Apply Undo clone before
+staging history. This catches in-place edits to any Project field that the
+facade projection does not expose, including unrelated Illustration prompts,
+Module data, and metadata. The supported Streamlit full-app path serializes
+Project mutations for the duration of this run; the pipe broker and polling
+fragment do not mutate Projects. Direct Project mutation from an unrelated
+out-of-band thread that bypasses the runtime gate is unsupported and cannot be
+made atomic by this owner.
+
+On successful publication the lifecycle appends one pre-Apply Project clone to
+bounded Undo history and replaces the session Project. Gallery selection,
+focus, editor mirrors, selected graph nodes, and the old human Module Swap
+Preview are reconciled only while the exact applied replacement and its
+prevalidated Project path still match the session. Before autosave, the runtime
+gate checks that same Project object and exact path again, then calls the
+application persistence owner with those explicit values; persistence never
+chooses its target by rereading a mutable current-Project pointer. Mailbox and
+custodian locks are released during filesystem work. A target switch before
+this decision skips both A-specific UI reconciliation and autosave, leaves the
+new Project's state untouched, and reports `applied_save_failed` with
+`save_succeeded: false`. The app updates save timestamps or feedback only if
+the applied Project/path remains active. If persistence itself fails, the
+successful in-memory Project and Undo snapshot remain available and the same
+bounded unsaved status is reported; Apply is never retried. A successful save
+reports `applied` only after the exact replacement has been persisted. The
+human surface reports whether Undo is available. Applying and terminal results
+remain host-only; a still-undelivered mailbox queue acknowledgment is replaced
+with the existing generic cancellation outcome, never with Apply details.
+Repeated approval callbacks cannot claim or apply a second time.
 
 ### PR-D: Streamlit/MCP end-to-end characterization
 
@@ -688,8 +734,8 @@ blocked while a human considers the Preview or send a result through a new
 pairing generation. Keep the existing 1,000-target planner cap and require the
 future human surface to render all targets.
 
-PR-B through PR-D remain separate future slices. **No-go:** do not combine
-custody, UI, and Apply into one change; do not reinterpret an exploratory
+PR-D remains a separate future slice. **No-go:** keep custody, UI, and Apply in
+their separately reviewed owners; do not reinterpret an exploratory
 Preview as a review request; do not route Apply through MCP; do not reuse
 shared Gallery selection as agent intent; and do not treat any identifier,
 digest, or agent assertion as human approval.

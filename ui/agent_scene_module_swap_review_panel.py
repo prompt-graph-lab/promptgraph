@@ -12,6 +12,7 @@ from ui.agent_scene_module_swap_review_lifecycle import (
 AGENT_REVIEW_ACTIVE_KEY = "agent_scene_module_swap_review_workspace_active"
 _ACK_IDENTITY_KEY = "agent_scene_module_swap_review_ack_identity"
 _PAGE_STATE_KEY = "agent_scene_module_swap_review_page_state"
+_RESULT_KEY = "agent_scene_module_swap_apply_result"
 _PAGE_SIZE = 20
 
 _STATE_MESSAGES = {
@@ -38,6 +39,22 @@ _STATE_MESSAGES = {
     "dismissed": (
         "This proposal was dismissed.",
         "The proposal was consumed. A new review request is required for another review.",
+    ),
+    "applying": (
+        "This proposal is being applied.",
+        "The one-time host approval is claimed. The review controls are unavailable until publication completes.",
+    ),
+    "applied": (
+        "The approved Scene Module Swap was applied.",
+        "The updated Project is in memory and autosave completed.",
+    ),
+    "applied_save_failed": (
+        "The approved Scene Module Swap was applied, but autosave did not complete.",
+        "Autosave was skipped or failed. Verify the active Project and destination before continuing.",
+    ),
+    "apply_failed": (
+        "The approved Scene Module Swap could not be applied.",
+        "The proposal was consumed. No automatic retry is available; request a fresh review.",
     ),
     "computation_failure": (
         "The proposal could not be verified right now.",
@@ -84,6 +101,51 @@ def _resolve_proposal(runtime, proposal_id, action, identity):
         _clear_acknowledgment(st.session_state)
 
 
+def _approve_and_apply(
+    apply_handler,
+    runtime,
+    project,
+    project_path,
+    proposal_id,
+    plan_id,
+    identity,
+    acknowledgment_widget_key,
+):
+    """Run the application-owned host lifecycle from the direct button action."""
+
+    try:
+        outcome = apply_handler(
+            session_state=st.session_state,
+            runtime=runtime,
+            project=project,
+            project_path=project_path,
+            proposal_id=proposal_id,
+            plan_id=plan_id,
+            acknowledgment_identity_key=_ACK_IDENTITY_KEY,
+            acknowledgment_identity=identity,
+            acknowledgment_widget_key=acknowledgment_widget_key,
+        )
+    except Exception:
+        outcome = {"status": "computation_failure"}
+    if type(outcome) is not dict:
+        outcome = {"status": "computation_failure"}
+    status = outcome.get("status")
+    if status not in {
+        "acknowledgment_required", "computation_failure", "applying",
+        "applied", "applied_save_failed", "apply_failed", "stale", "expired",
+        "rejected", "dismissed", "session_unavailable",
+    }:
+        status = "computation_failure"
+        outcome = {"status": status}
+    if status in {"acknowledgment_required", "computation_failure"}:
+        st.session_state[_RESULT_KEY] = {"identity": identity, "status": status}
+    else:
+        st.session_state.pop(_RESULT_KEY, None)
+        if st.session_state.get(_ACK_IDENTITY_KEY) == identity:
+            _clear_acknowledgment(st.session_state)
+        st.session_state.pop(_PAGE_STATE_KEY, None)
+
+
 def _set_page(identity, page_index):
     st.session_state[_PAGE_STATE_KEY] = {
         "identity": identity,
@@ -117,8 +179,14 @@ def render_agent_review_navigation(runtime):
         st.rerun()
 
 
-def render_agent_scene_module_swap_review_panel(project, runtime, project_path=""):
-    """Render the session's fresh proposal for human inspection; never Apply."""
+def render_agent_scene_module_swap_review_panel(
+    project,
+    runtime,
+    project_path="",
+    *,
+    apply_handler=None,
+):
+    """Render the session's fresh proposal and optional host-only Apply action."""
 
     st.title("Agent Review")
     if st.button("Return to Project", key="agent_scene_module_swap_review_return"):
@@ -136,13 +204,40 @@ def render_agent_scene_module_swap_review_panel(project, runtime, project_path="
     if state != "pending_fresh":
         _clear_acknowledgment(st.session_state)
         message = _STATE_MESSAGES.get(state, _STATE_MESSAGES["computation_failure"])
-        if state in {"stale", "expired", "rejected", "dismissed"}:
+        if state in {"applied"}:
+            st.success(message[0])
+        elif state in {"applied_save_failed", "stale", "expired", "rejected", "dismissed"}:
             st.warning(message[0])
         elif state in {"computation_failure", "validation_failure", "session_unavailable"}:
+            st.error(message[0])
+        elif state == "apply_failed":
             st.error(message[0])
         else:
             st.info(message[0])
         st.caption(message[1])
+        terminal = review.get("result") if type(review) is dict else None
+        if type(terminal) is dict and type(terminal.get("scene_label")) is str:
+            st.text(f"Scene: {terminal['scene_label']}")
+        if (type(terminal) is dict
+                and type(terminal.get("source_module_name")) is str
+                and type(terminal.get("target_module_name")) is str):
+            st.text(
+                "Module swap: "
+                f"{terminal['source_module_name']} → {terminal['target_module_name']}"
+            )
+        if type(terminal) is dict and type(terminal.get("applied_count")) is int:
+            st.metric("Applied Illustrations", terminal["applied_count"])
+            st.caption("Apply: completed")
+            save_result = (
+                "saved" if terminal.get("save_succeeded") is True
+                else "not saved; verify the active Project and destination"
+            )
+            st.caption(f"Save: {save_result}")
+            history = st.session_state.get("history")
+            if type(history) is list and history:
+                st.caption("Undo: the pre-Apply Project is available in history.")
+        if type(terminal) is dict and terminal.get("sync_warning") is True:
+            st.warning("One or more local selection/editor views could not be refreshed.")
         return
 
     identity = (review["proposal_id"], review["plan_id"])
@@ -150,6 +245,13 @@ def render_agent_scene_module_swap_review_panel(project, runtime, project_path="
     if prior_identity != identity:
         _clear_acknowledgment(st.session_state)
         st.session_state[_ACK_IDENTITY_KEY] = identity
+    attempt_feedback = st.session_state.pop(_RESULT_KEY, None)
+    if (type(attempt_feedback) is dict
+            and attempt_feedback.get("identity") == identity):
+        if attempt_feedback.get("status") == "acknowledgment_required":
+            st.info("Review acknowledgment is required before applying this proposal.")
+        elif attempt_feedback.get("status") == "computation_failure":
+            st.warning("The proposal could not be revalidated. It remains pending and may be reviewed again.")
 
     st.success("Awaiting human review")
     st.text(f"Scene: {review['scene_label']}")
@@ -234,16 +336,34 @@ def render_agent_scene_module_swap_review_panel(project, runtime, project_path="
         st.info("Review acknowledgment staged for this proposal. The Project has not changed.")
 
     resolver = getattr(runtime, "resolve_review_proposal", None)
+    action_count = 3 if callable(resolver) and callable(apply_handler) else 2
+    action_cols = st.columns(action_count)
+    action_index = 0
+    if callable(apply_handler):
+        ack_key = _ack_widget_key(identity)
+        with action_cols[action_index]:
+            st.button(
+                "Approve and Apply",
+                key=f"agent_scene_swap_review_apply_{identity[0]}_{identity[1]}",
+                type="primary",
+                disabled=not acknowledgment,
+                on_click=_approve_and_apply,
+                args=(
+                    apply_handler, runtime, project, project_path,
+                    identity[0], identity[1], identity, ack_key,
+                ),
+            )
+        action_index += 1
     if callable(resolver):
-        action_cols = st.columns(2)
-        with action_cols[0]:
+        with action_cols[action_index]:
             st.button(
                 "Reject proposal",
                 key=f"agent_scene_swap_review_reject_{identity[0]}_{identity[1]}",
                 on_click=_resolve_proposal,
                 args=(runtime, identity[0], "reject", identity),
             )
-        with action_cols[1]:
+        action_index += 1
+        with action_cols[action_index]:
             st.button(
                 "Dismiss proposal",
                 key=f"agent_scene_swap_review_dismiss_{identity[0]}_{identity[1]}",

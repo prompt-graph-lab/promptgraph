@@ -11,6 +11,9 @@ from ui.agent_scene_module_swap_review_panel import (
     render_agent_review_navigation,
     render_agent_scene_module_swap_review_panel,
 )
+from ui.agent_scene_module_swap_apply_lifecycle import (
+    apply_agent_scene_module_swap_approval,
+)
 from ui.project_save_as_lifecycle import (
     PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY,
     PROJECT_SAVE_AS_OVERWRITE_ACK_KEY,
@@ -1298,6 +1301,55 @@ def save_current_project_if_possible(reason: str = "") -> bool:
     except Exception as exc:
         st.session_state.autosave_feedback = f"autosave failed: {exc}"
         return False
+
+def save_agent_scene_module_swap_project(project, project_path: str, reason: str) -> bool:
+    """Save only the exact Project/path committed by agent-review Apply."""
+    current_path = st.session_state.get("current_project_path", "")
+    if (project is None or type(project_path) is not str or not project_path
+            or st.session_state.get("project") is not project
+            or type(current_path) is not str or current_path != project_path):
+        return False
+
+    try:
+        # This callback receives the applied replacement and the destination
+        # validated before Apply. Never resolve either value from mutable
+        # current-session state when selecting the persistence target.
+        save_project_to_json(project, project_path)
+    except Exception:
+        current_path = st.session_state.get("current_project_path", "")
+        if (st.session_state.get("project") is project
+                and type(current_path) is str
+                and current_path == project_path):
+            st.session_state.autosave_feedback = (
+                "Agent Scene Module Swap applied; autosave failed. Save manually."
+            )
+        return False
+
+    # Project JSON persistence has succeeded. Folder layout is supplemental;
+    # report its status only to the same still-active Project session.
+    try:
+        ensure_project_folder_layout(project_path)
+        layout_error = None
+    except Exception as exc:
+        layout_error = exc
+    current_path = st.session_state.get("current_project_path", "")
+    still_active = (
+        st.session_state.get("project") is project
+        and type(current_path) is str
+        and current_path == project_path
+    )
+    if still_active:
+        try:
+            st.session_state.project_folder_layout_ready = layout_error is None
+            if layout_error is not None:
+                st.warning(f"Project folders could not be created: {layout_error}")
+            st.session_state.last_saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.autosave_feedback = reason or "autosaved"
+        except Exception:
+            # Persistence already succeeded; a presentation/session feedback
+            # failure must not misreport the saved file as unsaved.
+            pass
+    return True
 
 def undo():
     if len(st.session_state.history) > 0:
@@ -6998,6 +7050,18 @@ def restore_focus_after_graph_update(previous_focused_line_id):
         st.session_state.focused_line_id = None
 
     validate_highlighted_line()
+
+
+def apply_agent_scene_module_swap_review(**approval):
+    """Wire host Project publication helpers into the dedicated Apply owner."""
+
+    return apply_agent_scene_module_swap_approval(
+        **approval,
+        synchronize_gallery_selection=_set_gallery_selected_route_ids_after_structure_change,
+        restore_focus=restore_focus_after_graph_update,
+        sync_text_areas=sync_text_areas,
+        save_project=save_agent_scene_module_swap_project,
+    )
 
 def get_line_by_id(project, line_id):
     if not project or not line_id:
@@ -20998,6 +21062,7 @@ if active_management_workspace:
             st.session_state.get("project"),
             _PROJECT_AGENT_SESSION_RUNTIME,
             st.session_state.get("current_project_path", ""),
+            apply_handler=apply_agent_scene_module_swap_review,
         )
         render_ui_profile_panel()
         st.stop()
@@ -21022,6 +21087,7 @@ if not st.session_state.project:
             None,
             _PROJECT_AGENT_SESSION_RUNTIME,
             st.session_state.get("current_project_path", ""),
+            apply_handler=apply_agent_scene_module_swap_review,
         )
         render_ui_profile_panel()
         st.stop()
@@ -21047,6 +21113,7 @@ if st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False):
         project,
         _PROJECT_AGENT_SESSION_RUNTIME,
         st.session_state.get("current_project_path", ""),
+        apply_handler=apply_agent_scene_module_swap_review,
     )
     render_ui_profile_panel()
     st.stop()

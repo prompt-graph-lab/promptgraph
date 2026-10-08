@@ -221,10 +221,14 @@ def build_agent_scene_module_swap_review(project, runtime, project_path=""):
     if project is None:
         return {"state": "project_unavailable"}
     if state != "pending":
-        return {"state": state if state in {
+        result = {"state": state if state in {
             "absent", "prepared", "expired", "stale", "rejected", "dismissed",
-            "computation_failure", "session_unavailable",
+            "computation_failure", "session_unavailable", "applying", "applied",
+            "applied_save_failed", "apply_failed",
         } else "computation_failure"}
+        if type(record.get("result")) is dict:
+            result["result"] = dict(record["result"])
+        return result
     if not _pending_record_is_well_formed(record):
         return {"state": "validation_failure"}
 

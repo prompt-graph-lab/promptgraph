@@ -6,12 +6,14 @@ service point; neither the mailbox nor the fragment can capture a Project.
 """
 
 from dataclasses import dataclass, field
+import threading
 
 import streamlit as st
 
 from ui.project_agent_request_bridge import dispatch_project_agent_request
 from ui.agent_scene_module_swap_approval_lifecycle import (
     AgentSceneModuleSwapApprovalCustodian,
+    ApplyProposalClaim,
     DuplicateReviewReply,
     PreparedReviewReply,
 )
@@ -49,17 +51,287 @@ class ProjectAgentSessionRuntime:
     )
     _named_pipe_broker: object = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+    _publication_gate: object = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self):
         self._registration = self._registry.register_session(self.mailbox)
 
     def synchronize_target(self, project, project_path):
+        with self._publication_gate:
+            if self._closed:
+                return None
+            return self._synchronize_target_locked(project, project_path)
+
+    def _synchronize_target_locked(self, project, project_path):
         epoch = self.target_tracker.observe(project, project_path)
         self.mailbox.synchronize_target_epoch(
             epoch,
             review_custodian=self.review_custodian,
         )
         return epoch
+
+    def publish_review_apply(
+        self,
+        claim,
+        *,
+        session_state,
+        source_project,
+        project_path,
+        target_epoch,
+        history_snapshot,
+        updated_project,
+    ):
+        """Serialize final claim validation with one host Project replacement.
+
+        The gate excludes runtime target synchronization, explicit Disarm, and
+        session cleanup through the commit boundary. Mailbox/custodian locks
+        are held only for bounded claim/publication markers, never while the
+        history or Project objects are changed.
+        """
+
+        with self._publication_gate:
+            if self._closed:
+                return "session_unavailable"
+            active_project = session_state.get("project")
+            active_path = session_state.get("current_project_path", "")
+            try:
+                current_epoch = self._synchronize_target_locked(
+                    active_project,
+                    active_path,
+                )
+            except Exception:
+                return "session_unavailable"
+            if (active_project is not source_project
+                    or type(active_path) is not str
+                    or type(project_path) is not str
+                    or active_path != project_path
+                    or current_epoch != target_epoch):
+                return "stale"
+            if not self.mailbox.review_apply_claim_is_current(
+                self.review_custodian,
+                claim,
+            ):
+                return "stale"
+
+            # The full-app Streamlit run is serialized for this supported host
+            # path, so ordinary Project mutators cannot run between this exact
+            # source-content check and the session replacement. The pipe broker
+            # and periodic fragment do not mutate Projects. The publication
+            # gate additionally excludes runtime-owned target/disarm/close
+            # transitions. Direct out-of-band mutation of a Project from an
+            # unrelated thread is not a supported writer.
+            try:
+                source_unchanged = source_project == history_snapshot
+            except Exception:
+                source_unchanged = False
+            if source_unchanged is not True:
+                return "stale"
+
+            # The equality check above covers the complete cloned Project,
+            # including unrelated Scene prompts, Module Library, and derived
+            # Project state. Re-read host identity immediately before staging
+            # history so an intervening host navigation fails closed.
+            active_project = session_state.get("project")
+            active_path = session_state.get("current_project_path", "")
+            try:
+                current_epoch = self._synchronize_target_locked(
+                    active_project,
+                    active_path,
+                )
+            except Exception:
+                return "session_unavailable"
+            if (active_project is not source_project
+                    or type(active_path) is not str
+                    or type(project_path) is not str
+                    or active_path != project_path
+                    or current_epoch != target_epoch
+                    or not self.mailbox.review_apply_claim_is_current(
+                        self.review_custodian,
+                        claim,
+                    )):
+                return "stale"
+
+            history = session_state.get("history")
+            if type(history) is not list:
+                return "apply_failed"
+            previous_first = history[0] if len(history) >= 20 else None
+            appended = False
+            evicted = False
+            try:
+                history.append(history_snapshot)
+                appended = True
+                if len(history) > 20:
+                    history.pop(0)
+                    evicted = True
+            except Exception:
+                if appended and history and history[-1] is history_snapshot:
+                    history.pop()
+                if evicted:
+                    history.insert(0, previous_first)
+                return "apply_failed"
+
+            # Stage the private publication marker before the session-state
+            # assignment, with all revokers excluded by this gate. If the
+            # assignment fails, both the marker and history are rolled back.
+            try:
+                marked = self.mailbox.mark_review_proposal_apply_published(
+                    self.review_custodian,
+                    claim,
+                )
+            except Exception:
+                marked = False
+            if not marked:
+                if history and history[-1] is history_snapshot:
+                    history.pop()
+                if evicted:
+                    history.insert(0, previous_first)
+                return "stale"
+
+            try:
+                session_state["project"] = updated_project
+            except Exception:
+                if session_state.get("project") is not updated_project:
+                    try:
+                        self.mailbox.rollback_review_proposal_apply_publication(
+                            self.review_custodian,
+                            claim,
+                        )
+                    except Exception:
+                        pass
+                    if history and history[-1] is history_snapshot:
+                        history.pop()
+                    if evicted:
+                        history.insert(0, previous_first)
+                    return "apply_failed"
+
+            # The session replacement has now committed. Retire its queued
+            # positive review ACK before target synchronization can classify
+            # that old mailbox reply as stale.
+            try:
+                self.mailbox.complete_review_proposal_apply_publication(
+                    self.review_custodian,
+                    claim,
+                )
+            except Exception:
+                pass
+
+            try:
+                self._synchronize_target_locked(updated_project, active_path)
+            except Exception:
+                # The replacement itself is already committed. Runtime target
+                # observation can be retried by the next normal app run.
+                pass
+            return "published"
+
+    def save_published_review_apply(
+        self,
+        claim,
+        *,
+        session_state,
+        applied_project,
+        project_path,
+        save_project,
+        reason,
+    ):
+        """Persist only the exact still-active Project committed by this Apply.
+
+        The caller supplies the applied replacement and destination captured
+        for the approved source target. The runtime gate fences target
+        synchronization, Disarm, and close while it verifies that the current
+        session still selects that same replacement/path and invokes the
+        explicit persistence callback. Mailbox/custodian locks are released
+        before the callback performs filesystem work.
+        """
+
+        with self._publication_gate:
+            if self._closed:
+                return "session_unavailable"
+            active_project = session_state.get("project")
+            active_path = session_state.get("current_project_path", "")
+            try:
+                self._synchronize_target_locked(active_project, active_path)
+            except Exception:
+                return "session_unavailable"
+            if (active_project is not applied_project
+                    or type(active_path) is not str
+                    or type(project_path) is not str
+                    or active_path != project_path):
+                return "target_changed"
+            if (not callable(save_project)
+                    or not self.mailbox.review_apply_claim_is_current(
+                        self.review_custodian,
+                        claim,
+                    )):
+                return "session_unavailable"
+            try:
+                saved = save_project(applied_project, project_path, reason)
+            except Exception:
+                saved = False
+            return "saved" if saved is True else "save_failed"
+
+    def reconcile_published_review_apply(
+        self,
+        *,
+        session_state,
+        applied_project,
+        project_path,
+        previous_focus,
+        synchronize_gallery_selection,
+        restore_focus,
+        sync_text_areas,
+    ):
+        """Reconcile host UI state only while the exact applied target is active."""
+
+        with self._publication_gate:
+            if self._closed:
+                return "session_unavailable", False
+            active_project = session_state.get("project")
+            active_path = session_state.get("current_project_path", "")
+            try:
+                self._synchronize_target_locked(active_project, active_path)
+            except Exception:
+                return "session_unavailable", False
+            if (active_project is not applied_project
+                    or type(active_path) is not str
+                    or type(project_path) is not str
+                    or active_path != project_path):
+                return "target_changed", False
+
+            warning = False
+            try:
+                session_state["selected_node_ids"] = []
+            except Exception:
+                warning = True
+            for callback, arguments in (
+                (synchronize_gallery_selection, (applied_project,)),
+                (restore_focus, (previous_focus,)),
+                (sync_text_areas, ()),
+            ):
+                current_project = session_state.get("project")
+                current_path = session_state.get("current_project_path", "")
+                if (current_project is not applied_project
+                        or type(current_path) is not str
+                        or current_path != project_path):
+                    return "target_changed", warning
+                try:
+                    if callable(callback):
+                        callback(*arguments)
+                except Exception:
+                    warning = True
+
+            current_project = session_state.get("project")
+            current_path = session_state.get("current_project_path", "")
+            if (current_project is not applied_project
+                    or type(current_path) is not str
+                    or current_path != project_path):
+                return "target_changed", warning
+            session_state.pop("module_swap_preview", None)
+            session_state.pop("module_swap_selected_routes_confirm", None)
+            return "reconciled", warning
 
     def inspect_review_custody(self):
         """Return review state through the mailbox/custodian coordination owner."""
@@ -81,6 +353,43 @@ class ProjectAgentSessionRuntime:
         return self.mailbox.mark_review_proposal_stale(
             self.review_custodian,
             proposal_id,
+        )
+
+    def claim_review_proposal_for_apply(
+        self,
+        proposal_id,
+        target_epoch,
+        intent,
+        preview,
+    ):
+        """Consume one pending approval and return its one-shot private claim."""
+
+        if self._closed:
+            return "session_unavailable", None
+        return self.mailbox.claim_review_proposal_for_apply(
+            self.review_custodian,
+            proposal_id,
+            target_epoch,
+            intent,
+            preview,
+        )
+
+    def review_apply_claim_is_current(self, claim):
+        if self._closed or type(claim) is not ApplyProposalClaim:
+            return False
+        return self.mailbox.review_apply_claim_is_current(
+            self.review_custodian,
+            claim,
+        )
+
+    def finish_review_proposal_apply(self, claim, status, result):
+        if self._closed or type(claim) is not ApplyProposalClaim:
+            return "session_unavailable"
+        return self.mailbox.finish_review_proposal_apply(
+            self.review_custodian,
+            claim,
+            status,
+            result,
         )
 
     def begin_full_app_run(self, project, project_path):
@@ -170,43 +479,41 @@ class ProjectAgentSessionRuntime:
 
         from ui.project_agent_named_pipe import LauncherRendezvousOperation
 
-        if self._closed or self._registration is None:
-            return LauncherRendezvousOperation("session_unavailable")
-        # Explicit host disarm cancels review custody. Ordinary pipe release
-        # and client disconnect do not call this session method.
-        self.mailbox.cancel_review_custody(self.review_custodian)
-        broker = self._named_pipe_broker
+        with self._publication_gate:
+            if self._closed or self._registration is None:
+                return LauncherRendezvousOperation("session_unavailable")
+            # Explicit host disarm cancels review custody. Ordinary pipe
+            # release and client disconnect do not call this session method.
+            self.mailbox.cancel_review_custody(self.review_custodian)
+            broker = self._named_pipe_broker
+            registration = self._registration
         if broker is None:
             return LauncherRendezvousOperation("unavailable")
         try:
-            return broker.disarm_launcher_rendezvous(self._registration)
+            return broker.disarm_launcher_rendezvous(registration)
         except Exception:
             return LauncherRendezvousOperation("unavailable")
 
     def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        # Close review custody while atomically closing the mailbox under the
-        # mailbox-then-custodian lock order. This prevents a committed positive
-        # reply from being consumed after its proposal has been discarded.
-        self.mailbox.close(review_custodian=self.review_custodian)
-        route_id = None
-        if self._registration is not None:
-            route_id = self._registration.route_id
-            # The mailbox and custodian are already closed. Remove external
-            # addressability without holding either lock while registry/pipe
-            # teardown serializes with paired operations.
-            self._registration.unregister()
-        try:
-            if self._named_pipe_broker is not None and route_id is not None:
-                self._named_pipe_broker.close_session_route(route_id)
-                if self._registration is not None:
-                    self._named_pipe_broker.forget_launcher_rendezvous(
-                        self._registration,
-                    )
-        finally:
+        with self._publication_gate:
+            if self._closed:
+                return
+            self._closed = True
+            # This shares the publication gate with final Apply commit, then
+            # closes the mailbox/custodian under their fixed lock order.
+            self.mailbox.close(review_custodian=self.review_custodian)
             self.target_tracker.close()
+            registration = self._registration
+            route_id = registration.route_id if registration is not None else None
+            broker = self._named_pipe_broker
+        if registration is not None:
+            # The mailbox and custodian are already closed. Remove external
+            # addressability without holding either owner or publication lock.
+            registration.unregister()
+        if broker is not None and route_id is not None:
+            broker.close_session_route(route_id)
+            if registration is not None:
+                broker.forget_launcher_rendezvous(registration)
 
 
 def _release_project_agent_session_runtime(runtime):
