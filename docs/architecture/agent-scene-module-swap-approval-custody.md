@@ -17,9 +17,13 @@ mailbox acknowledgment. Custody is transient, one-slot, size-bounded, and tied
 to the originating session, target epoch, and pairing generation. A standalone
 adapter/SDK invocation cannot enqueue a proposal.
 
-PR-A does not render or decide a proposal. A dedicated human review surface,
-human approval, host-only Apply, Undo/history, Project publication, and save
-remain separate PR-B/PR-C work. No MCP Apply tool exists.
+PR-A does not render or decide a proposal. PR-B adds the dedicated **Agent
+Review** surface in normal full-app runs, with complete paginated
+Before/After prompts, session-custody freshness validation, a safe host display
+projection, and terminal Reject/Dismiss actions. Its checkbox records only a
+session-local acknowledgment that the human reviewed the proposal; it does
+not approve or apply anything. Host-only Apply, Undo/history, Project
+publication, and save remain separate PR-C work. No MCP Apply tool exists.
 
 The implemented owner is `ui.agent_scene_module_swap_approval_lifecycle`, one
 custodian per `ProjectAgentSessionRuntime`. It retains one exact detached safe
@@ -49,6 +53,18 @@ non-actionable previews, exact retry and generation isolation, target/session
 cleanup, proposal-size boundaries, mailbox-reply expiry independence, and an
 event-coordinated race proving a positive acknowledgment cannot be consumed
 before pending custody commits.
+
+The human review renderer rebuilds its display projection on each full-app
+render from the current session custodian. It recomputes the exact safe facade
+envelope and uses the same ephemeral planner result to expose every affected
+Illustration, including targets beyond the facade's first 100 rows. The
+allowlisted display omits image paths, Module definitions, and arbitrary
+metadata. Confirmation widget identity binds to both the opaque proposal ID
+and complete Preview `plan_id`; stale content, target changes, Reject, and
+Dismiss clear that acknowledgment. Reject/Dismiss consume only the matching
+pending record in the session custodian. The MCP polling fragment remains
+connection-only, and the review surface performs no Project mutation,
+publication, history, or save.
 
 The sections below retain the audit's design rationale. Phrases such as
 “proposed” and “future” describe the state at the audit baseline unless the
