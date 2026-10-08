@@ -644,8 +644,14 @@ def _scene_module_swap_review_row(row):
     }
 
 
-def preview_scene_module_swap(project: Project, request):
-    """Create a safe, bounded single-Scene Module Swap review Preview."""
+def _preview_scene_module_swap_for_host_review(project: Project, request):
+    """Return the safe facade envelope and its ephemeral host-only planner result.
+
+    The raw plan stays inside the Python host boundary so the human review UI
+    can inspect every target without rebuilding the expensive planner result.
+    MCP callers continue to use preview_scene_module_swap(), which returns
+    only the safe envelope.
+    """
     normalized = None
     scene_id = None
     scene_label = None
@@ -759,13 +765,30 @@ def preview_scene_module_swap(project: Project, request):
         }
         envelope["plan_id"] = _digest({key: value for key, value in envelope.items()
                                        if key != "plan_id"})
-        return envelope
+        return envelope, plan
     except _Invalid as error:
-        return _scene_module_swap_invalid(error.args[0], request=normalized,
-                                          scene_id=scene_id, scene_label=scene_label)
+        return (
+            _scene_module_swap_invalid(
+                error.args[0], request=normalized,
+                scene_id=scene_id, scene_label=scene_label,
+            ),
+            None,
+        )
     except Exception:
-        return _scene_module_swap_invalid("module_swap_preview_failed", request=normalized,
-                                          scene_id=scene_id, scene_label=scene_label)
+        return (
+            _scene_module_swap_invalid(
+                "module_swap_preview_failed", request=normalized,
+                scene_id=scene_id, scene_label=scene_label,
+            ),
+            None,
+        )
+
+
+def preview_scene_module_swap(project: Project, request):
+    """Create a safe, bounded single-Scene Module Swap review Preview."""
+
+    envelope, _host_plan = _preview_scene_module_swap_for_host_review(project, request)
+    return envelope
 
 
 @dataclass(frozen=True)

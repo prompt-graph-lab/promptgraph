@@ -61,6 +61,28 @@ class ProjectAgentSessionRuntime:
         )
         return epoch
 
+    def inspect_review_custody(self):
+        """Return review state through the mailbox/custodian coordination owner."""
+
+        return self.mailbox.inspect_review_custody(self.review_custodian)
+
+    def resolve_review_proposal(self, proposal_id, action):
+        """Apply one exact human terminal action to custody and queued ACK state."""
+
+        return self.mailbox.resolve_review_proposal(
+            self.review_custodian,
+            proposal_id,
+            action,
+        )
+
+    def mark_review_proposal_stale(self, proposal_id):
+        """Invalidate one proposal through the shared terminal transition owner."""
+
+        return self.mailbox.mark_review_proposal_stale(
+            self.review_custodian,
+            proposal_id,
+        )
+
     def begin_full_app_run(self, project, project_path):
         epoch = self.synchronize_target(project, project_path)
         self.mailbox.begin_full_app_run(epoch)

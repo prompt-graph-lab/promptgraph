@@ -6,6 +6,11 @@ from ui.project_agent_session_pump import (
     service_project_agent_session_request,
 )
 from ui.mcp_connection_ui import render_mcp_connection_sidebar
+from ui.agent_scene_module_swap_review_panel import (
+    AGENT_REVIEW_ACTIVE_KEY,
+    render_agent_review_navigation,
+    render_agent_scene_module_swap_review_panel,
+)
 from ui.project_save_as_lifecycle import (
     PROJECT_SAVE_AS_PENDING_OVERWRITE_KEY,
     PROJECT_SAVE_AS_OVERWRITE_ACK_KEY,
@@ -20707,8 +20712,10 @@ _PROJECT_AGENT_SESSION_RUNTIME = begin_project_agent_session_run(
 )
 render_project_agent_request_pump()
 render_mcp_connection_sidebar()
+render_agent_review_navigation(_PROJECT_AGENT_SESSION_RUNTIME)
 
-if is_free() and st.session_state.show_tutorial:
+if (is_free() and st.session_state.show_tutorial
+        and not st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False)):
     st.title("🎉 PromptGraph Liteへようこそ！")
 
     st.markdown("""
@@ -20981,6 +20988,19 @@ render_project_assets_sidebar_section()
 render_management_workspace_launchers()
 active_management_workspace = get_active_management_workspace()
 if active_management_workspace:
+    if st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False):
+        service_project_agent_session_request(
+            _PROJECT_AGENT_SESSION_RUNTIME,
+            st.session_state,
+            _PROJECT_CAPTURE_RUN_TOKEN,
+        )
+        render_agent_scene_module_swap_review_panel(
+            st.session_state.get("project"),
+            _PROJECT_AGENT_SESSION_RUNTIME,
+            st.session_state.get("current_project_path", ""),
+        )
+        render_ui_profile_panel()
+        st.stop()
     render_management_workspace_shell(active_management_workspace)
     service_project_agent_session_request(
         _PROJECT_AGENT_SESSION_RUNTIME,
@@ -20991,6 +21011,20 @@ if active_management_workspace:
     st.stop()
 
 if not st.session_state.project:
+    if st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False):
+        st.info("No active Project is available in this browser session.")
+        service_project_agent_session_request(
+            _PROJECT_AGENT_SESSION_RUNTIME,
+            st.session_state,
+            _PROJECT_CAPTURE_RUN_TOKEN,
+        )
+        render_agent_scene_module_swap_review_panel(
+            None,
+            _PROJECT_AGENT_SESSION_RUNTIME,
+            st.session_state.get("current_project_path", ""),
+        )
+        render_ui_profile_panel()
+        st.stop()
     st.info("プロジェクトを作成・読み込みするか、下の「読み込み・書き出し」からプロンプト一覧を読み込んでください。")
     render_gallery_import_export_section(None)
     service_project_agent_session_request(
@@ -21008,6 +21042,15 @@ service_project_agent_session_request(
 )
 
 project = st.session_state.project
+if st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False):
+    render_agent_scene_module_swap_review_panel(
+        project,
+        _PROJECT_AGENT_SESSION_RUNTIME,
+        st.session_state.get("current_project_path", ""),
+    )
+    render_ui_profile_panel()
+    st.stop()
+
 production_mode_context = get_production_mode_context(project)
 focus_edit_active = production_mode_context["focus_edit_active"]
 

@@ -340,6 +340,7 @@ class AgentSceneModuleSwapApprovalCustodian:
         self._revision = 0
         self._record = None
         self._tombstones = OrderedDict()
+        self._human_review_state = "absent"
 
     def check_request(self, request_id, pairing_generation, target_epoch, intent):
         """Resolve same-generation retries and conflicts before Project capture."""
@@ -473,6 +474,7 @@ class AgentSceneModuleSwapApprovalCustodian:
                 prepared_at=now,
                 prepared_expires_at=now + MAX_PREPARED_LIFETIME_SECONDS,
             )
+            self._human_review_state = "prepared"
             return ReviewRequestDecision(
                 "prepared",
                 result=deepcopy(ack),
@@ -538,6 +540,96 @@ class AgentSceneModuleSwapApprovalCustodian:
                 "preview": deepcopy(record.preview),
             }
 
+    def inspect_for_human_review(self):
+        """Return only the current proposal needed by the session's human UI."""
+
+        with self._lock:
+            return self._inspect_for_human_review_locked(self._clock())
+
+    def _inspect_for_human_review_locked(self, now):
+        """Build a human-review snapshot with the custodian lock already held."""
+
+        self._expire_locked(now)
+        record = self._record
+        if self._closed:
+            return {
+                "contract_version": PROPOSAL_CONTRACT_VERSION,
+                "state": "session_unavailable",
+            }
+        if record is None:
+            return {
+                "contract_version": PROPOSAL_CONTRACT_VERSION,
+                "state": self._human_review_state,
+            }
+        if record.state == "prepared":
+            # Prepared custody is deliberately invisible until the mailbox
+            # reply and proposal commit complete together.
+            return {
+                "contract_version": PROPOSAL_CONTRACT_VERSION,
+                "state": "prepared",
+            }
+        return {
+            "contract_version": PROPOSAL_CONTRACT_VERSION,
+            "state": "pending",
+            "proposal_id": record.proposal_id,
+            "target_epoch": record.target_epoch,
+            "intent": deepcopy(record.intent),
+            "plan_id": record.plan_id,
+            "preview": deepcopy(record.preview),
+            "expires_in_seconds": max(0, int(record.expires_at - self._clock())),
+        }
+
+    def resolve_pending(self, proposal_id, action):
+        """Consume one exact pending proposal as rejected or dismissed."""
+
+        if action not in {"reject", "dismiss"}:
+            return "invalid_action"
+        with self._lock:
+            return self._resolve_pending_locked(proposal_id, action, self._clock())
+
+    def _resolve_pending_locked(self, proposal_id, action, now):
+        """Resolve a pending proposal with the custodian lock already held."""
+
+        self._expire_locked(now)
+        if self._closed:
+            return "session_unavailable"
+        record = self._record
+        if (record is None or record.state != "pending"
+                or type(proposal_id) is not str
+                or record.proposal_id != proposal_id):
+            return self._human_review_state
+        if action not in {"reject", "dismiss"}:
+            return "invalid_action"
+        state = "rejected" if action == "reject" else "dismissed"
+        self._remember_record_locked(record, "proposal_cancelled")
+        self._record = None
+        self._revision += 1
+        self._human_review_state = state
+        return state
+
+    def mark_pending_stale(self, proposal_id):
+        """Consume a proposal whose fresh content no longer matches custody."""
+
+        with self._lock:
+            return self._mark_pending_stale_locked(proposal_id, self._clock())
+
+    def _mark_pending_stale_locked(self, proposal_id, now):
+        """Mark one pending proposal stale with the custodian lock already held."""
+
+        self._expire_locked(now)
+        if self._closed:
+            return "session_unavailable"
+        record = self._record
+        if (record is None or record.state != "pending"
+                or type(proposal_id) is not str
+                or record.proposal_id != proposal_id):
+            return self._human_review_state
+        self._remember_record_locked(record, "stale_target")
+        self._record = None
+        self._revision += 1
+        self._human_review_state = "stale"
+        return "stale"
+
     def cancel_pending(self):
         """Cancel host custody explicitly; ordinary pipe release never calls this."""
 
@@ -570,6 +662,7 @@ class AgentSceneModuleSwapApprovalCustodian:
         if self._record is not None:
             self._remember_record_locked(self._record, "stale_target")
             self._record = None
+            self._human_review_state = "stale"
         return True
 
     def _commit_prepared_locked(self, token, *, request_id, pairing_generation,
@@ -604,6 +697,7 @@ class AgentSceneModuleSwapApprovalCustodian:
         # point. Mailbox consume_reply remains excluded by its outer lock.
         record.state = "pending"
         record.expires_at = now + DEFAULT_PROPOSAL_TTL_SECONDS
+        self._human_review_state = "pending"
         return True
 
     def _rollback_prepared_locked(self, token):
@@ -616,6 +710,7 @@ class AgentSceneModuleSwapApprovalCustodian:
         self._remember_record_locked(record, "review_unavailable")
         self._record = None
         self._revision += 1
+        self._human_review_state = "computation_failure"
         return True
 
     def _abort_prepared_locked(self, token, reason="review_unavailable"):
@@ -628,6 +723,7 @@ class AgentSceneModuleSwapApprovalCustodian:
         self._remember_record_locked(record, reason)
         self._record = None
         self._revision += 1
+        self._human_review_state = "computation_failure"
         return True
 
     def _abort_prepared_for_claim_locked(self, request_id, pairing_generation,
@@ -645,6 +741,7 @@ class AgentSceneModuleSwapApprovalCustodian:
         self._remember_record_locked(record, reason)
         self._record = None
         self._revision += 1
+        self._human_review_state = "computation_failure"
         return True
 
     def _cancel_locked(self, reason):
@@ -652,12 +749,14 @@ class AgentSceneModuleSwapApprovalCustodian:
         if self._record is not None:
             self._remember_record_locked(self._record, reason)
             self._record = None
+            self._human_review_state = "dismissed"
 
     def _close_locked(self):
         self._closed = True
         self._revision += 1
         self._record = None
         self._tombstones.clear()
+        self._human_review_state = "session_unavailable"
 
     def _expire_locked(self, now):
         record = self._record
@@ -667,10 +766,12 @@ class AgentSceneModuleSwapApprovalCustodian:
             self._remember_record_locked(record, "review_unavailable")
             self._record = None
             self._revision += 1
+            self._human_review_state = "computation_failure"
         elif record.state == "pending" and record.expires_at is not None and now >= record.expires_at:
             self._remember_record_locked(record, "proposal_expired")
             self._record = None
             self._revision += 1
+            self._human_review_state = "expired"
 
     def _remember_record_locked(self, record, reason):
         self._remember_locked(
