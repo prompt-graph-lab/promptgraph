@@ -25,6 +25,9 @@ from ui.agent_scene_module_swap_approval_lifecycle import (
     _valid_preview_envelope,
 )
 from ui.project_agent_request_bridge import BRIDGE_CONTRACT_VERSION
+from ui.agent_scene_module_swap_review_lifecycle import (
+    build_agent_scene_module_swap_review,
+)
 from ui.project_agent_session_mailbox import MailboxClaim, ProjectAgentSessionMailbox
 from ui.project_agent_session_pump import (
     ProjectAgentSessionRuntime,
@@ -164,7 +167,7 @@ def _make_staged_review(*, clock=None, preview=None):
     return clock, custodian, mailbox, claim, carrier
 
 
-def _make_live_pending_review(monkeypatch, *, clock=None):
+def _make_live_pending_review(monkeypatch, *, clock=None, consume_ack=True):
     monkeypatch.setattr(
         capture_safety._streamlit_config,
         "get_option",
@@ -187,11 +190,218 @@ def _make_live_pending_review(monkeypatch, *, clock=None):
     request = _request("request-a", arguments)
     assert route.submit(epoch, request).status == "accepted"
     assert service_project_agent_session_request(runtime, session, run_token) == "completed"
-    initial = route.consume_reply(epoch)
-    assert initial.status == "completed"
-    assert initial.reply["result"]["status"] == "queued_for_review"
+    if consume_ack:
+        initial = route.consume_reply(epoch)
+        assert initial.status == "completed"
+        assert initial.reply["result"]["status"] == "queued_for_review"
+    else:
+        assert runtime.mailbox.state == "reply_ready"
     assert runtime.review_custodian.inspect()["state"] == "pending"
     return runtime, route, registry, session, run_token, epoch, request, preview
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_state"),
+    (("reject", "rejected"), ("dismiss", "dismissed")),
+)
+def test_human_terminal_action_hides_only_the_exact_unconsumed_review_ack(
+        monkeypatch, action, expected_state):
+    runtime, route, _registry, _session, _run_token, epoch, _request, _preview = (
+        _make_live_pending_review(monkeypatch, consume_ack=False)
+    )
+    proposal_id = runtime.inspect_review_custody()["proposal_id"]
+
+    assert runtime.resolve_review_proposal(proposal_id, action) == expected_state
+    consumed = route.consume_reply(epoch)
+
+    assert consumed.status == "review_cancelled"
+    assert consumed.reply is None
+    assert runtime.inspect_review_custody()["state"] == expected_state
+    runtime.close()
+
+
+def test_freshness_invalidation_hides_the_exact_unconsumed_review_ack(monkeypatch):
+    runtime, route, _registry, session, _run_token, epoch, _request, _preview = (
+        _make_live_pending_review(monkeypatch, consume_ack=False)
+    )
+    proposal_id = runtime.inspect_review_custody()["proposal_id"]
+    project = session["project"]
+    line = project.prompt_lines[1]
+    line.current_text += ", changed after the review request"
+    line.tokens = parse_prompt(line.current_text)
+
+    review = build_agent_scene_module_swap_review(
+        project,
+        runtime,
+        session["current_project_path"],
+    )
+    consumed = route.consume_reply(epoch)
+
+    assert review == {"state": "stale"}
+    assert runtime.inspect_review_custody()["state"] == "stale"
+    assert consumed.status == "stale_target"
+    assert consumed.reply is None
+    assert "proposal_id" not in runtime.review_custodian.inspect()
+    assert proposal_id
+    runtime.close()
+
+
+def test_proposal_expiry_during_coordinated_review_inspection_hides_queued_ack(
+        monkeypatch):
+    clock = FakeClock()
+    runtime, route, _registry, _session, _run_token, epoch, _request, _preview = (
+        _make_live_pending_review(monkeypatch, clock=clock, consume_ack=False)
+    )
+    clock.advance(DEFAULT_PROPOSAL_TTL_SECONDS)
+
+    review = runtime.inspect_review_custody()
+    consumed = route.consume_reply(epoch)
+
+    assert review["state"] == "expired"
+    assert consumed.status == "expired"
+    assert consumed.reply is None
+    runtime.close()
+
+
+def test_ack_consumed_before_reject_remains_historical_and_not_retracted(monkeypatch):
+    runtime, route, _registry, _session, _run_token, epoch, _request, _preview = (
+        _make_live_pending_review(monkeypatch)
+    )
+    proposal_id = runtime.inspect_review_custody()["proposal_id"]
+
+    assert runtime.resolve_review_proposal(proposal_id, "reject") == "rejected"
+    assert route.consume_reply(epoch).status == "idle"
+    runtime.close()
+
+
+def test_stale_old_proposal_callback_does_not_cancel_a_new_proposal_ack(monkeypatch):
+    runtime, route, _registry, session, run_token, epoch, request, _preview = (
+        _make_live_pending_review(monkeypatch)
+    )
+    old_proposal_id = runtime.inspect_review_custody()["proposal_id"]
+    assert runtime.resolve_review_proposal(old_proposal_id, "reject") == "rejected"
+
+    new_request = _request("request-b", request["arguments"])
+    assert route.submit(epoch, new_request).status == "accepted"
+    assert service_project_agent_session_request(runtime, session, run_token) == "completed"
+    new_proposal_id = runtime.inspect_review_custody()["proposal_id"]
+    assert new_proposal_id != old_proposal_id
+
+    assert runtime.resolve_review_proposal(old_proposal_id, "dismiss") == "pending"
+    consumed = route.consume_reply(epoch)
+
+    assert consumed.status == "completed"
+    assert consumed.reply["result"]["status"] == "queued_for_review"
+    assert consumed.reply["result"]["proposal_id"] == new_proposal_id
+    runtime.close()
+
+
+def test_terminal_action_racing_initial_coordinated_commit_cancels_unconsumed_ack():
+    _clock, custodian, mailbox, claim, carrier = _make_staged_review()
+    runtime = ProjectAgentSessionRuntime(
+        mailbox=mailbox,
+        review_custodian=custodian,
+        _registry=ProjectAgentSessionRegistry(),
+    )
+    observed_lock = ObservedRLock()
+    mailbox._lock = observed_lock
+    committed = threading.Event()
+    allow_completion = threading.Event()
+    outcomes = queue.Queue()
+    proposal_id = carrier.reply["result"]["proposal_id"]
+    original_commit = custodian._commit_prepared_locked
+
+    def pause_after_commit(token, **kwargs):
+        result = original_commit(token, **kwargs)
+        committed.set()
+        if not allow_completion.wait(5):
+            raise TimeoutError("test did not resume coordinated commit")
+        return result
+
+    custodian._commit_prepared_locked = pause_after_commit
+
+    def complete():
+        outcomes.put(("complete", mailbox.complete_with_review(
+            claim, carrier, "epoch-a", custodian,
+        ).status))
+
+    def reject():
+        outcomes.put(("reject", runtime.resolve_review_proposal(proposal_id, "reject")))
+
+    completion_thread = threading.Thread(target=complete)
+    completion_thread.start()
+    assert committed.wait(5)
+    reject_thread = threading.Thread(target=reject)
+    reject_thread.start()
+    assert observed_lock.contended.wait(5)
+    allow_completion.set()
+    completion_thread.join(5)
+    reject_thread.join(5)
+
+    assert not completion_thread.is_alive()
+    assert not reject_thread.is_alive()
+    assert sorted((outcomes.get_nowait(), outcomes.get_nowait())) == [
+        ("complete", "completed"),
+        ("reject", "rejected"),
+    ]
+    assert mailbox.consume_reply("epoch-a").status == "review_cancelled"
+    assert custodian.inspect_for_human_review()["state"] == "rejected"
+    runtime.close()
+
+
+def test_terminal_action_racing_duplicate_ack_publication_cancels_unconsumed_ack(
+        monkeypatch):
+    runtime, route, _registry, session, run_token, epoch, request, _preview = (
+        _make_live_pending_review(monkeypatch)
+    )
+    proposal_id = runtime.inspect_review_custody()["proposal_id"]
+    observed_lock = ObservedRLock()
+    runtime.mailbox._lock = observed_lock
+    ack_published = threading.Event()
+    allow_completion = threading.Event()
+    outcomes = queue.Queue()
+    original_clear = runtime.mailbox._clear_request_payload_locked
+
+    def pause_after_duplicate_publication():
+        original_clear()
+        if (threading.current_thread().name == "duplicate-ack-completion"
+                and runtime.mailbox._reply_is_review_request
+                and runtime.mailbox._state == "reply_ready"):
+            ack_published.set()
+            if not allow_completion.wait(5):
+                raise TimeoutError("test did not resume duplicate completion")
+
+    runtime.mailbox._clear_request_payload_locked = pause_after_duplicate_publication
+    assert route.submit(epoch, request).status == "accepted"
+
+    def complete_retry():
+        outcomes.put(("retry", service_project_agent_session_request(
+            runtime, session, run_token,
+        )))
+
+    def dismiss():
+        outcomes.put(("dismiss", runtime.resolve_review_proposal(
+            proposal_id, "dismiss",
+        )))
+
+    retry_thread = threading.Thread(target=complete_retry, name="duplicate-ack-completion")
+    retry_thread.start()
+    assert ack_published.wait(5)
+    dismiss_thread = threading.Thread(target=dismiss)
+    dismiss_thread.start()
+    assert observed_lock.contended.wait(5)
+    allow_completion.set()
+    retry_thread.join(5)
+    dismiss_thread.join(5)
+
+    assert not retry_thread.is_alive()
+    assert not dismiss_thread.is_alive()
+    results = {outcomes.get_nowait(), outcomes.get_nowait()}
+    assert results == {("retry", "completed"), ("dismiss", "dismissed")}
+    consumed = route.consume_reply(epoch)
+    assert consumed.status == "review_cancelled"
+    assert consumed.reply is None
+    runtime.close()
 
 
 def _expanded_preview(preview, *, token_count):

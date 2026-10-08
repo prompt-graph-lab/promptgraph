@@ -544,35 +544,40 @@ class AgentSceneModuleSwapApprovalCustodian:
         """Return only the current proposal needed by the session's human UI."""
 
         with self._lock:
-            self._expire_locked(self._clock())
-            record = self._record
-            if self._closed:
-                return {
-                    "contract_version": PROPOSAL_CONTRACT_VERSION,
-                    "state": "session_unavailable",
-                }
-            if record is None:
-                return {
-                    "contract_version": PROPOSAL_CONTRACT_VERSION,
-                    "state": self._human_review_state,
-                }
-            if record.state == "prepared":
-                # Prepared custody is deliberately invisible until the mailbox
-                # reply and proposal commit complete together.
-                return {
-                    "contract_version": PROPOSAL_CONTRACT_VERSION,
-                    "state": "prepared",
-                }
+            return self._inspect_for_human_review_locked(self._clock())
+
+    def _inspect_for_human_review_locked(self, now):
+        """Build a human-review snapshot with the custodian lock already held."""
+
+        self._expire_locked(now)
+        record = self._record
+        if self._closed:
             return {
                 "contract_version": PROPOSAL_CONTRACT_VERSION,
-                "state": "pending",
-                "proposal_id": record.proposal_id,
-                "target_epoch": record.target_epoch,
-                "intent": deepcopy(record.intent),
-                "plan_id": record.plan_id,
-                "preview": deepcopy(record.preview),
-                "expires_in_seconds": max(0, int(record.expires_at - self._clock())),
+                "state": "session_unavailable",
             }
+        if record is None:
+            return {
+                "contract_version": PROPOSAL_CONTRACT_VERSION,
+                "state": self._human_review_state,
+            }
+        if record.state == "prepared":
+            # Prepared custody is deliberately invisible until the mailbox
+            # reply and proposal commit complete together.
+            return {
+                "contract_version": PROPOSAL_CONTRACT_VERSION,
+                "state": "prepared",
+            }
+        return {
+            "contract_version": PROPOSAL_CONTRACT_VERSION,
+            "state": "pending",
+            "proposal_id": record.proposal_id,
+            "target_epoch": record.target_epoch,
+            "intent": deepcopy(record.intent),
+            "plan_id": record.plan_id,
+            "preview": deepcopy(record.preview),
+            "expires_in_seconds": max(0, int(record.expires_at - self._clock())),
+        }
 
     def resolve_pending(self, proposal_id, action):
         """Consume one exact pending proposal as rejected or dismissed."""
@@ -580,38 +585,50 @@ class AgentSceneModuleSwapApprovalCustodian:
         if action not in {"reject", "dismiss"}:
             return "invalid_action"
         with self._lock:
-            self._expire_locked(self._clock())
-            if self._closed:
-                return "session_unavailable"
-            record = self._record
-            if (record is None or record.state != "pending"
-                    or type(proposal_id) is not str
-                    or record.proposal_id != proposal_id):
-                return self._human_review_state
-            state = "rejected" if action == "reject" else "dismissed"
-            self._remember_record_locked(record, "proposal_cancelled")
-            self._record = None
-            self._revision += 1
-            self._human_review_state = state
-            return state
+            return self._resolve_pending_locked(proposal_id, action, self._clock())
+
+    def _resolve_pending_locked(self, proposal_id, action, now):
+        """Resolve a pending proposal with the custodian lock already held."""
+
+        self._expire_locked(now)
+        if self._closed:
+            return "session_unavailable"
+        record = self._record
+        if (record is None or record.state != "pending"
+                or type(proposal_id) is not str
+                or record.proposal_id != proposal_id):
+            return self._human_review_state
+        if action not in {"reject", "dismiss"}:
+            return "invalid_action"
+        state = "rejected" if action == "reject" else "dismissed"
+        self._remember_record_locked(record, "proposal_cancelled")
+        self._record = None
+        self._revision += 1
+        self._human_review_state = state
+        return state
 
     def mark_pending_stale(self, proposal_id):
         """Consume a proposal whose fresh content no longer matches custody."""
 
         with self._lock:
-            self._expire_locked(self._clock())
-            if self._closed:
-                return "session_unavailable"
-            record = self._record
-            if (record is None or record.state != "pending"
-                    or type(proposal_id) is not str
-                    or record.proposal_id != proposal_id):
-                return self._human_review_state
-            self._remember_record_locked(record, "stale_target")
-            self._record = None
-            self._revision += 1
-            self._human_review_state = "stale"
-            return "stale"
+            return self._mark_pending_stale_locked(proposal_id, self._clock())
+
+    def _mark_pending_stale_locked(self, proposal_id, now):
+        """Mark one pending proposal stale with the custodian lock already held."""
+
+        self._expire_locked(now)
+        if self._closed:
+            return "session_unavailable"
+        record = self._record
+        if (record is None or record.state != "pending"
+                or type(proposal_id) is not str
+                or record.proposal_id != proposal_id):
+            return self._human_review_state
+        self._remember_record_locked(record, "stale_target")
+        self._record = None
+        self._revision += 1
+        self._human_review_state = "stale"
+        return "stale"
 
     def cancel_pending(self):
         """Cancel host custody explicitly; ordinary pipe release never calls this."""

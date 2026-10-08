@@ -550,6 +550,17 @@ proposal remains bound to its originating session and pairing generation and
 is independently invalidated by proposal TTL, target change, explicit host
 disconnect/disarm, or session cleanup.
 
+Host-side Reject, Dismiss, proposal expiry, and fresh-content invalidation are
+coordinated with the mailbox under the fixed mailbox-then-custodian lock order.
+The transition carries the exact proposal identity. If its positive
+`queued_for_review` acknowledgment is still ready in that mailbox, the same
+critical section replaces it with a bounded terminal outcome before a consumer
+can receive it. If `consume_reply()` completed first, the acknowledgment was
+already delivered and remains historically valid; host actions do not retract
+it. A stale callback for an older proposal cannot invalidate a newer proposal's
+acknowledgment. The review UI reaches these transitions only through its
+session runtime; it does not mutate the custodian directly.
+
 ## UI placement
 
 Add a dedicated, persistent **Agent Review** surface in the normal Streamlit
@@ -632,11 +643,12 @@ Add a dedicated host panel, complete paginated Before/After review, proposal
 states, Reject/Dismiss, and one-time confirmation binding. Do not Apply in this
 slice.
 
-Acceptance: every target row is inspectable, including a Scene over 100 rows;
-raw paths and Module definitions are not rendered; normal Gallery selection,
-focus, connection state, and existing human Module Swap controls remain
-unchanged; confirmation resets on stale/changed proposal and cannot be set by
-an MCP argument.
+Acceptance: every target row is inspectable, including Scenes over 100 rows and
+the full 1,000-target planner limit, with a boundary test proving all 1,000
+rows are addressable without omission. Raw paths and Module definitions are
+not rendered; normal Gallery selection, focus, connection state, and existing
+human Module Swap controls remain unchanged; confirmation resets on
+stale/changed proposal and cannot be set by an MCP argument.
 
 ### PR-C: revalidation and host-only Apply/publication
 

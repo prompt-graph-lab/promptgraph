@@ -73,11 +73,11 @@ def _set_workspace_active(active):
     st.session_state[AGENT_REVIEW_ACTIVE_KEY] = bool(active)
 
 
-def _resolve_proposal(custodian, proposal_id, action, identity):
+def _resolve_proposal(runtime, proposal_id, action, identity):
     """Streamlit callback consumes one exact proposal and its staged checkbox."""
 
     try:
-        custodian.resolve_pending(proposal_id, action)
+        runtime.resolve_review_proposal(proposal_id, action)
     except Exception:
         pass
     if st.session_state.get(_ACK_IDENTITY_KEY) == identity:
@@ -91,14 +91,24 @@ def _set_page(identity, page_index):
     }
 
 
+def _page_rows(rows, page_index, page_size=_PAGE_SIZE):
+    """Return one clamped page and its row offsets without dropping targets."""
+
+    page_count = max(1, math.ceil(len(rows) / page_size))
+    page_index = min(max(0, page_index), page_count - 1)
+    start = page_index * page_size
+    stop = min(len(rows), start + page_size)
+    return page_index, page_count, start, stop, rows[start:stop]
+
+
 def render_agent_review_navigation(runtime):
     """Expose a normal-run navigation entry independent of Gallery controls."""
 
     state = "unavailable"
-    custodian = getattr(runtime, "review_custodian", None)
+    inspector = getattr(runtime, "inspect_review_custody", None)
     try:
-        if custodian is not None:
-            state = custodian.inspect_for_human_review().get("state", "unavailable")
+        if callable(inspector):
+            state = inspector().get("state", "unavailable")
     except Exception:
         state = "unavailable"
     label = "Agent Review · waiting" if state in {"pending", "prepared"} else "Agent Review"
@@ -166,17 +176,17 @@ def render_agent_scene_module_swap_review_panel(project, runtime, project_path="
     )
 
     rows = review["rows"]
-    page_count = max(1, math.ceil(len(rows) / _PAGE_SIZE))
     page_state = st.session_state.get(_PAGE_STATE_KEY)
     if type(page_state) is not dict or page_state.get("identity") != identity:
         page_index = 0
     else:
-        page_index = min(max(0, page_state.get("page", 0)), page_count - 1)
-    start = page_index * _PAGE_SIZE
-    stop = min(len(rows), start + _PAGE_SIZE)
+        page_index = page_state.get("page", 0)
+    if type(page_index) is not int:
+        page_index = 0
+    page_index, page_count, start, stop, page_rows = _page_rows(rows, page_index)
     st.subheader(f"Affected Illustrations {start + 1}–{stop} of {len(rows)}")
 
-    for row in rows[start:stop]:
+    for row in page_rows:
         status = {
             "changed": "Changed",
             "no_op": "No change",
@@ -223,20 +233,20 @@ def render_agent_scene_module_swap_review_panel(project, runtime, project_path="
     if acknowledgment:
         st.info("Review acknowledgment staged for this proposal. The Project has not changed.")
 
-    custodian = getattr(runtime, "review_custodian", None)
-    if custodian is not None:
+    resolver = getattr(runtime, "resolve_review_proposal", None)
+    if callable(resolver):
         action_cols = st.columns(2)
         with action_cols[0]:
             st.button(
                 "Reject proposal",
                 key=f"agent_scene_swap_review_reject_{identity[0]}_{identity[1]}",
                 on_click=_resolve_proposal,
-                args=(custodian, identity[0], "reject", identity),
+                args=(runtime, identity[0], "reject", identity),
             )
         with action_cols[1]:
             st.button(
                 "Dismiss proposal",
                 key=f"agent_scene_swap_review_dismiss_{identity[0]}_{identity[1]}",
                 on_click=_resolve_proposal,
-                args=(custodian, identity[0], "dismiss", identity),
+                args=(runtime, identity[0], "dismiss", identity),
             )

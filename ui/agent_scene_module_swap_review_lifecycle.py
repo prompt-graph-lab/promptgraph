@@ -205,14 +205,16 @@ def build_agent_scene_module_swap_review(project, runtime, project_path=""):
     if runtime is None:
         return {"state": "session_unavailable"}
     custodian = getattr(runtime, "review_custodian", None)
-    if type(custodian) is not AgentSceneModuleSwapApprovalCustodian:
+    if (type(custodian) is not AgentSceneModuleSwapApprovalCustodian
+            or not callable(getattr(runtime, "inspect_review_custody", None))
+            or not callable(getattr(runtime, "mark_review_proposal_stale", None))):
         return {"state": "session_unavailable"}
     try:
         current_epoch = runtime.synchronize_target(project, project_path)
     except Exception:
         return {"state": "computation_failure"}
     try:
-        record = custodian.inspect_for_human_review()
+        record = runtime.inspect_review_custody()
     except Exception:
         return {"state": "computation_failure"}
     state = record.get("state") if type(record) is dict else None
@@ -228,7 +230,7 @@ def build_agent_scene_module_swap_review(project, runtime, project_path=""):
 
     if current_epoch != record.get("target_epoch"):
         try:
-            state = custodian.mark_pending_stale(record["proposal_id"])
+            state = runtime.mark_review_proposal_stale(record["proposal_id"])
         except Exception:
             state = "computation_failure"
         return {"state": "stale" if state == "stale" else "validation_failure"}
@@ -241,7 +243,7 @@ def build_agent_scene_module_swap_review(project, runtime, project_path=""):
         return {"state": "computation_failure"}
     if type(fresh) is not dict or fresh != record["preview"]:
         try:
-            state = custodian.mark_pending_stale(record["proposal_id"])
+            state = runtime.mark_review_proposal_stale(record["proposal_id"])
         except Exception:
             state = "computation_failure"
         return {"state": "stale" if state == "stale" else "validation_failure"}
@@ -249,7 +251,7 @@ def build_agent_scene_module_swap_review(project, runtime, project_path=""):
             or type(fresh.get("changed_count")) is not int
             or fresh["changed_count"] <= 0):
         try:
-            state = custodian.mark_pending_stale(record["proposal_id"])
+            state = runtime.mark_review_proposal_stale(record["proposal_id"])
         except Exception:
             state = "computation_failure"
         return {"state": "stale" if state == "stale" else "validation_failure"}
@@ -266,7 +268,7 @@ def build_agent_scene_module_swap_review(project, runtime, project_path=""):
     # proposal and target epoch remain current.
     try:
         final_epoch = runtime.synchronize_target(project, project_path)
-        final_record = custodian.inspect_for_human_review()
+        final_record = runtime.inspect_review_custody()
     except Exception:
         return {"state": "computation_failure"}
     final_state = final_record.get("state") if type(final_record) is dict else None
@@ -277,7 +279,7 @@ def build_agent_scene_module_swap_review(project, runtime, project_path=""):
         } else "validation_failure"}
     if final_epoch != record["target_epoch"]:
         try:
-            stale_state = custodian.mark_pending_stale(record["proposal_id"])
+            stale_state = runtime.mark_review_proposal_stale(record["proposal_id"])
         except Exception:
             stale_state = "computation_failure"
         return {"state": "stale" if stale_state == "stale" else "validation_failure"}

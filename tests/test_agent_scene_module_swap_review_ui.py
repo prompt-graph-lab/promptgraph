@@ -38,6 +38,15 @@ class _Runtime:
             self.review_custodian.synchronize_target_epoch(self.epoch)
         return self.epoch
 
+    def inspect_review_custody(self):
+        return self.review_custodian.inspect_for_human_review()
+
+    def resolve_review_proposal(self, proposal_id, action):
+        return self.review_custodian.resolve_pending(proposal_id, action)
+
+    def mark_review_proposal_stale(self, proposal_id):
+        return self.review_custodian.mark_pending_stale(proposal_id)
+
 
 def _project(illustration_count=101):
     lines = [PromptLine(
@@ -318,6 +327,22 @@ def test_review_panel_paginates_all_targets_stages_ack_only_and_rejects_without_
     assert project.prompt_lines[1].current_text == first_prompt
     assert ack_key not in app.session_state
     assert "Apply" not in [button.label for button in app.button]
+
+
+def test_review_pagination_addresses_all_one_thousand_targets_without_omission():
+    from ui.agent_scene_module_swap_review_panel import _PAGE_SIZE, _page_rows
+
+    rows = [{"illustration_id": f"illustration-{index:04}"} for index in range(1000)]
+    page_count = (len(rows) + _PAGE_SIZE - 1) // _PAGE_SIZE
+    addressed = []
+    for page in range(page_count):
+        actual_page, actual_count, _start, _stop, page_rows = _page_rows(rows, page)
+        assert actual_page == page
+        assert actual_count == page_count
+        addressed.extend(row["illustration_id"] for row in page_rows)
+
+    assert page_count == 50
+    assert addressed == [row["illustration_id"] for row in rows]
 
 
 def test_stale_content_clears_a_previously_staged_review_acknowledgment():
