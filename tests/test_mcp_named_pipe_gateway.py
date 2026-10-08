@@ -415,7 +415,7 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 assert [tool.name for tool in listed.tools] == [
                     entry["name"] for entry in catalog
                 ]
-                assert len(listed.tools) == 8
+                assert len(listed.tools) == 9
                 assert all("apply" not in tool.name.casefold() for tool in listed.tools)
                 for tool, entry in zip(listed.tools, catalog, strict=True):
                     assert tool.description == entry["description"]

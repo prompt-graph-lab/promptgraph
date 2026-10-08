@@ -16,16 +16,16 @@ and runs it inside the official `mcp.server.stdio.stdio_server()` context with
 
 The SDK context owns stdio claiming, protocol streams, and transport cleanup.
 The runner has no Project singleton, discovery, filesystem load/save, Project
-path argument, Project-related environment lookup, approval custody, or
-persistence. It does not import Streamlit, session state, an LLM SDK, or model
-code. It does not print to stdout or install logging handlers; stdout remains
-reserved for MCP protocol messages.
+path argument, Project-related environment lookup, proposal custody, human
+decision, or persistence. It does not import Streamlit, session state, an LLM
+SDK, or model code. It does not print to stdout or install logging handlers;
+stdout remains reserved for MCP protocol messages.
 
 ## Exposed tools and approval boundary
 
 The SDK server delegates to the existing SDK-independent adapter, which
 continues to source its exact catalog and dispatch domain work through
-`core.agent_facade`. The stdio server advertises the same eight logical tools:
+`core.agent_facade`. The stdio server advertises the same nine logical tools:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
@@ -35,12 +35,16 @@ continues to source its exact catalog and dispatch domain work through
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
 - `promptgraph_preview_scene_module_swap`
+- `promptgraph_request_scene_module_swap_review`
 
 All tool arguments and results remain JSON values. The tools do not expose
 Python Project or PromptLine objects. The catalog contains no Apply tool.
-There is no agent approval signal: the host must retain the exact Preview
-envelope a person approved, and `plan_id` remains a content identifier rather
-than authorization. No Preview or approval state is stored in the runner.
+The review-request tool is an explicit request for the paired host to queue a
+fresh proposal for human review; a successful reply does not mean it was viewed,
+approved, applied, or saved. The runner and gateway retain no proposal or
+approval state. A standalone adapter-backed stdio server has no host custodian
+and refuses that request before Project-provider access. `plan_id` remains a
+content identifier rather than authorization.
 
 ## Scope and validation boundary
 
@@ -53,10 +57,11 @@ license, supported-environment, or release-lock files are updated.
 
 The PoC-1c subprocess integration test runs a test-only host with a synthetic
 Project and uses the official SDK stdio client. It checks registered tools and
-schemas, all eight operations, bounded errors, Preview-only behavior, JSON
-results, no Project mutation, protocol stdout integrity, and graceful
-subprocess exit. The test host's synthetic Project and PID/report markers are
-test fixtures, not production Project discovery or transport configuration.
+schemas, the catalog operations, bounded errors, including the standalone
+host-review refusal, JSON results, no Project mutation, protocol stdout
+integrity, and graceful subprocess exit. The test host's synthetic Project
+and PID/report markers are test fixtures, not production Project discovery or
+transport configuration.
 
 ## Named Pipe gateway (PoC-1d)
 

@@ -177,15 +177,16 @@ def test_real_streamlit_fragment_wakes_only_its_session_and_dispatches_in_full_r
     dispatch_calls = []
     original_dispatch = session_pump.dispatch_project_agent_request
 
-    def observe_dispatch(session_state, run_token, request):
+    def observe_dispatch(session_state, run_token, request, **review_context):
         dispatch_calls.append({
             "session": session_state.get("project").project_metadata["session"],
             "run_token": run_token,
             "current_token": session_state.get(PROJECT_CAPTURE_RUN_TOKEN_KEY),
             "thread_id": threading.get_ident(),
             "request": copy.deepcopy(request),
+            "has_review_context": bool(review_context),
         })
-        return original_dispatch(session_state, run_token, request)
+        return original_dispatch(session_state, run_token, request, **review_context)
 
     monkeypatch.setattr(session_pump, "dispatch_project_agent_request", observe_dispatch)
 

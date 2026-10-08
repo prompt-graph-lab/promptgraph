@@ -430,6 +430,7 @@ class ProjectAgentSessionRegistry:
                 target_epoch,
                 request,
                 timeout_seconds=timeout_seconds,
+                _pairing_generation=paired_route._pairing_generation,
             ),
             unavailable=MailboxOutcome("session_unavailable"),
         )

@@ -215,6 +215,131 @@ def _rejected_reply(request_id, reason, diagnostic_code):
     }
 
 
+def _dispatch_scene_module_swap_review_request(
+        request_id, arguments, provider, review_custodian,
+        pairing_generation, target_epoch, session_state, run_token):
+    """Recompute and prepare one explicitly requested host review proposal."""
+
+    from agent_adapters import mcp_adapter
+    from core import agent_facade
+    from ui.agent_scene_module_swap_approval_lifecycle import (
+        AgentSceneModuleSwapApprovalCustodian,
+        PreparedReviewReply,
+    )
+
+    tool_name = "promptgraph_request_scene_module_swap_review"
+    normalized = mcp_adapter.validate_scene_module_swap_review_request_arguments(
+        arguments,
+    )
+    if normalized is None:
+        result = PromptGraphMCPAdapter().call_tool(tool_name, arguments)
+        return _completed_reply(request_id, result)
+
+    if (type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian
+            or type(pairing_generation) is not int or pairing_generation <= 0
+            or type(target_epoch) is not str or not target_epoch):
+        return _completed_reply(
+            request_id,
+            mcp_adapter.scene_module_swap_review_failure("host_review_unavailable"),
+        )
+
+    intent = dict(normalized)
+    decision = review_custodian.check_request(
+        request_id, pairing_generation, target_epoch, intent,
+    )
+    if decision.status == "retry_pending":
+        return _completed_reply(request_id, decision.result)
+    if decision.status != "new":
+        return _completed_reply(
+            request_id,
+            mcp_adapter.scene_module_swap_review_failure(decision.status),
+        )
+
+    def fail(reason):
+        review_custodian.remember_failure(
+            request_id,
+            pairing_generation,
+            target_epoch,
+            intent,
+            decision.revision,
+            reason,
+        )
+        return _completed_reply(
+            request_id,
+            mcp_adapter.scene_module_swap_review_failure(reason),
+        )
+
+    try:
+        project = provider()
+    except _CaptureProviderUnavailable:
+        return fail("review_unavailable")
+    except Exception:
+        return fail("review_unavailable")
+
+    capture = provider.capture
+    if capture is None or provider.failure_reason is not None:
+        return fail("review_unavailable")
+
+    try:
+        preview = agent_facade.preview_scene_module_swap(
+            project,
+            {
+                "scene_id": normalized["scene_id"],
+                "source_module_name": normalized["source_module_name"],
+                "target_module_name": normalized["target_module_name"],
+                "match_mode": normalized["match_mode"],
+            },
+        )
+    except Exception:
+        return fail("invalid_preview")
+
+    if type(preview) is not dict or preview.get("valid") is not True:
+        reason = (
+            "target_limit_exceeded"
+            if type(preview) is dict and preview.get("reason") == "target_limit_exceeded"
+            else "invalid_preview"
+        )
+        return fail(reason)
+    target_count = preview.get("target_count")
+    changed_count = preview.get("changed_count")
+    if (type(target_count) is not int or target_count < 0
+            or target_count > agent_facade.MAX_TARGETS):
+        return fail("target_limit_exceeded")
+    if type(changed_count) is not int:
+        return fail("invalid_preview")
+    if changed_count <= 0:
+        return fail("no_op_preview")
+    if preview.get("plan_id") != normalized["expected_plan_id"]:
+        return fail("stale_preview")
+
+    try:
+        capture_is_current = is_capture_current(session_state, capture, run_token)
+    except Exception:
+        capture_is_current = False
+    if not capture_is_current:
+        return fail("stale_target")
+
+    prepared = review_custodian.prepare(
+        request_id,
+        pairing_generation,
+        target_epoch,
+        intent,
+        decision.revision,
+        preview,
+    )
+    if prepared.status == "retry_pending":
+        return _completed_reply(request_id, prepared.result)
+    if prepared.status != "prepared" or prepared.token is None:
+        return _completed_reply(
+            request_id,
+            mcp_adapter.scene_module_swap_review_failure(prepared.status),
+        )
+    return PreparedReviewReply(
+        _completed_reply(request_id, prepared.result),
+        prepared.token,
+    )
+
+
 class _RequestCaptureProvider:
     """Lazy one-capture cache whose lifetime is one dispatch call."""
 
@@ -268,7 +393,9 @@ class _RequestCaptureProvider:
         self._attempted = False
 
 
-def dispatch_project_agent_request(session_state, run_token, request):
+def dispatch_project_agent_request(
+        session_state, run_token, request, *, review_custodian=None,
+        pairing_generation=None, target_epoch=None):
     """Dispatch one bounded request against a fresh optional Project snapshot.
 
     Adapter and facade results are returned unchanged when JSON-safe. Host
@@ -282,6 +409,17 @@ def dispatch_project_agent_request(session_state, run_token, request):
     tool, arguments = parsed
     provider = _RequestCaptureProvider(session_state, run_token)
     try:
+        if tool == "promptgraph_request_scene_module_swap_review":
+            return _dispatch_scene_module_swap_review_request(
+                request_id,
+                arguments,
+                provider,
+                review_custodian,
+                pairing_generation,
+                target_epoch,
+                session_state,
+                run_token,
+            )
         try:
             adapter = PromptGraphMCPAdapter(provider)
             result = adapter.call_tool(tool, arguments)

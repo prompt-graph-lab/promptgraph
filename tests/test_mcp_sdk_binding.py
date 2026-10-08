@@ -72,9 +72,9 @@ def test_sdk_registration_uses_exact_adapter_catalog_and_excludes_apply():
                 tool = by_name[entry["name"]]
                 assert tool.description == entry["description"]
                 assert tool.input_schema == entry["inputSchema"]
-                assert tool.annotations.read_only_hint is True
+                assert tool.annotations.read_only_hint is (entry["effect"] != "host_review_request")
                 assert tool.annotations.destructive_hint is False
-                assert tool.annotations.idempotent_hint is True
+                assert tool.annotations.idempotent_hint is (entry["effect"] != "host_review_request")
                 assert tool.annotations.open_world_hint is False
                 assert tool.meta == {"promptgraph/effect": entry["effect"]}
 
@@ -96,7 +96,7 @@ def test_sdk_registration_uses_exact_adapter_catalog_and_excludes_apply():
     assert provider_calls == []
 
 
-def test_real_sdk_call_path_delegates_all_eight_tools_without_project_mutation():
+def test_real_sdk_call_path_delegates_all_nine_tools_without_project_mutation():
     value = _project()
     before = copy.deepcopy(value)
     provider_calls = []
@@ -115,6 +115,10 @@ def test_real_sdk_call_path_delegates_all_eight_tools_without_project_mutation()
         ("promptgraph_preview_batch_replace", _request()),
         ("promptgraph_preview_scene_module_swap", {
             "scene_id": "scene-1", "source_module_name": "source", "target_module_name": "target",
+        }),
+        ("promptgraph_request_scene_module_swap_review", {
+            "scene_id": "scene-1", "source_module_name": "source",
+            "target_module_name": "target", "expected_plan_id": "0" * 64,
         }),
     ]
     expected = [adapter.call_tool(name, arguments) for name, arguments in calls]

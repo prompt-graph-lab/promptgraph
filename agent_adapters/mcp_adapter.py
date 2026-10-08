@@ -126,6 +126,37 @@ _TOOL_CATALOG = (
         },
         "effect": "reviewed_preview",
     },
+    {
+        "name": "promptgraph_request_scene_module_swap_review",
+        "description": (
+            "Request host review of a freshly recomputed single-Scene Module Swap Preview. "
+            "A successful response only queues the exact proposal for human review; it does not approve or Apply it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "source_module_name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "target_module_name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "expected_plan_id": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64,
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+                "match_mode": {
+                    "type": "string",
+                    "enum": list(agent_facade.SCENE_MODULE_SWAP_MODES),
+                    "default": "strict",
+                },
+            },
+            "required": [
+                "scene_id", "source_module_name", "target_module_name", "expected_plan_id",
+            ],
+            "additionalProperties": False,
+        },
+        "effect": "host_review_request",
+    },
 )
 
 _CAPABILITIES_TOOL = "promptgraph_capabilities"
@@ -136,6 +167,7 @@ _SEARCH_ILLUSTRATIONS_TOOL = "promptgraph_search_illustrations"
 _ILLUSTRATION_TOOL = "promptgraph_get_illustration"
 _PREVIEW_TOOL = "promptgraph_preview_batch_replace"
 _SCENE_MODULE_SWAP_PREVIEW_TOOL = "promptgraph_preview_scene_module_swap"
+_SCENE_MODULE_SWAP_REVIEW_REQUEST_TOOL = "promptgraph_request_scene_module_swap_review"
 _PREVIEW_REQUIRED_ARGUMENTS = ("illustration_ids", "find_text", "replace_text")
 _PREVIEW_OPTIONAL_ARGUMENTS = ("match_mode", "preserve_weights")
 _SEARCH_OPTIONAL_ARGUMENTS = ("match_mode", "scene_id", "limit")
@@ -143,6 +175,27 @@ _SCENE_MODULE_SWAP_REQUIRED_ARGUMENTS = (
     "scene_id", "source_module_name", "target_module_name",
 )
 _SCENE_MODULE_SWAP_OPTIONAL_ARGUMENTS = ("match_mode",)
+_SCENE_MODULE_SWAP_REVIEW_REQUIRED_ARGUMENTS = (
+    "scene_id", "source_module_name", "target_module_name", "expected_plan_id",
+)
+_SCENE_MODULE_SWAP_REVIEW_OPTIONAL_ARGUMENTS = ("match_mode",)
+
+SCENE_MODULE_SWAP_REVIEW_FAILURE_REASONS = frozenset({
+    "host_review_unavailable",
+    "stale_preview",
+    "invalid_preview",
+    "no_op_preview",
+    "target_limit_exceeded",
+    "review_already_pending",
+    "request_id_conflict",
+    "replay_not_accepted",
+    "proposal_too_large",
+    "proposal_expired",
+    "stale_target",
+    "session_closed",
+    "review_unavailable",
+    "proposal_cancelled",
+})
 
 
 def _error(reason: str):
@@ -235,6 +288,60 @@ def _scene_module_swap_transport_arguments(arguments):
     return args
 
 
+def validate_scene_module_swap_review_request_arguments(arguments):
+    """Validate the review-request wire shape without resolving a Project.
+
+    This is intentionally a transport-level check. The facade remains the
+    owner of Module Swap domain semantics; the trusted host bridge calls this
+    helper before capture and then computes the Preview itself.
+    """
+
+    args = _object_arguments(
+        arguments,
+        required=_SCENE_MODULE_SWAP_REVIEW_REQUIRED_ARGUMENTS,
+        optional=_SCENE_MODULE_SWAP_REVIEW_OPTIONAL_ARGUMENTS,
+    )
+    if args is None or not _arguments_have_types(args, {
+            "scene_id": str,
+            "source_module_name": str,
+            "target_module_name": str,
+            "expected_plan_id": str,
+            "match_mode": str,
+    }):
+        return None
+    for field_name in ("scene_id", "source_module_name", "target_module_name"):
+        value = args[field_name]
+        if not 1 <= len(value) <= 200:
+            return None
+        try:
+            value.encode("utf-8")
+        except UnicodeError:
+            return None
+    expected_plan_id = args["expected_plan_id"]
+    if (len(expected_plan_id) != 64
+            or any(char not in "0123456789abcdef" for char in expected_plan_id)):
+        return None
+    match_mode = args.get("match_mode", "strict")
+    if match_mode not in agent_facade.SCENE_MODULE_SWAP_MODES:
+        return None
+    normalized = {
+        "scene_id": args["scene_id"],
+        "source_module_name": args["source_module_name"],
+        "target_module_name": args["target_module_name"],
+        "expected_plan_id": expected_plan_id,
+        "match_mode": match_mode,
+    }
+    return normalized
+
+
+def scene_module_swap_review_failure(reason):
+    """Return a bounded adapter-shaped failure for the host review route."""
+
+    if reason not in SCENE_MODULE_SWAP_REVIEW_FAILURE_REASONS:
+        reason = "review_unavailable"
+    return _error(reason)
+
+
 def get_tool_catalog():
     """Return a fresh deterministic logical catalog for later SDK registration."""
     return deepcopy(list(_TOOL_CATALOG))
@@ -273,6 +380,8 @@ def get_adapter_capabilities():
         "scene_module_swap_requires_reviewed_preview_before_host_apply": (
             scene_swap["requires_reviewed_preview_before_host_apply"]
         ),
+        "scene_module_swap_review_request_requires_human_review": True,
+        "scene_module_swap_review_request_requires_expected_plan_id": True,
         "illustration_search_modes": list(search["modes"]),
         "illustration_search_max_results": search["max_results"],
         "illustration_search_query_text_chars": search["query_text_chars"],
@@ -330,6 +439,13 @@ class PromptGraphMCPAdapter:
             arguments = _scene_module_swap_transport_arguments(arguments)
             if arguments is None:
                 return _error("invalid_arguments")
+        elif name == _SCENE_MODULE_SWAP_REVIEW_REQUEST_TOOL:
+            arguments = validate_scene_module_swap_review_request_arguments(arguments)
+            if arguments is None:
+                return _error("invalid_arguments")
+            # An adapter call has no trusted session/run/custody context. It
+            # must never make a review proposal or ask its Project provider.
+            return scene_module_swap_review_failure("host_review_unavailable")
 
         if self._project_provider is None:
             return _error("missing_project_provider")
