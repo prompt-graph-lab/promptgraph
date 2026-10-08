@@ -47,14 +47,15 @@ def _failure(reason: str) -> dict[str, Any]:
 def _sdk_tool(entry: dict[str, Any]) -> Tool:
     """Translate one adapter entry into public MCP protocol types."""
 
+    host_review_request = entry.get("effect") == "host_review_request"
     return Tool(
         name=entry["name"],
         description=entry["description"],
         inputSchema=deepcopy(entry["inputSchema"]),
         annotations=ToolAnnotations(
-            readOnlyHint=True,
+            readOnlyHint=not host_review_request,
             destructiveHint=False,
-            idempotentHint=True,
+            idempotentHint=not host_review_request,
             openWorldHint=False,
         ),
         _meta={_EFFECT_META_KEY: entry["effect"]},

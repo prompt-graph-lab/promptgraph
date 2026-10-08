@@ -24,6 +24,7 @@ TOOL_NAMES = [
     "promptgraph_get_illustration",
     "promptgraph_preview_batch_replace",
     "promptgraph_preview_scene_module_swap",
+    "promptgraph_request_scene_module_swap_review",
 ]
 
 
@@ -93,7 +94,7 @@ def test_tool_catalog_is_deterministic_unique_and_preview_only():
     assert not any("apply" in name.lower() for name in names)
     assert [tool["effect"] for tool in first] == [
         "read_only", "read_only", "read_only", "read_only", "read_only", "read_only",
-        "reviewed_preview", "reviewed_preview"]
+        "reviewed_preview", "reviewed_preview", "host_review_request"]
     search_tool = first[4]
     assert search_tool["inputSchema"]["required"] == ["query_text"]
     assert search_tool["inputSchema"]["additionalProperties"] is False
@@ -105,14 +106,21 @@ def test_tool_catalog_is_deterministic_unique_and_preview_only():
         "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
         "limit": {"type": "integer", "minimum": 1, "maximum": agent_facade.MAX_ITEMS},
     }
-    assert first[-1]["name"] == "promptgraph_preview_scene_module_swap"
-    assert first[-1]["inputSchema"]["required"] == [
+    assert first[-2]["name"] == "promptgraph_preview_scene_module_swap"
+    assert first[-2]["inputSchema"]["required"] == [
         "scene_id", "source_module_name", "target_module_name"]
+    assert first[-2]["inputSchema"]["additionalProperties"] is False
+    assert first[-2]["inputSchema"]["properties"]["match_mode"]["enum"] == ["strict", "loose"]
+    assert first[-1]["name"] == "promptgraph_request_scene_module_swap_review"
+    assert first[-1]["effect"] == "host_review_request"
+    assert first[-1]["inputSchema"]["required"] == [
+        "scene_id", "source_module_name", "target_module_name", "expected_plan_id"]
     assert first[-1]["inputSchema"]["additionalProperties"] is False
-    assert first[-1]["inputSchema"]["properties"]["match_mode"]["enum"] == ["strict", "loose"]
-    assert "illustration_ids" in first[-2]["inputSchema"]["required"]
-    first[-2]["inputSchema"]["properties"].clear()
-    assert "illustration_ids" in mcp_adapter.get_tool_catalog()[-2]["inputSchema"]["properties"]
+    assert first[-1]["inputSchema"]["properties"]["expected_plan_id"]["pattern"] == (
+        "^[0-9a-f]{64}$")
+    assert "illustration_ids" in first[-3]["inputSchema"]["required"]
+    first[-3]["inputSchema"]["properties"].clear()
+    assert "illustration_ids" in mcp_adapter.get_tool_catalog()[-3]["inputSchema"]["properties"]
     json_only(second)
 
 
@@ -137,8 +145,10 @@ def test_capability_mapping_is_facade_derived_and_does_not_need_a_project():
     assert capabilities["scene_module_swap_requires_explicit_module_names"] is True
     assert capabilities["scene_module_swap_requires_reviewed_preview_before_host_apply"] is True
     assert capabilities["agent_callable_apply"] is False
+    assert capabilities["scene_module_swap_review_request_requires_human_review"] is True
+    assert capabilities["scene_module_swap_review_request_requires_expected_plan_id"] is True
     assert [tool["name"] for tool in capabilities["tools"]] == TOOL_NAMES
-    assert capabilities["tools"][-1]["effect"] == "reviewed_preview"
+    assert capabilities["tools"][-1]["effect"] == "host_review_request"
     assert scene_swap["requires_explicit_target_module_name"] is True
     json_only(capabilities)
 
@@ -171,12 +181,18 @@ def test_observations_and_preview_delegate_exactly_without_mutating_project():
          agent_facade.preview_scene_module_swap(value, {
              "scene_id": "scene-1", "source_module_name": "source", "target_module_name": "target",
          })),
+        ("promptgraph_request_scene_module_swap_review", {
+            "scene_id": "scene-1", "source_module_name": "source",
+            "target_module_name": "target", "expected_plan_id": "0" * 64,
+        }, {"adapter_contract_version": mcp_adapter.ADAPTER_CONTRACT_VERSION,
+            "ok": False, "reason": "host_review_unavailable",
+            "diagnostics": [{"code": "host_review_unavailable"}]}),
     ]
     for name, arguments, expected in calls:
         result = adapter.call_tool(name, arguments)
         assert result == expected
         json_only(result)
-    assert len(provider_calls) == len(calls)
+    assert len(provider_calls) == len(calls) - 1
     assert calls[2][2]["illustrations"][0]["illustration_id"] == "baseline"
     assert calls[2][2]["illustrations"][0]["scene_id"] is None
     assert value == before and identity_state(value) == identity
@@ -229,6 +245,28 @@ def test_scene_module_swap_preview_delegates_exact_facade_envelope_without_retai
                         lambda _project, _request: envelope)
     assert adapter.call_tool("promptgraph_preview_scene_module_swap", args) is envelope
     assert not hasattr(adapter, "apply_scene_module_swap")
+
+
+@pytest.mark.parametrize("arguments", [
+    {"scene_id": "scene-1", "source_module_name": "source",
+     "target_module_name": "target", "expected_plan_id": "0" * 63},
+    {"scene_id": "scene-1", "source_module_name": "source",
+     "target_module_name": "target", "expected_plan_id": "0" * 64,
+     "extra": True},
+    {"scene_id": "scene-1\ud800", "source_module_name": "source",
+     "target_module_name": "target", "expected_plan_id": "0" * 64},
+])
+def test_review_request_adapter_validates_before_project_provider(arguments):
+    provider_calls = []
+    adapter = mcp_adapter.PromptGraphMCPAdapter(
+        lambda: provider_calls.append(True) or project()
+    )
+
+    result = adapter.call_tool("promptgraph_request_scene_module_swap_review", arguments)
+
+    assert result["ok"] is False
+    assert result["reason"] == "invalid_arguments"
+    assert provider_calls == []
 
 
 def test_search_tool_answers_dogfood_count_without_constructing_a_preview(monkeypatch):

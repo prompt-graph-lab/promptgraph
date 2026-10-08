@@ -4,7 +4,7 @@ PoC-1d establishes a host-only, session-owned capture boundary for the live
 `st.session_state.project`. It does not connect that snapshot to an MCP
 process. The Streamlit session remains the sole owner of the active Project;
 `core.agent_facade` remains the owner of Project observations and Batch Replace
-Preview semantics.
+and Scene Module Swap Preview semantics.
 
 ## Why a session-state lookup is not enough
 
@@ -82,10 +82,12 @@ fail closed. A capture is request-scoped and represents the Project at the
 clone point; it is not a durable Project identity or content revision.
 
 The clone uses the existing `Project.clone()` deep-copy semantics. Facade
-summary, Scene, Illustration/detail, and Batch Replace Preview operations run
-against the snapshot only. They do not mutate the source Project or publish a
-Project change. Existing Agent Facade fingerprints and Preview validation
-remain authoritative for later freshness checks.
+summary, Scene, Illustration/detail, Batch Replace Preview, and Scene Module
+Swap Preview operations run against the snapshot only. They do not mutate the
+source Project or publish a Project change. The explicit host-review request
+uses the same request-scoped capture after its transport preflight. Existing
+Agent Facade fingerprints and Preview validation remain authoritative for
+later freshness checks.
 
 ## App-side request/reply bridge
 
@@ -117,7 +119,7 @@ returned. An adapter/domain result with `ok: false` is still a completed
 bridge request because dispatch succeeded.
 
 The bridge does not own the logical tool list or tool-specific argument rules.
-`agent_adapters.mcp_adapter` remains the owner of exactly these eight tools:
+`agent_adapters.mcp_adapter` remains the owner of the nine tool definitions:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
@@ -127,11 +129,18 @@ The bridge does not own the logical tool list or tool-specific argument rules.
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
 - `promptgraph_preview_scene_module_swap`
+- `promptgraph_request_scene_module_swap_review`
 
-The bridge always delegates to `PromptGraphMCPAdapter.call_tool(...)`; the
-adapter retains transport validation and tool dispatch, while
-`core.agent_facade` retains observation and Preview semantics. There is no
-agent-callable Apply or approval path.
+For ordinary tools the bridge delegates to
+`PromptGraphMCPAdapter.call_tool(...)`. For the explicit Module Swap
+review-request tool, it first uses the adapter's non-capturing schema validator,
+then recomputes the safe facade Preview and coordinates the session-local
+custodian with mailbox completion. A standalone adapter/SDK call returns
+`host_review_unavailable` before asking its Project provider. The custodian
+stores only the fresh JSON-safe facade envelope. This request queues a proposal
+for later human review; it is not a human decision, approval, Apply, or
+publication path. `core.agent_facade` retains observation and Preview
+semantics.
 
 The bridge supplies the adapter a request-local lazy Project provider rather
 than maintaining a second list of Project-dependent tools. Capabilities,
@@ -154,14 +163,14 @@ evidence for Preview content. Each new bridge call captures independently;
 no Project or capture is retained between requests, and no response history
 is kept.
 
-The capture and synchronous bridge boundaries have no session pairing or IPC.
-They add no gateway connection, socket, named pipe, HTTP server, process
-launch, filesystem loading, Project discovery, or persistence. The trusted app
-caller must explicitly provide its session state and run token; the run token
-is never part of the request or reply. PR #121 adds a session-scoped mailbox
-and Streamlit request pump above this bridge; see [MCP session mailbox and
-request pump](mcp-session-mailbox-pump.md). Local process pairing and request
-transport to the client-launched stdio gateway remain deferred.
+The capture boundary itself has no session pairing or IPC. It adds no gateway
+connection, socket, named pipe, HTTP server, process launch, filesystem
+loading, Project discovery, or persistence. The trusted app caller must
+explicitly provide its session state and run token; the run token is never part
+of the request or reply. Session pairing and the Streamlit request pump live in
+the upper host layer described in [MCP session mailbox and request
+pump](mcp-session-mailbox-pump.md), with the process transport described in the
+MCP stdio transport note.
 
 The private release-engineering export manifest remains outside this public
 repository. Before the next private public-tree export, release engineering
@@ -170,11 +179,12 @@ create or replace that private manifest.
 
 ## Still deferred
 
-There is no external MCP Project provider, session pairing, IPC, Project
-discovery/load/save, Apply, approval custody, history, or publication in this
-boundary. If a future host-owned Apply is designed, that host must preserve the
-exact approved Preview envelope. `plan_id` remains content identity, not
-authorization.
+This capture boundary does not own the paired external MCP route, Project
+discovery/load/save, human approval, Apply, history, or publication. The upper
+review-request route now provides transient session-local proposal custody; a
+human review surface and host-only Apply lifecycle remain separate work. Any
+future Apply must preserve and revalidate the exact reviewed Preview envelope.
+`plan_id` remains content identity, not authorization.
 
 The characterization intentionally uses Streamlit 1.60.0 test-only internals
 to drive the real AppSession/ScriptRunner overlap. Production code uses only

@@ -1,14 +1,58 @@
 # Agent Scene Module Swap approval custody
 
-This document records a code-backed design audit for turning an agent-created
-single-Scene Module Swap Preview into a human-reviewed, host-only Apply. It is
-design guidance only. At the audited baseline, PromptGraph has the agent-facing
-Preview and the existing human Selected Routes Module Swap flow, but no
-agent-review proposal store, approval panel, or agent-preview Apply lifecycle.
+This document records the design audit and staged implementation boundary for
+turning an agent-created single-Scene Module Swap Preview into a human-reviewed,
+host-only Apply. The audit baseline was public PromptGraph at
+`775086e4941782a6bfac28fb16ab6a4c063bde3a` (PR #135 merge), before review
+custody existed. Current code and characterization tests are authoritative.
 
-The audit inspected public PromptGraph at `775086e4941782a6bfac28fb16ab6a4c063bde3a`
-(PR #135 merge), including the owners and tests listed below. Current code and
-characterization tests remain authoritative if a later implementation differs.
+## Current implementation status
+
+PR-A implements the explicit
+`promptgraph_request_scene_module_swap_review` request and session-local
+proposal custody. The bridge validates the request before capture, recomputes
+the safe facade Preview against the current captured Project, compares the
+expected plan ID, and commits the fresh envelope together with its bounded
+mailbox acknowledgment. Custody is transient, one-slot, size-bounded, and tied
+to the originating session, target epoch, and pairing generation. A standalone
+adapter/SDK invocation cannot enqueue a proposal.
+
+PR-A does not render or decide a proposal. A dedicated human review surface,
+human approval, host-only Apply, Undo/history, Project publication, and save
+remain separate PR-B/PR-C work. No MCP Apply tool exists.
+
+The implemented owner is `ui.agent_scene_module_swap_approval_lifecycle`, one
+custodian per `ProjectAgentSessionRuntime`. It retains one exact detached safe
+facade envelope for 15 minutes and a bounded set of 64 correlation tombstones.
+Prepared records expire after 120 seconds and are never visible as pending.
+The proposal is removed on target-epoch change, explicit host disarm, or
+session cleanup; an ordinary paired-route release leaves committed custody in
+the original browser session. Pairing generation is private routing metadata,
+not part of the request or acknowledgment. Exact same-generation retries
+return the same acknowledgment without extending expiry; cross-generation
+replay does not disclose the old proposal ID.
+
+The custodian's canonical JSON size cap is 8 MiB per session proposal. This
+allows a complete 100-row review with ordinary prompt and token-delta content,
+while keeping the retained envelope and its later inspection copies within a
+practical per-session memory budget. The facade's theoretical maximum is much
+larger (a maximal control-character fixture is about 486 MB), so an unusually
+large but otherwise valid preview may be refused with `proposal_too_large`.
+The custodian streams canonical JSON chunks into a byte counter and SHA-256
+digest before copying the envelope; it rejects over-cap proposals whole and
+never truncates or partially stores the reviewed payload.
+
+Focused characterization lives in
+`tests/test_agent_scene_module_swap_approval_custody.py`: it covers the real
+paired-route/full-run/bridge path, non-capturing standalone refusal, stale and
+non-actionable previews, exact retry and generation isolation, target/session
+cleanup, proposal-size boundaries, mailbox-reply expiry independence, and an
+event-coordinated race proving a positive acknowledgment cannot be consumed
+before pending custody commits.
+
+The sections below retain the audit's design rationale. Phrases such as
+“proposed” and “future” describe the state at the audit baseline unless the
+current PR-A implementation status above says otherwise.
 
 ## Decision
 
@@ -32,14 +76,14 @@ unchanged and creates no pending item.
 | `core.module_swap_selected_routes.build_selected_routes_module_swap_plan` | Owns Module Swap semantics and freshness signature. The signature binds selected Scene/Illustration structure, target prompt and token state, relevant image-reference state, Module Library, Project source-directory value, mode, `project_path`, and `disabled_modules`. The agent facade deliberately calls it with `project_path=""` and `disabled_modules=None`. |
 | `core.module_swap_selected_routes.apply_selected_routes_module_swap` | Rebuilds the plan against the supplied Project and expected signature, then deep-copies the Project, rebuilds the plan on the clone, applies only planned target Illustration IDs, validates the result, and returns a replacement Project. A stale or failed operation returns no replacement Project. |
 | `ui.module_swap_selected_routes_lifecycle.apply_and_publish_selected_routes_module_swap` | Owns the existing human Selected Routes Apply publication. It reads the shared `gallery_selected_route_ids`, current path, and disabled Modules; after a successful core Apply it calls history, replaces the session Project, restores focus, saves, then consumes `module_swap_preview`. It is not an exact agent-Preview custodian and must not be reused by mutating Gallery selection to impersonate one. |
-| `agent_adapters.mcp_adapter` | Owns the catalog and request-shape boundary. `promptgraph_preview_scene_module_swap` is a reviewed Preview tool; there is no Apply tool. The adapter delegates to the facade and does not retain the Project or Preview. The proposed review-request tool's catalog schema and non-capturing transport validation also belong here; a direct adapter invocation cannot accept or retain a proposal. |
-| `ui.project_agent_request_bridge.dispatch_project_agent_request` | Validates the request envelope, lazily obtains a request-scoped captured Project when needed, calls the adapter, confirms capture/run identity remains current, and returns the adapter result unchanged. The proposed review-request path must dispatch to the host review lifecycle after adapter-owned argument validation; it must not use an adapter success result as proof of custody. |
-| `ui.project_agent_session_mailbox.ProjectAgentSessionMailbox` | Holds at most one detached request and one reply/outcome for the explicit session target epoch. `complete()` publishes the bridge reply as `reply_ready`; the paired producer consumes it once through `consume_reply()`. A target switch or deadline before consumption can stale or expire the reply. For a future review request only, a narrow completion primitive must coordinate reply visibility with a host callback while retaining mailbox ownership; the mailbox still contains no Project, Streamlit state, proposal, or Apply state. |
-| `ui.project_agent_session_pump.service_project_agent_session_request` | Runs only at explicit points in a normal full-app run. It synchronizes target epoch, claims one request, calls the bridge, synchronizes again, and completes the mailbox. The public periodic fragment only wakes an app rerun. For a prepared review request, the pump is the completion coordinator; proposal data stays in the host lifecycle and the mailbox receives only the bounded reply. |
+| `agent_adapters.mcp_adapter` | Owns the catalog and request-shape boundary. `promptgraph_preview_scene_module_swap` is a reviewed Preview tool; `promptgraph_request_scene_module_swap_review` is a distinct host-review request; there is no Apply tool. The adapter does not retain the Project or Preview. Its review-request validator is non-capturing, and a direct adapter invocation refuses before calling the Project provider. |
+| `ui.project_agent_request_bridge.dispatch_project_agent_request` | Validates the request envelope and adapter-owned review-request schema, lazily obtains a request-scoped captured Project, recomputes the facade Preview, checks the expected plan ID and capture/run identity, then prepares custody. It returns only a private carrier to the pump until coordinated mailbox completion commits. |
+| `ui.project_agent_session_mailbox.ProjectAgentSessionMailbox` | Holds at most one detached request and one reply/outcome for the explicit session target epoch. Ordinary `complete()` behavior is unchanged. `complete_with_review()` validates the exact active claim, epoch, deadline, and bounded reply while holding the mailbox lock, then commits through the session custodian under the mailbox-then-custodian lock order. The mailbox still contains no Project, Streamlit state, proposal envelope, or Apply state. |
+| `ui.project_agent_session_pump.service_project_agent_session_request` | Runs only at explicit points in a normal full-app run. It synchronizes target epoch, claims one request, calls the bridge without mailbox/target locks, synchronizes again, then uses coordinated completion for a prepared review request. The public periodic fragment only wakes an app rerun; the custodian retains proposal data and the mailbox receives only the bounded reply. |
 | `ui.project_agent_session_registry` / `ProjectAgentPairedRoute` | Addresses one explicitly paired mailbox and exposes only target lookup, submit, consume, and release. It does not retain a Project or expose session state or approval authority. |
 | `ui.project_capture_safety` | Captures a clone of the exact active Project using the current full-run token and serialized rerun configuration, then checks that the same active Project/run remains current. It is a request-safety gate, not a revision counter for in-place edits. |
 | `ui.mcp_connection_ui.render_mcp_connection_sidebar` | Shows and controls the current session's MCP connection. Its fragment is connection-only and intentionally does not own Project data or approval. |
-| `app.py` and `ui.gallery_selected_routes_session.reset_gallery_selected_route_session_state` | `app.py` previews and confirms the human Selected Routes operation. Project replacement and route reset clear the human `module_swap_preview` and confirmation. No agent proposal key exists today. |
+| `app.py` and `ui.gallery_selected_routes_session.reset_gallery_selected_route_session_state` | At the audit baseline, `app.py` previewed and confirmed only the human Selected Routes operation, and Project replacement/reset cleared that flow. PR-A adds custody to the per-session runtime without wiring a UI or reusing Gallery selection. |
 | `tests/test_module_swap_selected_routes_lifecycle.py` and `tests/test_module_swap_selected_routes_confirmation_round_trip.py` | Characterize human publication order and no-publication on stale/failure/no-op, plus resetting confirmation when its preview signature becomes stale. Request bridge, mailbox, pump, registry, and capture tests characterize their separate owners. |
 
 The existing human renderer currently limits visible line previews. It also has
@@ -91,13 +135,13 @@ different intent or require changing shared selection state.
 | Publish a successful replacement | Host application | History, Project replacement, Gallery/focus sanitation, then autosave and bounded status. |
 | Pair or transport the MCP client | Existing session registry and Named Pipe owners | Pairing addresses a session; it does not authorize a Project mutation. |
 
-For a future implementation, keep the new owners narrow: a
-`ui.agent_scene_module_swap_approval_lifecycle` owns the session-local proposal
-record and its prepare/promote/abort/consume transitions; a separate
-`ui.agent_review_panel` renders the record and accepts direct human decisions;
-`app.py` only wires the panel and lifecycle callbacks into normal full-app
-runs. The mailbox pump may coordinate proposal commit with its reply outcome,
-but it does not become the proposal store. `core.agent_facade` remains pure.
+PR-A implements the narrow
+`ui.agent_scene_module_swap_approval_lifecycle` session custodian and its
+prepare/commit/abort/expire transitions. Remaining UI work belongs to a
+separate review-panel owner; `app.py` should only wire that panel and the later
+host-Apply lifecycle into normal full-app runs. The mailbox pump coordinates
+proposal commit with its reply outcome but does not become the proposal store.
+`core.agent_facade` remains pure.
 
 ## Proposal origin
 
@@ -125,7 +169,7 @@ is a compare-and-swap value only, never authorization.
 Normal Preview calls continue to have zero side effects. A no-op, invalid,
 over-limit, or stale review request cannot create an actionable proposal.
 
-## Proposed review-request dispatch path
+## PR-A review-request dispatch path (implemented)
 
 The catalog and the trusted host operation have different responsibilities.
 The catalog-driven MCP client sees the new tool, but the adapter itself cannot
@@ -210,10 +254,11 @@ correlation ID with different normalized intent returns
 `request_id_conflict`. This preserves the session-owned human proposal without
 transferring its result to a later gateway pairing.
 
-## Proposed versioned host record
+## Session-local host record
 
-The record is session-local and transient. The version below is a design
-contract, not a current persisted schema:
+The record is session-local and transient. The custodian uses the versioned
+`promptgraph.agent-scene-module-swap-review.v1` contract in memory. The JSON
+below is a conceptual shape for the design and is not serialized or persisted:
 
 ```json
 {
@@ -320,10 +365,10 @@ correlation, pairing generation, normalized intent, content identity, session,
 epoch, and its own expiry, and that the one-pending-slot rule still holds. It
 rechecks that the same prepared token is not aborted, expired, replaced, or
 already committed, and that the bounded positive ack corresponds to that
-record. While both locks are held, the mailbox first writes the bounded reply
-and `reply_ready` state; the custodian then performs the `prepared → pending`
-assignment. That custodian assignment is the proposal acceptance
-linearization point. Releasing the custodian lock makes the proposal visible,
+record. While both locks are held, the custodian first performs the
+`prepared → pending` assignment. That custodian assignment is the proposal
+acceptance linearization point. The mailbox then writes the bounded reply and
+`reply_ready` state. Releasing the custodian lock makes the proposal visible,
 but the mailbox lock remains held until afterward, so `consume_reply()` cannot
 return the acknowledgment before the proposal is committed. The mailbox lock
 release is the acknowledgment's consumer-visibility point, strictly after the
@@ -331,14 +376,27 @@ proposal acceptance point. Both writes happen before either state is exposed
 through its owner; `consume_reply()` cannot race ahead by polling while the
 transaction holds the mailbox lock.
 
-Session cleanup marks the custodian closed under its lock before unregistering
-the route and closing the mailbox; it must release the custodian lock before
-waiting on registry or mailbox locks. The commit callback checks that closed
-marker while holding the custodian lock. If cleanup marks closed first, commit
-fails without a positive ack. If commit wins first, cleanup follows and
-removes the proposal before the session is released. Target synchronization
-continues to linearize through the mailbox lock; no code path may hold the
-custodian lock while acquiring the mailbox lock.
+An exact same-generation retry uses a separate coordinated completion path.
+Preflight returns an internal identity snapshot rather than directly publishing
+the old positive acknowledgment. Under the same mailbox-then-custodian lock
+order, completion revalidates the active claim and deadline plus the exact
+request correlation, pairing generation, normalized intent, target epoch,
+proposal ID, acknowledgment identity, pending state, and proposal TTL. Only
+that still-pending original proposal may publish its unchanged acknowledgment.
+Cancellation, expiry, target change, or session close before this recheck yields
+a terminal non-success outcome. Retry completion never creates a proposal,
+changes custody state, or renews either expiry. Ordinary observation and
+Preview replies continue through ordinary mailbox completion.
+
+Session cleanup closes the mailbox and marks the custodian closed together
+under the mailbox-then-custodian lock order, then releases both locks before
+unregistering the route or tearing down the pipe. It holds no registry or
+transport lock while waiting for either owner lock. The commit callback checks
+the closed marker while holding the custodian lock. If cleanup wins the
+mailbox lock first, commit fails without a positive ack. If commit wins first,
+cleanup clears the committed reply and proposal atomically before the route is
+unregistered, so no positive ack can be consumed after custody closes. No code
+path may hold the custodian lock while acquiring the mailbox lock.
 
 Failures before that boundary leave no actionable proposal and no successful
 ack. The mailbox alone decides stale target, expired deadline, session closed,
@@ -512,23 +570,27 @@ transport/dispatch owners. They do not gain Project access, approval authority,
 or Apply access. No new filesystem path, network endpoint, persistence, or
 global current-session mechanism is introduced.
 
-## Recommended implementation slices and acceptance
+## Implemented and remaining slices
 
-### PR-A: session-local proposal custody
+### PR-A: session-local proposal custody — implemented
 
-Add the explicit review-request route, bounded versioned record, one-slot
+The explicit review-request route, bounded versioned record, one-slot
 deduplication, expiry, prepare/commit/abort integration with full-run mailbox
-completion, and target-epoch invalidation. Do not add Apply or UI yet.
-
-Acceptance: ordinary Preview never creates state; matching expected plan ID
-stores the exact host-computed envelope only after the coordinated mailbox
-completion commits; mismatch/expired/stale/closed completion stores none and
-cannot publish a positive queue acknowledgment; duplicate and second-request
-behavior is deterministic and cannot transfer an acknowledgment across
-pairing generations; size/TTL bounds reject without truncating; malformed
-request arguments are rejected before capture; standalone adapter invocation
-cannot fabricate acceptance; no Project or raw planner object survives the
-request run; target switch and session cleanup isolate proposals.
+completion, and target-epoch invalidation are implemented. Ordinary Preview
+remains state-free. Only a matching expected plan ID and a current valid,
+non-no-op facade envelope can be prepared; the exact safe envelope becomes
+pending only after coordinated mailbox completion commits. Mismatch,
+expired/stale/closed completion, invalid reply, or lost token cannot leave a
+proposal paired with a positive acknowledgment. Duplicate and second-request
+behavior is deterministic and does not transfer an acknowledgment across
+pairing generations. Size/TTL bounds reject without truncation; malformed
+arguments are rejected before capture; standalone adapter calls cannot
+fabricate acceptance; no Project or raw planner object survives the request
+run. Target switch, explicit host disarm, and session cleanup isolate
+proposals. No UI, human decision, Apply, history, save, or publication was
+added. Same-generation retry acknowledgments revalidate the exact pending
+proposal during coordinated mailbox completion and cannot outlive cancellation
+or expiry.
 
 Concurrency acceptance for the commit protocol must use deterministic
 barriers/events, never sleep-based timing. Race `consume_reply()` against a
@@ -587,20 +649,19 @@ must remain free of Project/session/approval ownership.
 
 ## Open decisions and go/no-go
 
-Recommended defaults are one pending proposal per browser session, a
-15-minute monotonic expiry, and no asynchronous decision notification to the
-agent. If the client needs the human's later decision, design a separate
+The implemented defaults are one pending proposal per browser session, a
+15-minute monotonic expiry, an 8 MiB canonical JSON size cap, and no
+asynchronous decision notification to the agent. The custodian rejects a
+larger valid facade envelope as a whole before copying or retaining it; the
+cap does not redefine facade preview semantics or truncate visible content.
+If the client needs the human's later decision, design a separate
 session-bound status/result operation; do not leave a synchronous MCP call
 blocked while a human considers the Preview or send a result through a new
-pairing generation.
+pairing generation. Keep the existing 1,000-target planner cap and require the
+future human surface to render all targets.
 
-Before PR-A, derive and test the encoded-byte ceiling for a maximal valid
-facade envelope rather than inventing a truncation rule. Keep the existing
-1,000-target planner cap and require the human surface to render all targets.
-These are implementation limits, not authorization shortcuts.
-
-**Go:** proceed in PR-A through PR-D as separate reviewed slices after this
-design is accepted. **No-go:** do not combine custody, UI, and Apply into one
-change; do not reinterpret an exploratory Preview as a review request; do not
-route Apply through MCP; do not reuse shared Gallery selection as agent intent;
-and do not treat any identifier, digest, or agent assertion as human approval.
+PR-B through PR-D remain separate future slices. **No-go:** do not combine
+custody, UI, and Apply into one change; do not reinterpret an exploratory
+Preview as a review request; do not route Apply through MCP; do not reuse
+shared Gallery selection as agent intent; and do not treat any identifier,
+digest, or agent assertion as human approval.

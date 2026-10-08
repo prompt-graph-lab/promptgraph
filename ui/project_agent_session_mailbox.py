@@ -51,6 +51,7 @@ class MailboxClaim:
     _claim_id: str
     target_epoch: str
     request: dict
+    pairing_generation: int | None = None
 
 
 def _copy_plain_json(value, *, bounded: bool):
@@ -254,11 +255,13 @@ class ProjectAgentSessionMailbox:
         self._target_epoch = None
         self._request = None
         self._request_epoch = None
+        self._request_pairing_generation = None
         self._deadline = None
         self._claim_id = None
         self._invalidated_while_executing = False
         self._reply_status = None
         self._reply = None
+        self._reply_is_review_request = False
         self._reply_generation = 0
         self._first_fragment_tick_pending = False
         self._wake_retry_count = 0
@@ -276,14 +279,17 @@ class ProjectAgentSessionMailbox:
         with self._lock:
             return self._state
 
-    def submit(self, target_epoch, request, *, timeout_seconds=DEFAULT_REQUEST_TIMEOUT_SECONDS):
+    def submit(self, target_epoch, request, *, timeout_seconds=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+               _pairing_generation=None):
         """Accept one detached request explicitly bound to a target epoch."""
 
         if (type(target_epoch) is not str or not target_epoch
                 or type(timeout_seconds) not in (int, float)
                 or not math.isfinite(timeout_seconds)
                 or timeout_seconds <= 0
-                or timeout_seconds > MAX_REQUEST_TIMEOUT_SECONDS):
+                or timeout_seconds > MAX_REQUEST_TIMEOUT_SECONDS
+                or (_pairing_generation is not None
+                    and (type(_pairing_generation) is not int or _pairing_generation <= 0))):
             return MailboxOutcome("invalid_request")
 
         detached = _copy_plain_json(request, bounded=True)
@@ -301,35 +307,50 @@ class ProjectAgentSessionMailbox:
 
             self._request = detached
             self._request_epoch = target_epoch
+            self._request_pairing_generation = _pairing_generation
             self._deadline = now + float(timeout_seconds)
             self._claim_id = None
             self._invalidated_while_executing = False
             self._reply = None
             self._reply_status = None
+            self._reply_is_review_request = False
             self._reply_generation += 1
             self._wake_retry_count = 0
             self._wake_retry_at = None
             self._state = _PENDING
             return MailboxOutcome("accepted")
 
-    def synchronize_target_epoch(self, target_epoch):
+    def synchronize_target_epoch(self, target_epoch, *, review_custodian=None):
         """Invalidate old-target work while retaining the session mailbox."""
 
         if type(target_epoch) is not str or not target_epoch:
             return False
 
         with self._lock:
-            if self._closed or target_epoch == self._target_epoch:
+            if self._closed:
                 return False
+            changed = target_epoch != self._target_epoch
             self._target_epoch = target_epoch
+            if review_custodian is not None:
+                with review_custodian._lock:
+                    review_custodian._synchronize_target_epoch_locked(target_epoch)
+                    if not changed:
+                        return False
+                    return self._invalidate_target_locked()
+            if not changed:
+                return False
+            return self._invalidate_target_locked()
 
-            if self._state == _EXECUTING:
-                self._invalidated_while_executing = True
-                return True
-            if self._state in (_PENDING, _WAKE_REQUESTED, _SERVICE_DUE, _REPLY_READY):
-                if self._state != _REPLY_READY or self._reply_status == "completed":
-                    self._set_terminal_locked("stale_target")
+    def _invalidate_target_locked(self):
+        """Apply mailbox invalidation while the mailbox lock is held."""
+
+        if self._state == _EXECUTING:
+            self._invalidated_while_executing = True
             return True
+        if self._state in (_PENDING, _WAKE_REQUESTED, _SERVICE_DUE, _REPLY_READY):
+            if self._state != _REPLY_READY or self._reply_status == "completed":
+                self._set_terminal_locked("stale_target")
+        return True
 
     def begin_full_app_run(self, target_epoch, *, now=None):
         """Synchronize target and mark a normal app run as the service context."""
@@ -406,6 +427,7 @@ class ProjectAgentSessionMailbox:
             self._state = _SERVICE_DUE
 
             stored_request = self._request
+            pairing_generation = self._request_pairing_generation
             claim_id = uuid.uuid4().hex
             self._claim_id = claim_id
             self._state = _EXECUTING
@@ -428,7 +450,7 @@ class ProjectAgentSessionMailbox:
             if type(detached) is not dict:
                 self._set_terminal_locked("internal_error")
                 return None
-            return MailboxClaim(claim_id, target_epoch, detached)
+            return MailboxClaim(claim_id, target_epoch, detached, pairing_generation)
 
     def complete(self, claim, reply, target_epoch, *, now=None):
         """Publish the exact bridge reply, unless target/deadline went stale."""
@@ -458,6 +480,7 @@ class ProjectAgentSessionMailbox:
             else:
                 self._reply_status = "completed"
                 self._reply = detached_reply
+                self._reply_is_review_request = False
                 self._state = _REPLY_READY
                 self._reply_generation += 1
                 # Keep target epoch and deadline until the producer consumes
@@ -465,6 +488,250 @@ class ProjectAgentSessionMailbox:
                 # must invalidate a result that has not left the mailbox.
                 self._clear_request_payload_locked()
             return MailboxOutcome(self._reply_status or "unavailable")
+
+    def complete_with_review(self, claim, prepared_review, target_epoch,
+                             review_custodian, *, now=None):
+        """Atomically publish a positive reply with its host proposal custody.
+
+        Reply detachment occurs before locking. The only nested lock order is
+        mailbox then custodian, and this critical section performs no Project,
+        Streamlit, transport, or callback work.
+        """
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+            PreparedReviewReply,
+        )
+
+        if (type(prepared_review) is not PreparedReviewReply
+                or type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian):
+            return MailboxOutcome("invalid_review_carrier")
+        detached_reply = _copy_plain_json(prepared_review.reply, bounded=False)
+        reply_is_valid = detached_reply is not None and type(detached_reply) is dict
+        if now is None:
+            now = self._clock()
+
+        with self._lock:
+            with review_custodian._lock:
+                if self._closed:
+                    review_custodian._abort_prepared_locked(
+                        prepared_review.token, "session_closed",
+                    )
+                    return MailboxOutcome("session_closed")
+
+                claim_is_current = (
+                    type(claim) is MailboxClaim
+                    and self._state == _EXECUTING
+                    and self._claim_id == claim._claim_id
+                    and claim.pairing_generation == self._request_pairing_generation
+                    and claim.pairing_generation is not None
+                )
+                if not claim_is_current:
+                    review_custodian._abort_prepared_locked(prepared_review.token)
+                    if self._state == _EXECUTING:
+                        review_custodian._abort_prepared_for_claim_locked(
+                            self._request.get("request_id") if type(self._request) is dict else None,
+                            self._request_pairing_generation,
+                            self._request_epoch,
+                        )
+                        self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("unavailable")
+
+                if (self._invalidated_while_executing
+                        or claim.target_epoch != target_epoch
+                        or self._target_epoch != target_epoch):
+                    review_custodian._abort_prepared_locked(
+                        prepared_review.token, "stale_target",
+                    )
+                    self._set_terminal_locked("stale_target")
+                    return MailboxOutcome("stale_target")
+                if self._is_expired_locked(now):
+                    review_custodian._abort_prepared_locked(
+                        prepared_review.token, "proposal_expired",
+                    )
+                    self._set_terminal_locked("expired")
+                    return MailboxOutcome("expired")
+                if not reply_is_valid:
+                    review_custodian._abort_prepared_locked(prepared_review.token)
+                    self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("internal_error")
+
+                try:
+                    committed = review_custodian._commit_prepared_locked(
+                        prepared_review.token,
+                        request_id=claim.request.get("request_id"),
+                        pairing_generation=claim.pairing_generation,
+                        target_epoch=claim.target_epoch,
+                        reply=detached_reply,
+                        now=now,
+                    )
+                except Exception:
+                    review_custodian._rollback_prepared_locked(prepared_review.token)
+                    self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("internal_error")
+                if not committed:
+                    review_custodian._abort_prepared_locked(prepared_review.token)
+                    review_custodian._abort_prepared_for_claim_locked(
+                        claim.request.get("request_id"),
+                        claim.pairing_generation,
+                        claim.target_epoch,
+                    )
+                    self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("internal_error")
+
+                try:
+                    # Consumers cannot observe the acknowledgement until the
+                    # mailbox lock is released, after custody is pending.
+                    self._reply_status = "completed"
+                    self._reply = detached_reply
+                    self._reply_is_review_request = True
+                    self._state = _REPLY_READY
+                    self._reply_generation += 1
+                    self._clear_request_payload_locked()
+                except Exception:
+                    review_custodian._rollback_prepared_locked(prepared_review.token)
+                    self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("internal_error")
+
+                return MailboxOutcome("completed")
+
+    def complete_with_duplicate_review(self, claim, duplicate_review, target_epoch,
+                                       review_custodian, *, now=None):
+        """Publish a retry acknowledgement only while its exact proposal is pending.
+
+        Unlike first-time review completion, this does not create or transition
+        proposal custody. It revalidates the retry's original correlation,
+        pairing, intent, proposal, and acknowledgement under the same fixed
+        mailbox-then-custodian lock order before exposing the positive reply.
+        """
+
+        from ui.agent_scene_module_swap_approval_lifecycle import (
+            AgentSceneModuleSwapApprovalCustodian,
+            DuplicateReviewReply,
+            PendingReviewRetryToken,
+        )
+
+        if (type(duplicate_review) is not DuplicateReviewReply
+                or type(duplicate_review.token) is not PendingReviewRetryToken
+                or type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian):
+            return MailboxOutcome("invalid_review_retry_carrier")
+
+        detached_reply = _copy_plain_json(duplicate_review.reply, bounded=False)
+        reply_is_valid = detached_reply is not None and type(detached_reply) is dict
+        self.synchronize_target_epoch(
+            target_epoch,
+            review_custodian=review_custodian,
+        )
+
+        token = duplicate_review.token
+        with self._lock:
+            with review_custodian._lock:
+                if self._closed or review_custodian._closed:
+                    if self._state == _EXECUTING:
+                        self._set_terminal_locked("session_closed")
+                    return MailboxOutcome("session_closed")
+
+                claim_is_current = (
+                    type(claim) is MailboxClaim
+                    and self._state == _EXECUTING
+                    and self._claim_id == claim._claim_id
+                    and claim.pairing_generation is not None
+                    and claim.pairing_generation == self._request_pairing_generation
+                    and claim.target_epoch == self._request_epoch
+                    and type(self._request) is dict
+                    and type(claim.request) is dict
+                    and claim.request == self._request
+                    and claim.request.get("request_id") == token.request_id
+                    and self._request.get("request_id") == token.request_id
+                )
+                if not claim_is_current:
+                    if self._state == _EXECUTING:
+                        self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("unavailable")
+
+                if (self._invalidated_while_executing
+                        or claim.target_epoch != target_epoch
+                        or self._target_epoch != target_epoch
+                        or token.target_epoch != target_epoch
+                        or review_custodian._target_epoch != target_epoch):
+                    self._set_terminal_locked("stale_target")
+                    return MailboxOutcome("stale_target")
+
+                mailbox_now = self._clock() if now is None else now
+                if self._is_expired_locked(mailbox_now):
+                    self._set_terminal_locked("expired")
+                    return MailboxOutcome("expired")
+                if not reply_is_valid:
+                    self._set_terminal_locked("internal_error")
+                    return MailboxOutcome("internal_error")
+
+                custody_now = review_custodian._clock() if now is None else now
+                review_custodian._expire_locked(custody_now)
+                record = review_custodian._record
+                tombstone = review_custodian._tombstones.get(token.request_id)
+                if record is None:
+                    terminal_status = "review_cancelled"
+                    if (tombstone is not None
+                            and tombstone.pairing_generation == token.pairing_generation
+                            and tombstone.intent_digest == token.intent_digest):
+                        terminal_status = {
+                            "proposal_expired": "expired",
+                            "stale_target": "stale_target",
+                            "session_closed": "session_closed",
+                        }.get(tombstone.reason, "review_cancelled")
+                    self._set_terminal_locked(terminal_status)
+                    return MailboxOutcome(terminal_status)
+
+                expected_reply = detached_reply
+                identity_matches = (
+                    record.state == "pending"
+                    and record.expires_at is not None
+                    and custody_now < record.expires_at
+                    and record.request_id == token.request_id
+                    and record.pairing_generation == token.pairing_generation
+                    and record.pairing_generation == claim.pairing_generation
+                    and record.target_epoch == token.target_epoch
+                    and record.target_epoch == claim.target_epoch
+                    and record.target_epoch == review_custodian._target_epoch
+                    and record.intent == token.intent
+                    and record.intent_digest == token.intent_digest
+                    and record.proposal_id == token.proposal_id
+                    and record.acknowledgment_identity == token.acknowledgment_identity
+                    and record.ack == token.acknowledgment
+                    and type(expected_reply) is dict
+                    and set(expected_reply) == {
+                        "bridge_contract_version", "request_id", "status", "result",
+                    }
+                    and expected_reply.get("bridge_contract_version") == (
+                        "promptgraph.app-agent-request-bridge.v1"
+                    )
+                    and expected_reply.get("request_id") == token.request_id
+                    and expected_reply.get("status") == "completed"
+                    and expected_reply.get("result") == record.ack
+                )
+                if not identity_matches:
+                    self._set_terminal_locked("review_cancelled")
+                    return MailboxOutcome("review_cancelled")
+
+                # Retry publication does not change custody state or expiry.
+                self._reply_status = "completed"
+                self._reply = detached_reply
+                self._reply_is_review_request = True
+                self._state = _REPLY_READY
+                self._reply_generation += 1
+                self._clear_request_payload_locked()
+                return MailboxOutcome("completed")
+
+    def cancel_review_custody(self, review_custodian):
+        """Cancel custody and hide an unconsumed positive queue reply."""
+
+        with self._lock:
+            with review_custodian._lock:
+                review_custodian._cancel_locked("proposal_cancelled")
+                if (self._state == _REPLY_READY
+                        and self._reply_status == "completed"
+                        and self._reply_is_review_request):
+                    self._set_terminal_locked("review_cancelled")
 
     def consume_reply(self, target_epoch, *, now=None):
         """Consume one outcome, detaching large replies without holding lock."""
@@ -509,7 +776,7 @@ class ProjectAgentSessionMailbox:
                 return MailboxOutcome("session_closed")
             if self._state != _REPLY_READY or generation != self._reply_generation:
                 if self._state == _REPLY_READY and self._reply_status in (
-                    "stale_target", "expired", "internal_error",
+                    "stale_target", "expired", "internal_error", "review_cancelled",
                 ):
                     if target_epoch != self._request_epoch:
                         return MailboxOutcome("stale_target")
@@ -529,20 +796,25 @@ class ProjectAgentSessionMailbox:
             self._clear_outcome_locked()
             return outcome
 
-    def close(self):
+    def close(self, *, review_custodian=None):
         """Close this session route and reject any outstanding work."""
 
         with self._lock:
+            if review_custodian is not None:
+                with review_custodian._lock:
+                    review_custodian._close_locked()
             self._closed = True
             self._state = _CLOSED
             self._target_epoch = None
             self._request = None
             self._request_epoch = None
+            self._request_pairing_generation = None
             self._deadline = None
             self._claim_id = None
             self._invalidated_while_executing = False
             self._reply_status = None
             self._reply = None
+            self._reply_is_review_request = False
             self._reply_generation += 1
             self._first_fragment_tick_pending = False
             self._wake_retry_at = None
@@ -563,11 +835,13 @@ class ProjectAgentSessionMailbox:
         self._state = _REPLY_READY
         self._reply_status = status
         self._reply = None
+        self._reply_is_review_request = False
         self._clear_request_payload_locked()
         self._reply_generation += 1
 
     def _clear_request_payload_locked(self):
         self._request = None
+        self._request_pairing_generation = None
         self._claim_id = None
         self._invalidated_while_executing = False
         self._wake_retry_count = 0
@@ -577,6 +851,7 @@ class ProjectAgentSessionMailbox:
         self._state = _IDLE
         self._reply_status = None
         self._reply = None
+        self._reply_is_review_request = False
         self._request_epoch = None
         self._deadline = None
         self._claim_id = None

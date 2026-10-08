@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 import streamlit as st
 
 from ui.project_agent_request_bridge import dispatch_project_agent_request
+from ui.agent_scene_module_swap_approval_lifecycle import (
+    AgentSceneModuleSwapApprovalCustodian,
+    DuplicateReviewReply,
+    PreparedReviewReply,
+)
 from ui.project_capture_safety import PROJECT_CAPTURE_RUN_TOKEN_KEY
 from ui.project_agent_session_mailbox import (
     FRAGMENT_POLL_INTERVAL_SECONDS,
@@ -29,6 +34,9 @@ class ProjectAgentSessionRuntime:
     """Session resource holding its mailbox, target tracker, and route authority."""
 
     mailbox: ProjectAgentSessionMailbox = field(default_factory=ProjectAgentSessionMailbox)
+    review_custodian: AgentSceneModuleSwapApprovalCustodian = field(
+        default_factory=AgentSceneModuleSwapApprovalCustodian,
+    )
     target_tracker: ProjectTargetTracker = field(default_factory=ProjectTargetTracker)
     _registry: ProjectAgentSessionRegistry = field(
         default_factory=get_process_project_agent_session_registry,
@@ -47,7 +55,10 @@ class ProjectAgentSessionRuntime:
 
     def synchronize_target(self, project, project_path):
         epoch = self.target_tracker.observe(project, project_path)
-        self.mailbox.synchronize_target_epoch(epoch)
+        self.mailbox.synchronize_target_epoch(
+            epoch,
+            review_custodian=self.review_custodian,
+        )
         return epoch
 
     def begin_full_app_run(self, project, project_path):
@@ -139,6 +150,9 @@ class ProjectAgentSessionRuntime:
 
         if self._closed or self._registration is None:
             return LauncherRendezvousOperation("session_unavailable")
+        # Explicit host disarm cancels review custody. Ordinary pipe release
+        # and client disconnect do not call this session method.
+        self.mailbox.cancel_review_custody(self.review_custodian)
         broker = self._named_pipe_broker
         if broker is None:
             return LauncherRendezvousOperation("unavailable")
@@ -151,20 +165,26 @@ class ProjectAgentSessionRuntime:
         if self._closed:
             return
         self._closed = True
+        # Close review custody while atomically closing the mailbox under the
+        # mailbox-then-custodian lock order. This prevents a committed positive
+        # reply from being consumed after its proposal has been discarded.
+        self.mailbox.close(review_custodian=self.review_custodian)
         route_id = None
         if self._registration is not None:
             route_id = self._registration.route_id
-            # Remove external addressability before closing the mailbox. Any
-            # in-flight paired operation is serialized with unregister.
+            # The mailbox and custodian are already closed. Remove external
+            # addressability without holding either lock while registry/pipe
+            # teardown serializes with paired operations.
             self._registration.unregister()
-        if self._named_pipe_broker is not None and route_id is not None:
-            self._named_pipe_broker.close_session_route(route_id)
-            if self._registration is not None:
-                self._named_pipe_broker.forget_launcher_rendezvous(
-                    self._registration,
-                )
-        self.mailbox.close()
-        self.target_tracker.close()
+        try:
+            if self._named_pipe_broker is not None and route_id is not None:
+                self._named_pipe_broker.close_session_route(route_id)
+                if self._registration is not None:
+                    self._named_pipe_broker.forget_launcher_rendezvous(
+                        self._registration,
+                    )
+        finally:
+            self.target_tracker.close()
 
 
 def _release_project_agent_session_runtime(runtime):
@@ -248,6 +268,9 @@ def service_project_agent_session_request(
             session_state,
             run_token,
             claim.request,
+            review_custodian=runtime.review_custodian,
+            pairing_generation=claim.pairing_generation,
+            target_epoch=claim.target_epoch,
         )
     except Exception:
         bridge_reply = None
@@ -256,5 +279,20 @@ def service_project_agent_session_request(
         session_state.get("project"),
         session_state.get("current_project_path", ""),
     )
-    outcome = runtime.mailbox.complete(claim, bridge_reply, current_epoch)
+    if type(bridge_reply) is PreparedReviewReply:
+        outcome = runtime.mailbox.complete_with_review(
+            claim,
+            bridge_reply,
+            current_epoch,
+            runtime.review_custodian,
+        )
+    elif type(bridge_reply) is DuplicateReviewReply:
+        outcome = runtime.mailbox.complete_with_duplicate_review(
+            claim,
+            bridge_reply,
+            current_epoch,
+            runtime.review_custodian,
+        )
+    else:
+        outcome = runtime.mailbox.complete(claim, bridge_reply, current_epoch)
     return outcome.status

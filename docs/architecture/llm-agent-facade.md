@@ -1,14 +1,16 @@
 # LLM Operator PoC-0, PoC-1a, and PoC-1b: Facade and MCP Binding
 
 `core.agent_facade` is a small transport-neutral boundary shared by the MCP SDK
-binding and a later internal LLM harness. PoC-0 provides observations and one
-reviewed mutation family, Batch Replace. PoC-1a adds the SDK-independent logical
-tool adapter; PoC-1b binds it to the official SDK without starting a transport
-process or integrating a model. `app.py` remains the terminal application shell.
+binding and a later internal LLM harness. It provides observations and reviewed
+Preview envelopes for Batch Replace and single-Scene Module Swap. A separate
+explicit MCP request can ask the host to retain a fresh Module Swap Preview for
+human review; the adapter and facade do not own that session-local custody.
+`app.py` remains the terminal application shell.
 
 The near-term workflow direction for these primitives is documented in the
-[Pixiv Publish Skill plan](pixiv-publish-skill-plan.md). That roadmap does not
-expand the current MCP tool surface or change the host-owned approval boundary.
+[Pixiv Publish Skill plan](pixiv-publish-skill-plan.md). Current MCP tools
+include the read-only and Preview surface plus an explicit host-review request;
+human decision, Apply, and publication remain host-owned.
 
 ## Layering and trust boundary
 
@@ -25,10 +27,11 @@ identifies content and detects changes; it is not a signature or authorization
 token. An agent must not substitute a newly constructed valid plan for the
 approved envelope. Authentication, human authorization, and recording that
 decision belong to a host UI and session lifecycle, not the core facade or MCP
-gateway. The design audit for future Scene Module Swap custody is documented
-in [Agent Scene Module Swap approval custody](agent-scene-module-swap-approval-custody.md).
-Apply itself validates and materializes the supplied reviewed envelope,
-without prompting or publishing it.
+gateway. The explicit Scene Module Swap review-request route and its current
+session-local custody boundary are documented in
+[Agent Scene Module Swap approval custody](agent-scene-module-swap-approval-custody.md).
+That route only queues a fresh proposal. It does not collect a human decision,
+Apply a plan, or publish a Project.
 
 ## Versioned observation surface
 
@@ -36,7 +39,7 @@ All agent results use `contract_version: "promptgraph.agent-facade.v1"`.
 
 | Function | Result |
 | --- | --- |
-| `discover_capabilities()` | Supported observations, Batch Replace modes and bounds |
+| `discover_capabilities()` | Supported observations and search bounds, Batch Replace modes, and single-Scene Module Swap modes/requirements |
 | `summarize_project(project)` | Illustration, Scene, baseline, deleted-line, Workbench and active Candidate/Variant counts; bounded Module and Attribute Group names |
 | `observe_scenes(project, limit=100)` | Active separator-backed Scenes in Project order, explicit order, labels, color and bounded Illustration IDs |
 | `list_illustrations(project, scene_id=None, limit=100)` | Normal active Illustrations in Project order, optionally filtered by Scene; filename, sequence index, Scene label, edited state, prompt text, stored image references and active Candidate/Variant counts |
@@ -227,13 +230,15 @@ ordinary JSON primitives and containers; Project, PromptLine, graph/session
 objects, callables, and arbitrary metadata never enter agent-facing results.
 
 Reviewed Previews are the only mutation-related capabilities exposed to an
-agent. The host owns human approval and must retain the exact envelope approved
-for any later host-only Apply. A `plan_id` is a content identifier and integrity check, not an
-authorization token. The model cannot prove approval by echoing an envelope,
-setting an `approved` flag, or supplying a plan ID. PoC-1a adds no Apply wrapper,
-approval registry, or mutable adapter-global Preview store. Although a
-host-side Scene Module Swap approval design is now recorded, it is not yet
-implemented or wired. Until a reviewed host approval-custody flow exists,
+agent. The distinct Scene Module Swap review-request tool asks the trusted host
+to retain a fresh safe envelope for human review; it has no mutation or
+approval authority. The session runtime owns this transient custody, while the
+host remains responsible for human approval and any later Apply. A `plan_id` is
+a content identifier and integrity check, not an authorization token. The
+model cannot prove approval by echoing an envelope, setting an `approved` flag,
+or supplying a plan ID. The adapter adds no Apply wrapper, approval registry,
+or mutable adapter-global Preview store. Human review UI and the exact
+host-only Scene Module Swap Apply lifecycle are not yet implemented.
 `core.agent_facade.apply_batch_replace` remains callable only by a trusted
 host.
 
@@ -258,7 +263,7 @@ facade behavior. The SDK wrapper delegates every tool call to
 shape before asking the host Project provider, and `core.agent_facade` remains
 the owner of domain validation and observations.
 
-The binding registers the same eight logical tools from the adapter catalog:
+The binding registers the nine logical tools from the adapter catalog:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
@@ -268,19 +273,24 @@ The binding registers the same eight logical tools from the adapter catalog:
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
 - `promptgraph_preview_scene_module_swap`
+- `promptgraph_request_scene_module_swap_review`
 
-Read-only versus reviewed-Preview effects are carried as MCP tool annotations
-and PromptGraph metadata. Results preserve the adapter's JSON object as MCP
+Read-only, reviewed-Preview, and host-review-request effects are carried as MCP
+tool annotations and PromptGraph metadata. The review-request tool is
+successful only through the trusted app-side bridge and returns queue status;
+a standalone logical-adapter or SDK call refuses before Project-provider
+access. Results preserve the adapter's JSON object as MCP
 `structuredContent` and include deterministic JSON text content. Project and
 all provider state remain host-owned; each Project-dependent call asks the
 adapter's provider for the current Project. The SDK binding retains no active
-Project, approved Preview, or authorization state.
+Project, proposal, human decision, Apply authority, or authorization state.
 
 The SDK low-level server does not validate incoming call arguments against the
 published input schema. The adapter's existing transport-shape validation
-therefore remains required and runs before Project access; domain semantics
-remain in the facade. The binding does not add its own validation or rebuild
-Preview envelopes.
+therefore remains required and runs before Project access; the app-side bridge
+also validates the host-review request before capture. Domain Preview
+semantics remain in the facade. The binding does not add its own validation or
+rebuild Preview envelopes.
 
 There is deliberately no agent-callable Apply tool. The host must retain the
 exact Preview envelope approved by a human and may call the trusted facade
