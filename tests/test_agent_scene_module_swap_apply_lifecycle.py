@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 from core.agent_facade import preview_scene_module_swap
 from core.graph_builder import build_graph
 from core import module_swap_selected_routes as core_module_swap
+from core.io import load_project_from_json, save_project_to_json
 from core.parser import parse_prompt
 from core.project import Project, PromptLine
 from ui.agent_scene_module_swap_approval_lifecycle import (
@@ -101,7 +102,13 @@ def _intent():
     }
 
 
-def _runtime_with_pending(project, *, clock=None, include_unconsumed_ack=False):
+def _runtime_with_pending(
+    project,
+    *,
+    clock=None,
+    include_unconsumed_ack=False,
+    project_path=ACTIVE_PATH,
+):
     mailbox_kwargs = {} if clock is None else {"clock": clock}
     custodian_kwargs = {} if clock is None else {"clock": clock}
     runtime = ProjectAgentSessionRuntime(
@@ -109,7 +116,7 @@ def _runtime_with_pending(project, *, clock=None, include_unconsumed_ack=False):
         review_custodian=AgentSceneModuleSwapApprovalCustodian(**custodian_kwargs),
         _registry=ProjectAgentSessionRegistry(),
     )
-    epoch = runtime.synchronize_target(project, ACTIVE_PATH)
+    epoch = runtime.synchronize_target(project, project_path)
     preview = preview_scene_module_swap(project, _intent())
     assert preview["valid"] is True
     assert preview["changed_count"] == 1
@@ -166,10 +173,10 @@ def _runtime_with_pending(project, *, clock=None, include_unconsumed_ack=False):
     return runtime, epoch, review
 
 
-def _state(project, review, *, checked=True):
+def _state(project, review, *, checked=True, project_path=ACTIVE_PATH):
     state = {
         "project": project,
-        "current_project_path": ACTIVE_PATH,
+        "current_project_path": project_path,
         "history": [],
         "focused_line_id": "line-a",
         "selected_node_ids": ["stale-node"],
@@ -188,7 +195,7 @@ def _apply(runtime, state, review, project, *, callbacks=None):
         state,
         runtime,
         project=project,
-        project_path=ACTIVE_PATH,
+        project_path=state.get("current_project_path", ACTIVE_PATH),
         proposal_id=review["proposal_id"],
         plan_id=review["plan_id"],
         acknowledgment_identity_key=ACK_IDENTITY_KEY,
@@ -197,7 +204,7 @@ def _apply(runtime, state, review, project, *, callbacks=None):
         synchronize_gallery_selection=callbacks.get("selection"),
         restore_focus=callbacks.get("focus"),
         sync_text_areas=callbacks.get("text"),
-        save_project=callbacks.get("save", lambda _reason: True),
+        save_project=callbacks.get("save", lambda _project, _path, _reason: True),
     )
 
 
@@ -225,11 +232,13 @@ def test_success_revalidates_applies_one_scene_and_publishes_in_order():
     def text_sync():
         events.append(("text", state["project"]))
 
-    def save(reason):
+    def save(saved_project, destination, reason):
         assert reason == "Agent Scene Module Swap applied"
+        assert saved_project is state["project"]
+        assert destination == ACTIVE_PATH
         assert state["project"] is not project
         assert runtime.inspect_review_custody()["state"] == "applying"
-        events.append(("save", state["project"]))
+        events.append(("save", saved_project, destination))
         return True
 
     before = deepcopy(project)
@@ -296,7 +305,7 @@ def test_autosave_failure_keeps_project_and_history_and_consumes_approval():
     project = _project()
     runtime, _epoch, review = _runtime_with_pending(project)
     state = _state(project, review)
-    result = _apply(runtime, state, review, project, callbacks={"save": lambda _reason: False})
+    result = _apply(runtime, state, review, project, callbacks={"save": lambda *_args: False})
 
     assert result["status"] == "applied_save_failed"
     assert result["save_succeeded"] is False
@@ -305,6 +314,96 @@ def test_autosave_failure_keeps_project_and_history_and_consumes_approval():
     assert runtime.inspect_review_custody()["state"] == "applied_save_failed"
     assert _apply(runtime, state, review, project)["status"] == "applied_save_failed"
     assert len(state["history"]) == 1
+    runtime.close()
+
+
+def test_persistence_owner_receives_exact_applied_project_and_original_path(tmp_path):
+    project = _project()
+    destination = str(tmp_path / "approved-project.json")
+    runtime, _epoch, review = _runtime_with_pending(
+        project,
+        project_path=destination,
+    )
+    state = _state(project, review, project_path=destination)
+    observed = []
+
+    def persist(saved_project, saved_path, reason):
+        observed.append((saved_project, saved_path, reason))
+        assert saved_project is state["project"]
+        assert saved_path == destination
+        save_project_to_json(saved_project, saved_path)
+        return True
+
+    result = _apply(
+        runtime,
+        state,
+        review,
+        project,
+        callbacks={"save": persist},
+    )
+
+    assert result["status"] == "applied"
+    assert observed == [(
+        state["project"],
+        destination,
+        "Agent Scene Module Swap applied",
+    )]
+    assert observed[0][0] is state["project"]
+    assert observed[0][0] is not project
+    persisted = load_project_from_json(destination)
+    assert persisted.prompt_lines[1].current_text == "gold, green"
+    runtime.close()
+
+
+def test_late_unrelated_source_edit_after_post_apply_preview_blocks_publication():
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+    state = _state(project, review)
+    saved = []
+    real_publish = runtime.publish_review_apply
+    real_preview = preview_scene_module_swap
+    preview_count = 0
+
+    def count_preview(*args, **kwargs):
+        nonlocal preview_count
+        preview_count += 1
+        return real_preview(*args, **kwargs)
+
+    def late_edit_then_publish(*args, **kwargs):
+        # Both pre-Apply and post-core facade previews have passed by the time
+        # the lifecycle reaches its final publication decision.
+        assert preview_count == 2
+        project.project_metadata["edited_after_final_preview"] = True
+        return real_publish(*args, **kwargs)
+
+    runtime.publish_review_apply = late_edit_then_publish
+    with patch(
+        "ui.agent_scene_module_swap_apply_lifecycle.preview_scene_module_swap",
+        side_effect=count_preview,
+    ) as facade_preview:
+        with patch(
+            "ui.agent_scene_module_swap_apply_lifecycle.apply_selected_routes_module_swap",
+            wraps=core_module_swap.apply_selected_routes_module_swap,
+        ) as core_apply:
+            result = _apply(
+                runtime,
+                state,
+                review,
+                project,
+                callbacks={
+                    "save": lambda _project, _path, reason: saved.append(reason) or True,
+                },
+            )
+
+    assert facade_preview.call_count == 2
+    assert core_apply.call_count == 1
+    assert result["status"] == "stale"
+    assert state["project"] is project
+    assert state["history"] == []
+    assert saved == []
+    assert project.project_metadata["edited_after_final_preview"] is True
+    assert project.prompt_lines[1].current_text == "red, blue"
+    assert runtime.inspect_review_custody()["state"] == "stale"
     runtime.close()
 
 
@@ -329,7 +428,7 @@ def test_core_failure_consumes_claim_without_host_publication():
             state,
             review,
             project,
-            callbacks={"save": lambda reason: saved.append(reason) or True},
+            callbacks={"save": lambda _project, _path, reason: saved.append(reason) or True},
         )
 
     assert core_apply.call_count == 1
@@ -360,7 +459,7 @@ def test_stale_prompt_or_target_change_has_no_publication(stale_kind):
         state["project"] = replacement
         state["current_project_path"] = "replacement.json"
 
-    result = _apply(runtime, state, review, project, callbacks={"save": lambda reason: saved.append(reason)})
+    result = _apply(runtime, state, review, project, callbacks={"save": lambda _project, _path, reason: saved.append(reason)})
 
     assert result["status"] == "stale"
     assert state["history"] == []
@@ -396,7 +495,7 @@ def test_in_place_edit_during_real_core_apply_survives_without_host_publication(
             state,
             review,
             project,
-            callbacks={"save": lambda reason: saved.append(reason) or True},
+            callbacks={"save": lambda _project, _path, reason: saved.append(reason) or True},
         )
 
     assert core_apply.call_count == 1
@@ -429,7 +528,7 @@ def test_project_replacement_failure_rolls_back_the_staged_undo_entry():
         state,
         review,
         project,
-        callbacks={"save": lambda reason: saved.append(reason) or True},
+        callbacks={"save": lambda _project, _path, reason: saved.append(reason) or True},
     )
 
     assert result["status"] == "apply_failed"
@@ -464,7 +563,7 @@ def test_revocation_or_target_switch_winning_before_publication_prevents_commit(
             state,
             review,
             project,
-            callbacks={"save": lambda reason: saved.append(reason) or True},
+            callbacks={"save": lambda _project, _path, reason: saved.append(reason) or True},
         )
         assert publication_ready.wait(timeout=5)
         if winner == "disarm":
@@ -547,68 +646,136 @@ def test_publication_gate_winning_before_revocation_keeps_apply_success(winner):
         state,
         review,
         project,
-        callbacks={"save": lambda reason: saved.append(reason) or True},
+        callbacks={"save": lambda _project, _path, reason: saved.append(reason) or True},
     )
     assert entered_public_assignment.is_set()
     assert racer_done.wait(timeout=5)
-    assert result["status"] == "applied"
+    assert result["status"] in {"applied", "applied_save_failed"}
     assert state["project"] is not project
     assert len(state["history"]) == 1
-    assert saved == ["Agent Scene Module Swap applied"]
     if winner == "disarm":
+        assert result["status"] == "applied"
+        assert saved == ["Agent Scene Module Swap applied"]
         assert runtime.inspect_review_custody()["state"] == "applied"
+    elif result["status"] == "applied":
+        assert saved == ["Agent Scene Module Swap applied"]
+    else:
+        assert result["save_succeeded"] is False
+        assert saved == []
 
 
-def test_immediate_newer_target_after_apply_publication_does_not_relabel_success():
+def test_session_close_after_publication_reports_unsaved_apply_without_rollback():
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+    state = _state(project, review)
+    saved = []
+    real_publish = runtime.publish_review_apply
+
+    def publish_then_close(*args, **kwargs):
+        status = real_publish(*args, **kwargs)
+        assert status == "published"
+        runtime.close()
+        return status
+
+    runtime.publish_review_apply = publish_then_close
+    result = _apply(
+        runtime,
+        state,
+        review,
+        project,
+        callbacks={
+            "save": lambda _project, _path, reason: saved.append(reason) or True,
+        },
+    )
+
+    assert result == {
+        "status": "applied_save_failed",
+        "applied_count": 1,
+        "save_succeeded": False,
+        "sync_warning": False,
+    }
+    assert state["project"] is not project
+    assert state["project"].prompt_lines[1].current_text == "gold, green"
+    assert len(state["history"]) == 1
+    assert saved == []
+
+
+@pytest.mark.parametrize("switch_kind", ["project", "path"])
+def test_target_identity_or_path_change_after_publication_skips_reconciliation_and_save(
+    switch_kind,
+):
     project = _project()
     runtime, _epoch, review = _runtime_with_pending(project)
     newer_project = _project()
-    gate = _ObservedGate("target-switch-racer")
-    runtime._publication_gate = gate
-    switch_done = Event()
-
-    class CompetingState(dict):
-        def __setitem__(self, key, value):
-            if key == "project" and value is not project:
-                def switch_after_commit():
-                    try:
-                        with runtime._publication_gate:
-                            dict.__setitem__(self, "project", newer_project)
-                            dict.__setitem__(self, "current_project_path", "newer.json")
-                            runtime._synchronize_target_locked(
-                                newer_project,
-                                "newer.json",
-                            )
-                    finally:
-                        switch_done.set()
-
-                Thread(target=switch_after_commit, name="target-switch-racer").start()
-                assert gate.observed_attempt.wait(timeout=5)
-            return super().__setitem__(key, value)
-
-    state = CompetingState(_state(project, review))
+    state = _state(project, review)
+    state["autosave_feedback"] = "B was already saved"
+    state["last_saved_at"] = "B saved timestamp"
+    state["selected_node_ids"] = ["B selected node"]
+    state["gallery_selected_route_ids"] = ["B selected scene"]
+    state["focused_line_id"] = "B focused line"
+    state["module_swap_preview"] = {"belongs_to": "B"}
+    state["module_swap_selected_routes_confirm"] = "B widget state"
+    callbacks_called = []
     saved = []
+    real_publish = runtime.publish_review_apply
 
-    def save_after_target_switch(reason):
-        assert reason == "Agent Scene Module Swap applied"
-        assert switch_done.wait(timeout=5)
-        saved.append(reason)
-        return True
+    def publish_then_switch_target(*args, **kwargs):
+        status = real_publish(*args, **kwargs)
+        assert status == "published"
+        with runtime._publication_gate:
+            if switch_kind == "project":
+                state["project"] = newer_project
+                # Same path makes the object-identity part of the guard
+                # observable independently from destination validation.
+                runtime._synchronize_target_locked(newer_project, ACTIVE_PATH)
+            else:
+                # A same-object Save As changes the validated destination.
+                state["current_project_path"] = "newer.json"
+                runtime._synchronize_target_locked(
+                    state["project"],
+                    "newer.json",
+                )
+        return status
+
+    runtime.publish_review_apply = publish_then_switch_target
 
     result = _apply(
         runtime,
         state,
         review,
         project,
-        callbacks={"save": save_after_target_switch},
+        callbacks={
+            "selection": lambda *_args: callbacks_called.append("selection"),
+            "focus": lambda *_args: callbacks_called.append("focus"),
+            "text": lambda *_args: callbacks_called.append("text"),
+            "save": lambda *_args: saved.append("save") or True,
+        },
     )
 
-    assert result["status"] == "applied"
-    assert state["project"] is newer_project
-    assert state["current_project_path"] == "newer.json"
+    assert result == {
+        "status": "applied_save_failed",
+        "applied_count": 1,
+        "save_succeeded": False,
+        "sync_warning": False,
+    }
+    if switch_kind == "project":
+        assert state["project"] is newer_project
+        assert state["current_project_path"] == ACTIVE_PATH
+    else:
+        assert state["project"] is not project
+        assert state["current_project_path"] == "newer.json"
     assert len(state["history"]) == 1
-    assert saved == ["Agent Scene Module Swap applied"]
-    assert runtime.inspect_review_custody()["state"] == "applied"
+    assert saved == []
+    assert callbacks_called == []
+    assert state["autosave_feedback"] == "B was already saved"
+    assert state["last_saved_at"] == "B saved timestamp"
+    assert state["selected_node_ids"] == ["B selected node"]
+    assert state["gallery_selected_route_ids"] == ["B selected scene"]
+    assert state["focused_line_id"] == "B focused line"
+    assert state["module_swap_preview"] == {"belongs_to": "B"}
+    assert state["module_swap_selected_routes_confirm"] == "B widget state"
+    assert runtime.inspect_review_custody()["state"] == "applied_save_failed"
+    assert runtime.inspect_review_custody()["result"]["save_succeeded"] is False
     runtime.close()
 
 
@@ -674,7 +841,7 @@ def test_target_switch_during_core_apply_blocks_replacement_publication():
             state,
             review,
             project,
-            callbacks={"save": lambda reason: saved.append(reason) or True},
+            callbacks={"save": lambda _project, _path, reason: saved.append(reason) or True},
         )
 
     assert result["status"] == "stale"
@@ -706,7 +873,7 @@ def test_session_close_during_core_apply_blocks_replacement_publication():
             state,
             review,
             project,
-            callbacks={"save": lambda reason: saved.append(reason) or True},
+            callbacks={"save": lambda _project, _path, reason: saved.append(reason) or True},
         )
 
     assert result["status"] == "session_unavailable"
@@ -742,7 +909,7 @@ def test_explicit_disarm_during_core_apply_revokes_claim_before_publication():
             state,
             review,
             project,
-            callbacks={"save": lambda reason: saved.append(reason) or True},
+            callbacks={"save": lambda _project, _path, reason: saved.append(reason) or True},
         )
 
     assert result["status"] == "dismissed"
@@ -785,7 +952,7 @@ def test_review_panel_requires_staged_ack_then_dispatches_direct_host_apply():
         "        synchronize_gallery_selection=lambda project: None,\n"
         "        restore_focus=lambda focus: None,\n"
         "        sync_text_areas=lambda: None,\n"
-        "        save_project=lambda reason: True,\n"
+        "        save_project=lambda _project, _path, reason: True,\n"
         "    )\n"
         "render_agent_scene_module_swap_review_panel(\n"
         "    st.session_state['project'],\n"

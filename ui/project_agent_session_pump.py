@@ -117,6 +117,44 @@ class ProjectAgentSessionRuntime:
             ):
                 return "stale"
 
+            # The full-app Streamlit run is serialized for this supported host
+            # path, so ordinary Project mutators cannot run between this exact
+            # source-content check and the session replacement. The pipe broker
+            # and periodic fragment do not mutate Projects. The publication
+            # gate additionally excludes runtime-owned target/disarm/close
+            # transitions. Direct out-of-band mutation of a Project from an
+            # unrelated thread is not a supported writer.
+            try:
+                source_unchanged = source_project == history_snapshot
+            except Exception:
+                source_unchanged = False
+            if source_unchanged is not True:
+                return "stale"
+
+            # The equality check above covers the complete cloned Project,
+            # including unrelated Scene prompts, Module Library, and derived
+            # Project state. Re-read host identity immediately before staging
+            # history so an intervening host navigation fails closed.
+            active_project = session_state.get("project")
+            active_path = session_state.get("current_project_path", "")
+            try:
+                current_epoch = self._synchronize_target_locked(
+                    active_project,
+                    active_path,
+                )
+            except Exception:
+                return "session_unavailable"
+            if (active_project is not source_project
+                    or type(active_path) is not str
+                    or type(project_path) is not str
+                    or active_path != project_path
+                    or current_epoch != target_epoch
+                    or not self.mailbox.review_apply_claim_is_current(
+                        self.review_custodian,
+                        claim,
+                    )):
+                return "stale"
+
             history = session_state.get("history")
             if type(history) is not list:
                 return "apply_failed"
@@ -188,6 +226,112 @@ class ProjectAgentSessionRuntime:
                 # observation can be retried by the next normal app run.
                 pass
             return "published"
+
+    def save_published_review_apply(
+        self,
+        claim,
+        *,
+        session_state,
+        applied_project,
+        project_path,
+        save_project,
+        reason,
+    ):
+        """Persist only the exact still-active Project committed by this Apply.
+
+        The caller supplies the applied replacement and destination captured
+        for the approved source target. The runtime gate fences target
+        synchronization, Disarm, and close while it verifies that the current
+        session still selects that same replacement/path and invokes the
+        explicit persistence callback. Mailbox/custodian locks are released
+        before the callback performs filesystem work.
+        """
+
+        with self._publication_gate:
+            if self._closed:
+                return "session_unavailable"
+            active_project = session_state.get("project")
+            active_path = session_state.get("current_project_path", "")
+            try:
+                self._synchronize_target_locked(active_project, active_path)
+            except Exception:
+                return "session_unavailable"
+            if (active_project is not applied_project
+                    or type(active_path) is not str
+                    or type(project_path) is not str
+                    or active_path != project_path):
+                return "target_changed"
+            if (not callable(save_project)
+                    or not self.mailbox.review_apply_claim_is_current(
+                        self.review_custodian,
+                        claim,
+                    )):
+                return "session_unavailable"
+            try:
+                saved = save_project(applied_project, project_path, reason)
+            except Exception:
+                saved = False
+            return "saved" if saved is True else "save_failed"
+
+    def reconcile_published_review_apply(
+        self,
+        *,
+        session_state,
+        applied_project,
+        project_path,
+        previous_focus,
+        synchronize_gallery_selection,
+        restore_focus,
+        sync_text_areas,
+    ):
+        """Reconcile host UI state only while the exact applied target is active."""
+
+        with self._publication_gate:
+            if self._closed:
+                return "session_unavailable", False
+            active_project = session_state.get("project")
+            active_path = session_state.get("current_project_path", "")
+            try:
+                self._synchronize_target_locked(active_project, active_path)
+            except Exception:
+                return "session_unavailable", False
+            if (active_project is not applied_project
+                    or type(active_path) is not str
+                    or type(project_path) is not str
+                    or active_path != project_path):
+                return "target_changed", False
+
+            warning = False
+            try:
+                session_state["selected_node_ids"] = []
+            except Exception:
+                warning = True
+            for callback, arguments in (
+                (synchronize_gallery_selection, (applied_project,)),
+                (restore_focus, (previous_focus,)),
+                (sync_text_areas, ()),
+            ):
+                current_project = session_state.get("project")
+                current_path = session_state.get("current_project_path", "")
+                if (current_project is not applied_project
+                        or type(current_path) is not str
+                        or current_path != project_path):
+                    return "target_changed", warning
+                try:
+                    if callable(callback):
+                        callback(*arguments)
+                except Exception:
+                    warning = True
+
+            current_project = session_state.get("project")
+            current_path = session_state.get("current_project_path", "")
+            if (current_project is not applied_project
+                    or type(current_path) is not str
+                    or current_path != project_path):
+                return "target_changed", warning
+            session_state.pop("module_swap_preview", None)
+            session_state.pop("module_swap_selected_routes_confirm", None)
+            return "reconciled", warning
 
     def inspect_review_custody(self):
         """Return review state through the mailbox/custodian coordination owner."""

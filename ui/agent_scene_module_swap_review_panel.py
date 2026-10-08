@@ -49,8 +49,8 @@ _STATE_MESSAGES = {
         "The updated Project is in memory and autosave completed.",
     ),
     "applied_save_failed": (
-        "The approved Scene Module Swap was applied, but autosave failed.",
-        "The updated Project and Undo history remain in memory. Save the Project manually.",
+        "The approved Scene Module Swap was applied, but autosave did not complete.",
+        "Autosave was skipped or failed. Verify the active Project and destination before continuing.",
     ),
     "apply_failed": (
         "The approved Scene Module Swap could not be applied.",
@@ -230,7 +230,7 @@ def render_agent_scene_module_swap_review_panel(
             st.caption("Apply: completed")
             save_result = (
                 "saved" if terminal.get("save_succeeded") is True
-                else "save failed; manual save is available"
+                else "not saved; verify the active Project and destination"
             )
             st.caption(f"Save: {save_result}")
             history = st.session_state.get("history")

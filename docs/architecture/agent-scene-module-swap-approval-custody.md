@@ -679,17 +679,36 @@ back both the staged marker and history entry. The next normal app run can
 observe and synchronize a committed replacement without making its successful
 Apply appear stale.
 
-On success the lifecycle appends one pre-Apply Project clone to bounded Undo
-history, replaces the session Project, clears selected graph nodes, sanitizes
-Gallery selection and focus, refreshes editor mirrors, clears the stale human
-Module Swap Preview, attempts autosave, and then stores a bounded terminal
-result including a safe Scene label, source/target Module names, changed count,
-and save outcome. The human surface reports whether Undo is available.
-Autosave failure retains the successful in-memory Project and Undo snapshot,
-reports `applied_save_failed`, and consumes the proposal. Applying and terminal
-results remain host-only; a still-undelivered mailbox queue acknowledgment is
-replaced with the existing generic cancellation outcome, never with Apply
-details. Repeated approval callbacks cannot claim or apply a second time.
+After the core Apply and the second facade Preview pass, the final publication
+gate compares the complete source Project with the pre-Apply Undo clone before
+staging history. This catches in-place edits to any Project field that the
+facade projection does not expose, including unrelated Illustration prompts,
+Module data, and metadata. The supported Streamlit full-app path serializes
+Project mutations for the duration of this run; the pipe broker and polling
+fragment do not mutate Projects. Direct Project mutation from an unrelated
+out-of-band thread that bypasses the runtime gate is unsupported and cannot be
+made atomic by this owner.
+
+On successful publication the lifecycle appends one pre-Apply Project clone to
+bounded Undo history and replaces the session Project. Gallery selection,
+focus, editor mirrors, selected graph nodes, and the old human Module Swap
+Preview are reconciled only while the exact applied replacement and its
+prevalidated Project path still match the session. Before autosave, the runtime
+gate checks that same Project object and exact path again, then calls the
+application persistence owner with those explicit values; persistence never
+chooses its target by rereading a mutable current-Project pointer. Mailbox and
+custodian locks are released during filesystem work. A target switch before
+this decision skips both A-specific UI reconciliation and autosave, leaves the
+new Project's state untouched, and reports `applied_save_failed` with
+`save_succeeded: false`. The app updates save timestamps or feedback only if
+the applied Project/path remains active. If persistence itself fails, the
+successful in-memory Project and Undo snapshot remain available and the same
+bounded unsaved status is reported; Apply is never retried. A successful save
+reports `applied` only after the exact replacement has been persisted. The
+human surface reports whether Undo is available. Applying and terminal results
+remain host-only; a still-undelivered mailbox queue acknowledgment is replaced
+with the existing generic cancellation outcome, never with Apply details.
+Repeated approval callbacks cannot claim or apply a second time.
 
 ### PR-D: Streamlit/MCP end-to-end characterization
 

@@ -102,6 +102,8 @@ def apply_agent_scene_module_swap_approval(
             or not callable(getattr(runtime, "claim_review_proposal_for_apply", None))
             or not callable(getattr(runtime, "review_apply_claim_is_current", None))
             or not callable(getattr(runtime, "publish_review_apply", None))
+            or not callable(getattr(runtime, "save_published_review_apply", None))
+            or not callable(getattr(runtime, "reconcile_published_review_apply", None))
             or not callable(getattr(runtime, "finish_review_proposal_apply", None))
             or not callable(getattr(runtime, "mark_review_proposal_stale", None))):
         return {"status": "session_unavailable"}
@@ -257,29 +259,35 @@ def apply_agent_scene_module_swap_approval(
             return {"status": _finish_claim(runtime, claim, "apply_failed")}
         if publication_status == "publication_uncertain":
             return {"status": publication_status}
+        if publication_status == "stale":
+            return {"status": _finish_claim(runtime, claim, "stale")}
         return {"status": _terminal_review_state(runtime)}
 
     # The Project replacement is now successful and must not be rolled back
-    # if persistence fails. Each publication helper is host-local and bounded.
-    session_state["selected_node_ids"] = []
-    sync_warning = False
-    for callback, arguments in (
-        (synchronize_gallery_selection, (updated_project,)),
-        (restore_focus, (previous_focus,)),
-        (sync_text_areas, ()),
-    ):
-        try:
-            if callable(callback):
-                callback(*arguments)
-        except Exception:
-            sync_warning = True
-    session_state.pop("module_swap_preview", None)
-    session_state.pop("module_swap_selected_routes_confirm", None)
-
+    # if persistence fails. Reconcile only while the exact applied replacement
+    # and the path validated before Apply remain active in this browser session.
     try:
-        save_succeeded = bool(save_project("Agent Scene Module Swap applied"))
+        _sync_status, sync_warning = runtime.reconcile_published_review_apply(
+            session_state=session_state,
+            applied_project=updated_project,
+            project_path=project_path,
+            previous_focus=previous_focus,
+            synchronize_gallery_selection=synchronize_gallery_selection,
+            restore_focus=restore_focus,
+            sync_text_areas=sync_text_areas,
+        )
     except Exception:
-        save_succeeded = False
+        sync_warning = True
+
+    save_status = runtime.save_published_review_apply(
+        claim,
+        session_state=session_state,
+        applied_project=updated_project,
+        project_path=project_path,
+        save_project=save_project,
+        reason="Agent Scene Module Swap applied",
+    )
+    save_succeeded = save_status == "saved"
     terminal_status = "applied" if save_succeeded else "applied_save_failed"
     terminal_result = {
         "applied_count": changed_count,

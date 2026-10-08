@@ -870,9 +870,14 @@ class ProjectAgentSessionMailbox:
         if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
             return False
         with self._lock:
-            if self._closed or self._target_epoch != getattr(claim, "target_epoch", None):
+            if self._closed:
                 return False
             with review_custodian._lock:
+                # A claim that already crossed the host Project replacement
+                # boundary remains terminalizable even though that expected
+                # replacement advanced the target epoch. The custodian's
+                # apply-published marker distinguishes this from a target
+                # switch that revokes an uncommitted claim.
                 return review_custodian._apply_claim_is_current_locked(claim)
 
     def mark_review_proposal_apply_published(self, review_custodian, claim):
