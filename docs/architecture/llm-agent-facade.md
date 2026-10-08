@@ -23,9 +23,12 @@ Module structure guards and Apply to `core.operations`.
 The host owns approval and retains the exact envelope that was approved. SHA-256
 identifies content and detects changes; it is not a signature or authorization
 token. An agent must not substitute a newly constructed valid plan for the
-approved envelope. Authentication, authorization and recording human approval
-belong to the future adapter/harness. Apply itself validates and materializes
-the supplied reviewed envelope, without prompting or publishing it.
+approved envelope. Authentication, human authorization, and recording that
+decision belong to a host UI and session lifecycle, not the core facade or MCP
+gateway. The design audit for future Scene Module Swap custody is documented
+in [Agent Scene Module Swap approval custody](agent-scene-module-swap-approval-custody.md).
+Apply itself validates and materializes the supplied reviewed envelope,
+without prompting or publishing it.
 
 ## Versioned observation surface
 
@@ -228,9 +231,11 @@ agent. The host owns human approval and must retain the exact envelope approved
 for any later host-only Apply. A `plan_id` is a content identifier and integrity check, not an
 authorization token. The model cannot prove approval by echoing an envelope,
 setting an `approved` flag, or supplying a plan ID. PoC-1a adds no Apply wrapper,
-approval registry, or mutable adapter-global Preview store. Until a real
-approval-custody boundary is designed, `core.agent_facade.apply_batch_replace`
-remains callable only by a trusted host.
+approval registry, or mutable adapter-global Preview store. Although a
+host-side Scene Module Swap approval design is now recorded, it is not yet
+implemented or wired. Until a reviewed host approval-custody flow exists,
+`core.agent_facade.apply_batch_replace` remains callable only by a trusted
+host.
 
 This adapter imports no MCP package and does not implement MCP wire behavior.
 There is no MCP SDK/runtime dependency, server process, authentication, stdio,
