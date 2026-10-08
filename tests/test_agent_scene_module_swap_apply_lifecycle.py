@@ -412,6 +412,45 @@ def test_session_close_during_core_apply_blocks_replacement_publication():
     assert saved == []
 
 
+def test_explicit_disarm_during_core_apply_revokes_claim_before_publication():
+    project = _project()
+    runtime, _epoch, review = _runtime_with_pending(project)
+    state = _state(project, review)
+    saved = []
+    real_core_apply = core_module_swap.apply_selected_routes_module_swap
+
+    class FakeBroker:
+        def disarm_launcher_rendezvous(self, _registration):
+            return type("Operation", (), {"status": "disarmed"})()
+
+    runtime._named_pipe_broker = FakeBroker()
+
+    def disarm_during_core(*args, **kwargs):
+        result = real_core_apply(*args, **kwargs)
+        assert runtime.disarm_launcher_rendezvous().status == "disarmed"
+        return result
+
+    with patch(
+        "ui.agent_scene_module_swap_apply_lifecycle.apply_selected_routes_module_swap",
+        side_effect=disarm_during_core,
+    ):
+        result = _apply(
+            runtime,
+            state,
+            review,
+            project,
+            callbacks={"save": lambda reason: saved.append(reason) or True},
+        )
+
+    assert result["status"] == "dismissed"
+    assert state["project"] is project
+    assert state["history"] == []
+    assert saved == []
+    assert runtime.inspect_review_custody()["state"] == "dismissed"
+    runtime._named_pipe_broker = None
+    runtime.close()
+
+
 def test_missing_human_acknowledgment_cannot_claim_or_apply():
     project = _project()
     runtime, _epoch, review = _runtime_with_pending(project)
