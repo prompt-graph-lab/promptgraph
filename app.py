@@ -1316,8 +1316,10 @@ def save_agent_scene_module_swap_project(project, project_path: str, reason: str
         # current-session state when selecting the persistence target.
         save_project_to_json(project, project_path)
     except Exception:
+        current_path = st.session_state.get("current_project_path", "")
         if (st.session_state.get("project") is project
-                and st.session_state.get("current_project_path", "") == project_path):
+                and type(current_path) is str
+                and current_path == project_path):
             st.session_state.autosave_feedback = (
                 "Agent Scene Module Swap applied; autosave failed. Save manually."
             )
