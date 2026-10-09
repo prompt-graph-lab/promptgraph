@@ -116,6 +116,16 @@ _TOOL_CATALOG = (
         "effect": "read_only",
     },
     {
+        "name": "promptgraph_preview_generation",
+        "description": "Preflight one explicit Scene using host-configured workflow and prompts. Read-only: no job, review request, generation, download or adoption.",
+        "inputSchema": {
+            "type": "object", "properties": {
+                "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "run_count": {"type": "integer", "minimum": 1, "maximum": 5, "default": 1},
+            }, "required": ["scene_id"], "additionalProperties": False,
+        }, "effect": "read_only",
+    },
+    {
         "name": "promptgraph_preview_batch_replace",
         "description": "Create a reviewed Batch Replace Preview for explicit Illustration IDs. This tool does not Apply the plan.",
         "inputSchema": {
@@ -442,6 +452,7 @@ def get_adapter_capabilities():
         "illustration_search_query_text_chars": search["query_text_chars"],
         "agent_callable_apply": False,
         "candidate_observation": facade_result["capabilities"]["candidate_observation"],
+        "generation_preview": facade_result["capabilities"]["generation_preview"],
         "agent_callable_generation": False,
         "agent_callable_candidate_adoption": False,
     }
@@ -454,9 +465,11 @@ class PromptGraphMCPAdapter:
     never caches the Project, Preview, approval state, or result.
     """
 
-    def __init__(self, project_provider: Callable[[], object] | None, *, candidate_binding_provider=None):
+    def __init__(self, project_provider: Callable[[], object] | None, *, candidate_binding_provider=None,
+                 generation_context_provider=None):
         self._project_provider = project_provider
         self._candidate_binding_provider = candidate_binding_provider
+        self._generation_context_provider = generation_context_provider
 
     def call_tool(self, name, arguments):
         """Invoke one catalog tool and return only ordinary JSON data."""
@@ -494,6 +507,18 @@ class PromptGraphMCPAdapter:
             arguments = _candidate_transport_arguments(name, arguments)
             if arguments is None:
                 return _error("invalid_arguments")
+        elif name == "promptgraph_preview_generation":
+            arguments = _object_arguments(arguments, required=("scene_id",), optional=("run_count",))
+            if arguments is None or not _arguments_have_types(arguments, {"scene_id": str, "run_count": int}):
+                return _error("invalid_arguments")
+            scene = arguments["scene_id"]
+            if (not 1 <= len(scene) <= 200 or scene.strip() != scene
+                    or not 1 <= arguments.get("run_count", 1) <= agent_facade.MAX_GENERATION_RUNS):
+                return _error("invalid_arguments")
+            try:
+                scene.encode("utf-8")
+            except UnicodeError:
+                return _error("invalid_arguments")
         elif name == _PREVIEW_TOOL:
             arguments = _preview_transport_arguments(arguments)
             if arguments is None:
@@ -520,6 +545,12 @@ class PromptGraphMCPAdapter:
             return _error("project_provider_failed")
 
         try:
+            if name == "promptgraph_preview_generation":
+                binding = (self._candidate_binding_provider()
+                           if self._candidate_binding_provider is not None else None)
+                return agent_facade.preview_generation(project, **arguments,
+                    host_context_provider=self._generation_context_provider, observation_binding=binding)
+
             if name in ("promptgraph_list_candidates", "promptgraph_get_candidate"):
                 binding = (self._candidate_binding_provider()
                            if self._candidate_binding_provider is not None else None)
