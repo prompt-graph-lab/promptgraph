@@ -242,3 +242,56 @@ def test_mailbox_session_loss_closes_generation_custody():
     runtime.mailbox.close()
     assert runtime.generation_review_custodian.inspect_for_human_review()["state"] == "session_unavailable"
     runtime.close()
+
+
+@pytest.mark.parametrize("pending_retry", [False, True])
+@pytest.mark.parametrize("drift", ["configuration", "workflow", "unavailable"])
+def test_publication_drift_is_stale_with_consistent_exact_retry(pending_retry, drift):
+    runtime, route, epoch, state, args = setup()
+    before = copy.deepcopy(state["project"])
+    swap_before = runtime.inspect_review_custody()
+    if pending_retry:
+        send(runtime, route, epoch, state, args)
+        assert route.consume_reply(epoch).reply["result"]["ok"] is True
+    calls = 0
+    def provider(p, runs):
+        nonlocal calls
+        calls += 1
+        # Request preflight succeeds on calls 1/2. Publication sees drift.
+        if calls >= 3 and drift == "unavailable":
+            raise FileNotFoundError("PRIVATE_WORKFLOW_PATH")
+        context = host(p, runs)
+        if calls >= 3:
+            if drift == "configuration":
+                context["generation_options"]["endpoint"] = "changed"
+            else:
+                original = context["request_builder"]
+                def build(item, index):
+                    record = original(item, index)
+                    record["workflow_json"] = {}
+                    return record
+                context["request_builder"] = build
+        return context
+    assert send(runtime, route, epoch, state, args, provider=provider) == "completed"
+    first = route.consume_reply(epoch).reply["result"]
+    assert first["ok"] is False and first["reason"] == "stale_preview"
+    assert runtime.generation_review_custodian.inspect_for_human_review()["state"] == "stale"
+    assert runtime.generation_review_custodian._tombstones["r"].reason == "stale_preview"
+    assert send(runtime, route, epoch, state, args) == "completed"
+    assert route.consume_reply(epoch).reply["result"] == first
+    assert runtime.inspect_review_custody() == swap_before and state["project"] == before
+    runtime.close()
+
+
+def test_publication_failure_does_not_consume_unrelated_carrier():
+    from ui.agent_scene_module_swap_approval_lifecycle import PreparedReviewReply, PreparedProposalToken
+    runtime, route, epoch, state, args = setup()
+    send(runtime, route, epoch, state, args)
+    route.consume_reply(epoch)
+    before = runtime.generation_review_custodian.inspect()
+    assert route.submit(epoch, {"request_id": "r", "tool": "promptgraph_request_generation_review", "arguments": args}).status == "accepted"
+    claim = runtime.mailbox._claim_for_service(epoch)
+    fake = PreparedReviewReply({}, PreparedProposalToken("unrelated", 0))
+    assert not runtime.mailbox.fail_generation_review_publication(claim, fake, runtime.generation_review_custodian)
+    assert runtime.generation_review_custodian.inspect() == before
+    runtime.close()

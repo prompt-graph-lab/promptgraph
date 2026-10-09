@@ -418,6 +418,37 @@ class AgentGenerationReviewCustodian:
         with self._lock:
             self._cancel_locked("proposal_cancelled")
 
+    def _fail_publication_locked(self, carrier, now):
+        """Stale only the exact prepared/pending carrier; never a human action."""
+        from ui.agent_scene_module_swap_approval_lifecycle import PreparedReviewReply, DuplicateReviewReply
+        self._expire_locked(now)
+        record = self._record
+        if self._closed or record is None:
+            return False
+        if type(carrier) is PreparedReviewReply:
+            token = carrier.token
+            matches = (type(token) is PreparedProposalToken and record.state == "prepared"
+                       and token._value == record.token and token._revision == self._revision)
+        elif type(carrier) is DuplicateReviewReply:
+            token = carrier.token
+            matches = (type(token) is PendingReviewRetryToken and record.state == "pending"
+                       and token.proposal_id == record.proposal_id
+                       and token.request_id == record.request_id
+                       and token.pairing_generation == record.pairing_generation
+                       and token.target_epoch == record.target_epoch
+                       and token.intent_digest == record.intent_digest
+                       and token.acknowledgment_identity == record.acknowledgment_identity)
+        else:
+            matches = False
+        if not matches:
+            return False
+        self._remember_record_locked(record, "stale_preview")
+        self._record = None
+        self._revision += 1
+        self._human_review_state = "stale"
+        self._human_review_result = None
+        return True
+
     def close(self):
         """Drop every proposal and prevent later preparation or commitment."""
 

@@ -1019,6 +1019,27 @@ class ProjectAgentSessionMailbox:
         if type(owner) is AgentGenerationReviewCustodian:
             self.inspect_review_custody(owner)
 
+    def fail_generation_review_publication(self, claim, carrier, custodian):
+        """Record automatic drift for this claim under mailbox/custodian order."""
+        from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
+        if type(custodian) is not AgentGenerationReviewCustodian:
+            return False
+        with self._lock:
+            with custodian._lock:
+                record = custodian._record
+                if (self._closed or type(claim) is not MailboxClaim
+                        or self._state != _EXECUTING or self._claim_id != claim._claim_id
+                        or claim.request.get("tool") != "promptgraph_request_generation_review"
+                        or record is None or record.request_id != claim.request.get("request_id")
+                        or record.pairing_generation != claim.pairing_generation
+                        or record.target_epoch != claim.target_epoch):
+                    return False
+                proposal_id = record.proposal_id
+                changed = custodian._fail_publication_locked(carrier, custodian._clock())
+                if changed and self._reply_review_owner is custodian:
+                    self._discard_review_ack_locked(proposal_id, "stale_target")
+                return changed
+
     def consume_reply(self, target_epoch, *, now=None):
         """Consume one outcome, detaching large replies without holding lock."""
 

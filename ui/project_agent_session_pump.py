@@ -636,7 +636,8 @@ def service_project_agent_session_request(
         result = fresh.get("result", {}) if type(fresh) is dict else {}
         if (result.get("valid") is not True
                 or result.get("plan_id") != claim.request["arguments"]["expected_plan_id"]):
-            runtime.mailbox.cancel_review_custody(runtime.generation_review_custodian)
+            runtime.mailbox.fail_generation_review_publication(
+                claim, bridge_reply, runtime.generation_review_custodian)
             from agent_adapters.mcp_adapter import generation_review_failure
             bridge_reply = {"bridge_contract_version": "promptgraph.app-agent-request-bridge.v1",
                             "request_id": claim.request["request_id"], "status": "completed",

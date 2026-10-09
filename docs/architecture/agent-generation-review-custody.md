@@ -35,6 +35,12 @@ rolls back the prepared record. Pending expiry is 15 minutes from commitment;
 retry does not extend it. The ACK says `queued_for_review`, not approved,
 completed or started. No generation has started.
 
+Publication-boundary config/workflow drift or unavailable verification stales
+only the exact prepared or pending retry carrier under mailbox/custodian locks.
+It records `stale_preview` in the failure reply and bounded tombstone, so exact
+retries return the same reason; host inspection reports `stale`, never a human
+Reject/Dismiss. No positive queue ACK is published on this path.
+
 The mailbox records which operation owns each review ACK. Inspection,
 Reject/Dismiss, expiry and explicit disarm retire only the matching operation's
 queued ACK. Both custody slots invalidate on target changes and host closure.
