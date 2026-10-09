@@ -61,13 +61,10 @@ tombstones, oldest first. Replay protection is bounded session bookkeeping,
 not durable exactly-once delivery; evicted IDs may be used for a fresh request.
 Host-only exact-proposal Reject/Dismiss methods exist for the future UI.
 
-## Deferred human surface
+## Human surface
 
-There is no dedicated Generation Review navigation or UI in this slice.
-Capabilities explicitly report `review_ui_available: false` and
-`execution_available: false`. The next bounded PR must revalidate current
-Project/config/plan before rendering, show full ordered targets via paging,
-authored/resolved prompt summaries, counts/estimates and safe summaries, and
-support exact-proposal Reject/Dismiss only. Prompt binding remains uncertified
-and runtime success is never guaranteed. No Approve/Start/Run/Apply is planned
-for that review-only UI slice.
+The subsequent [host Generation Review UI](agent-generation-review-ui.md) adds
+dedicated navigation, fresh verification, full target paging and exact-proposal
+Reject/Dismiss. Capabilities report `review_ui_available: true` and
+`execution_available: false`. Prompt binding remains uncertified and runtime
+success is never guaranteed. There is no Approve/Start/Run/Apply.

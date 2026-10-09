@@ -354,6 +354,7 @@ class AgentGenerationReviewCustodian:
             "state": "pending",
             "proposal_id": record.proposal_id,
             "target_epoch": record.target_epoch,
+            "pairing_generation": record.pairing_generation,
             "intent": deepcopy(record.intent),
             "plan_id": record.plan_id,
             "preview": deepcopy(record.preview),

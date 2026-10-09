@@ -67,7 +67,9 @@ The [Generation Preview-first contract](agent-generation-preview.md) adds
 offline preflight for one explicit Scene with the host-configured shared
 workflow. It submits no job and creates no human-review custody by itself.
 The [Generation review custody](agent-generation-review-custody.md) slice adds
-an explicit request and isolated session slot; its human UI remains deferred.
+an explicit request and isolated session slot. The
+[Generation Review UI](agent-generation-review-ui.md) adds fresh host inspection,
+full target paging and Reject/Dismiss only; execution remains unavailable.
 
 This is useful for read-only Project, Scene, Illustration, Candidate, and prompt
 inspection, plus reviewed Batch Replace and single-Scene Module Swap Previews.

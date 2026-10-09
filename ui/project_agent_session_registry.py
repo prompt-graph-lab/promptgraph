@@ -128,6 +128,10 @@ class ProjectAgentSessionRegistration:
             return PairingOperation("session_unavailable")
         return self._registry.disarm_pairing_offer(self)
 
+    def inspect_pairing_generation(self):
+        """Host-only validity/generation snapshot; release is valid with None."""
+        return self._registry.inspect_pairing_generation(self)
+
     def unregister(self):
         if self._closed:
             return False
@@ -244,6 +248,16 @@ class ProjectAgentSessionRegistry:
             )
             self._routes[route_id] = record
         return ProjectAgentSessionRegistration(self, route_id, authority)
+
+    def inspect_pairing_generation(self, registration):
+        record = self._record_for_registration(registration)
+        if record is None:
+            return False, None
+        with record.operation_lock:
+            with self._lock:
+                if not self._registration_matches_locked(registration, record):
+                    return False, None
+                return True, record.pairing_generation
 
     def arm_pairing(self, registration):
         """Issue or replace one short-lived capability for the owner route."""
