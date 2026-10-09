@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import threading
 
 import streamlit as st
+from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
 
 from ui.project_agent_request_bridge import dispatch_project_agent_request
 from ui.agent_scene_module_swap_approval_lifecycle import (
@@ -40,6 +41,7 @@ class ProjectAgentSessionRuntime:
         default_factory=AgentSceneModuleSwapApprovalCustodian,
     )
     target_tracker: ProjectTargetTracker = field(default_factory=ProjectTargetTracker)
+    generation_review_custodian: AgentGenerationReviewCustodian = field(default_factory=AgentGenerationReviewCustodian)
     _registry: ProjectAgentSessionRegistry = field(
         default_factory=get_process_project_agent_session_registry,
         repr=False,
@@ -58,6 +60,7 @@ class ProjectAgentSessionRuntime:
     )
 
     def __post_init__(self):
+        self.mailbox._generation_review_custodian = self.generation_review_custodian
         self._registration = self._registry.register_session(self.mailbox)
 
     def synchronize_target(self, project, project_path):
@@ -72,6 +75,7 @@ class ProjectAgentSessionRuntime:
             epoch,
             review_custodian=self.review_custodian,
         )
+        self.mailbox.synchronize_target_epoch(epoch, review_custodian=self.generation_review_custodian)
         return epoch
 
     def publish_review_apply(
@@ -485,6 +489,7 @@ class ProjectAgentSessionRuntime:
             # Explicit host disarm cancels review custody. Ordinary pipe
             # release and client disconnect do not call this session method.
             self.mailbox.cancel_review_custody(self.review_custodian)
+            self.mailbox.cancel_review_custody(self.generation_review_custodian)
             broker = self._named_pipe_broker
             registration = self._registration
         if broker is None:
@@ -502,6 +507,7 @@ class ProjectAgentSessionRuntime:
             # This shares the publication gate with final Apply commit, then
             # closes the mailbox/custodian under their fixed lock order.
             self.mailbox.close(review_custodian=self.review_custodian)
+            self.generation_review_custodian.close()
             self.target_tracker.close()
             registration = self._registration
             route_id = registration.route_id if registration is not None else None
@@ -604,6 +610,7 @@ def service_project_agent_session_request(
             candidate_session_identity=(runtime._registration.route_id
                                         if runtime._registration is not None else None),
             generation_context_provider=generation_context_provider,
+            generation_review_custodian=runtime.generation_review_custodian,
         )
     except Exception:
         bridge_reply = None
@@ -612,19 +619,45 @@ def service_project_agent_session_request(
         session_state.get("project"),
         session_state.get("current_project_path", ""),
     )
+    if (claim.request.get("tool") == "promptgraph_request_generation_review"
+            and type(bridge_reply) in (PreparedReviewReply, DuplicateReviewReply)):
+        # Revalidate fresh content/config at the mailbox publication boundary.
+        # A plan ID remains a precondition, never an execution capability.
+        try:
+            fresh = dispatch_project_agent_request(session_state, run_token,
+                {"request_id": claim.request["request_id"], "tool": "promptgraph_preview_generation",
+                 "arguments": {"scene_id": claim.request["arguments"]["scene_id"],
+                               "run_count": claim.request["arguments"]["run_count"]}},
+                pairing_generation=claim.pairing_generation, target_epoch=claim.target_epoch,
+                candidate_session_identity=runtime._registration.route_id,
+                generation_context_provider=generation_context_provider)
+        except Exception:
+            fresh = None
+        result = fresh.get("result", {}) if type(fresh) is dict else {}
+        if (result.get("valid") is not True
+                or result.get("plan_id") != claim.request["arguments"]["expected_plan_id"]):
+            runtime.mailbox.cancel_review_custody(runtime.generation_review_custodian)
+            from agent_adapters.mcp_adapter import generation_review_failure
+            bridge_reply = {"bridge_contract_version": "promptgraph.app-agent-request-bridge.v1",
+                            "request_id": claim.request["request_id"], "status": "completed",
+                            "result": generation_review_failure("stale_preview")}
+        current_epoch = runtime.synchronize_target(session_state.get("project"),
+            session_state.get("current_project_path", ""))
     if type(bridge_reply) is PreparedReviewReply:
         outcome = runtime.mailbox.complete_with_review(
             claim,
             bridge_reply,
             current_epoch,
-            runtime.review_custodian,
+            (runtime.generation_review_custodian if claim.request.get("tool") == "promptgraph_request_generation_review"
+             else runtime.review_custodian),
         )
     elif type(bridge_reply) is DuplicateReviewReply:
         outcome = runtime.mailbox.complete_with_duplicate_review(
             claim,
             bridge_reply,
             current_epoch,
-            runtime.review_custodian,
+            (runtime.generation_review_custodian if claim.request.get("tool") == "promptgraph_request_generation_review"
+             else runtime.review_custodian),
         )
     else:
         outcome = runtime.mailbox.complete(claim, bridge_reply, current_epoch)

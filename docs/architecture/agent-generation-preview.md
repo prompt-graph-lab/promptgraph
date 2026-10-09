@@ -2,9 +2,10 @@
 
 This is the read-only Preview-first split of the
 [Phase 4 audit](agent-generation-candidate-audit.md). The shipped operation is
-`promptgraph_preview_generation`. Generation review requests, dedicated
-Generation custody and human review UI are deferred to a separate PR. There is
-no `promptgraph_request_generation_review`, Start/Apply action or job receipt.
+`promptgraph_preview_generation`. The subsequent
+[Generation review custody](agent-generation-review-custody.md) adds an explicit
+request tool and isolated session custody. Human review UI remains deferred.
+There is no Start/Apply action or job receipt.
 The existing host generation UI remains the only execution path.
 
 ## Request and projection
@@ -85,11 +86,10 @@ Project/session/target/pairing. Project/prompt/Module/config/workflow changes al
 identity; target switches and in-place live changes during preflight reject the
 reply. A plan ID is observation identity, never approval or execution authority.
 
-The next PR should add operation-specific Generation custody, expected-plan
-revalidation, bounded expiry/duplicate/cancel behavior and complete paginated
-human review with Reject/Dismiss. It must remain separate from Scene Module Swap
-custody, and still add no Start/Apply action. This PR claims none of those review
-features are available.
+Operation-specific Generation custody and request freshness now live in the
+[custody-first slice](agent-generation-review-custody.md). The next PR should
+add complete paginated human review with fresh verification and Reject/Dismiss,
+remaining separate from Scene Module Swap and adding no Start/Apply action.
 
 [Focused tests](../../tests/test_agent_generation_preview.py) cover real planner
 and app preparation owners, order/counts/limits, invalid/missing/oversized files,

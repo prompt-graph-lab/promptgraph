@@ -126,6 +126,16 @@ _TOOL_CATALOG = (
         }, "effect": "read_only",
     },
     {
+        "name": "promptgraph_request_generation_review",
+        "description": "Queue a fresh Generation Preview in paired host session custody only. No generation, approval, Apply or review UI in this slice.",
+        "inputSchema": {"type": "object", "properties": {
+            "scene_id": {"type": "string", "minLength": 1, "maxLength": 200},
+            "run_count": {"type": "integer", "minimum": 1, "maximum": 5},
+            "expected_plan_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        }, "required": ["scene_id", "run_count", "expected_plan_id"], "additionalProperties": False},
+        "effect": "host_review_request",
+    },
+    {
         "name": "promptgraph_preview_batch_replace",
         "description": "Create a reviewed Batch Replace Preview for explicit Illustration IDs. This tool does not Apply the plan.",
         "inputSchema": {
@@ -353,6 +363,26 @@ def _scene_module_swap_transport_arguments(arguments):
     return args
 
 
+def validate_generation_review_arguments(arguments):
+    args = _object_arguments(arguments, required=("scene_id", "run_count", "expected_plan_id"), optional=())
+    if args is None or not _arguments_have_types(args, {"scene_id": str, "run_count": int, "expected_plan_id": str}):
+        return None
+    scene, plan = args["scene_id"], args["expected_plan_id"]
+    if (not 1 <= len(scene) <= 200 or scene.strip() != scene or not 1 <= args["run_count"] <= 5
+            or len(plan) != 64 or any(c not in "0123456789abcdef" for c in plan)):
+        return None
+    try:
+        scene.encode("utf-8")
+    except UnicodeError:
+        return None
+    return args
+
+
+def generation_review_failure(reason):
+    return {"review_request_contract_version": "promptgraph.agent-generation-review-request.v1",
+            "ok": False, "status": "rejected", "reason": reason}
+
+
 def validate_scene_module_swap_review_request_arguments(arguments):
     """Validate the review-request wire shape without resolving a Project.
 
@@ -507,6 +537,9 @@ class PromptGraphMCPAdapter:
             arguments = _candidate_transport_arguments(name, arguments)
             if arguments is None:
                 return _error("invalid_arguments")
+        elif name == "promptgraph_request_generation_review":
+            arguments = validate_generation_review_arguments(arguments)
+            return generation_review_failure("invalid_arguments" if arguments is None else "host_review_unavailable")
         elif name == "promptgraph_preview_generation":
             arguments = _object_arguments(arguments, required=("scene_id",), optional=("run_count",))
             if arguments is None or not _arguments_have_types(arguments, {"scene_id": str, "run_count": int}):

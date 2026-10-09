@@ -25,7 +25,7 @@ stdout remains reserved for MCP protocol messages.
 
 The SDK server delegates to the existing SDK-independent adapter, which
 continues to source its exact catalog and dispatch domain work through
-`core.agent_facade`. The stdio server advertises the same twelve logical tools:
+`core.agent_facade`. The stdio server advertises the same thirteen logical tools:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
@@ -36,6 +36,7 @@ continues to source its exact catalog and dispatch domain work through
 - `promptgraph_list_candidates`
 - `promptgraph_get_candidate`
 - `promptgraph_preview_generation`
+- `promptgraph_request_generation_review`
 - `promptgraph_preview_batch_replace`
 - `promptgraph_preview_scene_module_swap`
 - `promptgraph_request_scene_module_swap_review`
@@ -50,7 +51,7 @@ no such provider and reports that boundary as unavailable.
 
 All tool arguments and results remain JSON values. The tools do not expose
 Python Project or PromptLine objects. The catalog contains no Apply tool.
-The review-request tool is an explicit request for the paired host to queue a
+The review-request tools are explicit requests for the paired host to queue a
 fresh proposal for human review; a successful reply does not mean it was viewed,
 approved, applied, or saved. The runner and gateway retain no proposal or
 approval state. A standalone adapter-backed stdio server has no host custodian

@@ -412,10 +412,60 @@ class _RequestCaptureProvider:
         self._attempted = False
 
 
+def _dispatch_generation_review(request_id, arguments, provider, custodian, pairing,
+                                epoch, state, token, session_identity, host):
+    from agent_adapters.mcp_adapter import validate_generation_review_arguments, generation_review_failure
+    from core.agent_facade import preview_generation, generation_preview_project_state
+    from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
+    from ui.agent_scene_module_swap_approval_lifecycle import PreparedReviewReply, DuplicateReviewReply
+    args = validate_generation_review_arguments(arguments)
+    def reject(reason):
+        return _completed_reply(request_id, generation_review_failure(reason))
+    if args is None:
+        return reject("invalid_arguments")
+    if (type(custodian) is not AgentGenerationReviewCustodian or type(pairing) is not int
+            or pairing <= 0 or type(epoch) is not str or not epoch or session_identity is None):
+        return reject("host_review_unavailable")
+    decision = custodian.check_request(request_id, pairing, epoch, args)
+    if decision.status not in {"new", "retry_pending"}:
+        return reject(decision.status)
+    def fail(reason):
+        custodian.remember_failure(request_id, pairing, epoch, args, decision.revision, reason)
+        return reject(reason)
+    try:
+        project = provider()
+        capture = provider.capture
+        source = capture._source_project_ref()
+        binding = [project_identity(source), session_identity, state.get("current_project_path", ""), pairing, epoch]
+        preview = preview_generation(project, args["scene_id"], run_count=args["run_count"],
+                                     host_context_provider=host, observation_binding=binding)
+        if preview.get("valid") is not True or preview.get("request_count", 0) <= 0:
+            if decision.retry_token is not None:
+                custodian.mark_pending_stale(decision.retry_token.proposal_id)
+            return fail("invalid_preview")
+        if preview.get("plan_id") != args["expected_plan_id"]:
+            if decision.retry_token is not None:
+                custodian.mark_pending_stale(decision.retry_token.proposal_id)
+            return fail("stale_preview")
+        if (not is_capture_current(state, capture, token)
+                or generation_preview_project_state(project) != generation_preview_project_state(source)):
+            return fail("stale_target")
+        if decision.status == "retry_pending":
+            return DuplicateReviewReply(_completed_reply(request_id, decision.result), decision.retry_token)
+        prepared = custodian.prepare(request_id, pairing, epoch, args, decision.revision, preview)
+    except Exception:
+        return fail("review_unavailable")
+    if prepared.status == "retry_pending":
+        return DuplicateReviewReply(_completed_reply(request_id, prepared.result), prepared.retry_token)
+    if prepared.status != "prepared":
+        return reject(prepared.status)
+    return PreparedReviewReply(_completed_reply(request_id, prepared.result), prepared.token)
+
+
 def dispatch_project_agent_request(
         session_state, run_token, request, *, review_custodian=None,
         pairing_generation=None, target_epoch=None, candidate_session_identity=None,
-        generation_context_provider=None):
+        generation_context_provider=None, generation_review_custodian=None):
     """Dispatch one bounded request against a fresh optional Project snapshot.
 
     Adapter and facade results are returned unchanged when JSON-safe. Host
@@ -429,6 +479,10 @@ def dispatch_project_agent_request(
     tool, arguments = parsed
     provider = _RequestCaptureProvider(session_state, run_token)
     try:
+        if tool == "promptgraph_request_generation_review":
+            return _dispatch_generation_review(request_id, arguments, provider, generation_review_custodian,
+                pairing_generation, target_epoch, session_state, run_token, candidate_session_identity,
+                generation_context_provider)
         if tool == "promptgraph_request_scene_module_swap_review":
             return _dispatch_scene_module_swap_review_request(
                 request_id,

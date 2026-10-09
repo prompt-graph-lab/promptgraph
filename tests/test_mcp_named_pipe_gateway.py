@@ -425,7 +425,7 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 assert [tool.name for tool in listed.tools] == [
                     entry["name"] for entry in catalog
                 ]
-                assert len(listed.tools) == 12
+                assert len(listed.tools) == 13
                 assert all("apply" not in tool.name.casefold() for tool in listed.tools)
                 for tool, entry in zip(listed.tools, catalog, strict=True):
                     assert tool.description == entry["description"]
@@ -481,6 +481,11 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 assert generation.is_error is False and generation.structured_content["valid"]
                 assert not generation.structured_content["job_submitted"]
                 assert generation.structured_content["request_count"] == 1
+                review = await client.call_tool("promptgraph_request_generation_review", {
+                    "scene_id": "scene-1", "run_count": 1,
+                    "expected_plan_id": generation.structured_content["plan_id"]})
+                assert not review.is_error and review.structured_content["status"] == "queued_for_review"
+                assert runtime.generation_review_custodian.inspect()["state"] == "pending"
 
                 preview = await client.call_tool(
                     "promptgraph_preview_batch_replace",
@@ -525,6 +530,6 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
 
     assert not pump_thread.is_alive()
     assert project == original
-    assert service_results == ["completed"] * 7
-    assert len(capture_calls) == 6
+    assert service_results == ["completed"] * 8
+    assert len(capture_calls) == 8
     assert shutdown_pairing_status == "released"
