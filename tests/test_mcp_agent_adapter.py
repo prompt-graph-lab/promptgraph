@@ -22,6 +22,8 @@ TOOL_NAMES = [
     "promptgraph_list_illustrations",
     "promptgraph_search_illustrations",
     "promptgraph_get_illustration",
+    "promptgraph_list_candidates",
+    "promptgraph_get_candidate",
     "promptgraph_preview_batch_replace",
     "promptgraph_preview_scene_module_swap",
     "promptgraph_request_scene_module_swap_review",
@@ -94,6 +96,7 @@ def test_tool_catalog_is_deterministic_unique_and_preview_only():
     assert not any("apply" in name.lower() for name in names)
     assert [tool["effect"] for tool in first] == [
         "read_only", "read_only", "read_only", "read_only", "read_only", "read_only",
+        "read_only", "read_only",
         "reviewed_preview", "reviewed_preview", "host_review_request"]
     search_tool = first[4]
     assert search_tool["inputSchema"]["required"] == ["query_text"]

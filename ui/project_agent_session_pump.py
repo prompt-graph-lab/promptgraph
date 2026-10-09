@@ -600,6 +600,8 @@ def service_project_agent_session_request(
             review_custodian=runtime.review_custodian,
             pairing_generation=claim.pairing_generation,
             target_epoch=claim.target_epoch,
+            candidate_session_identity=(runtime._registration.route_id
+                                        if runtime._registration is not None else None),
         )
     except Exception:
         bridge_reply = None

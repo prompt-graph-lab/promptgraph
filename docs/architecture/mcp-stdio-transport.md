@@ -25,7 +25,7 @@ stdout remains reserved for MCP protocol messages.
 
 The SDK server delegates to the existing SDK-independent adapter, which
 continues to source its exact catalog and dispatch domain work through
-`core.agent_facade`. The stdio server advertises the same nine logical tools:
+`core.agent_facade`. The stdio server advertises the same eleven logical tools:
 
 - `promptgraph_capabilities`
 - `promptgraph_project_summary`
@@ -33,9 +33,14 @@ continues to source its exact catalog and dispatch domain work through
 - `promptgraph_list_illustrations`
 - `promptgraph_search_illustrations`
 - `promptgraph_get_illustration`
+- `promptgraph_list_candidates`
+- `promptgraph_get_candidate`
 - `promptgraph_preview_batch_replace`
 - `promptgraph_preview_scene_module_swap`
 - `promptgraph_request_scene_module_swap_review`
+
+The [Candidate metadata tools](agent-candidate-metadata-observation.md) expose
+persistent records only, without paths, bytes or generation/adoption authority.
 
 All tool arguments and results remain JSON values. The tools do not expose
 Python Project or PromptLine objects. The catalog contains no Apply tool.

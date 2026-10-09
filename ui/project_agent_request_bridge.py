@@ -9,6 +9,7 @@ from math import isfinite
 
 from agent_adapters.mcp_adapter import PromptGraphMCPAdapter
 from core.project import Project
+from core.candidate_observation_handles import project_identity
 from ui.project_capture_safety import (
     CapturedProject,
     ProjectCaptureResult,
@@ -413,7 +414,7 @@ class _RequestCaptureProvider:
 
 def dispatch_project_agent_request(
         session_state, run_token, request, *, review_custodian=None,
-        pairing_generation=None, target_epoch=None):
+        pairing_generation=None, target_epoch=None, candidate_session_identity=None):
     """Dispatch one bounded request against a fresh optional Project snapshot.
 
     Adapter and facade results are returned unchanged when JSON-safe. Host
@@ -439,7 +440,19 @@ def dispatch_project_agent_request(
                 run_token,
             )
         try:
-            adapter = PromptGraphMCPAdapter(provider)
+            def candidate_binding():
+                # Called only after schema validation and successful capture.
+                source = provider.capture._source_project_ref()
+                if source is None:
+                    raise _CaptureProviderUnavailable()
+                return [project_identity(source),
+                        candidate_session_identity if candidate_session_identity is not None else id(session_state),
+                        session_state.get("current_project_path", ""),
+                        pairing_generation, target_epoch]
+
+            adapter = (PromptGraphMCPAdapter(provider, candidate_binding_provider=candidate_binding)
+                       if tool in ("promptgraph_list_candidates", "promptgraph_get_candidate")
+                       else PromptGraphMCPAdapter(provider))
             result = adapter.call_tool(tool, arguments)
         except Exception:
             return _rejected_reply(request_id, "adapter_dispatch_failed",
