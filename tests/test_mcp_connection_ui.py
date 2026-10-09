@@ -200,5 +200,6 @@ def test_project_switch_is_not_part_of_the_connection_ui_surface():
     assert "dispatch_project_agent_request" not in source
     pump = app_source.index("render_project_agent_request_pump()")
     connection = app_source.index("render_mcp_connection_sidebar()")
-    tutorial = app_source.index("if is_free() and st.session_state.show_tutorial:")
+    # The tutorial guard also excludes Agent Review and spans multiple lines.
+    tutorial = app_source.index("if (is_free() and st.session_state.show_tutorial")
     assert pump < connection < tutorial

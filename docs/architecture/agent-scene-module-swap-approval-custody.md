@@ -23,7 +23,8 @@ Before/After prompts, session-custody freshness validation, a safe host display
 projection, and terminal Reject/Dismiss actions. Its checkbox records only a
 session-local acknowledgment that the human reviewed the proposal; it does
 not approve or apply anything. PR-C adds a direct human Approve and Apply
-action and host-only publication. No MCP Apply tool exists.
+action and host-only publication. PR-A/B/C are implemented. PR-D adds composed
+integration characterization described below. No MCP Apply tool exists.
 
 The implemented owner is `ui.agent_scene_module_swap_approval_lifecycle`, one
 custodian per `ProjectAgentSessionRuntime`. It retains one exact detached safe
@@ -63,12 +64,13 @@ metadata. Confirmation widget identity binds to both the opaque proposal ID
 and complete Preview `plan_id`; stale content, target changes, Reject, and
 Dismiss clear that acknowledgment. Reject/Dismiss consume only the matching
 pending record in the session custodian. The MCP polling fragment remains
-connection-only, and the review surface performs no Project mutation,
-publication, history, or save.
+connection-only. The review surface stages acknowledgment and terminal
+Reject/Dismiss actions; its explicit Approve and Apply button delegates
+mutation, publication, history, and save to the PR-C host lifecycle.
 
 The sections below retain the audit's design rationale. Phrases such as
 “proposed” and “future” describe the state at the audit baseline unless the
-current PR-A implementation status above says otherwise.
+current implementation status above says otherwise.
 
 ## Decision
 
@@ -109,19 +111,30 @@ acceptable agent-review record.
 
 ## Current request and human Apply paths
 
-Agent request path:
+Explicit review-request path:
 
 ```text
 MCP client → stdio gateway → paired route → session mailbox
            → fragment wake → normal full-app run
            → request bridge → MCP adapter → agent facade Preview
-           → exact bridge reply → mailbox reply_ready
-           → gateway consumes reply → MCP client
+           → prepared custody → coordinated custody/mailbox commit
+           → mailbox reply_ready → gateway consumes queue ACK → MCP client
 ```
 
-The host currently has no retained copy after the dispatch returns. The exact
-reply belongs to the mailbox until the gateway consumes it; consumption is
-external to Streamlit and cannot itself be the moment that mutates host state.
+The host custodian retains the exact fresh safe envelope when an explicit
+review request commits. The bounded queue acknowledgment belongs to the
+mailbox until the gateway consumes it; consumption is external to Streamlit
+and cannot itself be the moment that mutates a Project. An ordinary Preview
+still creates no retained proposal.
+
+Dedicated human Agent Review path:
+
+```text
+session custody → full-app fresh complete review → human review checkbox
+  → human Approve and Apply → one-shot host claim → core clone Apply
+  → fresh revalidation → publication gate → Undo + Project replacement
+  → pinned reconciliation → exact-Project/path autosave → host-only status
+```
 
 Existing human Selected Routes path:
 
@@ -710,16 +723,67 @@ remain host-only; a still-undelivered mailbox queue acknowledgment is replaced
 with the existing generic cancellation outcome, never with Apply details.
 Repeated approval callbacks cannot claim or apply a second time.
 
-### PR-D: Streamlit/MCP end-to-end characterization
+### PR-D: Streamlit/MCP end-to-end characterization — implemented
 
-Exercise the public Streamlit 1.60.0 session route, stdio gateway, mailbox,
-review request, host review, and host-only Apply using the real product owners.
+`tests/test_agent_scene_module_swap_e2e.py` composes existing product owners
+without adding another planner, custodian, approval path, or persistence
+implementation. It uses `AppTest.from_file("app.py")`, rather than a substitute
+review app, so request service, review widgets, direct human Apply callback,
+Gallery/focus reconciliation, and the pinned autosave callback are the actual
+application wiring. Settings and Project destinations are temporary fixtures.
+Streamlit 1.60.0 AppTest hardcodes one session ID; the test harness assigns
+distinct `LocalScriptRunner` test identities before starting each fixture,
+so the real session-scoped resource cache separates the two browser fixtures.
+This adapts a pinned test facility, not the product route or custody logic.
 
-Acceptance: test one and multiple sessions, target switch/Save As between
-Preview and approval, in-place prompt/Module edits, busy mailbox, timeout,
-paired-client disconnect, explicit disconnect, session close, stale proposal,
-successful publication, autosave failure, and no duplicate Apply. The gateway
-must remain free of Project/session/approval ownership.
+The Windows-only success test starts the official
+`python -m agent_adapters.mcp_named_pipe_launcher` subprocess, the MCP SDK
+stdio client, and `WindowsNamedPipeBroker` with actual Win32 Named Pipes and
+protected rendezvous files. Both processes use one temporary Windows temp
+directory for the fixed rendezvous, without adding launcher arguments. An
+accepted-submission queue coordinates full app reruns; no sleep establishes
+readiness. Capture is observed inside a real Streamlit ScriptRunner context.
+The test verifies unchanged safe exploratory Preview responses with no pending
+proposal, recomputation against the expected plan identity, pending custody
+before ACK consumption, all 101 affected Illustrations and exact Before/After
+prompts across six pages, checkbox-only acknowledgment, and the separate
+**Approve and Apply** action. Real core Apply targets only the explicit Scene,
+publishes one replacement and one pre-Apply Undo snapshot, and writes/reopens
+the intended Project JSON, then exercises the product Undo control to restore
+the pre-Apply memory snapshot. It also rejects forged approval/agent fields and
+IDs, verifies the catalog exposes no Apply/decision tool, and confirms later
+ordinary Preview responses do not acquire human decision or save fields.
+
+The remaining new tests use real paired routes, mailboxes, capture gates, and
+full `app.py` AppTest runs, with explicitly simulated failures at existing
+owner seams:
+
+| Boundary | Composed characterization |
+| --- | --- |
+| Freshness and human controls | A staged proposal becomes unapprovable after Project replacement, actual Save As UI publication, in-place prompt or Module edits, simulated monotonic expiry, or human Dismiss. No-op requests never queue. |
+| Isolation and retries | Two independent Streamlit sessions retain separate proposals. Same-generation correlation retries return the same ACK without another capture or TTL extension; next-generation replay exposes no old proposal ID. Ordinary route release retains pending custody, while explicit host Disarm removes only that session's proposal. |
+| Mailbox lifecycle | Busy requests cannot replace work. Simulated request-deadline expiry before servicing cannot capture or retain a proposal. |
+| Apply and persistence failures | Simulated core failure, event-coordinated Disarm/session close during core Apply, and target navigation during core Apply prevent publication. Autosave failure preserves the successful memory replacement and Undo snapshot. Target navigation after publication prevents old-target reconciliation/save. Full reruns cannot retry the consumed approval. |
+
+This coverage supplements the focused PR-A/B/C suites instead of repeating
+their domain/state-machine tests. Those suites retain deterministic
+mailbox/custodian commit races, duplicate-ACK cancellation, session/pairing
+generation tombstones, all 1,000 review targets, core freshness contracts,
+path and exact-Project pinning, and duplicate approval callbacks racing final
+publication. Gateway/adapter ownership checks remain in their existing tests.
+`test_project_agent_session_pump.py` separately uses real Streamlit
+`AppSession`/`ScriptRunner` facilities and explicitly delivered fragment reruns
+to prove a fragment wakes only its own session and dispatch occurs in a full
+run. It does not substitute a background Project-owning pump for Streamlit.
+
+**Evidence limits:** AppTest supplies widget actions programmatically; this
+is not a human-driven browser or deployed WebSocket session. Periodic browser
+fragment scheduling, browser refresh/tab disconnect behavior, a live external
+LLM client, abrupt process termination, OS crash/disk durability, and an
+independent Windows/browser environment remain manual or untested boundaries.
+Core/persistence failures and target navigation are simulated at named product
+owner seams; the real Windows success test does not inject an OS disk failure.
+No manual browser check or full-suite claim is implied by this characterization.
 
 ## Open decisions and go/no-go
 
@@ -732,9 +796,9 @@ If the client needs the human's later decision, design a separate
 session-bound status/result operation; do not leave a synchronous MCP call
 blocked while a human considers the Preview or send a result through a new
 pairing generation. Keep the existing 1,000-target planner cap and require the
-future human surface to render all targets.
+implemented human surface to continue rendering all targets.
 
-PR-D remains a separate future slice. **No-go:** keep custody, UI, and Apply in
+**No-go:** keep custody, UI, and Apply in
 their separately reviewed owners; do not reinterpret an exploratory
 Preview as a review request; do not route Apply through MCP; do not reuse
 shared Gallery selection as agent intent; and do not treat any identifier,

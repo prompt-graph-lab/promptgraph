@@ -237,8 +237,12 @@ host remains responsible for human approval and any later Apply. A `plan_id` is
 a content identifier and integrity check, not an authorization token. The
 model cannot prove approval by echoing an envelope, setting an `approved` flag,
 or supplying a plan ID. The adapter adds no Apply wrapper, approval registry,
-or mutable adapter-global Preview store. Human review UI and the exact
-host-only Scene Module Swap Apply lifecycle are not yet implemented.
+or mutable adapter-global Preview store. PR-A, PR-B, and PR-C implement
+session custody, the Agent Review UI, and the dedicated host-only Scene Module
+Swap Apply lifecycle. PR-D characterizes their composed path through the
+official stdio launcher, real Windows Named Pipes, full `app.py` Streamlit
+runs, human widget actions, and the existing Project persistence owner; see
+the custody document for coverage and remaining manual boundaries.
 `core.agent_facade.apply_batch_replace` remains callable only by a trusted
 host.
 
