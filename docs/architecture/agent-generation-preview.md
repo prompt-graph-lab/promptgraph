@@ -33,7 +33,10 @@ node input values, local paths, endpoint strings, settings, exception messages
 and arbitrary metadata are never projected.
 
 `expected_image_count` follows the current planner's one-image-per-request
-estimate. `expected_output_node_count` counts preflighted SaveImage nodes;
+estimate. `expected_output_node_count` counts supported image-output nodes using
+the existing SaveImage/PreviewImage and custom suffix classifier. Per-Illustration
+`image_output_node_count` includes both classes; `save_image_node_count` remains
+SaveImage-only. Node counts do not imply exact output-file counts;
 neither promises actual downloaded-image counts, since workflow batching/runtime
 behavior can differ. `valid` means offline preflight passed, not that the server
 is connected or will accept every node/link. Seeds are not randomized/committed

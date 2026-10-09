@@ -105,6 +105,36 @@ def test_content_and_host_freshness_change_plan_identity(change):
     assert second["valid"] and first["plan_id"] != second["plan_id"]
 
 
+@pytest.mark.parametrize("output_class,save_count", [
+    ("SaveImage", 1), ("PreviewImage", 0),
+    ("custom.SaveImage", 1), ("custom.PreviewImage", 0), ("UnsupportedOutput", 0)])
+def test_authoritative_output_classes_and_separate_save_metrics(output_class, save_count):
+    value = project()
+    before = copy.deepcopy(value)
+    def provider(p, runs):
+        context = host(p, runs)
+        original = context["request_builder"]
+        def build(item, index):
+            record = original(item, index)
+            record["workflow_json"]["2"]["class_type"] = output_class
+            return record
+        context["request_builder"] = build
+        return context
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network")):
+        result = facade.preview_generation(value, "scene", run_count=3, host_context_provider=provider)
+    supported = output_class != "UnsupportedOutput"
+    assert result["valid"] is supported
+    assert result["expected_output_node_count"] == (6 if supported else 0)
+    assert result["request_count"] == (6 if supported else 0)
+    assert result["output_count_is_estimate"] and not result["job_submitted"]
+    assert value == before and "PRIVATE" not in json.dumps(result)
+    if supported:
+        assert all(row["image_output_node_count"] == 1 and row["save_image_node_count"] == save_count
+                   for row in result["illustrations"])
+    else:
+        assert result["blocked_count"] == 2 and result["blockers"] == ["workflow_preflight_failed"]
+
+
 def test_configuration_changes_during_preflight_fail_closed():
     calls = 0
     def unstable(p, runs):

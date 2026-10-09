@@ -527,6 +527,7 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
     """Preflight one explicit Scene through host configuration, never execute."""
     from core.gallery_generation import build_selected_routes_generation_plan
     from core.comfy_workflow_metadata import _is_executable_comfy_workflow
+    from core.comfy_workflow_outputs import _workflow_output_nodes, _workflow_save_image_nodes
     try:
         lines = _lines(project)
         target = _id(scene_id)
@@ -572,8 +573,7 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
                    or type(node.get("class_type")) is not str or not node["class_type"]
                    for node in workflow.values()):
                 raise ValueError("unsupported API workflow")
-            output_count = sum(type(node) is dict and node.get("class_type") == "SaveImage"
-                               for node in workflow.values())
+            output_count = len(_workflow_output_nodes(workflow))
             if not output_count:
                 raise ValueError("no image output")
             positive = item.get("resolved_positive_prompt")
@@ -582,7 +582,8 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
                 raise ValueError("invalid prompts")
             prepared[line.id] = {"positive_prompt": _text(positive), "negative_prompt": _text(negative),
                                  "prompt_summary_kind": "active_illustration_inputs", "workflow_binding_verified": False,
-                                 "workflow_node_count": len(workflow), "save_image_node_count": output_count,
+                                 "workflow_node_count": len(workflow), "image_output_node_count": output_count,
+                                 "save_image_node_count": len(_workflow_save_image_nodes(workflow)),
                                  "warnings": ["prompt_binding_requires_review"] if item.get("warning") else []}
             return workflow, ""
         plan = build_selected_routes_generation_plan(
@@ -613,7 +614,7 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
                          request_count=plan["request_count"] if plan["valid"] else 0,
                          expected_image_count=plan["expected_image_count"] if plan["valid"] else 0,
                          output_count_is_estimate=True, illustrations=rows,
-                         expected_output_node_count=(sum(item["save_image_node_count"] for item in prepared.values()) * run_count
+                         expected_output_node_count=(sum(item["image_output_node_count"] for item in prepared.values()) * run_count
                                                      if plan["valid"] else 0),
                          skipped_count=plan["skipped_line_count"], blocked_count=plan["blocked_line_count"],
                          skipped=[{"illustration_id": item["line_id"],
