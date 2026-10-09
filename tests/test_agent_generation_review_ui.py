@@ -293,3 +293,55 @@ def test_malformed_host_record_fails_closed_without_actions(malformed):
     assert build_generation_review(state, runtime, host)["state"] == "validation_failure"
     assert runtime.generation_review_custodian.inspect()["state"] == "pending"
     runtime.close()
+
+
+@pytest.mark.parametrize("target,label", [("project_management", "Project Management"),
+    ("module_attribute_authoring", "Module / Attribute Authoring"), ("comfyui_settings", "ComfyUI Settings")])
+def test_actual_management_navigation_owners_switch_immediately_and_leave_no_destination(target, label):
+    # Execute the production navigation owners in a real normal-run AppTest,
+    # avoiding unrelated production app startup/configuration dependencies.
+    root = Path(__file__).resolve().parents[1]
+    tree = ast.parse((root/"app.py").read_text(encoding="utf-8"))
+    names = {"normalize_management_workspace_target", "reset_management_workspace_session_state",
+             "open_management_workspace", "get_active_management_workspace",
+             "activate_generation_review_navigation", "render_management_workspace_launchers"}
+    definitions = '\n\n'.join(ast.unparse(node) for node in tree.body
+                              if isinstance(node, ast.FunctionDef) and node.name in names)
+    script = APP[:APP.index('render_agent_review_navigation(runtime,')] + '''
+ACTIVE_MANAGEMENT_WORKSPACE_KEY = "active_management_workspace"
+MANAGEMENT_WORKSPACE_TARGETS = {
+    "project_management": {"title": "Project Management"},
+    "module_attribute_authoring": {"title": "Module / Attribute Authoring"},
+    "comfyui_settings": {"title": "ComfyUI Settings"}}
+''' + definitions + '''
+render_agent_review_navigation(runtime, on_activate=lambda: st.session_state.__setitem__(GENERATION_REVIEW_ACTIVE_KEY, False))
+render_generation_review_navigation(runtime, on_activate=activate_generation_review_navigation)
+render_management_workspace_launchers()
+if st.session_state.get(GENERATION_REVIEW_ACTIVE_KEY, False):
+    render_generation_review_panel(runtime, host)
+elif get_active_management_workspace():
+    st.title(MANAGEMENT_WORKSPACE_TARGETS[get_active_management_workspace()]["title"])
+else:
+    st.title("Project workspace")
+'''
+    runtime, route, epoch, state, args = queued(consume=True)
+    before = copy.deepcopy(state["project"])
+    app = AppTest.from_string(script)
+    app.session_state["runtime"] = runtime
+    for key, value in state.items():
+        app.session_state[key] = value
+    app.session_state[GENERATION_REVIEW_ACTIVE_KEY] = True
+    with patch("urllib.request.urlopen", side_effect=AssertionError("execution")):
+        app.run()
+        assert app.title[0].value == "Generation Review"
+        next(b for b in app.button if b.label == label).click().run()
+        assert not app.exception and app.title[0].value == label
+        assert app.session_state[GENERATION_REVIEW_ACTIVE_KEY] is False
+        app.button(key="agent_generation_review_navigation").click().run()
+        assert app.title[0].value == "Generation Review"
+        assert app.session_state["active_management_workspace"] == ""
+        app.button(key="agent_generation_review_return").click().run()
+        assert app.title[0].value == "Project workspace"
+    assert runtime.generation_review_custodian.inspect()["state"] == "pending"
+    assert state["project"] == before
+    runtime.close()

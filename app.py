@@ -900,12 +900,19 @@ def reset_module_edit_scope_project_session_state() -> None:
     st.session_state.pop("module_edit_scope_name", None)
 
 
+def activate_generation_review_navigation() -> None:
+    """Leave no deferred management destination when opening review."""
+    reset_management_workspace_session_state()
+    st.session_state[AGENT_REVIEW_ACTIVE_KEY] = False
+
+
 def open_management_workspace(target) -> bool:
     clean_target = normalize_management_workspace_target(target)
     if not clean_target:
         reset_management_workspace_session_state()
         return False
     st.session_state[ACTIVE_MANAGEMENT_WORKSPACE_KEY] = clean_target
+    st.session_state[GENERATION_REVIEW_ACTIVE_KEY] = False
     return True
 
 
@@ -20823,7 +20830,7 @@ render_mcp_connection_sidebar()
 render_agent_review_navigation(_PROJECT_AGENT_SESSION_RUNTIME,
     on_activate=lambda: st.session_state.__setitem__(GENERATION_REVIEW_ACTIVE_KEY, False))
 render_generation_review_navigation(_PROJECT_AGENT_SESSION_RUNTIME,
-    on_activate=lambda: st.session_state.__setitem__(AGENT_REVIEW_ACTIVE_KEY, False))
+    on_activate=activate_generation_review_navigation)
 
 if (is_free() and st.session_state.show_tutorial
         and not st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False)

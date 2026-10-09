@@ -36,7 +36,9 @@ is no Project, Candidate, history, autosave or filesystem mutation.
 `ui/agent_generation_review_panel.py` owns only Generation navigation/widget/page
 state. App composition makes the two review surfaces mutually navigable without
 sharing proposals, pages or action state. Return to Project does not resolve a
-proposal. Review runs in the normal app run before management/missing-Project
+proposal. Management navigation clears Generation Review immediately; entering
+Generation Review clears the prior management destination so Return to Project
+does not open a deferred manager. Review runs in the normal app run before management/missing-Project
 workspace stops; the periodic agent fragment remains wake-only.
 
 Every eligible Illustration is available in physical order on pages of 20,
