@@ -241,7 +241,7 @@ def test_sdk_and_paired_full_run_preview_never_creates_custody(tmp_path):
         async with Client(build_mcp_server(adapter)) as client:
             result = await client.call_tool("promptgraph_preview_generation", {"scene_id": "scene"})
             assert result.structured_content["valid"] and not result.is_error
-            assert (await client.call_tool("promptgraph_request_generation_review", {})).structured_content["reason"] == "unknown_tool"
+            assert (await client.call_tool("promptgraph_request_generation_review", {})).structured_content["reason"] == "invalid_arguments"
     asyncio.run(sdk())
     registry = ProjectAgentSessionRegistry()
     runtime = ProjectAgentSessionRuntime(_registry=registry)

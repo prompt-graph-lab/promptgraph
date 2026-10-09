@@ -222,7 +222,8 @@ def discover_capabilities():
                                "max_run_count": MAX_GENERATION_RUNS,
                                "max_requests": MAX_GENERATION_REQUESTS,
                                "shared_workflow_only": True,
-                               "review_request_available": False, "execution_available": False},
+                               "review_request_available": True, "review_request_requires_paired_host": True,
+                               "review_ui_available": False, "execution_available": False},
         "illustration_search": {"modes": list(SEARCH_MODES), "max_results": MAX_ITEMS,
                                 "query_text_chars": MAX_REQUEST_TEXT},
         "mutations": [

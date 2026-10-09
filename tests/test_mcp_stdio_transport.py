@@ -158,7 +158,7 @@ def test_stdio_subprocess_serves_catalog_tools_and_shuts_down_cleanly(tmp_path):
                 assert [tool.name for tool in listed.tools] == [
                     entry["name"] for entry in catalog
                 ]
-                assert len({tool.name for tool in listed.tools}) == 12
+                assert len({tool.name for tool in listed.tools}) == 13
                 assert all("apply" not in tool.name.casefold() for tool in listed.tools)
                 for registered, entry in zip(listed.tools, catalog, strict=True):
                     assert registered.description == entry["description"]

@@ -250,6 +250,7 @@ class ProjectAgentSessionMailbox:
     def __init__(self, *, clock=time.monotonic):
         self._clock = clock
         self._lock = threading.RLock()
+        self._generation_review_custodian = None
         self._state = _IDLE
         self._closed = False
         self._target_epoch = None
@@ -263,6 +264,7 @@ class ProjectAgentSessionMailbox:
         self._reply = None
         self._reply_is_review_request = False
         self._reply_review_identity = None
+        self._reply_review_owner = None
         self._reply_generation = 0
         self._first_fragment_tick_pending = False
         self._wake_retry_count = 0
@@ -316,6 +318,7 @@ class ProjectAgentSessionMailbox:
             self._reply_status = None
             self._reply_is_review_request = False
             self._reply_review_identity = None
+            self._reply_review_owner = None
             self._reply_generation += 1
             self._wake_retry_count = 0
             self._wake_retry_at = None
@@ -484,6 +487,7 @@ class ProjectAgentSessionMailbox:
                 self._reply = detached_reply
                 self._reply_is_review_request = False
                 self._reply_review_identity = None
+                self._reply_review_owner = None
                 self._state = _REPLY_READY
                 self._reply_generation += 1
                 # Keep target epoch and deadline until the producer consumes
@@ -501,13 +505,15 @@ class ProjectAgentSessionMailbox:
         Streamlit, transport, or callback work.
         """
 
+        from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
+
         from ui.agent_scene_module_swap_approval_lifecycle import (
             AgentSceneModuleSwapApprovalCustodian,
             PreparedReviewReply,
         )
 
         if (type(prepared_review) is not PreparedReviewReply
-                or type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian):
+                or type(review_custodian) not in (AgentSceneModuleSwapApprovalCustodian, AgentGenerationReviewCustodian)):
             return MailboxOutcome("invalid_review_carrier")
         detached_reply = _copy_plain_json(prepared_review.reply, bounded=False)
         reply_is_valid = detached_reply is not None and type(detached_reply) is dict
@@ -589,6 +595,7 @@ class ProjectAgentSessionMailbox:
                     self._reply = detached_reply
                     self._reply_is_review_request = True
                     record = review_custodian._record
+                    self._reply_review_owner = review_custodian
                     self._reply_review_identity = (
                         record.request_id,
                         record.pairing_generation,
@@ -606,6 +613,7 @@ class ProjectAgentSessionMailbox:
 
                 return MailboxOutcome("completed")
 
+
     def complete_with_duplicate_review(self, claim, duplicate_review, target_epoch,
                                        review_custodian, *, now=None):
         """Publish a retry acknowledgement only while its exact proposal is pending.
@@ -616,6 +624,8 @@ class ProjectAgentSessionMailbox:
         mailbox-then-custodian lock order before exposing the positive reply.
         """
 
+        from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
+
         from ui.agent_scene_module_swap_approval_lifecycle import (
             AgentSceneModuleSwapApprovalCustodian,
             DuplicateReviewReply,
@@ -624,7 +634,7 @@ class ProjectAgentSessionMailbox:
 
         if (type(duplicate_review) is not DuplicateReviewReply
                 or type(duplicate_review.token) is not PendingReviewRetryToken
-                or type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian):
+                or type(review_custodian) not in (AgentSceneModuleSwapApprovalCustodian, AgentGenerationReviewCustodian)):
             return MailboxOutcome("invalid_review_retry_carrier")
 
         detached_reply = _copy_plain_json(duplicate_review.reply, bounded=False)
@@ -728,6 +738,7 @@ class ProjectAgentSessionMailbox:
                 self._reply_status = "completed"
                 self._reply = detached_reply
                 self._reply_is_review_request = True
+                self._reply_review_owner = review_custodian
                 self._reply_review_identity = (
                     token.request_id,
                     token.pairing_generation,
@@ -740,6 +751,7 @@ class ProjectAgentSessionMailbox:
                 self._clear_request_payload_locked()
                 return MailboxOutcome("completed")
 
+
     def inspect_review_custody(self, review_custodian):
         """Inspect host review while coordinating terminal state with its reply.
 
@@ -748,11 +760,13 @@ class ProjectAgentSessionMailbox:
         exact proposal may be replaced with a terminal mailbox outcome.
         """
 
+        from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
+
         from ui.agent_scene_module_swap_approval_lifecycle import (
             AgentSceneModuleSwapApprovalCustodian,
         )
 
-        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+        if type(review_custodian) not in (AgentSceneModuleSwapApprovalCustodian, AgentGenerationReviewCustodian):
             return {"state": "session_unavailable"}
         with self._lock:
             with review_custodian._lock:
@@ -767,19 +781,22 @@ class ProjectAgentSessionMailbox:
                     "applied_save_failed": "review_cancelled",
                     "apply_failed": "review_cancelled",
                 }.get(review.get("state") if type(review) is dict else None)
-                identity = self._reply_review_identity
+                identity = (self._reply_review_identity if self._reply_review_owner is review_custodian else None)
                 if status is not None and type(identity) is tuple and len(identity) == 5:
                     self._discard_review_ack_locked(identity[3], status)
                 return review
 
+
     def resolve_review_proposal(self, review_custodian, proposal_id, action):
         """Resolve one human action and invalidate only its queued ACK atomically."""
+
+        from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
 
         from ui.agent_scene_module_swap_approval_lifecycle import (
             AgentSceneModuleSwapApprovalCustodian,
         )
 
-        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+        if type(review_custodian) not in (AgentSceneModuleSwapApprovalCustodian, AgentGenerationReviewCustodian):
             return "session_unavailable"
         if action not in {"reject", "dismiss"}:
             return "invalid_action"
@@ -788,7 +805,7 @@ class ProjectAgentSessionMailbox:
                 state = review_custodian._resolve_pending_locked(
                     proposal_id, action, review_custodian._clock(),
                 )
-                identity = self._reply_review_identity
+                identity = (self._reply_review_identity if self._reply_review_owner is review_custodian else None)
                 if type(identity) is tuple and len(identity) == 5:
                     status = {
                         "rejected": "review_cancelled",
@@ -800,14 +817,17 @@ class ProjectAgentSessionMailbox:
                         self._discard_review_ack_locked(proposal_id, status)
                 return state
 
+
     def mark_review_proposal_stale(self, review_custodian, proposal_id):
         """Mark a stale host proposal and its exact undelivered ACK together."""
+
+        from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
 
         from ui.agent_scene_module_swap_approval_lifecycle import (
             AgentSceneModuleSwapApprovalCustodian,
         )
 
-        if type(review_custodian) is not AgentSceneModuleSwapApprovalCustodian:
+        if type(review_custodian) not in (AgentSceneModuleSwapApprovalCustodian, AgentGenerationReviewCustodian):
             return "session_unavailable"
         with self._lock:
             with review_custodian._lock:
@@ -815,7 +835,7 @@ class ProjectAgentSessionMailbox:
                     proposal_id,
                     review_custodian._clock(),
                 )
-                identity = self._reply_review_identity
+                identity = (self._reply_review_identity if self._reply_review_owner is review_custodian else None)
                 if type(identity) is tuple and len(identity) == 5:
                     status = {
                         "stale": "stale_target",
@@ -824,6 +844,7 @@ class ProjectAgentSessionMailbox:
                     if status is not None:
                         self._discard_review_ack_locked(proposal_id, status)
                 return state
+
 
     def claim_review_proposal_for_apply(
         self,
@@ -988,8 +1009,36 @@ class ProjectAgentSessionMailbox:
                 review_custodian._cancel_locked("proposal_cancelled")
                 if (self._state == _REPLY_READY
                         and self._reply_status == "completed"
-                        and self._reply_is_review_request):
+                        and self._reply_is_review_request
+                        and self._reply_review_owner is review_custodian):
                     self._set_terminal_locked("review_cancelled")
+
+    def _expire_generation_ack_locked(self):
+        from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
+        owner = self._reply_review_owner
+        if type(owner) is AgentGenerationReviewCustodian:
+            self.inspect_review_custody(owner)
+
+    def fail_generation_review_publication(self, claim, carrier, custodian):
+        """Record automatic drift for this claim under mailbox/custodian order."""
+        from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
+        if type(custodian) is not AgentGenerationReviewCustodian:
+            return False
+        with self._lock:
+            with custodian._lock:
+                record = custodian._record
+                if (self._closed or type(claim) is not MailboxClaim
+                        or self._state != _EXECUTING or self._claim_id != claim._claim_id
+                        or claim.request.get("tool") != "promptgraph_request_generation_review"
+                        or record is None or record.request_id != claim.request.get("request_id")
+                        or record.pairing_generation != claim.pairing_generation
+                        or record.target_epoch != claim.target_epoch):
+                    return False
+                proposal_id = record.proposal_id
+                changed = custodian._fail_publication_locked(carrier, custodian._clock())
+                if changed and self._reply_review_owner is custodian:
+                    self._discard_review_ack_locked(proposal_id, "stale_target")
+                return changed
 
     def consume_reply(self, target_epoch, *, now=None):
         """Consume one outcome, detaching large replies without holding lock."""
@@ -997,6 +1046,7 @@ class ProjectAgentSessionMailbox:
         if now is None:
             now = self._clock()
         with self._lock:
+            self._expire_generation_ack_locked()
             if self._closed:
                 return MailboxOutcome("session_closed")
             if type(target_epoch) is not str or not target_epoch:
@@ -1030,6 +1080,7 @@ class ProjectAgentSessionMailbox:
             detached_reply = None
 
         with self._lock:
+            self._expire_generation_ack_locked()
             if self._closed:
                 return MailboxOutcome("session_closed")
             if self._state != _REPLY_READY or generation != self._reply_generation:
@@ -1061,6 +1112,9 @@ class ProjectAgentSessionMailbox:
             if review_custodian is not None:
                 with review_custodian._lock:
                     review_custodian._close_locked()
+            if self._generation_review_custodian is not None:
+                with self._generation_review_custodian._lock:
+                    self._generation_review_custodian._close_locked()
             self._closed = True
             self._state = _CLOSED
             self._target_epoch = None
@@ -1074,6 +1128,7 @@ class ProjectAgentSessionMailbox:
             self._reply = None
             self._reply_is_review_request = False
             self._reply_review_identity = None
+            self._reply_review_owner = None
             self._reply_generation += 1
             self._first_fragment_tick_pending = False
             self._wake_retry_at = None
@@ -1096,6 +1151,7 @@ class ProjectAgentSessionMailbox:
         self._reply = None
         self._reply_is_review_request = False
         self._reply_review_identity = None
+        self._reply_review_owner = None
         self._clear_request_payload_locked()
         self._reply_generation += 1
 
@@ -1113,6 +1169,7 @@ class ProjectAgentSessionMailbox:
         self._reply = None
         self._reply_is_review_request = False
         self._reply_review_identity = None
+        self._reply_review_owner = None
         self._request_epoch = None
         self._deadline = None
         self._claim_id = None
