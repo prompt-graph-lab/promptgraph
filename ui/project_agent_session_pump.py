@@ -10,6 +10,7 @@ import threading
 
 import streamlit as st
 from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
+from ui.agent_generation_job import GenerationJobRegistry
 
 from ui.project_agent_request_bridge import dispatch_project_agent_request
 from ui.agent_scene_module_swap_approval_lifecycle import (
@@ -42,6 +43,7 @@ class ProjectAgentSessionRuntime:
     )
     target_tracker: ProjectTargetTracker = field(default_factory=ProjectTargetTracker)
     generation_review_custodian: AgentGenerationReviewCustodian = field(default_factory=AgentGenerationReviewCustodian)
+    generation_jobs: GenerationJobRegistry = field(default_factory=GenerationJobRegistry)
     _registry: ProjectAgentSessionRegistry = field(
         default_factory=get_process_project_agent_session_registry,
         repr=False,
@@ -76,6 +78,9 @@ class ProjectAgentSessionRuntime:
             review_custodian=self.review_custodian,
         )
         self.mailbox.synchronize_target_epoch(epoch, review_custodian=self.generation_review_custodian)
+        # The tracker epoch binds exact Project object/path activation, including
+        # switch-away/back and Save As. No Project/path enters the job owner.
+        self.generation_jobs.synchronize_target(epoch, epoch)
         return epoch
 
     def publish_review_apply(
@@ -508,6 +513,7 @@ class ProjectAgentSessionRuntime:
             # closes the mailbox/custodian under their fixed lock order.
             self.mailbox.close(review_custodian=self.review_custodian)
             self.generation_review_custodian.close()
+            self.generation_jobs.close()
             self.target_tracker.close()
             registration = self._registration
             route_id = registration.route_id if registration is not None else None
