@@ -21,6 +21,18 @@ order inside each group. Trash is excluded by default. This slice exposes
 explicit truncation, not page continuation. Legacy path strings produce
 metadata-empty rows; same-path duplicates remain separate observations.
 
+Internal processing accepts at most **1,000 persistent records** per
+Illustration, including Trash, independent of the public result limit.
+Collections above that cap fail closed with `candidate_collection_too_large`.
+The complete private revision snapshot also has an aggregate budget of 20,000
+JSON nodes and 1,000,000 string characters (including keys and unknown metadata),
+with the existing depth limit of 32. Excess fails closed with
+`candidate_observation_bounds_exceeded`; no partial revision or handles are
+issued. Accepted collections retain full revision coverage, accurate filtered
+counts and stable order even when the public result is truncated. List/Get
+validation and signing scan at most the capped collection; no persistent
+Candidate index or cache is added.
+
 Each row contains only its opaque handle, Illustration ID, pinned/trashed/selected
 flags, legacy-record flag, a small known source classification (otherwise
 `unknown`), integer seed (including zero; null when absent), bounded
@@ -29,6 +41,10 @@ facade's 4,000-character bound with length/truncation fields. Existing Candidate
 inspection owns prompt-field priority and the manual-import metadata source
 gate. Workflow-shaped JSON prompt values are suppressed. Nested/raw metadata,
 workflow/lineage objects, image paths and workflow filenames are not projected.
+
+Known generation sources include the actual `app.py` producers
+`single_generate`, `multi_generate`, `gallery_generate`, and
+`gallery_global_generate`; unrecognized source strings remain `unknown`.
 
 No visual quality or prompt/image consistency is inferred. `selected` compares
 references using existing selected/generated Candidate precedence; it does not

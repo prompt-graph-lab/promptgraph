@@ -20,6 +20,9 @@ from core import candidate_inspection, candidate_observation_handles
 CONTRACT_VERSION = "promptgraph.agent-facade.v1"
 OPERATION = "batch_replace"
 MAX_ITEMS = 100
+MAX_CANDIDATE_RECORDS = 1000
+MAX_CANDIDATE_SNAPSHOT_NODES = 20000
+MAX_CANDIDATE_SNAPSHOT_CHARS = 1000000
 MAX_TARGETS = 1000
 MAX_TEXT = 4000
 MAX_REQUEST_TEXT = 10000
@@ -42,19 +45,24 @@ class _Invalid(ValueError):
     pass
 
 
-def _json_copy(value: Any) -> Any:
+def _json_copy(value: Any, *, node_limit=100000, text_limit=None) -> Any:
     """Accept built-in JSON values only; never call a supplied object's hooks."""
-    remaining = 100000
+    remaining = node_limit
+    remaining_text = text_limit
     active = set()
 
     def visit(item, depth):
-        nonlocal remaining
+        nonlocal remaining, remaining_text
         remaining -= 1
         if remaining < 0 or depth > 32:
             raise _Invalid("json_bounds_exceeded")
         kind = type(item)
         if kind in (str, int, bool) or item is None:
             if kind is str:
+                if remaining_text is not None:
+                    remaining_text -= len(item)
+                    if remaining_text < 0:
+                        raise _Invalid("json_bounds_exceeded")
                 if len(item) > 1000000:
                     raise _Invalid("json_bounds_exceeded")
                 try:
@@ -66,6 +74,8 @@ def _json_copy(value: Any) -> Any:
             return item
         if kind not in (dict, list):
             raise _Invalid("non_json_value")
+        if text_limit is not None and len(item) > remaining:
+            raise _Invalid("json_bounds_exceeded")
         identity = id(item)
         if identity in active:
             raise _Invalid("cyclic_json")
@@ -202,7 +212,10 @@ def discover_capabilities():
         "observations": ["project_summary", "scenes", "illustrations", "illustration",
                          "illustration_search", "candidates", "candidate"],
         "candidate_observation": {"read_only": True, "persistent_records_only": True,
-                                  "image_availability": "unknown", "image_bytes": False},
+                                  "image_availability": "unknown", "image_bytes": False,
+                                  "max_collection_records": MAX_CANDIDATE_RECORDS,
+                                  "max_snapshot_nodes": MAX_CANDIDATE_SNAPSHOT_NODES,
+                                  "max_snapshot_chars": MAX_CANDIDATE_SNAPSHOT_CHARS},
         "illustration_search": {"modes": list(SEARCH_MODES), "max_results": MAX_ITEMS,
                                 "query_text_chars": MAX_REQUEST_TEXT},
         "mutations": [
@@ -374,18 +387,29 @@ def _candidate_rows(project, illustration_id, binding):
         raise _Invalid("unknown_illustration_id")
     if not _normal(line):
         raise _Invalid("unsupported_illustration_target")
-    records = _json_copy(line.generated_candidates)
-    if type(records) is not list:
+    if type(line.generated_candidates) is not list:
         raise _Invalid("invalid_candidate_records")
+    if len(line.generated_candidates) > MAX_CANDIDATE_RECORDS:
+        raise _Invalid("candidate_collection_too_large")
     # Hash full persistent input privately, including order/Trash/unknown fields.
     # No hash or raw path crosses the boundary; handles are keyed opaque values.
-    revision = _digest(_json_copy({
-        "structure": [[item.id, item.line_type, item.deleted] for item in lines],
-        "illustration": [line.id, line.current_text, line.negative_prompt,
-                         line.selected_candidate_path, line.generated_image_path,
-                         line.image_path, line.source_generation_info, line.lineage_info],
-        "records": records,
-    }))
+    if len(lines) * 4 > MAX_CANDIDATE_SNAPSHOT_NODES:
+        raise _Invalid("candidate_observation_bounds_exceeded")
+    try:
+        snapshot = _json_copy({
+            "structure": [[item.id, item.line_type, item.deleted] for item in lines],
+            "illustration": [line.id, line.current_text, line.negative_prompt,
+                             line.selected_candidate_path, line.generated_image_path,
+                             line.image_path, line.source_generation_info, line.lineage_info],
+            "records": line.generated_candidates,
+        }, node_limit=MAX_CANDIDATE_SNAPSHOT_NODES,
+           text_limit=MAX_CANDIDATE_SNAPSHOT_CHARS)
+    except _Invalid as error:
+        if error.args[0] == "json_bounds_exceeded":
+            raise _Invalid("candidate_observation_bounds_exceeded") from None
+        raise
+    revision = _digest(snapshot)
+    records = snapshot["records"]
     if binding is None:
         binding = candidate_observation_handles.project_identity(project)
     else:
@@ -427,6 +451,7 @@ def _candidate_rows(project, illustration_id, binding):
         source = candidate.get("source")
         source = source if type(source) is str and source in {
             "manual_import", "gallery_global_generate", "focus_generate",
+            "single_generate", "multi_generate", "gallery_generate",
             "main_image_retreat", "batch_candidate_adoption"} else "unknown"
         row = {"candidate_handle": candidate_observation_handles.sign_candidate(binding, revision, index),
                "illustration_id": line.id, "pinned": pinned, "trashed": trashed,

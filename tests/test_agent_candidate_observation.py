@@ -67,6 +67,68 @@ def test_order_legacy_duplicates_trash_source_gate_seed_and_privacy():
     assert value == before
 
 
+@pytest.mark.parametrize("source", ["single_generate", "multi_generate", "gallery_generate",
+                                   "gallery_global_generate", "unrecognized_producer"])
+def test_real_generation_producer_sources_remain_observable(source):
+    value = project()
+    value.prompt_lines[0].generated_candidates = [
+        {"path": "private-output.png", "source": source,
+         "prompt_text": "red shirt", "negative_prompt": "blur", "seed": 0}]
+    row = listed(value)["candidates"][0]
+    assert row["source"] == ("unknown" if source == "unrecognized_producer" else source)
+    assert row["seed"] == 0 and row["positive_prompt"]["text"] == "red shirt"
+    assert "private-output.png" not in json.dumps(row)
+
+
+def test_full_accepted_collection_revision_and_counts_survive_public_truncation():
+    value = project()
+    records = [{"path": "same-path.png", "seed": index} for index in range(20)]
+    records[-1]["pinned"] = True
+    records[-2]["trashed"] = True
+    value.prompt_lines[0].generated_candidates = records
+    before = copy.deepcopy(value)
+    result = listed(value, limit=2)
+    assert result["total_count"] == 19 and result["truncated"]
+    assert [row["seed"] for row in result["candidates"]] == [19, 0]
+    assert len({row["candidate_handle"] for row in result["candidates"]}) == 2
+    handle = result["candidates"][0]["candidate_handle"]
+    assert facade.get_candidate(value, "one", handle)["ok"]
+    assert value == before
+    records[10]["private_metadata"] = "tail revision"
+    assert facade.get_candidate(value, "one", handle)["reason"] == "unknown_or_stale_candidate_handle"
+    assert listed(value, limit=2)["total_count"] == 19
+
+
+def test_collection_cap_is_accepted_at_boundary_and_rejected_before_signing(monkeypatch):
+    value = project()
+    value.prompt_lines[0].generated_candidates = ["same-path.png"] * facade.MAX_CANDIDATE_RECORDS
+    result = listed(value, limit=1)
+    assert result["total_count"] == facade.MAX_CANDIDATE_RECORDS and result["truncated"]
+    handle = result["candidates"][0]["candidate_handle"]
+    value.prompt_lines[0].generated_candidates.append("one-too-many.png")
+    before = copy.deepcopy(value)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("oversized collections must not be signed")
+    monkeypatch.setattr(handles, "sign_candidate", forbidden)
+    for result in (facade.list_candidates(value, "one", limit=1),
+                   facade.get_candidate(value, "one", handle)):
+        assert result["reason"] == "candidate_collection_too_large"
+        assert "candidates" not in result and "candidate" not in result
+    assert value == before
+
+
+@pytest.mark.parametrize("budget", ["chars", "nodes"])
+def test_large_metadata_fails_closed_before_revision_or_handle_issue(monkeypatch, budget):
+    value = project()
+    metadata = (["x"] * facade.MAX_CANDIDATE_SNAPSHOT_NODES if budget == "nodes"
+                else ["x" * 600000, "y" * 600000])
+    value.prompt_lines[0].generated_candidates = [{"path": "x", "metadata": metadata}]
+    def forbidden(*args, **kwargs):
+        raise AssertionError("incomplete revisions cannot issue handles")
+    monkeypatch.setattr(handles, "sign_candidate", forbidden)
+    assert facade.list_candidates(value, "one")["reason"] == "candidate_observation_bounds_exceeded"
+
+
 @pytest.mark.parametrize("path", ["../x", "/etc/private", "C:\\private.png", "C:relative.png",
                                   "\\\\host\\share\\x", "\\rooted", "C:/private/x", "link.png"])
 def test_no_filesystem_resolution_for_any_path_or_symlink(tmp_path, path):
