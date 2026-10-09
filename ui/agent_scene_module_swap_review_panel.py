@@ -163,7 +163,7 @@ def _page_rows(rows, page_index, page_size=_PAGE_SIZE):
     return page_index, page_count, start, stop, rows[start:stop]
 
 
-def render_agent_review_navigation(runtime):
+def render_agent_review_navigation(runtime, *, on_activate=None):
     """Expose a normal-run navigation entry independent of Gallery controls."""
 
     state = "unavailable"
@@ -176,6 +176,8 @@ def render_agent_review_navigation(runtime):
     label = "Agent Review · waiting" if state in {"pending", "prepared"} else "Agent Review"
     if st.sidebar.button(label, key="agent_scene_module_swap_review_navigation", width="stretch"):
         _set_workspace_active(True)
+        if on_activate is not None:
+            on_activate()
         st.rerun()
 
 

@@ -389,7 +389,7 @@ def test_app_has_global_agent_review_navigation_and_services_review_before_works
     from pathlib import Path
 
     source = Path("app.py").read_text(encoding="utf-8")
-    assert source.index("render_agent_review_navigation(_PROJECT_AGENT_SESSION_RUNTIME)") < source.index(
+    assert source.index("render_agent_review_navigation(_PROJECT_AGENT_SESSION_RUNTIME") < source.index(
         "if (is_free() and st.session_state.show_tutorial"
     )
     assert source.index("if st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False):") < source.index(

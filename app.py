@@ -6,6 +6,9 @@ from ui.project_agent_session_pump import (
     service_project_agent_session_request as _service_project_agent_session_request,
 )
 from ui.mcp_connection_ui import render_mcp_connection_sidebar
+from ui.agent_generation_review_panel import (
+    GENERATION_REVIEW_ACTIVE_KEY, render_generation_review_navigation, render_generation_review_panel,
+)
 from ui.agent_scene_module_swap_review_panel import (
     AGENT_REVIEW_ACTIVE_KEY,
     render_agent_review_navigation,
@@ -20817,10 +20820,14 @@ _PROJECT_AGENT_SESSION_RUNTIME = begin_project_agent_session_run(
 )
 render_project_agent_request_pump()
 render_mcp_connection_sidebar()
-render_agent_review_navigation(_PROJECT_AGENT_SESSION_RUNTIME)
+render_agent_review_navigation(_PROJECT_AGENT_SESSION_RUNTIME,
+    on_activate=lambda: st.session_state.__setitem__(GENERATION_REVIEW_ACTIVE_KEY, False))
+render_generation_review_navigation(_PROJECT_AGENT_SESSION_RUNTIME,
+    on_activate=lambda: st.session_state.__setitem__(AGENT_REVIEW_ACTIVE_KEY, False))
 
 if (is_free() and st.session_state.show_tutorial
-        and not st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False)):
+        and not st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False)
+        and not st.session_state.get(GENERATION_REVIEW_ACTIVE_KEY, False)):
     st.title("🎉 PromptGraph Liteへようこそ！")
 
     st.markdown("""
@@ -21091,6 +21098,11 @@ with st.sidebar.expander("Advanced", expanded=False):
 render_project_assets_sidebar_section()
 
 render_management_workspace_launchers()
+if st.session_state.get(GENERATION_REVIEW_ACTIVE_KEY, False):
+    service_project_agent_session_request(_PROJECT_AGENT_SESSION_RUNTIME, st.session_state, _PROJECT_CAPTURE_RUN_TOKEN)
+    render_generation_review_panel(_PROJECT_AGENT_SESSION_RUNTIME, _prepare_agent_generation_context)
+    render_ui_profile_panel()
+    st.stop()
 active_management_workspace = get_active_management_workspace()
 if active_management_workspace:
     if st.session_state.get(AGENT_REVIEW_ACTIVE_KEY, False):
