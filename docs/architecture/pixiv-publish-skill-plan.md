@@ -53,6 +53,7 @@ The current logical MCP surface contains:
 - `promptgraph_get_illustration`
 - `promptgraph_preview_batch_replace`
 - `promptgraph_preview_scene_module_swap`
+- `promptgraph_request_scene_module_swap_review`
 
 This is useful for read-only Project, Scene, Illustration, and prompt
 inspection, plus reviewed Batch Replace and single-Scene Module Swap Previews.
@@ -70,7 +71,12 @@ as Module Swap, Gallery generation, Candidate review/adoption, and Final Images
 Export. The agent can now inspect a bounded single-Scene Module Swap Preview
 through the existing core planner and safe Agent Facade projection. It still
 cannot Apply the swap; human approval, Project publication, Undo/history, and
-save remain host-owned. Other operations are not agent-callable merely because
+save remain host-owned. The explicit review request, session custody, complete
+Agent Review surface, and human **Approve and Apply** action are implemented
+in PR-A/B/C. PR-D adds focused integration coverage, including the official
+stdio launcher and real Windows Named Pipes through full-app review and
+autosave; it does not implement later Pixiv workflow steps. Other operations
+are not agent-callable merely because
 they have application/domain owners; future agent-facing access should reuse
 those owners and preserve their existing Preview, review, and persistence
 behavior.
@@ -232,7 +238,13 @@ against current owners and product boundaries before implementation.
    the agent can inspect a bounded reviewed Preview for an explicit Scene,
    source Module, and target Module through
    `promptgraph_preview_scene_module_swap` in `strict` or `loose` mode. No
-   Module Swap Apply tool is exposed. Continue only by reusing existing
+   Module Swap Apply tool is exposed. An explicit review request now queues a
+   freshly recomputed Preview in the originating browser session, and the
+   human can review every affected Illustration, acknowledge review, and
+   explicitly select **Approve and Apply**. The dedicated host lifecycle
+   revalidates custody, publishes one replacement with Undo history, and
+   autosaves through the existing persistence owner. PR-D characterizes this
+   composed path and its failure boundaries. Continue only by reusing existing
    operation owners and preserving host-only approval and publication; do not
    duplicate domain logic in the adapter.
 4. **Generation and Candidate review.** Let the agent request supported
