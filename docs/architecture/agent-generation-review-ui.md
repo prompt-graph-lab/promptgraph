@@ -70,3 +70,8 @@ boundary. This UI grants no execution approval or job authority; proposal/plan
 IDs cannot be reused as Start/Apply capabilities. ComfyUI submission/download,
 async jobs, Candidate creation/adoption, multimodal review and Pixiv/export
 remain outside this slice.
+
+[Phase 4-C1 Job foundation](agent-generation-job-foundation.md) now defines
+bounded session ownership and fake-event state transitions with production
+execution disabled. It records the audited execution/publication seam and the
+exact future C2 human Start contract; Generation Review remains review-only.
