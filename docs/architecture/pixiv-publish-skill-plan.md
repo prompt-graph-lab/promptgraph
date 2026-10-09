@@ -247,7 +247,10 @@ against current owners and product boundaries before implementation.
    composed path and its failure boundaries. Continue only by reusing existing
    operation owners and preserving host-only approval and publication; do not
    duplicate domain logic in the adapter.
-4. **Generation and Candidate review.** Let the agent request supported
+4. **Generation and Candidate review.** The repository-backed
+   [Agent Generation and Candidate Review audit](agent-generation-candidate-audit.md)
+   maps existing owners, approval boundaries, job-lifecycle gaps, and a
+   metadata-only first implementation slice. Let the agent request supported
    generation work, observe job/results, and propose Candidate review or
    adoption through explicit Preview/approval boundaries.
 5. **Multimodal image observation.** Provide bounded access to selected and
