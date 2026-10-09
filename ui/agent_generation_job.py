@@ -273,6 +273,7 @@ class GenerationJobRegistry:
                 ("submitting", "submitted"): "awaiting_result",
                 ("awaiting_result", "outputs_ready"): "awaiting_host_registration",
                 ("unsent", "failed"): "failed",
+                ("submitting", "failed"): "failed",
                 ("awaiting_result", "failed"): "failed",
                 ("submitting", "submission_unknown"): "submission_outcome_unknown",
             }

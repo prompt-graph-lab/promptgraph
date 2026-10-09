@@ -75,7 +75,7 @@ immutable event contract. No generation runs in the mailbox or periodic fragment
 | --- | --- |
 | `prepared_not_started` | Frozen intent only; fake exact claim -> `claimed`; host pre-submit cancel -> `cancelled`; expiry -> `expired`. No execution authority. |
 | `claimed` | One-shot in-memory claim recorded; before any send attempt, cancellation remains possible. `submission_started` -> `running`. |
-| `running` | A submission attempt has begun. `submitted` -> `awaiting_result`; ambiguous submission -> terminal `submission_outcome_unknown`. Pre-submit cancellation is now refused. |
+| `running` | A submission attempt has begun. `submitted` -> `awaiting_result`; definitive `failed` settles that request, allowing the next unsent request only after settlement (or terminal `failed` if all requests failed); ambiguous submission -> terminal `submission_outcome_unknown`. Pre-submit cancellation is now refused. |
 | `awaiting_result` | May include external completion/downloads awaiting host registration or unsent requests after a settled earlier request. An `outputs_ready` event alone cannot complete a request/job. Separate exact host publication receipt settles it; only then may the next request begin. |
 | `completed` | Every request's fake host registration receipt confirms all reported downloaded outputs registered in memory. `save_state` is independently `not_attempted`, `saved` or `save_failed`; completion is never inferred from a ComfyUI response. |
 | `partially_failed` | Some outputs registered, while at least one request/output failed registration. Those registered counts remain visible even when a later save fails. |
@@ -88,6 +88,10 @@ immutable event contract. No generation runs in the mailbox or periodic fragment
 Request states separately distinguish unsent, submitting, awaiting external
 result, awaiting host registration, completed, partially failed, failed and
 unknown submission. Worker events cannot assert host registration or save.
+After submission begins, `failed` means a definitive failure such as a known
+submission rejection. A timeout or lost response whose acceptance is uncertain
+must use `submission_unknown`; it cannot settle the request as `failed` to
+continue the job or retry submission.
 Sequence numbers must be contiguous across the job; request submission follows
 the frozen order. Exact retained event duplicates are no-ops, changed same-sequence
 events conflict, and older evicted duplicates/out-of-order/late events are

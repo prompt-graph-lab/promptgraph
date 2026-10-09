@@ -181,6 +181,36 @@ def test_partial_request_failure_and_save_failure_do_not_rollback_registration()
                                                outcome="saved") == "save_conflict"
 
 
+@pytest.mark.parametrize("request_count", [1, 2])
+def test_definitive_submission_failure_settles_before_next_request(request_count):
+    registry, binding, _, job_id, _ = owner(count=request_count)
+    claim_id = claim(registry, binding, job_id)
+    assert registry.event_for_characterization(job_id, claim_id,
+                                               WorkerEvent(1, 0, "submission_started")) == "accepted"
+    submitting_revision = registry.snapshot(job_id)["revision"]
+    if request_count == 2:
+        assert registry.event_for_characterization(job_id, claim_id,
+            WorkerEvent(2, 1, "submission_started")) == "invalid_transition"
+        assert registry.snapshot(job_id)["revision"] == submitting_revision
+    assert registry.event_for_characterization(job_id, claim_id,
+                                               WorkerEvent(2, 0, "failed")) == "accepted"
+    settled = registry.snapshot(job_id)
+    assert settled["requests"][0]["state"] == "failed"
+    assert settled["revision"] > submitting_revision
+    assert settled["registered_count"] == 0
+    assert registry.event_for_characterization(job_id, claim_id,
+                                               WorkerEvent(2, 0, "failed")) == "duplicate_event"
+    assert registry.snapshot(job_id)["revision"] == settled["revision"]
+    if request_count == 1:
+        assert settled["state"] == "failed"
+    else:
+        assert settled["state"] == "awaiting_result"
+        outputs(registry, job_id, claim_id, index=1, sequence=3)
+        publish(registry, binding, job_id, claim_id, index=1)
+        assert registry.snapshot(job_id)["state"] == "partially_failed"
+        assert registry.snapshot(job_id)["registered_count"] == 1
+
+
 def test_ambiguous_submission_stops_unsent_requests_without_retry():
     registry, binding, _, job_id, _ = owner(count=2)
     claim_id = claim(registry, binding, job_id)
@@ -194,6 +224,10 @@ def test_ambiguous_submission_stops_unsent_requests_without_retry():
     assert registry.snapshot(job_id)["requests"][1]["state"] == "unsent"
     assert registry.event_for_characterization(job_id, claim_id,
                                                WorkerEvent(3, 1, "submission_started")) == "terminal"
+    assert registry.event_for_characterization(job_id, claim_id,
+                                               WorkerEvent(3, 0, "submission_started")) == "terminal"
+    assert registry.claim_for_characterization(job_id, binding=binding,
+                                              claim_key="e" * 32).status == "terminal"
 
 
 @pytest.mark.parametrize("claimed", [False, True])
