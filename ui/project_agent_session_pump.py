@@ -574,6 +574,7 @@ def service_project_agent_session_request(
     runtime,
     session_state,
     run_token,
+    *, generation_context_provider=None,
 ):
     """Run at one explicit full-app point and publish one bounded mailbox outcome."""
 
@@ -602,6 +603,7 @@ def service_project_agent_session_request(
             target_epoch=claim.target_epoch,
             candidate_session_identity=(runtime._registration.route_id
                                         if runtime._registration is not None else None),
+            generation_context_provider=generation_context_provider,
         )
     except Exception:
         bridge_reply = None

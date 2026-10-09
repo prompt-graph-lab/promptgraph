@@ -379,6 +379,13 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
     service_lock = threading.Lock()
     shutdown_pairing_status = None
 
+    def generation_context(p, runs):
+        return {"generation_options": {"run_count": runs}, "project_path": state["current_project_path"],
+                "request_builder": lambda item, index: {
+                    "workflow_json": {"1": {"class_type": "SaveImage", "inputs": {}}},
+                    "warning": "", "resolved_positive_prompt": item.current_text,
+                    "resolved_negative_prompt": item.negative_prompt}}
+
     def host_run_pump():
         while not stop_pump.is_set():
             if runtime.mailbox.fragment_tick():
@@ -390,6 +397,7 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                     runtime,
                     state,
                     run_token,
+                    generation_context_provider=generation_context,
                 )
                 with service_lock:
                     service_results.append(status)
@@ -417,7 +425,7 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 assert [tool.name for tool in listed.tools] == [
                     entry["name"] for entry in catalog
                 ]
-                assert len(listed.tools) == 11
+                assert len(listed.tools) == 12
                 assert all("apply" not in tool.name.casefold() for tool in listed.tools)
                 for tool, entry in zip(listed.tools, catalog, strict=True):
                     assert tool.description == entry["description"]
@@ -469,6 +477,11 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 assert candidate.is_error is False
                 assert candidate.structured_content["candidate"] == row
 
+                generation = await client.call_tool("promptgraph_preview_generation", {"scene_id": "scene-1"})
+                assert generation.is_error is False and generation.structured_content["valid"]
+                assert not generation.structured_content["job_submitted"]
+                assert generation.structured_content["request_count"] == 1
+
                 preview = await client.call_tool(
                     "promptgraph_preview_batch_replace",
                     {
@@ -512,6 +525,6 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
 
     assert not pump_thread.is_alive()
     assert project == original
-    assert service_results == ["completed"] * 6
-    assert len(capture_calls) == 5
+    assert service_results == ["completed"] * 7
+    assert len(capture_calls) == 6
     assert shutdown_pairing_status == "released"

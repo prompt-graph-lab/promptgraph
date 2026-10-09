@@ -3,7 +3,7 @@ from ui.project_capture_safety import begin_project_capture_run
 from ui.project_agent_session_pump import (
     begin_project_agent_session_run,
     render_project_agent_request_pump,
-    service_project_agent_session_request,
+    service_project_agent_session_request as _service_project_agent_session_request,
 )
 from ui.mcp_connection_ui import render_mcp_connection_sidebar
 from ui.agent_scene_module_swap_review_panel import (
@@ -8748,14 +8748,15 @@ def _gallery_generation_average_seconds() -> float | None:
     return sum(durations) / len(durations)
 
 
-def _selected_routes_generation_options(project, run_count: int) -> dict:
+def _selected_routes_generation_options(project, run_count: int, *, workflow_file_signature=None) -> dict:
     workflow_path = (
         st.session_state.get("comfy_workflow_path")
         or st.session_state.settings.get("comfyui_workflow_path", "workflow_api.json")
     )
     resolved_workflow_path, workflow_source_kind = resolve_effective_comfy_workflow_path(workflow_path)
-    workflow_file_signature = {}
-    if resolved_workflow_path and os.path.isfile(resolved_workflow_path):
+    supplied_signature = workflow_file_signature is not None
+    workflow_file_signature = workflow_file_signature if supplied_signature else {}
+    if not supplied_signature and resolved_workflow_path and os.path.isfile(resolved_workflow_path):
         try:
             workflow_stat = os.stat(resolved_workflow_path)
             with open(resolved_workflow_path, "rb") as workflow_file:
@@ -8788,6 +8789,46 @@ def _selected_routes_generation_options(project, run_count: int) -> dict:
         "output_directory": _project_generation_output_dir_path(project),
         "output_prefix_strategy": "gallery_all_{line_id}_{run_index}",
     }
+
+
+def _prepare_agent_generation_context(project, run_count):
+    """Read only the existing host-selected shared workflow, bounded to 1 MiB.
+
+    Embedded image workflows are deliberately excluded from this first agent
+    slice. Prompt expansion and binding stay with their existing core owners.
+    """
+    configured = st.session_state.get("comfy_workflow_path") or st.session_state.settings.get("comfyui_workflow_path", "workflow_api.json")
+    workflow_path, _source_kind = resolve_effective_comfy_workflow_path(configured)
+    if not workflow_path or not os.path.isfile(workflow_path):
+        raise ValueError("workflow unavailable")
+    with open(workflow_path, "rb") as source:
+        workflow_bytes = source.read(1024 * 1024 + 1)
+    if len(workflow_bytes) > 1024 * 1024:
+        raise ValueError("workflow too large")
+    workflow_text = workflow_bytes.decode("utf-8-sig")
+    signature = {"size": len(workflow_bytes), "sha256": hashlib.sha256(workflow_bytes).hexdigest()}
+    options = _selected_routes_generation_options(project, run_count, workflow_file_signature=signature)
+    settings = options["settings"]
+    disabled_modules = set(options["disabled_modules"])
+    def build(line, _index):
+        injection = prepare_generation_injection_line(
+            line, disabled_modules, fallback_prompt=settings.get("fallback_prompt", "(masterpiece:1.0)"),
+            module_library=project.module_library)
+        workflow, warning = _build_line_workflow_from_text(
+            workflow_text, injection, settings, project=project, disabled_modules=disabled_modules)
+        if isinstance(settings.get("comfy_mapping"), dict) and settings["comfy_mapping"].get("group_map"):
+            warning = warning or "group mapping configured"
+        return {"workflow_json": workflow, "warning": warning,
+                "resolved_positive_prompt": injection.current_text,
+                "resolved_negative_prompt": injection.negative_prompt}
+    return {"generation_options": options, "request_builder": build,
+            "project_path": st.session_state.get("current_project_path", "")}
+
+
+def service_project_agent_session_request(runtime, session_state, run_token):
+    """Supply trusted generation preparation only at existing full-run points."""
+    return _service_project_agent_session_request(
+        runtime, session_state, run_token, generation_context_provider=_prepare_agent_generation_context)
 
 
 def _build_selected_routes_gallery_generation_plan(

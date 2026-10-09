@@ -414,7 +414,8 @@ class _RequestCaptureProvider:
 
 def dispatch_project_agent_request(
         session_state, run_token, request, *, review_custodian=None,
-        pairing_generation=None, target_epoch=None, candidate_session_identity=None):
+        pairing_generation=None, target_epoch=None, candidate_session_identity=None,
+        generation_context_provider=None):
     """Dispatch one bounded request against a fresh optional Project snapshot.
 
     Adapter and facade results are returned unchanged when JSON-safe. Host
@@ -450,9 +451,13 @@ def dispatch_project_agent_request(
                         session_state.get("current_project_path", ""),
                         pairing_generation, target_epoch]
 
-            adapter = (PromptGraphMCPAdapter(provider, candidate_binding_provider=candidate_binding)
-                       if tool in ("promptgraph_list_candidates", "promptgraph_get_candidate")
-                       else PromptGraphMCPAdapter(provider))
+            if tool == "promptgraph_preview_generation":
+                adapter = PromptGraphMCPAdapter(provider, candidate_binding_provider=candidate_binding,
+                                               generation_context_provider=generation_context_provider)
+            else:
+                adapter = (PromptGraphMCPAdapter(provider, candidate_binding_provider=candidate_binding)
+                           if tool in ("promptgraph_list_candidates", "promptgraph_get_candidate")
+                           else PromptGraphMCPAdapter(provider))
             result = adapter.call_tool(tool, arguments)
         except Exception:
             return _rejected_reply(request_id, "adapter_dispatch_failed",
@@ -471,6 +476,16 @@ def dispatch_project_agent_request(
             if not current:
                 return _rejected_reply(request_id, "project_capture_invalidated",
                                        "capture_no_longer_current")
+            if tool == "promptgraph_preview_generation":
+                from core.agent_facade import generation_preview_project_state
+                try:
+                    content_current = (generation_preview_project_state(capture.project)
+                                       == generation_preview_project_state(capture._source_project_ref()))
+                except Exception:
+                    content_current = False
+                if not content_current:
+                    return _rejected_reply(request_id, "project_capture_invalidated",
+                                           "capture_no_longer_current")
 
         if not _is_plain_json_result(result):
             return _rejected_reply(request_id, "invalid_adapter_result",

@@ -53,6 +53,7 @@ The current logical MCP surface contains:
 - `promptgraph_get_illustration`
 - `promptgraph_list_candidates`
 - `promptgraph_get_candidate`
+- `promptgraph_preview_generation`
 - `promptgraph_preview_batch_replace`
 - `promptgraph_preview_scene_module_swap`
 - `promptgraph_request_scene_module_swap_review`
@@ -60,6 +61,11 @@ The current logical MCP surface contains:
 The [Candidate metadata contract](agent-candidate-metadata-observation.md)
 adds persistent-record observation without paths, image bytes, generation or
 adoption authority. Session-only Candidate records are excluded.
+
+The [Generation Preview-first contract](agent-generation-preview.md) adds
+offline preflight for one explicit Scene with the host-configured shared
+workflow. It submits no job and creates no human-review custody; Generation
+review requests and UI remain a later slice.
 
 This is useful for read-only Project, Scene, Illustration, Candidate, and prompt
 inspection, plus reviewed Batch Replace and single-Scene Module Swap Previews.

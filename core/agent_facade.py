@@ -23,6 +23,8 @@ MAX_ITEMS = 100
 MAX_CANDIDATE_RECORDS = 1000
 MAX_CANDIDATE_SNAPSHOT_NODES = 20000
 MAX_CANDIDATE_SNAPSHOT_CHARS = 1000000
+MAX_GENERATION_RUNS = 5
+MAX_GENERATION_REQUESTS = 100
 MAX_TARGETS = 1000
 MAX_TEXT = 4000
 MAX_REQUEST_TEXT = 10000
@@ -216,6 +218,11 @@ def discover_capabilities():
                                   "max_collection_records": MAX_CANDIDATE_RECORDS,
                                   "max_snapshot_nodes": MAX_CANDIDATE_SNAPSHOT_NODES,
                                   "max_snapshot_chars": MAX_CANDIDATE_SNAPSHOT_CHARS},
+        "generation_preview": {"read_only": True, "requires_host_configuration": True,
+                               "max_run_count": MAX_GENERATION_RUNS,
+                               "max_requests": MAX_GENERATION_REQUESTS,
+                               "shared_workflow_only": True,
+                               "review_request_available": False, "execution_available": False},
         "illustration_search": {"modes": list(SEARCH_MODES), "max_results": MAX_ITEMS,
                                 "query_text_chars": MAX_REQUEST_TEXT},
         "mutations": [
@@ -500,6 +507,130 @@ def get_candidate(project, illustration_id, candidate_handle, *, include_trashed
         return _response(False, error.args[0])
     except (AttributeError, TypeError, ValueError):
         return _response(False, "invalid_project_state")
+
+
+def generation_preview_project_state(project):
+    """Private semantic freshness snapshot; never a transport projection."""
+    lines = _lines(project)
+    if len(lines) > MAX_TARGETS:
+        raise _Invalid("generation_target_limit_exceeded")
+    return _json_copy({"modules": project.module_library, "metadata": project.project_metadata,
+                      "source_directory": project.source_directory,
+                      "lines": [[line.id, line.original_file_name, line.line_type, line.deleted, line.separator_label,
+                                 line.separator_color, line.current_text, line.negative_prompt,
+                                 line.tokens, line.source_generation_info, line.generated_candidates]
+                                for line in lines]}, node_limit=20000, text_limit=1000000)
+
+
+def preview_generation(project, scene_id, *, run_count=1, host_context_provider=None,
+                       observation_binding=None):
+    """Preflight one explicit Scene through host configuration, never execute."""
+    from core.gallery_generation import build_selected_routes_generation_plan
+    from core.comfy_workflow_metadata import _is_executable_comfy_workflow
+    try:
+        lines = _lines(project)
+        target = _id(scene_id)
+        if target != scene_id:
+            raise _Invalid("invalid_id")
+        if type(run_count) is not int or not 1 <= run_count <= MAX_GENERATION_RUNS:
+            raise _Invalid("invalid_generation_run_count")
+        scenes = _scenes(project)
+        scene = next((item for item in scenes if item["route_id"] == target), None)
+        if scene is None:
+            raise _Invalid("unknown_scene_id")
+        target_ids = set(scene["line_ids"])
+        eligible = [line for line in lines if line.id in target_ids and _normal(line)]
+        if not eligible:
+            raise _Invalid("no_generation_targets")
+        if len(eligible) * run_count > MAX_GENERATION_REQUESTS or len(lines) > MAX_TARGETS:
+            raise _Invalid("generation_target_limit_exceeded")
+        source_state = generation_preview_project_state(project)
+        if host_context_provider is None:
+            raise _Invalid("generation_host_unavailable")
+        context = host_context_provider(project, run_count)
+        if type(context) is not dict or not callable(context.get("request_builder")):
+            raise _Invalid("invalid_generation_host_context")
+        options = _json_copy(context.get("generation_options"), node_limit=20000, text_limit=1000000)
+        if type(options) is not dict:
+            raise _Invalid("invalid_generation_host_context")
+        prepared = {}
+        workflow_budget = 8 * 1024 * 1024
+        def build(line, index):
+            nonlocal workflow_budget
+            if workflow_budget <= 0:
+                raise ValueError("workflow plan budget exhausted")
+            item = context["request_builder"](line, index)
+            if type(item) is not dict:
+                raise ValueError("invalid preflight")
+            workflow = _json_copy(item.get("workflow_json"), node_limit=20000, text_limit=1000000)
+            workflow_budget -= len(json.dumps(workflow, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+            if workflow_budget < 0:
+                raise ValueError("workflow plan too large")
+            if not _is_executable_comfy_workflow(workflow):
+                raise ValueError("unsupported workflow")
+            if any(type(node) is not dict or type(node.get("inputs")) is not dict
+                   or type(node.get("class_type")) is not str or not node["class_type"]
+                   for node in workflow.values()):
+                raise ValueError("unsupported API workflow")
+            output_count = sum(type(node) is dict and node.get("class_type") == "SaveImage"
+                               for node in workflow.values())
+            if not output_count:
+                raise ValueError("no image output")
+            positive = item.get("resolved_positive_prompt")
+            negative = item.get("resolved_negative_prompt")
+            if type(positive) is not str or type(negative) is not str:
+                raise ValueError("invalid prompts")
+            prepared[line.id] = {"positive_prompt": _text(positive), "negative_prompt": _text(negative),
+                                 "prompt_summary_kind": "active_illustration_inputs", "workflow_binding_verified": False,
+                                 "workflow_node_count": len(workflow), "save_image_node_count": output_count,
+                                 "warnings": ["prompt_binding_requires_review"] if item.get("warning") else []}
+            return workflow, ""
+        plan = build_selected_routes_generation_plan(
+            project, [target], run_count=run_count, generation_options=options,
+            project_path=context.get("project_path", ""), request_builder=build, example_limit=MAX_ITEMS)
+        # Re-read host configuration/file identity after all preflight, without
+        # retaining any plan or changing the configured generation operation.
+        fresh = host_context_provider(project, run_count)
+        if (type(fresh) is not dict or _json_copy(fresh.get("generation_options"),
+                node_limit=20000, text_limit=1000000) != options
+                or fresh.get("project_path", "") != context.get("project_path", "")):
+            raise _Invalid("generation_configuration_changed")
+        if generation_preview_project_state(project) != source_state:
+            raise _Invalid("generation_project_changed")
+        rows = []
+        for entry in plan["line_entries"]:
+            line_id = entry["line_id"]
+            rows.append({"illustration_id": line_id, "project_order": entry["project_order"],
+                         "authored_positive_prompt": _text(entry["prompt"]),
+                         "authored_negative_prompt": _text(entry["negative_prompt"]),
+                         "eligible": not bool(entry["blocked_reason"]),
+                         "blocker": "workflow_preflight_failed" if entry["blocked_reason"] else "",
+                         **prepared.get(line_id, {})})
+        binding = (candidate_observation_handles.project_identity(project)
+                   if observation_binding is None else _json_copy(observation_binding))
+        return _response(valid=bool(plan["valid"]), scene_id=target, scene_label=_text(scene["route_label"]),
+                         run_count=run_count, target_count=plan["target_line_count"],
+                         request_count=plan["request_count"] if plan["valid"] else 0,
+                         expected_image_count=plan["expected_image_count"] if plan["valid"] else 0,
+                         output_count_is_estimate=True, illustrations=rows,
+                         expected_output_node_count=(sum(item["save_image_node_count"] for item in prepared.values()) * run_count
+                                                     if plan["valid"] else 0),
+                         skipped_count=plan["skipped_line_count"], blocked_count=plan["blocked_line_count"],
+                         skipped=[{"illustration_id": item["line_id"],
+                                   "reason": "workbench" if item["reason"] == "Workbench line" else "deleted"}
+                                  for item in plan["skipped_lines"][:MAX_ITEMS]],
+                         skipped_truncated=plan["skipped_line_count"] > MAX_ITEMS,
+                         plan_id=_digest([plan["signature"], binding]),
+                         workflow_summary={"source": "host_configured", "endpoint": "host_configured"},
+                         warnings=["preview_only_no_job_submitted", "image_count_is_estimate",
+                                   "execution_seeds_not_committed", "workflow_bindings_not_certified"],
+                         blockers=[] if plan["valid"] else ["workflow_preflight_failed"],
+                         review_requested=False, job_submitted=False)
+    except _Invalid as error:
+        return _response(False, error.args[0])
+    except Exception:
+        # Host/workflow diagnostics can contain paths, credentials or JSON.
+        return _response(False, "generation_preflight_unavailable")
 
 
 def _request(value, lines):
