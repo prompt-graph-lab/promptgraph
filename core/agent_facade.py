@@ -14,6 +14,7 @@ from typing import Any
 from core import module_swap_selected_routes, operations
 from core.parser import parse_prompt
 from core.project import Project, PromptLine
+from core import candidate_inspection, candidate_observation_handles
 
 
 CONTRACT_VERSION = "promptgraph.agent-facade.v1"
@@ -199,7 +200,9 @@ def discover_capabilities():
     """Return a fresh, versioned, JSON-safe capability document."""
     return _response(capabilities={
         "observations": ["project_summary", "scenes", "illustrations", "illustration",
-                         "illustration_search"],
+                         "illustration_search", "candidates", "candidate"],
+        "candidate_observation": {"read_only": True, "persistent_records_only": True,
+                                  "image_availability": "unknown", "image_bytes": False},
         "illustration_search": {"modes": list(SEARCH_MODES), "max_results": MAX_ITEMS,
                                 "query_text_chars": MAX_REQUEST_TEXT},
         "mutations": [
@@ -355,6 +358,119 @@ def get_illustration(project: Project, illustration_id):
             raise _Invalid("unsupported_illustration_target")
         sequence_index = [item.id for item in lines if _normal(item)].index(line.id)
         return _response(illustration=_illustration(line, _scene_map(project), sequence_index, detail=True))
+    except _Invalid as error:
+        return _response(False, error.args[0])
+    except (AttributeError, TypeError, ValueError):
+        return _response(False, "invalid_project_state")
+
+
+def _candidate_rows(project, illustration_id, binding):
+    lines = _lines(project)
+    target_id = _id(illustration_id)
+    if target_id != illustration_id:
+        raise _Invalid("invalid_id")
+    line = next((item for item in lines if item.id == target_id), None)
+    if line is None:
+        raise _Invalid("unknown_illustration_id")
+    if not _normal(line):
+        raise _Invalid("unsupported_illustration_target")
+    records = _json_copy(line.generated_candidates)
+    if type(records) is not list:
+        raise _Invalid("invalid_candidate_records")
+    # Hash full persistent input privately, including order/Trash/unknown fields.
+    # No hash or raw path crosses the boundary; handles are keyed opaque values.
+    revision = _digest(_json_copy({
+        "structure": [[item.id, item.line_type, item.deleted] for item in lines],
+        "illustration": [line.id, line.current_text, line.negative_prompt,
+                         line.selected_candidate_path, line.generated_image_path,
+                         line.image_path, line.source_generation_info, line.lineage_info],
+        "records": records,
+    }))
+    if binding is None:
+        binding = candidate_observation_handles.project_identity(project)
+    else:
+        binding = _json_copy(binding)
+    rows = []
+    for index, record in enumerate(records):
+        if type(record) is str:
+            if not record.strip():
+                raise _Invalid("invalid_candidate_record")
+            candidate = {"path": record}
+        elif type(record) is dict:
+            candidate = record
+            if type(candidate.get("path")) is not str or not candidate["path"].strip():
+                raise _Invalid("invalid_candidate_record")
+            for flag in ("pinned", "trashed"):
+                value = candidate.get(flag)
+                if value is not None and type(value) not in (bool, str, int, float):
+                    raise _Invalid("invalid_candidate_state")
+        else:
+            raise _Invalid("invalid_candidate_record")
+        pinned = candidate_inspection._candidate_is_pinned(candidate)
+        trashed = candidate_inspection._candidate_is_trashed(candidate)
+        # Only these authored prompt fields are projected; nested/raw workflow
+        # and arbitrary metadata stay private. Preserve existing source gate.
+        safe_prompt = {key: candidate[key] for key in (
+            "source", "candidate_prompt_source", "prompt_text", "positive_prompt",
+            "source_prompt", "negative_prompt", "source_negative_prompt", "negative")
+            if key in candidate and candidate[key] is not None}
+        if any(type(value) is not str for value in safe_prompt.values()):
+            raise _Invalid("invalid_candidate_metadata")
+        metadata = candidate_inspection._candidate_prompt_metadata(safe_prompt)
+        for key in ("positive_prompt", "negative_prompt"):
+            text = metadata.get(key, "")
+            if candidate_inspection._looks_like_workflow_json_prompt(text):
+                metadata[key] = ""
+        seed = candidate.get("seed")
+        if seed is not None and (type(seed) is not int or not -(2**63) <= seed < 2**64):
+            raise _Invalid("invalid_candidate_metadata")
+        source = candidate.get("source")
+        source = source if type(source) is str and source in {
+            "manual_import", "gallery_global_generate", "focus_generate",
+            "main_image_retreat", "batch_candidate_adoption"} else "unknown"
+        row = {"candidate_handle": candidate_observation_handles.sign_candidate(binding, revision, index),
+               "illustration_id": line.id, "pinned": pinned, "trashed": trashed,
+               "selected": candidate["path"] == candidate_inspection._selected_candidate_path(line),
+               "legacy_record": type(record) is str, "source": source, "seed": seed,
+               "positive_prompt": _text(metadata.get("positive_prompt", "")),
+               "negative_prompt": _text(metadata.get("negative_prompt", "")),
+               "image_availability": "unknown"}
+        rows.append((index, row))
+    return [row for index, row in sorted(rows, key=lambda item: (not item[1]["pinned"], item[0]))]
+
+
+def list_candidates(project, illustration_id, *, limit=MAX_ITEMS, include_trashed=False,
+                    observation_binding=None):
+    """Observe persistent records only; never reconcile UI caches or probe files."""
+    try:
+        _limit(limit)
+        if type(include_trashed) is not bool:
+            raise _Invalid("invalid_include_trashed")
+        rows = _candidate_rows(project, illustration_id, observation_binding)
+        rows = [row for row in rows if include_trashed or not row["trashed"]]
+        return _response(candidates=rows[:limit], total_count=len(rows),
+                         truncated=len(rows) > limit, persistent_records_only=True)
+    except _Invalid as error:
+        return _response(False, error.args[0])
+    except (AttributeError, TypeError, ValueError):
+        return _response(False, "invalid_project_state")
+
+
+def get_candidate(project, illustration_id, candidate_handle, *, include_trashed=False,
+                  observation_binding=None):
+    try:
+        if (type(candidate_handle) is not str or len(candidate_handle) != 74
+                or not candidate_handle.startswith("candidate_")
+                or any(char not in "0123456789abcdef" for char in candidate_handle[10:])):
+            raise _Invalid("invalid_candidate_handle")
+        if type(include_trashed) is not bool:
+            raise _Invalid("invalid_include_trashed")
+        rows = _candidate_rows(project, illustration_id, observation_binding)
+        row = next((item for item in rows if item["candidate_handle"] == candidate_handle
+                    and (include_trashed or not item["trashed"])), None)
+        if row is None:
+            raise _Invalid("unknown_or_stale_candidate_handle")
+        return _response(candidate=row, persistent_records_only=True)
     except _Invalid as error:
         return _response(False, error.args[0])
     except (AttributeError, TypeError, ValueError):

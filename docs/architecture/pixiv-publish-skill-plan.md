@@ -51,11 +51,17 @@ The current logical MCP surface contains:
 - `promptgraph_list_illustrations`
 - `promptgraph_search_illustrations`
 - `promptgraph_get_illustration`
+- `promptgraph_list_candidates`
+- `promptgraph_get_candidate`
 - `promptgraph_preview_batch_replace`
 - `promptgraph_preview_scene_module_swap`
 - `promptgraph_request_scene_module_swap_review`
 
-This is useful for read-only Project, Scene, Illustration, and prompt
+The [Candidate metadata contract](agent-candidate-metadata-observation.md)
+adds persistent-record observation without paths, image bytes, generation or
+adoption authority. Session-only Candidate records are excluded.
+
+This is useful for read-only Project, Scene, Illustration, Candidate, and prompt
 inspection, plus reviewed Batch Replace and single-Scene Module Swap Previews.
 Neither operation exposes Apply to the agent. The current MCP surface does not
 provide the complete Scene recast, image audit, cover, or byte-budget export

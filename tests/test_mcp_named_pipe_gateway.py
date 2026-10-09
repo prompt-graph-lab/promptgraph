@@ -337,6 +337,8 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
     monkeypatch,
 ):
     project = _project()
+    observed_line = next(line for line in project.prompt_lines if line.id == "illustration-1")
+    observed_line.generated_candidates = [{"path": "../not-readable.png", "seed": 0}]
     original = copy.deepcopy(project)
     state = {
         "project": project,
@@ -415,7 +417,7 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 assert [tool.name for tool in listed.tools] == [
                     entry["name"] for entry in catalog
                 ]
-                assert len(listed.tools) == 9
+                assert len(listed.tools) == 11
                 assert all("apply" not in tool.name.casefold() for tool in listed.tools)
                 for tool, entry in zip(listed.tools, catalog, strict=True):
                     assert tool.description == entry["description"]
@@ -452,6 +454,20 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
                 )
                 assert search.is_error is False
                 assert search.structured_content == expected_search
+
+                candidates = await client.call_tool(
+                    "promptgraph_list_candidates", {"illustration_id": "illustration-1"},
+                )
+                assert candidates.is_error is False
+                row = candidates.structured_content["candidates"][0]
+                assert row["seed"] == 0 and row["image_availability"] == "unknown"
+                assert "not-readable.png" not in candidates.content[0].text
+                candidate = await client.call_tool(
+                    "promptgraph_get_candidate",
+                    {"illustration_id": "illustration-1", "candidate_handle": row["candidate_handle"]},
+                )
+                assert candidate.is_error is False
+                assert candidate.structured_content["candidate"] == row
 
                 preview = await client.call_tool(
                     "promptgraph_preview_batch_replace",
@@ -496,6 +512,6 @@ def test_real_stdio_gateway_round_trips_through_one_live_session_route(
 
     assert not pump_thread.is_alive()
     assert project == original
-    assert service_results == ["completed", "completed", "completed", "completed"]
-    assert len(capture_calls) == 3
+    assert service_results == ["completed"] * 6
+    assert len(capture_calls) == 5
     assert shutdown_pairing_status == "released"

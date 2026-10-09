@@ -87,6 +87,35 @@ _TOOL_CATALOG = (
         "effect": "read_only",
     },
     {
+        "name": "promptgraph_list_candidates",
+        "description": "Read bounded persistent Candidate metadata for one explicit Illustration. No paths, image bytes, generation or adoption; session-only records are excluded.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "illustration_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "include_trashed": {"type": "boolean", "default": False},
+            },
+            "required": ["illustration_id"], "additionalProperties": False,
+        },
+        "effect": "read_only",
+    },
+    {
+        "name": "promptgraph_get_candidate",
+        "description": "Read one current Candidate observation handle for an explicit Illustration. Handles grant no file or adoption authority.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "illustration_id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "candidate_handle": {"type": "string", "minLength": 74, "maxLength": 74,
+                                     "pattern": "^candidate_[0-9a-f]{64}$"},
+                "include_trashed": {"type": "boolean", "default": False},
+            },
+            "required": ["illustration_id", "candidate_handle"], "additionalProperties": False,
+        },
+        "effect": "read_only",
+    },
+    {
         "name": "promptgraph_preview_batch_replace",
         "description": "Create a reviewed Batch Replace Preview for explicit Illustration IDs. This tool does not Apply the plan.",
         "inputSchema": {
@@ -265,6 +294,31 @@ def _search_transport_arguments(arguments):
     return args
 
 
+def _candidate_transport_arguments(name, arguments):
+    get = name == "promptgraph_get_candidate"
+    args = _object_arguments(arguments,
+                             required=("illustration_id", "candidate_handle") if get else ("illustration_id",),
+                             optional=("include_trashed",) if get else ("limit", "include_trashed"))
+    if args is None or not _arguments_have_types(args, {
+            "illustration_id": str, "candidate_handle": str, "limit": int, "include_trashed": bool}):
+        return None
+    value = args["illustration_id"]
+    if not 1 <= len(value) <= 200 or value.strip() != value:
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        return None
+    if "limit" in args and not 1 <= args["limit"] <= agent_facade.MAX_ITEMS:
+        return None
+    if get:
+        handle = args["candidate_handle"]
+        if (len(handle) != 74 or not handle.startswith("candidate_")
+                or any(char not in "0123456789abcdef" for char in handle[10:])):
+            return None
+    return args
+
+
 def _scene_module_swap_transport_arguments(arguments):
     """Validate the fixed scene-swap wire shape before resolving the host Project."""
     args = _object_arguments(
@@ -387,6 +441,9 @@ def get_adapter_capabilities():
         "illustration_search_max_results": search["max_results"],
         "illustration_search_query_text_chars": search["query_text_chars"],
         "agent_callable_apply": False,
+        "candidate_observation": facade_result["capabilities"]["candidate_observation"],
+        "agent_callable_generation": False,
+        "agent_callable_candidate_adoption": False,
     }
 
 
@@ -397,8 +454,9 @@ class PromptGraphMCPAdapter:
     never caches the Project, Preview, approval state, or result.
     """
 
-    def __init__(self, project_provider: Callable[[], object] | None):
+    def __init__(self, project_provider: Callable[[], object] | None, *, candidate_binding_provider=None):
         self._project_provider = project_provider
+        self._candidate_binding_provider = candidate_binding_provider
 
     def call_tool(self, name, arguments):
         """Invoke one catalog tool and return only ordinary JSON data."""
@@ -432,6 +490,10 @@ class PromptGraphMCPAdapter:
             arguments = _search_transport_arguments(arguments)
             if arguments is None:
                 return _error("invalid_arguments")
+        elif name in ("promptgraph_list_candidates", "promptgraph_get_candidate"):
+            arguments = _candidate_transport_arguments(name, arguments)
+            if arguments is None:
+                return _error("invalid_arguments")
         elif name == _PREVIEW_TOOL:
             arguments = _preview_transport_arguments(arguments)
             if arguments is None:
@@ -458,6 +520,13 @@ class PromptGraphMCPAdapter:
             return _error("project_provider_failed")
 
         try:
+            if name in ("promptgraph_list_candidates", "promptgraph_get_candidate"):
+                binding = (self._candidate_binding_provider()
+                           if self._candidate_binding_provider is not None else None)
+                observe = (agent_facade.list_candidates if name == "promptgraph_list_candidates"
+                           else agent_facade.get_candidate)
+                return observe(project, **arguments, observation_binding=binding)
+
             if name == _SUMMARY_TOOL:
                 return agent_facade.summarize_project(project)
 
