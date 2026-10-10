@@ -157,3 +157,78 @@ Focused tests exercise concurrent claims, immutable bounded events/snapshots,
 partial/unknown/stale outcomes, fake worker isolation, retention, actual runtime
 switch/Save As/close, and existing Gallery/review/Scene Module Swap contracts.
 No full suite or live generation is required for this foundation PR.
+
+## Phase 4-C2A: host authorization preparation (execution remains disabled)
+
+`ui.agent_generation_start_lifecycle` owns the private human callback carrier,
+immutable execution-manifest preparation, and an atomic custody/claim seam.
+There is no visible Start control, production executor, MCP Start tool, job
+observation tool, submission, output write, Candidate append, or autosave here.
+
+The existing Generation Review intentionally reports
+`workflow_binding_verified=False` and uncommitted execution seeds. It cannot
+certify the actual executable workflow. Production authorization therefore
+returns `executable_review_required` without allocating a job, consuming pending
+custody, or acknowledging successful Start. IDs and agent approval assertions
+never bypass this condition. C2A's explicitly named characterization certificate
+and acceptance callback are usable only with a characterization-enabled job
+owner; they model contracts, and do not establish real prompt binding or seeds.
+
+The direct host action captures exact proposal/plan identity and a private
+runtime incarnation. The lifecycle reloads complete current safe Preview and
+host preflight through the existing Facade/Gallery planner. Endpoint and output
+location come from the existing `generation_options.comfyui_endpoint` and
+`generation_options.output_directory` host fields. Its internal
+`_host_preflight` sink copies only requests, workflow data, generation options,
+and host output location; it never copies Gallery plan `target_lines` or a live
+Project. Freshness checks include activation, Scene membership/prompt/Module
+state, host config and raw workflow signatures. A plan ID match cannot certify
+a differing executable workflow: characterization certification binds the
+complete safe Review and complete detached preflight independently. Host endpoint
+and output destination must equal the certificate; neither comes from an agent.
+
+Private frozen manifest records contain ordered stable Illustration IDs, run
+and request correlation, exact workflow bytes/digests, parameter bytes, host
+endpoint/output location, seed policy and content identity. Job/claim correlation
+is attached only after the atomic claim. Workflow fields are bounded to 4,096
+characters, each serialized workflow to 1,000,000 bytes, and aggregate repeated
+workflow plus parameter storage to 8 MiB; existing job limits enforce 100 requests
+and five runs. Immutable bytes/scalars retain no Project/session/widget objects.
+Public job snapshots remain count-only and contain none of the manifest data.
+
+Expensive preflight and manifest encoding run outside locks. Final linearization
+uses publication gate -> mailbox -> Generation custodian -> job registry. Under
+that ordering the exact pending proposal is checked, the one active job slot is
+reserved and claimed, and custody is consumed together. Failed preparation,
+missing executor, invalid certificate or busy slot leaves the proposal pending.
+Duplicate actions cannot claim twice. Only Generation custody's exact ACK is
+retired; Scene Module Swap custody and ACKs remain independent. Host full-app-run
+ownership remains required: arbitrary concurrent Project/config writers are not
+supported and must not bypass the publication gate.
+
+The fake acceptance callback runs after all locks are released. Definite inbox
+rejection retires the claim as failed. Exceptions, unrecognized responses and
+ambiguous handoff become terminal `submission_outcome_unknown`; the lifecycle
+returns no runnable manifest and never retries that proposal. A target switch,
+Save As or session close invalidates the job, including during acceptance.
+Ordinary transport release cannot mint authorization. Lease expiry is not proof
+of external non-acceptance, and is never a reason to replay claimed work.
+
+### Required C2B work before enabling Start
+
+C2B must provide a genuine human-reviewed executable certificate covering final
+prompt binding, workflow, per-request seed policy/parameters and host destination,
+including any workflow transformation after the current display Preview. It
+must replace the characterization seam with one production atomic claim and a
+bounded nonblocking worker inbox reservation/acceptance contract. No second
+Gallery submission path may be introduced. A worker must own immutable correlated
+work without Streamlit/live Project references, and report through bounded typed
+events. No user-visible Start success may precede actual executor custody.
+
+If inbox capacity is unavailable, preparation must leave custody unconsumed. If
+acceptance becomes ambiguous after claim, fence the claim and retain explicit
+human recovery information without automatic retry or pretending that submission
+failed. C2B must define containment, download/output receipt verification, stale
+output quarantine/recovery and normal-full-run Candidate/history/save publication
+before enabling execution. These remain unresolved production decisions; C2A's
+fake tests do not certify network exactly-once behavior or a supported executor.

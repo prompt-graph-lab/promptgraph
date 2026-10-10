@@ -524,7 +524,7 @@ def generation_preview_project_state(project):
 
 
 def preview_generation(project, scene_id, *, run_count=1, host_context_provider=None,
-                       observation_binding=None):
+                       observation_binding=None, _host_preflight=None):
     """Preflight one explicit Scene through host configuration, never execute."""
     from core.gallery_generation import build_selected_routes_generation_plan
     from core.comfy_workflow_metadata import _is_executable_comfy_workflow
@@ -610,7 +610,7 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
                          **prepared.get(line_id, {})})
         binding = (candidate_observation_handles.project_identity(project)
                    if observation_binding is None else _json_copy(observation_binding))
-        return _response(valid=bool(plan["valid"]), scene_id=target, scene_label=_text(scene["route_label"]),
+        result = _response(valid=bool(plan["valid"]), scene_id=target, scene_label=_text(scene["route_label"]),
                          run_count=run_count, target_count=plan["target_line_count"],
                          request_count=plan["request_count"] if plan["valid"] else 0,
                          expected_image_count=plan["expected_image_count"] if plan["valid"] else 0,
@@ -628,6 +628,13 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
                                    "execution_seeds_not_committed", "workflow_bindings_not_certified"],
                          blockers=[] if plan["valid"] else ["workflow_preflight_failed"],
                          review_requested=False, job_submitted=False)
+        if type(_host_preflight) is dict and plan["valid"]:
+            # Internal host sink: detached bounded data only, never target_lines.
+            _host_preflight.update(_json_copy({
+                "request_plan": plan["request_plan"], "workflow_plan": plan["workflow_plan"],
+                "generation_options": options},
+                node_limit=2000000, text_limit=9000000))
+        return result
     except _Invalid as error:
         return _response(False, error.args[0])
     except Exception:
