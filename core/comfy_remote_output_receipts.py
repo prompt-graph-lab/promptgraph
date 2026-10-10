@@ -77,6 +77,9 @@ class RemoteOutputReceipt:
     identity: str
     images: tuple[RemoteImageDescriptor, ...] = field(repr=False)
     encoded_size: int
+    # C2B-4 accepts status-less metadata. Only an explicit validated success
+    # record is execution evidence for C2B-5; output presence alone is not.
+    execution_succeeded: bool = False
 
 
 def validate_remote_outputs(envelope, prepared, prompt_id, history_json):
@@ -139,4 +142,4 @@ def validate_remote_outputs(envelope, prepared, prompt_id, history_json):
     encoded_size = len(history_json)
     return RemoteOutputReceipt(envelope.job_id, envelope.claim_id, envelope.manifest.manifest_identity,
         prepared.request_id, prepared.request_index, prepared.workflow_identity, prompt_id,
-        identity, tuple(images), encoded_size)
+        identity, tuple(images), encoded_size, "status" in record)
