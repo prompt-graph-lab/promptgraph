@@ -7,6 +7,11 @@ submission/download, output file, Candidate/history mutation or autosave.
 Executable Review and explicit human confirmation retain their existing behavior;
 production C2A still returns `executable_review_required`.
 
+Phase 4-C2B-4 adds an offline [frozen ComfyUI executor and private remote output
+receipt seam](agent-generation-comfy-executor-adapter.md). Remote readiness is
+separate from local downloaded outputs, host registration and save; production
+execution remains unavailable.
+
 ## Owners and integration point
 
 The browser's `ProjectAgentSessionRuntime` holds one private

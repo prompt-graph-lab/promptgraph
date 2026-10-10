@@ -75,8 +75,9 @@ class JobRequest:
 class WorkerEvent:
     """Allowlisted count-only event; sequence is contiguous across a job.
 
-    A worker may report submission_started, submitted, outputs_ready, failed or
-    submission_unknown. Only the separate host receipt can mark registration.
+    A worker may report submission_started, submitted, execution_progress, execution_timeout,
+    remote_outputs_ready, outputs_ready, failed or submission_unknown. Remote
+    metadata is distinct from local output; only host receipts mark registration.
     Raw errors, paths, workflow/Project objects and transport credentials have
     no field in this carrier. No event itself executes work.
     """
@@ -107,6 +108,7 @@ class _Job:
     claim_id: str | None = None
     request_states: list = field(default_factory=list)
     outputs: list = field(default_factory=list)
+    remote_outputs: list = field(default_factory=list)
     registered: list = field(default_factory=list)
     save_state: str = "not_attempted"
     event_count: int = 0
@@ -200,6 +202,7 @@ class GenerationJobRegistry:
             job = _Job(job_id, frozen_binding, tuple(detached), now, now + PREPARED_TTL,
                        request_states=["unsent"] * len(detached),
                        outputs=[0] * len(detached), registered=[0] * len(detached))
+            job.remote_outputs = [0] * len(detached)
             self._jobs[job_id] = job
             return JobReceipt("prepared_not_started", job_id)
 
@@ -276,10 +279,10 @@ class GenerationJobRegistry:
                 or type(event.output_count) is not int
                 or not 0 <= event.output_count <= MAX_OUTPUTS_PER_REQUEST
                 or type(event.kind) is not str
-                or event.kind not in {"submission_started", "submitted", "outputs_ready",
+                or event.kind not in {"submission_started", "submitted", "execution_progress", "execution_timeout", "remote_outputs_ready", "outputs_ready",
                                       "failed", "submission_unknown"}
-                or (event.kind != "outputs_ready" and event.output_count != 0)
-                or (event.kind == "outputs_ready" and event.output_count == 0)):
+                or (event.kind not in {"outputs_ready", "remote_outputs_ready"} and event.output_count != 0)
+                or (event.kind in {"outputs_ready", "remote_outputs_ready"} and event.output_count == 0)):
             return "invalid_event"
         detached = WorkerEvent(event.sequence, event.request_index, event.kind, event.output_count)
         now = self._clock()
@@ -302,7 +305,11 @@ class GenerationJobRegistry:
             transitions = {
                 ("unsent", "submission_started"): "submitting",
                 ("submitting", "submitted"): "awaiting_result",
+                ("awaiting_result", "execution_progress"): "awaiting_result",
+                ("awaiting_result", "execution_timeout"): "awaiting_result",
+                ("awaiting_result", "remote_outputs_ready"): "awaiting_download",
                 ("awaiting_result", "outputs_ready"): "awaiting_host_registration",
+                ("awaiting_download", "outputs_ready"): "awaiting_host_registration",
                 ("unsent", "failed"): "failed",
                 ("submitting", "failed"): "failed",
                 ("awaiting_result", "failed"): "failed",
@@ -316,7 +323,10 @@ class GenerationJobRegistry:
                     for state in job.request_states[:index])):
                 return "invalid_transition"
             job.request_states[index] = after
-            job.outputs[index] = event.output_count
+            if event.kind == "remote_outputs_ready":
+                job.remote_outputs[index] = event.output_count
+            elif event.kind not in {"execution_progress", "execution_timeout"}:
+                job.outputs[index] = event.output_count
             job.event_count += 1
             job.events[event.sequence] = detached
             while len(job.events) > MAX_EVENT_HISTORY:
@@ -421,10 +431,12 @@ class GenerationJobRegistry:
                 "job_id": job.job_id, "state": job.state, "revision": job.revision,
                 "execution_available": False, "request_count": len(job.requests),
                 "output_count": sum(job.outputs), "registered_count": sum(job.registered),
+                "remote_output_count": sum(job.remote_outputs),
                 "save_state": job.save_state, "event_count": job.event_count,
                 "events_truncated": job.event_count > len(job.events),
                 "requests": [{"index": index, "state": state,
                               "output_count": job.outputs[index],
+                              "remote_output_count": job.remote_outputs[index],
                               "registered_count": job.registered[index]}
                              for index, state in enumerate(job.request_states)],
                 "events": [{"sequence": event.sequence, "request_index": event.request_index,
