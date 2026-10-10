@@ -46,6 +46,9 @@ class ProjectAgentSessionRuntime:
     generation_review_custodian: AgentGenerationReviewCustodian = field(default_factory=AgentGenerationReviewCustodian)
     generation_jobs: GenerationJobRegistry = field(default_factory=GenerationJobRegistry)
     _generation_executor_inbox: GenerationExecutorInbox = field(default_factory=GenerationExecutorInbox, repr=False)
+    # Private original-host publication evidence; never sent to the executor.
+    _generation_publication_origin: object = field(default=None, init=False, repr=False)
+    _generation_candidate_publication: object = field(default=None, init=False, repr=False)
     # Host-only, one bounded detached executable carrier and acknowledgment.
     # These are never session widget values, mailbox replies or Start authority.
     _executable_review: object = field(default=None, init=False, repr=False)

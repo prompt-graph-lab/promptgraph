@@ -5,6 +5,7 @@ Only the actual server-held finalized review and exact human acknowledgment
 can supply data, and even those cannot start a production inbox/job registry.
 """
 from dataclasses import dataclass, field
+import copy
 import secrets
 
 from ui.agent_generation_executable_confirmation import (
@@ -27,6 +28,16 @@ class ExecutorHumanStartAction:
     manifest_identity: str = field(repr=False)
     review_revision: int
     nonce: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class GenerationPublicationOrigin:
+    """Original-host custody only; never included in the worker envelope."""
+    envelope: ExecutionEnvelope = field(repr=False)
+    project: object = field(repr=False)
+    path: str = field(repr=False)
+    source_snapshot: object = field(repr=False)
+    review_json: bytes = field(repr=False)
 
 
 def capture_executor_human_start_for_characterization(runtime):
@@ -74,6 +85,12 @@ def handoff_generation_for_characterization(state, runtime, provider, action, *,
             action.origin_identity, action.manifest_identity, action.review_revision):
         return HandoffReceipt("stale_human_action")
     project, path = state.get("project"), state.get("current_project_path", "")
+    # Private original-host evidence only. Clone outside owner locks, then
+    # compare under the final handoff gate. Never reconstruct authority by ID.
+    try:
+        source_snapshot = copy.deepcopy(project)
+    except Exception:
+        return HandoffReceipt("source_capture_failed")
     # Encoding/reconstruction/bounds work runs before bounded atomic markers.
     reservation = inbox.reserve_for_characterization(manifest)
     if reservation.status != "reserved":
@@ -94,7 +111,8 @@ def handoff_generation_for_characterization(state, runtime, provider, action, *,
                     return HandoffReceipt(status)
                 if (runtime._executable_review is not held or not _same(held.custody, record)
                         or runtime._executable_confirmation != _confirmation(held)
-                        or state.get("project") is not project or state.get("current_project_path", "") != path):
+                        or state.get("project") is not project or state.get("current_project_path", "") != path
+                        or project != source_snapshot):
                     return HandoffReceipt("stale_authorization")
                 custodian = runtime.generation_review_custodian
                 with runtime.mailbox._lock:
@@ -118,6 +136,8 @@ def handoff_generation_for_characterization(state, runtime, provider, action, *,
                                     return HandoffReceipt(claim.status)
                                 envelope = ExecutionEnvelope(binding, held.review.origin_identity, manifest,
                                                              claim.job_id, claim.claim_id)
+                                runtime._generation_publication_origin = GenerationPublicationOrigin(
+                                    envelope, project, path, source_snapshot, held.review.projection_json)
                                 # Durable here means stored in the session job
                                 # owner before take, not disk/restart durability.
                                 committed = inbox._commit_locked(reservation, envelope)

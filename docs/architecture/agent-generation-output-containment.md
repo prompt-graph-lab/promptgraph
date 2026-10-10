@@ -160,9 +160,10 @@ Expiry is not remote cancellation; nothing resubmits or regenerates work.
 
 ## Remaining gates
 
-A separately authorized slice must add original-host Candidate publication,
-exact receipt/storage acceptance, Project persistence receipts, explicit human
-recovery and bounded retention/cleanup policy. A later production slice must
+[C2B-6](agent-generation-candidate-publication.md) now characterizes original-host
+Candidate publication, exact receipt/storage acceptance and separate Project
+persistence receipts using disposable test Projects only. Explicit human
+recovery and bounded retention/cleanup policy remain future work. A production slice must
 approve a protected filesystem root, real `/view` transport and redirect policy,
 worker lifecycle, network submission, Start UI and exact human review/confirmation.
 `execution_available` remains false and MCP execution remains unavailable.

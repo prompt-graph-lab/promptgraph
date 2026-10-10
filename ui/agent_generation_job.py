@@ -381,7 +381,7 @@ class GenerationJobRegistry:
         if not self._characterization:
             return "execution_unavailable"
         if (not _valid_binding(binding) or type(outcome) is not str
-                or outcome not in {"saved", "save_failed"}):
+                or outcome not in {"saved", "save_failed", "save_uncertain"}):
             return "invalid_input"
         now = self._clock()
         with self._lock:
