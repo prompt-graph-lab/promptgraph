@@ -128,7 +128,7 @@ class GenerationJobRegistry:
             raise ValueError("invalid characterization mode")
         self._clock = clock
         self._characterization = characterization
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._jobs = OrderedDict()
         self._closed = False
         self._target = None
@@ -234,6 +234,37 @@ class GenerationJobRegistry:
             job.deadline = now + ACTIVE_TTL
             job.revision += 1
             return JobReceipt("claimed", job_id, job.claim_id)
+
+    def claim_authorized_for_characterization(self, binding, requests, claim_key):
+        """One atomic slot reservation/claim for C2A's fake host acceptance seam.
+
+        Caller holds publication gate -> mailbox -> Generation custodian. No
+        callback or expensive preparation runs here. Production remains fenced.
+        """
+        if not self._characterization:
+            return JobReceipt("execution_unavailable")
+        with self._lock:
+            receipt = self.prepare(binding, requests)
+            if receipt.status != "prepared_not_started":
+                return receipt
+            claim = self.claim_for_characterization(receipt.job_id, binding=binding, claim_key=claim_key)
+            if claim.status != "claimed":
+                self.cancel_before_submission(receipt.job_id)
+            return claim
+
+    def settle_handoff_for_characterization(self, job_id, claim_id, outcome):
+        """An unaccepted/ambiguous inbox handoff is terminal, never retryable."""
+        if not self._characterization:
+            return "execution_unavailable"
+        if outcome not in {"rejected", "unknown"}:
+            return "invalid_input"
+        with self._lock:
+            job = self._authorized_locked(job_id, claim_id)
+            if job is None or job.state != "claimed":
+                return "unavailable"
+            self._finish_locked(job, "failed" if outcome == "rejected" else
+                                "submission_outcome_unknown", self._clock())
+            return "settled"
 
     def event_for_characterization(self, job_id, claim_id, event):
         """Accept deterministic detached fake events; no real worker is launched."""
