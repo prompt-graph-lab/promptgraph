@@ -1,6 +1,6 @@
-"""C2B-1 host-only observation. No human approval, custody consume or job claim.
+"""Host-only observation. No custody consumption or job claim.
 
-The returned private carrier can be retained by a future human UI. Inspection
+The returned private carrier is retained by the session's executable review UI. Inspection
 recomputes host inputs and rejects drift without rerolling its finalized seeds.
 Neither the carrier nor its public projection is an execution certificate.
 """
@@ -66,7 +66,7 @@ def _inputs(session_state, runtime, provider):
 
 
 def build_executable_generation_review(session_state, runtime, host_context_provider, *, random_u64=None):
-    """Finalize once for future human inspection, preserving pending custody."""
+    """Finalize once for human inspection, preserving pending custody."""
     try:
         status, inputs = _inputs(session_state, runtime, host_context_provider)
         if inputs is None:

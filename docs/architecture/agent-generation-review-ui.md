@@ -5,6 +5,9 @@ Module Swap Agent Review. This completes the human review-only UI over
 [Generation custody](agent-generation-review-custody.md). It does not execute
 generation or approve a future run. The visible notice says: “No generation has
 started; review only.” There is no Approve, Start, Generate, Run or Apply action.
+The [Executable Review section](agent-generation-executable-review-ui.md) now
+adds exact offline workflow/seed inspection and explicit human acknowledgment.
+Its confirmation does not grant execution approval or start generation.
 
 ## Owners and freshness
 
