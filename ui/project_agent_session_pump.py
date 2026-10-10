@@ -11,6 +11,7 @@ import threading
 import streamlit as st
 from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
 from ui.agent_generation_job import GenerationJobRegistry
+from ui.agent_generation_executor_inbox import GenerationExecutorInbox
 
 from ui.project_agent_request_bridge import dispatch_project_agent_request
 from ui.agent_scene_module_swap_approval_lifecycle import (
@@ -44,6 +45,7 @@ class ProjectAgentSessionRuntime:
     target_tracker: ProjectTargetTracker = field(default_factory=ProjectTargetTracker)
     generation_review_custodian: AgentGenerationReviewCustodian = field(default_factory=AgentGenerationReviewCustodian)
     generation_jobs: GenerationJobRegistry = field(default_factory=GenerationJobRegistry)
+    _generation_executor_inbox: GenerationExecutorInbox = field(default_factory=GenerationExecutorInbox, repr=False)
     # Host-only, one bounded detached executable carrier and acknowledgment.
     # These are never session widget values, mailbox replies or Start authority.
     _executable_review: object = field(default=None, init=False, repr=False)
@@ -520,6 +522,8 @@ class ProjectAgentSessionRuntime:
             self.mailbox.cancel_review_custody(self.generation_review_custodian)
             self._clear_executable_review_locked()
             broker = self._named_pipe_broker
+            self.generation_jobs.invalidate_execution_custody()
+            self._generation_executor_inbox.invalidate()
             registration = self._registration
         if broker is None:
             return LauncherRendezvousOperation("unavailable")
@@ -539,6 +543,7 @@ class ProjectAgentSessionRuntime:
             self.mailbox.close(review_custodian=self.review_custodian)
             self.generation_review_custodian.close()
             self.generation_jobs.close()
+            self._generation_executor_inbox.close()
             self.target_tracker.close()
             registration = self._registration
             route_id = registration.route_id if registration is not None else None
