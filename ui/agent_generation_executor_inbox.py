@@ -237,19 +237,19 @@ class GenerationExecutorInbox:
         if (type(progress.sequence) is not int or not 1 <= progress.sequence <= MAX_EVENTS
                 or type(progress.request_index) is not int or not 0 <= progress.request_index < MAX_REQUESTS
                 or type(progress.kind) is not str or progress.kind not in {
-                    "submission_started", "submitted", "outputs_ready", "failed", "submission_unknown"}
+                    "submission_started", "submitted", "execution_progress", "execution_timeout", "remote_outputs_ready", "outputs_ready", "failed", "submission_unknown"}
                 or type(progress.output_count) is not int
                 or not 0 <= progress.output_count <= MAX_OUTPUTS_PER_REQUEST
-                or (progress.kind != "outputs_ready" and progress.output_count != 0)):
+                or (progress.kind not in {"outputs_ready", "remote_outputs_ready"} and progress.output_count != 0)):
             return "invalid_event"
         if event.outputs is not None and (
                 type(event.outputs) is not OutputReceipt or not _token(event.outputs.receipt_id)
                 or type(event.outputs.output_count) is not int
-                or event.progress.kind != "outputs_ready"
+                or event.progress.kind not in {"outputs_ready", "remote_outputs_ready"}
                 or event.outputs.output_count != event.progress.output_count
                 or not 1 <= event.outputs.output_count <= 16):
             return "invalid_event"
-        if event.progress.kind == "outputs_ready" and event.outputs is None:
+        if event.progress.kind in {"outputs_ready", "remote_outputs_ready"} and event.outputs is None:
             return "invalid_event"
         with jobs._lock:
             jobs._cleanup_locked(jobs._clock())
