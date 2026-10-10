@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import uuid
 
 from core.comfy_prompt_request import prepare_frozen_prompt_request
+from core.comfy_output_containment import ContainedOutputStore
 from core.comfy_remote_output_receipts import (
     validate_remote_outputs, valid_prompt_id, decode_remote_json,
 )
@@ -64,13 +65,16 @@ class ComfyExecutorAdapter:
     execution_available = False
 
     def __init__(self, jobs, inbox, *, fake_transport, fake_result_provider, host_event_sink,
-                 characterization=False):
+                 characterization=False, host_local_output_gate=None):
         if (type(jobs) is not GenerationJobRegistry or type(inbox) is not GenerationExecutorInbox
                 or type(characterization) is not bool):
             raise ValueError("invalid_executor_owner")
         self._enabled = characterization and jobs._characterization and inbox._characterization
         self._jobs, self._inbox = jobs, inbox
         self._transport, self._result_provider, self._event_sink = fake_transport, fake_result_provider, host_event_sink
+        self._local_gate = host_local_output_gate
+        self._local_store = None
+        self._local_receipts = OrderedDict()
         self._envelope = self._acceptance = None
         self._index = 0
         self._phase = "not_taken"
@@ -269,6 +273,63 @@ class ComfyExecutorAdapter:
 
     def remote_receipts(self):
         return tuple(self._receipts.values())
+
+    def contain_local_outputs_for_characterization(self, store, *, fake_stream_provider):
+        """One unlocked complete batch; original-host gates precede count events.
+
+        No Candidate, save or next-request scheduling. A repeated call never
+        downloads again. Failure/late evidence stays isolated, without retry.
+        """
+        if not self._enabled or type(store) is not ContainedOutputStore or not callable(self._local_gate):
+            return self._observe("execution_unavailable")
+        if self._local_store is not None and self._local_store is not store:
+            return self._observe("local_storage_owner_mismatch")
+        remote = next((r for r in self._receipts.values() if r.request_index == self._index), None)
+        if remote is None:
+            return self._observe("remote_receipt_required")
+        previous = self._local_receipts.get(remote.identity)
+        if previous is not None:
+            try:
+                store.revalidate_for_characterization(previous)
+            except Exception:
+                self._local_receipts[remote.identity] = next(r for r in store.receipts_for_characterization()
+                                                           if r.request_id == previous.request_id)
+                return self._observe("local_receipt_conflict")
+            return self._observe("duplicate_local_receipt", previous.verified_count)
+        if self._phase != "awaiting_download":
+            return self._observe("local_outputs_fenced")
+        self._local_store = store
+        self._phase = "containing_outputs"  # callback reentry cannot redownload
+        try:
+            current = self._local_gate(self._envelope, remote, None) is True
+        except Exception:
+            current = False
+        if not current:
+            self._phase = "stopped"
+            return self._observe("host_invalidated")
+        try:
+            local = store.stage_for_characterization(self._envelope, self._active_prepared, remote,
+                                                      fake_stream_provider=fake_stream_provider)
+        except Exception:
+            self._phase = "stopped"
+            return self._observe("local_receipt_conflict")
+        self._local_receipts[remote.identity] = local
+        if local.state != "verified":
+            self._phase = "awaiting_download"
+            return self._observe("local_outputs_" + local.state)
+        try:
+            current = self._local_gate(self._envelope, remote, local) is True
+        except Exception:
+            current = False
+        if not current or self._emit("outputs_ready", count=local.verified_count, receipt_id=local.identity[:32]) != "accepted":
+            self._local_receipts[remote.identity] = store.quarantine_for_characterization(local)
+            self._phase = "stopped"
+            return self._observe("local_outputs_quarantined")
+        self._phase = "awaiting_download"
+        return self._observe("local_outputs_ready", local.verified_count)
+
+    def local_receipts(self):
+        return tuple(self._local_receipts.values())
 
     def late_receipts(self):
         return tuple(self._late)

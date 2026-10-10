@@ -138,11 +138,13 @@ or transport exception detail.
 
 ## Remaining gates
 
-A separate authorized slice must implement host-approved contained download
-destinations, bounded actual downloads, local image validation, cleanup and
-original-host publication/save receipts. It must preserve the target/pairing
-gate and define explicit human recovery for unknown or lost ownership. A later
+The [C2B-5 output containment slice](agent-generation-output-containment.md)
+now characterizes host-created isolated storage, bounded injected fake streams,
+Pillow validation, atomic local receipts and original-host freshness checks.
+Status-less remote metadata remains valid here but cannot establish successful
+execution or local output readiness. Candidate publication/save receipts and
+explicit human recovery/retention remain separately authorized work. A later
 slice must then authorize real transport/worker lifecycle and explicit Start UI,
 with exact review confirmation retained. MCP execution remains unavailable.
-This adapter alone cannot download, register, save, reopen a proposal or enable
-production Start.
+Production downloading, Candidate registration, saving and Start remain
+unavailable; neither characterization adapter reopens a consumed proposal.
