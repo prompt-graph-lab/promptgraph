@@ -44,6 +44,13 @@ class ProjectAgentSessionRuntime:
     target_tracker: ProjectTargetTracker = field(default_factory=ProjectTargetTracker)
     generation_review_custodian: AgentGenerationReviewCustodian = field(default_factory=AgentGenerationReviewCustodian)
     generation_jobs: GenerationJobRegistry = field(default_factory=GenerationJobRegistry)
+    # Host-only, one bounded detached executable carrier and acknowledgment.
+    # These are never session widget values, mailbox replies or Start authority.
+    _executable_review: object = field(default=None, init=False, repr=False)
+    _executable_confirmation: object = field(default=None, init=False, repr=False)
+    _executable_revision: int = field(default=0, init=False, repr=False)
+    _executable_target_epoch: object = field(default=None, init=False, repr=False)
+    _executable_proposal_id: object = field(default=None, init=False, repr=False)
     _registry: ProjectAgentSessionRegistry = field(
         default_factory=get_process_project_agent_session_registry,
         repr=False,
@@ -81,7 +88,23 @@ class ProjectAgentSessionRuntime:
         # The tracker epoch binds exact Project object/path activation, including
         # switch-away/back and Save As. No Project/path enters the job owner.
         self.generation_jobs.synchronize_target(epoch, epoch)
+        self._prune_executable_review_locked(epoch)
         return epoch
+
+    def _clear_executable_review_locked(self):
+        self._executable_review = None
+        self._executable_confirmation = None
+        self._executable_target_epoch = None
+        self._executable_proposal_id = None
+        self._executable_revision += 1
+
+    def _prune_executable_review_locked(self, epoch):
+        if self._executable_target_epoch is None:
+            return
+        record = self.mailbox.inspect_review_custody(self.generation_review_custodian)
+        if (epoch != self._executable_target_epoch or record.get("state") != "pending"
+                or record.get("proposal_id") != self._executable_proposal_id):
+            self._clear_executable_review_locked()
 
     def publish_review_apply(
         self,
@@ -495,6 +518,7 @@ class ProjectAgentSessionRuntime:
             # release and client disconnect do not call this session method.
             self.mailbox.cancel_review_custody(self.review_custodian)
             self.mailbox.cancel_review_custody(self.generation_review_custodian)
+            self._clear_executable_review_locked()
             broker = self._named_pipe_broker
             registration = self._registration
         if broker is None:
@@ -509,6 +533,7 @@ class ProjectAgentSessionRuntime:
             if self._closed:
                 return
             self._closed = True
+            self._clear_executable_review_locked()
             # This shares the publication gate with final Apply commit, then
             # closes the mailbox/custodian under their fixed lock order.
             self.mailbox.close(review_custodian=self.review_custodian)

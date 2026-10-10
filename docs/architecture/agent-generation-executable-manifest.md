@@ -1,6 +1,9 @@
 # Agent Generation executable manifest (Phase 4-C2B-1)
 
 This slice makes exact per-request work available for a future human review.
+The subsequent [C2B-2 executable review UI](agent-generation-executable-review-ui.md)
+now retains these carriers in the session host and records explicit human
+acknowledgment; generation execution remains unavailable.
 It grants no execution authority. The shipped Generation Preview and Review UI
 remain safe observation surfaces, and production C2A still returns
 `executable_review_required`. No visible Start, MCP execution tool, worker,
@@ -86,12 +89,12 @@ longer text blocks certification rather than hiding the exact text behind
 truncation. Each request has at most 100 prompt bindings, 100 seed slots and
 100 parameter rows. A budget failure never delivers a partial manifest.
 
-## Future human surface and freshness
+## Human surface and freshness
 
 `ui.agent_generation_executable_review.build_executable_generation_review` is
-a host-only entry point, with no production UI/MCP caller. It recomputes the
+a host-only entry point used by the C2B-2 UI, with no MCP caller. It recomputes the
 existing Generation Review and authoritative host preflight before and after
-finalization. The returned immutable carrier may be retained by a future UI.
+finalization. The returned immutable carrier is retained by the session host.
 Inspection revalidates the exact pending proposal and reconstructs the carrier
 from fresh authoritative inputs plus its already finalized seeds. It compares
 both private manifest and projection, rather than trusting public IDs or a
@@ -123,9 +126,9 @@ withheld throughout the projection, while verified prompt text can explain
 individual target status. Pending Generation custody is retained and no job
 is created or claimed, for both certified and uncertifiable observations.
 
-Future human confirmation must separately bind the complete displayed carrier
-to the exact private manifest immediately before the existing C2A one-shot
-claim boundary. Production Start still requires that confirmation lifecycle,
+The C2B-2 human confirmation lifecycle separately binds the complete displayed
+carrier to the exact private manifest without entering the C2A one-shot claim
+boundary. Production Start still requires a new explicit human Start action,
 bounded executor custody/inbox, output verification/recovery and normal host
 Candidate/history/save publication. Neither this offline `certified` state,
 public IDs nor the C2A characterization certificate proves human review or

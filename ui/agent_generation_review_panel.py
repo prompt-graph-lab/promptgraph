@@ -1,11 +1,16 @@
-"""Dedicated normal-run Generation Review surface. Reject/Dismiss only."""
+"""Generation Preview and executable details; human acknowledgment, no Start."""
 import math
 import streamlit as st
 from ui.agent_generation_review_lifecycle import build_generation_review, resolve_generation_review
+from ui.agent_generation_executable_confirmation import (
+    prepare_session_executable_review, inspect_session_executable_review, confirm_session_execution_details,
+)
 
 GENERATION_REVIEW_ACTIVE_KEY = "agent_generation_review_workspace_active"
 _PAGE_KEY = "agent_generation_review_page"
 _FEEDBACK_KEY = "agent_generation_review_feedback"
+_EXEC_PAGE_KEY = "agent_generation_executable_page"
+_EXEC_FEEDBACK_KEY = "agent_generation_executable_feedback"
 _MESSAGES = {
     "absent": "No Generation proposal is waiting for review.",
     "prepared": "Generation proposal preparation is pending; review is unavailable until custody commits.",
@@ -58,6 +63,85 @@ def _prompt(label, value):
     st.code(value["text"], language="text")
     if value["truncated"]:
         st.caption(f"Bounded prompt summary; original length {value['length']} characters.")
+
+
+def _prepare_executable(runtime, provider, identity, held=None):
+    st.session_state[_EXEC_FEEDBACK_KEY] = prepare_session_executable_review(
+        st.session_state, runtime, provider, *identity, refresh=held is not None, expected_review=held)
+
+
+def _confirm_executable(runtime, provider, held):
+    st.session_state[_EXEC_FEEDBACK_KEY] = confirm_session_execution_details(st.session_state, runtime, provider, held)
+
+
+def _set_executable_page(identity, index):
+    st.session_state[_EXEC_PAGE_KEY] = {"identity": identity, "page": max(0, index)}
+
+
+def _render_executable_review(runtime, provider, identity):
+    st.subheader("Executable Review")
+    st.info("Confirmation does not start generation. ComfyUI execution is not available yet.")
+    st.caption("Execution unavailable: no worker or Start capability exists. Offline certification does not guarantee runtime success.")
+    feedback = st.session_state.pop(_EXEC_FEEDBACK_KEY, None)
+    if feedback not in {None, "certified", "uncertifiable", "confirmed", "already_confirmed", "already_prepared"}:
+        st.warning("The executable review action could not be verified. No new human confirmation was recorded.")
+    view, held = inspect_session_executable_review(st.session_state, runtime, provider)
+    state = view["state"]
+    if state == "unprepared":
+        st.caption("Prepare executable review to freeze exact workflows and seeds for this proposal.")
+        st.button("Prepare executable review", key=f"agent_generation_executable_prepare_{identity[0]}",
+                  on_click=_prepare_executable, args=(runtime, provider, identity))
+        return
+    if held is None:
+        st.warning("Stale / unavailable: executable details cannot be confirmed. Retry verification in a normal app run.")
+        return
+    if view.get("human_confirmed"):
+        st.success("Confirmed: human acknowledged the exact displayed execution details.")
+    elif state == "certified":
+        st.success("Prepared / certified: executable details verified offline.")
+    else:
+        st.warning("Uncertifiable: blockers prevent confirmation of this complete review.")
+    st.text(f"Executable Scene: {view['scene_label']['text']}")
+    st.text(f"Executable Scene identity: {view['scene_id']}")
+    st.caption(f"Targets: {view['target_count']}; requests: {view['request_count']}; runs: {view['run_count']}; seed policy: {view['seed_policy']}.")
+    st.caption("Certification warnings: " + ", ".join(view["warnings"]))
+    st.caption("Certification blockers: " + (", ".join(view["blockers"]) or "none"))
+    page_identity = (identity, held.revision)
+    page = st.session_state.get(_EXEC_PAGE_KEY, {})
+    index = page.get("page", 0) if type(page) is dict and page.get("identity") == page_identity else 0
+    if type(index) is not int:
+        index = 0
+    rows = view["requests"]
+    index, pages, start, page_rows = _page_rows(rows, index)
+    targets = {row["illustration_id"]: row for row in view["targets"]}
+    st.subheader(f"Executable requests {start + 1}–{start + len(page_rows)} of {len(rows)}")
+    for row in page_rows:
+        target = targets[row["illustration_id"]]
+        with st.expander(f"Executable request {row['request_index'] + 1} · {row['illustration_id']} · run {row['run_index']}"):
+            st.caption(f"Physical Illustration order: {target['project_order']}; request order: {row['request_index'] + 1}; run order: {row['run_index']}.")
+            st.caption(f"Target certification: {'certified' if target['certified'] else 'uncertifiable'}; request certification: {'certified' if row['certified'] else 'uncertifiable'}.")
+            st.caption("Target blockers: " + (", ".join(target["blockers"]) or "none"))
+            st.caption("Request blockers: " + (", ".join(row["blockers"]) or "none"))
+            for prompt in row["prompts"]:
+                st.caption(f"Verified {prompt['role']} prompt · binding {prompt['binding_index'] + 1} · {prompt['semantics']}")
+                st.code(prompt["text"], language="text")
+            for seed in row["seeds"]:
+                st.text(f"Final {seed['input_key']} · slot {seed['seed_index'] + 1}: {seed['value']} ({seed['policy']})")
+            for parameter in row["parameters"]:
+                st.text(f"Parameter {parameter['parameter']}: {parameter['value']}")
+            st.text("Workflow fingerprint: " + (row["workflow_identity"] or "unavailable"))
+    columns = st.columns(2)
+    columns[0].button("Previous executable requests", key=f"agent_generation_executable_previous_{identity[0]}_{held.revision}",
+        disabled=index <= 0, on_click=_set_executable_page, args=(page_identity, index - 1))
+    columns[1].button("Next executable requests", key=f"agent_generation_executable_next_{identity[0]}_{held.revision}",
+        disabled=index >= pages - 1, on_click=_set_executable_page, args=(page_identity, index + 1))
+    st.caption(f"Executable page {index + 1} of {pages}. Every request and affected target is inspectable.")
+    st.button("Confirm reviewed execution details", key=f"agent_generation_executable_confirm_{identity[0]}_{held.revision}",
+        disabled=state != "certified" or view.get("human_confirmed", False),
+        on_click=_confirm_executable, args=(runtime, provider, held))
+    st.button("Refresh executable review", key=f"agent_generation_executable_refresh_{identity[0]}_{held.revision}",
+        on_click=_prepare_executable, args=(runtime, provider, identity, held),
+        help="Invalidates the old executable review and human confirmation before finalizing new seeds.")
 
 
 def render_generation_review_panel(runtime, host_context_provider):
@@ -116,6 +200,7 @@ def render_generation_review_panel(runtime, host_context_provider):
     columns[1].button("Next Illustrations", key=f"agent_generation_next_{identity[0]}", disabled=index >= pages - 1,
                       on_click=_set_page, args=(identity, index + 1))
     st.caption(f"Page {index + 1} of {pages}. Every target is available for inspection.")
+    _render_executable_review(runtime, host_context_provider, identity)
     columns = st.columns(2)
     for column, label, action in zip(columns, ("Reject proposal", "Dismiss proposal"), ("reject", "dismiss"), strict=True):
         column.button(label, key=f"agent_generation_{action}_{identity[0]}", on_click=_resolve,

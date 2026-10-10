@@ -104,6 +104,9 @@ def resolve_generation_review(session_state, runtime, host_context_provider, pro
                 return "session_unavailable"
             if generation is not None and generation != record["pairing_generation"]:
                 return runtime.mailbox.mark_review_proposal_stale(runtime.generation_review_custodian, proposal_id)
-            return runtime.mailbox.resolve_review_proposal(runtime.generation_review_custodian, proposal_id, action)
+            status = runtime.mailbox.resolve_review_proposal(runtime.generation_review_custodian, proposal_id, action)
+            if status in {"rejected", "dismissed"}:
+                runtime._clear_executable_review_locked()
+            return status
     except Exception:
         return "computation_failure"
