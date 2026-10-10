@@ -216,6 +216,13 @@ of external non-acceptance, and is never a reason to replay claimed work.
 
 ### Required C2B work before enabling Start
 
+The [C2B-3 executor handoff foundation](agent-generation-executor-handoff.md)
+now models capacity-one reservation, atomic claim/custody consumption, one-shot
+worker take and correlated typed events over actual confirmed finalized review
+data. Its entry points and worker are characterization-only. Production Start,
+real execution, output containment/recovery and Candidate/history/save publication
+remain disabled and require separate authorized work.
+
 The bounded [C2B-1 executable-manifest slice](agent-generation-executable-manifest.md)
 now provides per-request frozen workflows/seeds and a host-only complete
 review projection with offline binding certification. It does not implement

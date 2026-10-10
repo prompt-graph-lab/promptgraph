@@ -447,6 +447,14 @@ class GenerationJobRegistry:
                 if job.state not in _TERMINAL:
                     self._finish_locked(job, "unavailable", now)
 
+    def invalidate_execution_custody(self):
+        """Explicit host disarm/pairing fencing; never claims remote cancellation."""
+        now = self._clock()
+        with self._lock:
+            for job in self._jobs.values():
+                if job.state not in _TERMINAL:
+                    self._finish_locked(job, "unavailable", now)
+
     def _authorized_locked(self, job_id, claim_id):
         if self._closed or type(job_id) is not str or not _token(claim_id):
             return None
