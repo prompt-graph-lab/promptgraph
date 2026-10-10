@@ -215,9 +215,14 @@ class GenerationExecutorInbox:
                 if envelope is None:
                     return HandoffReceipt("stale_receipt")
                 job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
-                if self._closed or job is None or job.state in _TERMINAL:
+                if (self._closed or job is None or self._state == "invalidated"
+                        or (job.binding.target_epoch, job.binding.activation_id) != jobs._target
+                        or (job.state in _TERMINAL and job.state not in {
+                            "completed", "partially_failed", "failed"})):
                     return HandoffReceipt("handoff_invalidated", envelope.job_id)
-                # Acceptance is independent of claimed/running/awaiting_result.
+                # An observed take remains accepted even if legitimate progress
+                # completed before the handoff returned. This never reopens a
+                # terminal job or restores execution/publication authority.
                 return self._receipt_locked("characterized_acceptance" if self._state == "accepted"
                                             else "handoff_unknown")
 

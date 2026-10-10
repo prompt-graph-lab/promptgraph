@@ -107,6 +107,101 @@ def test_progress_before_handoff_returns_does_not_require_claimed_state(progress
     runtime.close()
 
 
+@pytest.mark.parametrize("terminal", ["failed", "completed", "partially_failed"])
+def test_normal_terminal_progress_before_handoff_preserves_observed_acceptance(terminal):
+    values = ready()
+    runtime, _, state, *_ = values
+    jobs, inbox = runtime.generation_jobs, runtime._generation_executor_inbox
+    taken = []
+    def worker(offer):
+        receipt, envelope = accept(runtime, offer)
+        taken.append((receipt, envelope))
+        sequence = 0
+        for index in range(len(envelope.manifest.requests)):
+            if terminal == "failed":
+                sequence += 1
+                assert deliver(state, runtime, event(offer, sequence, "failed", index=index)) == "accepted"
+            else:
+                for kind, count in (("submission_started", 0), ("submitted", 0), ("outputs_ready", 2)):
+                    sequence += 1
+                    assert deliver(state, runtime, event(offer, sequence, kind, index=index, count=count)) == "accepted"
+                registered = 1 if terminal == "partially_failed" and index == 0 else 2
+                assert jobs.publication_for_characterization(offer.job_id, offer.claim_id,
+                    binding=envelope.binding, request_index=index, registered_count=registered) == "accepted"
+        before = jobs.snapshot(offer.job_id)
+        assert before["state"] == terminal
+        assert inbox.accepted_receipt(jobs, receipt).status == "characterized_acceptance"
+        assert jobs.snapshot(offer.job_id) == before
+        return receipt
+    before_project = copy.deepcopy(state)
+    result = start(values, worker)
+    assert result.status == "characterized_acceptance"
+    assert jobs.snapshot(result.job_id)["state"] == terminal
+    assert jobs.snapshot(result.job_id)["save_state"] == "not_attempted"
+    assert state == before_project  # fake publication records only registry counts
+    receipt, envelope = taken[0]
+    assert accept(runtime, receipt)[1] is None
+    assert jobs.claim_for_characterization(result.job_id, binding=envelope.binding,
+        claim_key=values[-1].nonce).status == "terminal"
+    assert start(values).status != "characterized_acceptance"
+    assert len(taken) == 1 and len(jobs._jobs) == 1
+    assert inbox.accepted_receipt(jobs, replace(receipt, manifest_identity="0" * 64)).status == "stale_receipt"
+    runtime.close()
+
+
+@pytest.mark.parametrize("invalidation", ["switch", "save_as", "disarm", "close", "unknown_handoff"])
+def test_normal_terminal_acceptance_still_fences_subsequent_invalidation(invalidation):
+    values = ready()
+    runtime, _, state, *_ = values
+    jobs, inbox = runtime.generation_jobs, runtime._generation_executor_inbox
+    offers = []
+    def worker(offer):
+        receipt, envelope = accept(runtime, offer)
+        offers.append(receipt)
+        for index in range(len(envelope.manifest.requests)):
+            assert deliver(state, runtime, event(offer, index + 1, "failed", index=index)) == "accepted"
+        assert jobs.snapshot(offer.job_id)["state"] == "failed"
+        if invalidation == "switch": state["project"] = copy.deepcopy(state["project"])
+        elif invalidation == "save_as": state["current_project_path"] = "SAVE_AS"
+        elif invalidation == "disarm": runtime.disarm_launcher_rendezvous()
+        elif invalidation == "close": runtime.close()
+        else: inbox.settle_for_characterization(jobs, receipt, "unknown")
+        if invalidation in {"switch", "save_as"}:
+            runtime.synchronize_target(state["project"], state["current_project_path"])
+        assert inbox.accepted_receipt(jobs, receipt).status != "characterized_acceptance"
+        return receipt
+    assert start(values, worker).status != "characterized_acceptance"
+    assert accept(runtime, offers[0])[1] is None
+    runtime.close()
+
+
+@pytest.mark.parametrize("invalidation", ["submission_unknown", "cancelled", "lease_expiry", "unavailable", "unknown_handoff"])
+def test_observed_acceptance_does_not_bypass_uncertain_or_unavailable_terminal(invalidation):
+    values = ready()
+    runtime, _, state, *_ = values
+    jobs, inbox = runtime.generation_jobs, runtime._generation_executor_inbox
+    clock = [10]
+    jobs._clock = lambda: clock[0]
+    offers = []
+    def worker(offer):
+        receipt, envelope = accept(runtime, offer)
+        offers.append(receipt)
+        if invalidation == "submission_unknown":
+            assert deliver(state, runtime, event(offer, 1, "submission_started")) == "accepted"
+            assert deliver(state, runtime, event(offer, 2, "submission_unknown")) == "accepted"
+        elif invalidation == "cancelled": assert jobs.cancel_before_submission(offer.job_id) == "cancelled"
+        elif invalidation == "lease_expiry": clock[0] += ACTIVE_TTL
+        elif invalidation == "unavailable": jobs.invalidate_execution_custody()
+        else: inbox.settle_for_characterization(jobs, receipt, "unknown")
+        assert inbox.accepted_receipt(jobs, receipt).status == "handoff_invalidated"
+        return receipt
+    result = start(values, worker)
+    assert result.status == "handoff_invalidated"
+    assert accept(runtime, offers[0])[1] is None
+    assert start(values).status != "characterized_acceptance"
+    runtime.close()
+
+
 def test_double_human_claim_and_double_worker_acceptance_are_one_shot():
     values = ready()
     runtime, _, state, provider, held, action = values
