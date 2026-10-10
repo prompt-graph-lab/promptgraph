@@ -556,6 +556,7 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
         if type(options) is not dict:
             raise _Invalid("invalid_generation_host_context")
         prepared = {}
+        binding_contexts = {}
         workflow_budget = 8 * 1024 * 1024
         def build(line, index):
             nonlocal workflow_budget
@@ -586,6 +587,9 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
                                  "workflow_node_count": len(workflow), "image_output_node_count": output_count,
                                  "save_image_node_count": len(_workflow_save_image_nodes(workflow)),
                                  "warnings": ["prompt_binding_requires_review"] if item.get("warning") else []}
+            if type(_host_preflight) is dict:
+                binding_contexts[line.id] = _json_copy(item.get("binding_context"),
+                                                      node_limit=20000, text_limit=1000000)
             return workflow, ""
         plan = build_selected_routes_generation_plan(
             project, [target], run_count=run_count, generation_options=options,
@@ -632,7 +636,7 @@ def preview_generation(project, scene_id, *, run_count=1, host_context_provider=
             # Internal host sink: detached bounded data only, never target_lines.
             _host_preflight.update(_json_copy({
                 "request_plan": plan["request_plan"], "workflow_plan": plan["workflow_plan"],
-                "generation_options": options},
+                "generation_options": options, "binding_contexts": binding_contexts},
                 node_limit=2000000, text_limit=9000000))
         return result
     except _Invalid as error:

@@ -100,3 +100,9 @@ captured paired full-run service and unavailable review requests. The existing
 Windows Named Pipe/stdio integration also calls the new Preview through a paired
 host context. Generation execution, jobs, adoption and full-suite validation are
 outside this slice.
+
+The subsequent [C2B-1 executable manifest](agent-generation-executable-manifest.md)
+reuses this private host preflight to finalize each run's workflow and seeds
+and verify supported prompt bindings for a future complete human review.
+Safe Preview retains its uncommitted-seed and uncertified-binding contract;
+the new offline host observation grants no execution authority.

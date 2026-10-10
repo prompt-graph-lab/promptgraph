@@ -8824,11 +8824,13 @@ def _prepare_agent_generation_context(project, run_count):
         injection = prepare_generation_injection_line(
             line, disabled_modules, fallback_prompt=settings.get("fallback_prompt", "(masterpiece:1.0)"),
             module_library=project.module_library)
+        binding_context = {}
         workflow, warning = _build_line_workflow_from_text(
-            workflow_text, injection, settings, project=project, disabled_modules=disabled_modules)
+            workflow_text, injection, settings, project=project, disabled_modules=disabled_modules,
+            _binding_context=binding_context)
         if isinstance(settings.get("comfy_mapping"), dict) and settings["comfy_mapping"].get("group_map"):
             warning = warning or "group mapping configured"
-        return {"workflow_json": workflow, "warning": warning,
+        return {"workflow_json": workflow, "warning": warning, "binding_context": binding_context,
                 "resolved_positive_prompt": injection.current_text,
                 "resolved_negative_prompt": injection.negative_prompt}
     return {"generation_options": options, "request_builder": build,

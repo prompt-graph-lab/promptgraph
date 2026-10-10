@@ -216,6 +216,11 @@ of external non-acceptance, and is never a reason to replay claimed work.
 
 ### Required C2B work before enabling Start
 
+The bounded [C2B-1 executable-manifest slice](agent-generation-executable-manifest.md)
+now provides per-request frozen workflows/seeds and a host-only complete
+review projection with offline binding certification. It does not implement
+human confirmation or replace the production fail-closed C2A authorization.
+
 C2B must provide a genuine human-reviewed executable certificate covering final
 prompt binding, workflow, per-request seed policy/parameters and host destination,
 including any workflow transformation after the current display Preview. It

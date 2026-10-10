@@ -12,9 +12,15 @@ from core.comfy_prompt_binding import _replace_clip_text_prompts
 from core.comfyui import inject_prompt_to_workflow
 
 
-def _build_line_workflow_from_text(workflow_text, line, settings, project=None, disabled_modules=None, image_metadata=None):
+def _build_line_workflow_from_text(workflow_text, line, settings, project=None, disabled_modules=None, image_metadata=None,
+                                   *, _binding_context=None):
     line_prompt = getattr(line, "current_text", "") or ""
     mapping = settings.get("comfy_mapping")
+    if type(_binding_context) is dict:
+        # Private host evidence only; never part of the safe Preview projection.
+        _binding_context.update(source_workflow=json.loads(workflow_text), grouped_prompt=None,
+                                positive_prompt=line_prompt,
+                                negative_prompt=getattr(line, "negative_prompt", "") or "")
     if mapping and "group_map" in mapping:
         workflow_json = json.loads(workflow_text)
         if project is not None:
@@ -22,6 +28,9 @@ def _build_line_workflow_from_text(workflow_text, line, settings, project=None, 
             grouped = build_prompt_by_group(project, line, disabled_modules or set())
         else:
             grouped = {"default": [line_prompt]}
+        if type(_binding_context) is dict:
+            from copy import deepcopy
+            _binding_context["grouped_prompt"] = deepcopy(grouped)
         return inject_prompt_to_workflow(
             workflow_json,
             grouped,
