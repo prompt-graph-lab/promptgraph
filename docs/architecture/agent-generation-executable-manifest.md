@@ -53,8 +53,13 @@ positive and negative links must point directly to separate standard
 `CLIPTextEncode.text` slots at output index zero. Missing nodes/keys, shared
 positive/negative slots, custom samplers/encoders, conditioning intermediates,
 other unreviewed text nodes and unavailable private evidence block certification.
-This is offline binding evidence, never proof of server connectivity, complete
-ComfyUI schema validity, successful generation or exact output counts.
+Each recognized `SaveImage` or `PreviewImage` path must trace through the
+standard `VAEDecode.samples` input at output index zero to a standard
+`KSampler`/`KSamplerAdvanced`; every certified sampler must reach at least one
+such output. Unsupported, ambiguous or malformed output paths block
+certification; unknown custom-node semantics are never inferred. This is
+offline binding and output-path evidence, never proof of server connectivity,
+complete ComfyUI schema validity, successful generation or exact output counts.
 
 For ordinary injection, every supported final positive and negative slot must
 equal the corresponding expanded Illustration input. A successful injection

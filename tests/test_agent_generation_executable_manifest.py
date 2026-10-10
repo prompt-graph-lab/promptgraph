@@ -20,13 +20,16 @@ from test_agent_generation_review_custody import setup, send
 
 
 def workflow():
-    return {"p": {"class_type": "CLIPTextEncode", "inputs": {"text": "original positive"}},
-            "n": {"class_type": "CLIPTextEncode", "inputs": {"text": "original negative"}},
+    return {"p": {"class_type": "CLIPTextEncode", "inputs": {"text": "original positive", "clip": ["checkpoint", 1]}},
+            "n": {"class_type": "CLIPTextEncode", "inputs": {"text": "original negative", "clip": ["checkpoint", 1]}},
             "s": {"class_type": "KSampler", "inputs": {"seed": 0, "steps": 20, "cfg": 7.0,
-                  "sampler_name": "euler", "scheduler": "normal", "positive": ["p", 0], "negative": ["n", 0]}},
+                  "sampler_name": "euler", "scheduler": "normal", "positive": ["p", 0], "negative": ["n", 0],
+                  "model": ["checkpoint", 0], "latent_image": ["latent", 0]}},
             "noise": {"class_type": "RandomNoise", "inputs": {"noise_seed": owner.MAX_SEED}},
             "latent": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512, "batch_size": 1}},
-            "out": {"class_type": "SaveImage", "inputs": {"filename_prefix": "PRIVATE_PATH"}}}
+            "checkpoint": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "PRIVATE_MODEL"}},
+            "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["s", 0], "vae": ["checkpoint", 2]}},
+            "out": {"class_type": "SaveImage", "inputs": {"filename_prefix": "PRIVATE_PATH", "images": ["decode", 0]}}}
 
 
 def host_for(settings=None, change=None):
@@ -152,6 +155,142 @@ def test_missing_ambiguous_unsupported_bindings_fail_closed(change, reason):
     result = finalize(provider=host_for(change=change))
     assert result.manifest is None
     assert json.loads(result.projection_json)["requests"][0]["blockers"] == [reason]
+
+
+@pytest.mark.parametrize("sampler", ["KSampler", "KSamplerAdvanced"])
+@pytest.mark.parametrize("output", ["SaveImage", "PreviewImage"])
+def test_connected_standard_sampler_decoder_output_certifies(sampler, output):
+    def connected(w):
+        w["s"]["class_type"] = sampler
+        if sampler == "KSamplerAdvanced":
+            w["s"]["inputs"]["noise_seed"] = w["s"]["inputs"].pop("seed")
+            w["s"]["inputs"].update(add_noise="enable", start_at_step=0, end_at_step=20,
+                                    return_with_leftover_noise="disable")
+        w["out"]["class_type"] = output
+    result = finalize(provider=host_for({"agent_generation_seed_policy": "preserve_u64"}, connected))
+    view = json.loads(result.projection_json)
+    assert result.manifest and view["state"] == "certified"
+    assert len(result.manifest.requests) == len(view["requests"]) == 6
+    assert all(row["certified"] and row["seeds"][0]["value"] == 0 for row in view["requests"])
+    assert not view["execution_available"] and not view["job_submitted"]
+
+
+def test_disconnected_standard_sampler_cannot_mask_custom_output_sampler():
+    def custom_output(w):
+        # This name deliberately contains no "ksampler": the old name guard
+        # cannot establish that the supported sampler produces these images.
+        w["custom_sampler"] = {"class_type": "SamplerCustom", "inputs": {
+            "model": ["checkpoint", 0], "positive": ["p", 0], "negative": ["n", 0],
+            "noise_seed": 0, "latent_image": ["latent", 0]}}
+        w["decode"]["inputs"]["samples"] = ["custom_sampler", 0]
+    result = finalize(provider=host_for(change=custom_output))
+    view = json.loads(result.projection_json)
+    assert result.manifest is None and view["manifest_identity"] is None
+    assert len(view["targets"]) == 2 and len(view["requests"]) == 6
+    assert all(not row["certified"] and row["blockers"] == ["unsupported_output_binding"]
+               for row in view["targets"] + view["requests"])
+    assert all(row["workflow_identity"] is None and not row["seeds"] and not row["parameters"]
+               for row in view["requests"])
+    assert b"PRIVATE" not in result.projection_json
+
+
+@pytest.mark.parametrize("change,reason", [
+    (lambda w: w["out"]["inputs"].pop("images"), "unverifiable_output_binding"),
+    (lambda w: w["out"]["inputs"].update(images=["missing", 0]), "unverifiable_output_binding"),
+    (lambda w: w["out"]["inputs"].update(images=["decode", 1]), "unverifiable_output_binding"),
+    (lambda w: w["out"]["inputs"].update(images=["decode", False]), "unverifiable_output_binding"),
+    (lambda w: w["out"]["inputs"].update(images="PRIVATE_LINK"), "unverifiable_output_binding"),
+    (lambda w: w["decode"]["inputs"].pop("samples"), "unverifiable_output_binding"),
+    (lambda w: w["decode"]["inputs"].update(samples=["missing", 0]), "unverifiable_output_binding"),
+    (lambda w: w["decode"]["inputs"].update(samples=["s", 1]), "unverifiable_output_binding"),
+    (lambda w: w["decode"]["inputs"].update(samples=["decode", 0]), "unsupported_output_binding"),
+    (lambda w: w["decode"].update(class_type="CustomDecoder"), "unsupported_output_binding"),
+    (lambda w: w["out"].update(class_type="custom.SaveImage"), "unsupported_output_binding"),
+    (lambda w: w["out"]["inputs"].update(images=["s", 0]), "unsupported_output_binding"),
+    (lambda w: w.update(unused_sampler=copy.deepcopy(w["s"])), "ambiguous_output_binding"),
+])
+def test_unverifiable_unsupported_or_disconnected_output_linkage_withholds_manifest(change, reason):
+    result = finalize(provider=host_for(change=change))
+    view = json.loads(result.projection_json)
+    assert result.manifest is None and len(view["requests"]) == 6
+    assert all(not row["certified"] and row["blockers"] == [reason] for row in view["requests"])
+    assert b"PRIVATE" not in result.projection_json
+
+
+@pytest.mark.parametrize("kind", ["SaveImage", "PreviewImage", "custom.SaveImage", "custom.PreviewImage"])
+def test_valid_output_cannot_mask_second_unverifiable_output(kind):
+    def second_output(w):
+        w["other_out"] = {"class_type": kind, "inputs": {"images": ["missing", 0]}}
+    result = finalize(provider=host_for(change=second_output))
+    view = json.loads(result.projection_json)
+    reason = "unverifiable_output_binding" if kind in owner.IMAGE_OUTPUTS else "unsupported_output_binding"
+    assert result.manifest is None and len(view["requests"]) == 6
+    assert all(row["blockers"] == [reason] for row in view["requests"])
+
+
+def test_valid_output_cannot_mask_second_custom_sampler_output():
+    def second_output(w):
+        w["custom_sampler"] = {"class_type": "SamplerCustom", "inputs": {
+            "positive": ["p", 0], "negative": ["n", 0], "noise_seed": 0}}
+        w["other_decode"] = {"class_type": "VAEDecode", "inputs": {
+            "samples": ["custom_sampler", 0], "vae": ["checkpoint", 2]}}
+        w["other_out"] = {"class_type": "SaveImage", "inputs": {"images": ["other_decode", 0]}}
+    result = finalize(provider=host_for(change=second_output))
+    assert result.manifest is None
+    assert all(row["blockers"] == ["unsupported_output_binding"]
+               for row in json.loads(result.projection_json)["requests"])
+
+
+def test_shared_standard_sampler_can_reach_multiple_proven_image_outputs():
+    result = finalize(provider=host_for(change=lambda w: w.update(
+        preview={"class_type": "PreviewImage", "inputs": {"images": ["decode", 0]}})))
+    assert result.manifest and len(result.manifest.requests) == 6
+
+
+def test_output_failure_on_one_target_withholds_entire_manifest_and_preserves_coverage():
+    preview, preflight = inputs()
+    preflight["workflow_plan"]["one"]["workflow_json"]["out"]["inputs"].pop("images")
+    result = owner.finalize_generation_manifest("proposal", preview, preflight, random_u64=lambda: 0)
+    view = json.loads(result.projection_json)
+    assert result.manifest is None and [row["certified"] for row in view["targets"]] == [True, False]
+    assert len(view["requests"]) == 6 and view["request_count"] == 6
+    assert [row["blockers"] for row in view["requests"]] == [[]] * 3 + [["unverifiable_output_binding"]] * 3
+    assert all(row["workflow_identity"] is None and not row["seeds"] and not row["parameters"]
+               for row in view["requests"])
+
+
+def test_missing_output_after_preflight_withholds_manifest():
+    preview, preflight = inputs()
+    preflight["workflow_plan"]["one"]["workflow_json"].pop("out")
+    result = owner.finalize_generation_manifest("proposal", preview, preflight, random_u64=lambda: 0)
+    view = json.loads(result.projection_json)
+    assert result.manifest is None and len(view["requests"]) == 6
+    assert view["targets"][1]["blockers"] == ["image_output_missing"]
+
+
+@pytest.mark.parametrize("node_id", ["out", "decode"])
+@pytest.mark.parametrize("malformed_inputs", [None, [], "PRIVATE_INPUTS", False])
+def test_malformed_output_path_inputs_are_bounded_blockers(node_id, malformed_inputs):
+    preview, preflight = inputs()
+    preflight["workflow_plan"]["one"]["workflow_json"][node_id]["inputs"] = malformed_inputs
+    result = owner.finalize_generation_manifest("proposal", preview, preflight, random_u64=lambda: 0)
+    view = json.loads(result.projection_json)
+    assert result.manifest is None and len(view["requests"]) == 6
+    assert view["targets"][1]["blockers"] == ["unverifiable_output_binding"]
+    assert b"PRIVATE" not in result.projection_json
+
+
+@pytest.mark.parametrize("node_id", ["out", "decode"])
+def test_missing_output_path_class_type_is_a_bounded_blocker(node_id):
+    preview, preflight = inputs()
+    node = preflight["workflow_plan"]["one"]["workflow_json"][node_id]
+    # The output discovery helper can recognize a sink from its type fallback,
+    # but this is insufficient evidence of the standard API node semantics.
+    node["type"] = node.pop("class_type")
+    result = owner.finalize_generation_manifest("proposal", preview, preflight, random_u64=lambda: 0)
+    view = json.loads(result.projection_json)
+    assert result.manifest is None and len(view["requests"]) == 6
+    assert view["targets"][1]["blockers"] == ["unsupported_output_binding"]
 
 
 @pytest.mark.parametrize("mode,expected", [("overwrite", "first, second"), ("merge", "original positive, first, second")])

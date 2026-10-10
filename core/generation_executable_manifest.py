@@ -3,7 +3,8 @@
 Only immutable serialized workflows leave this owner. A future executor must
 submit these exact bytes without the legacy submission-time seed randomizer.
 Binding certification supports direct standard sampler/CLIPTextEncode links
-and host group mappings to those same text slots, not arbitrary custom nodes.
+and host group mappings to those same text slots, with a proven standard
+sampler -> VAEDecode -> image output path, not arbitrary custom nodes.
 """
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ import re
 
 from core.agent_facade import _json_copy
 from core.comfy_workflow_injection import inject_prompt_to_workflow
+from core.comfy_workflow_outputs import _workflow_output_nodes
 
 MAX_WORKFLOW_BYTES = 1_000_000
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
@@ -25,6 +27,7 @@ MAX_SEEDS = 100
 MAX_PARAMETERS = 100
 MAX_SEED = 2**64 - 1
 SAMPLERS = {"KSampler", "KSamplerAdvanced"}
+IMAGE_OUTPUTS = {"SaveImage", "PreviewImage"}
 PARAMETERS = {"steps", "cfg", "sampler_name", "scheduler", "denoise",
               "width", "height", "batch_size", "start_at_step", "end_at_step",
               "add_noise", "return_with_leftover_noise"}
@@ -34,7 +37,8 @@ BLOCKERS = {"prompt_node_missing", "unsupported_prompt_binding", "prompt_input_m
             "unsupported_prompt_mapping", "prompt_group_unmapped", "prompt_destination_missing", "prompt_source_mismatch",
             "prompt_mapping_incomplete", "prompt_binding_limit", "prompt_text_mismatch", "unsupported_seed_value",
             "seed_review_limit", "seed_binding_missing", "unsupported_generation_parameter", "parameter_review_limit",
-            "workflow_limit", "aggregate_limit", "manifest_limit"}
+            "workflow_limit", "aggregate_limit", "manifest_limit", "image_output_missing",
+            "unsupported_output_binding", "unverifiable_output_binding", "ambiguous_output_binding"}
 
 
 def _blocker(error):
@@ -100,9 +104,50 @@ def _slot(nodes, node_id, key):
     return inputs[key]
 
 
+def _output_link(nodes, node, key):
+    """Only port zero links in the supported image/latent path are provable."""
+    inputs = node.get("inputs")
+    if type(inputs) is not dict:
+        raise ValueError("unverifiable_output_binding")
+    link = inputs.get(key)
+    if (type(link) is not list or len(link) != 2 or type(link[0]) is not str
+            or type(link[1]) is not int or link[1] != 0 or link[0] not in nodes):
+        raise ValueError("unverifiable_output_binding")
+    return link[0]
+
+
+def _verify_output_paths(nodes, samplers):
+    """Prove all recognized image outputs consume certified standard samplers.
+
+    Preview's class-name discovery does not prove custom output semantics.
+    Only the exact standard sink/decoder/sampler chain is supported here;
+    unknown transforms are never followed by guessing from their inputs.
+    """
+    outputs = _workflow_output_nodes(nodes)
+    if not outputs:
+        raise ValueError("image_output_missing")
+    reached = set()
+    for node_id in outputs:
+        output = nodes[node_id]
+        if output.get("class_type") not in IMAGE_OUTPUTS:
+            raise ValueError("unsupported_output_binding")
+        decoder = nodes[_output_link(nodes, output, "images")]
+        if decoder.get("class_type") != "VAEDecode":
+            raise ValueError("unsupported_output_binding")
+        sampler_id = _output_link(nodes, decoder, "samples")
+        if nodes[sampler_id].get("class_type") not in SAMPLERS:
+            raise ValueError("unsupported_output_binding")
+        reached.add(sampler_id)
+    # Certifying an unused sampler would attribute its prompts to images that
+    # it does not produce. All standard samplers must have a proven output.
+    if reached != samplers:
+        raise ValueError("ambiguous_output_binding")
+
+
 def _roles(nodes):
     roles = {"positive": [], "negative": []}
-    for node in nodes.values():
+    samplers = set()
+    for node_id, node in nodes.items():
         if type(node) is not dict:
             raise ValueError("unsupported_workflow")
         kind = node.get("class_type", "")
@@ -110,6 +155,7 @@ def _roles(nodes):
             raise ValueError("unsupported_prompt_binding")
         if kind not in SAMPLERS:
             continue
+        samplers.add(node_id)
         for role in roles:
             link = node.get("inputs", {}).get(role)
             if (type(link) is not list or len(link) != 2 or type(link[0]) is not str
@@ -123,6 +169,7 @@ def _roles(nodes):
         raise ValueError("prompt_mapping_missing")
     if set(roles["positive"]) & set(roles["negative"]):
         raise ValueError("ambiguous_prompt_binding")
+    _verify_output_paths(nodes, samplers)
     # Extra encoders/custom text nodes could contain another active prompt.
     # Do not claim complete certification with unreviewed text slots.
     covered = set(roles["positive"] + roles["negative"])
