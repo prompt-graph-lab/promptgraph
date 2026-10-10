@@ -17,8 +17,8 @@ from PIL import Image, ImageFile
 
 from core.comfy_prompt_request import FrozenPromptRequest, prepare_frozen_prompt_request
 from core.comfy_remote_output_receipts import (
-    RemoteOutputReceipt, RemoteImageDescriptor, validate_remote_outputs,
-    MAX_REMOTE_BYTES, MAX_REMOTE_IMAGES, MAX_DESCRIPTOR_NAME, MAX_SUBFOLDER,
+    RemoteOutputReceipt, validate_remote_outputs,
+    MAX_REMOTE_BYTES, MAX_REMOTE_IMAGES,
 )
 
 CHUNK_BYTES = 64 * 1024
@@ -124,25 +124,12 @@ def _validate_binding(envelope, prepared, remote):
     if prepared != prepare_frozen_prompt_request(envelope.manifest,
             envelope.manifest.requests[prepared.request_index], client_id=prepared.client_id):
         raise _ContainmentFailure("remote_correlation_mismatch")
-    # Reuse C2B-4's path/provenance/content identity validator; compare every
-    # correlation field, not only its opaque digest. Adapter additionally admits
-    # only the exact receipt object it obtained from the validated result stream.
-    outputs = {node: {"images": []} for node, _ in prepared.output_nodes}
-    for image in remote.images:
-        if (type(image) is not RemoteImageDescriptor
-                or type(image.filename) is not str or len(image.filename) > MAX_DESCRIPTOR_NAME
-                or type(image.subfolder) is not str or len(image.subfolder) > MAX_SUBFOLDER
-                or type(image.node_id) is not str or len(image.node_id) > 160
-                or type(image.bucket) is not str or len(image.bucket) > 16):
-            raise _ContainmentFailure("remote_correlation_mismatch")
-        outputs[image.node_id]["images"].append({"filename": image.filename,
-            "subfolder": image.subfolder, "type": image.bucket})
-    record = {"outputs": outputs}
-    if remote.execution_succeeded:
-        record["status"] = {"completed": True, "status_str": "success"}
+    # Revalidate the original history, including its explicit execution status.
+    # A replaced summary boolean cannot manufacture missing success evidence.
+    # Compare every correlation field and descriptor, not just opaque digests.
     checked = validate_remote_outputs(envelope, prepared, remote.prompt_id,
-        json.dumps({remote.prompt_id: record}, separators=(",", ":")).encode())
-    if replace(checked, encoded_size=remote.encoded_size) != remote:
+        remote._validated_history_json)
+    if checked != remote:
         raise _ContainmentFailure("remote_correlation_mismatch")
 
 

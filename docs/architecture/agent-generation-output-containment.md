@@ -17,7 +17,11 @@ one accepted envelope; another job cannot reuse its storage.
 
 C2B-4 intentionally permits history without an explicit success status. The
 private remote receipt now records `execution_succeeded` only when the validator
-observed `status.completed: true` and `status.status_str: success`. A status-less
+observed `status.completed: true` and `status.status_str: success`. The receipt
+privately retains the bounded original validated history bytes; containment
+revalidates that history and compares the resulting receipt's execution status,
+correlation fields and descriptors. Changing only the summary boolean cannot
+authorize execution success. A status-less
 receipt remains valid **remote metadata**, but cannot download or produce local
 `outputs_ready`: containment records `quarantined / execution_success_unproven`
 without invoking the provider. `ExecutionResult.status: ready`, outputs presence,

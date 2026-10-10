@@ -129,6 +129,31 @@ def test_statusless_remote_metadata_alone_never_downloads_or_advances(store):
     values[0].close()
 
 
+def test_forged_statusless_success_rejected_by_standalone_containment_before_io(store):
+    values, adapter, sent, accepted = running(success=False)
+    remote = adapter.remote_receipts()[0]
+    assert remote.execution_succeeded is False
+    forged = replace(remote, execution_succeeded=True)
+    calls = []
+    before = values[0].generation_jobs.snapshot(accepted.job_id)
+    with patch.object(adapter, "_event_sink") as events:
+        with pytest.raises(ValueError, match="remote_correlation_mismatch"):
+            store.stage_for_characterization(adapter._envelope, sent[0], forged,
+                fake_stream_provider=stream_provider(image_bytes(), calls))
+        events.assert_not_called()
+    assert not calls and not list(store._root.iterdir())
+    assert store.receipts_for_characterization() == () and adapter.local_receipts() == ()
+    after = values[0].generation_jobs.snapshot(accepted.job_id)
+    assert after == before
+    assert after["output_count"] == 0
+    assert after["requests"][0]["state"] == "awaiting_download"
+    # Rejection does not poison the original receipt's unverified quarantine.
+    assert contain(adapter, store, stream_provider(image_bytes(), calls)).status == "local_outputs_quarantined"
+    assert adapter.local_receipts()[0].failure_code == "execution_success_unproven"
+    assert not calls
+    values[0].close()
+
+
 def test_multi_image_atomic_receipt_multi_run_correlation_no_second_download(store):
     images = [{"filename": f"remote{i}.png", "subfolder": "", "type": "output"} for i in range(3)]
     values, adapter, sent, accepted = running(images=images)
