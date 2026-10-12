@@ -622,6 +622,18 @@ def reopen_journal(root, filename, *, expected_revision=None, expected_digest=No
 class OfflineJournalWriter:
     execution_available = False
 
+    def _create_exclusive_file(self, path, flags):
+        return os.open(path, flags, 0o600)
+
+    def _check_file(self, path, identity):
+        if _file_identity(_ordinary(path, directory=False)) != identity:
+            _fail("file_identity_changed")
+
+    def _release_lock(self, path, identity):
+        self.root.check()
+        if _file_identity(_ordinary(path, directory=False)) == identity:
+            path.unlink()
+
     def __init__(self, root, operation, *, characterization=False, fault=lambda boundary: None):
         if characterization is not True:
             _fail("execution_unavailable")
@@ -654,7 +666,7 @@ class OfflineJournalWriter:
         # Exclusive same-operation writer fence. A crash leaves this marker for
         # human inspection; no stale-lock takeover or automatic recovery.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        lock_fd = os.open(lock, flags, 0o600)
+        lock_fd = self._create_exclusive_file(lock, flags)
         lock_identity = _file_identity(os.fstat(lock_fd))
         os.close(lock_fd)
         try:
@@ -675,7 +687,7 @@ class OfflineJournalWriter:
             if len(data) > MAX_BYTES:
                 _fail("oversize")
             temp = base / (self.operation.operation_id + "." + uuid.uuid4().hex + ".tmp")
-            fd = os.open(temp, flags | getattr(os, "O_BINARY", 0), 0o600)
+            fd = self._create_exclusive_file(temp, flags | getattr(os, "O_BINARY", 0))
             temp_identity = _file_identity(os.fstat(fd))
             with os.fdopen(fd, "wb") as output:
                 output.write(data)
@@ -683,8 +695,7 @@ class OfflineJournalWriter:
                 os.fsync(output.fileno())
             self.fault("before_replace")
             self.root.check()
-            if _file_identity(_ordinary(temp, directory=False)) != temp_identity:
-                _fail("file_identity_changed")
+            self._check_file(temp, temp_identity)
             # Recheck immediately before replace; supported writers obey lock.
             if self._revision:
                 prior = reopen_journal(self.root, self.filename)
@@ -706,9 +717,7 @@ class OfflineJournalWriter:
         finally:
             # Only this live writer's unchanged lock is released. Temp files and
             # interrupted evidence remain; inventory never removes either.
-            self.root.check()
-            if _file_identity(_ordinary(lock, directory=False)) == lock_identity:
-                lock.unlink()
+            self._release_lock(lock, lock_identity)
 
 
 @dataclass(frozen=True)
