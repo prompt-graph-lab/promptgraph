@@ -164,6 +164,70 @@ truncation makes it incomplete independently. These counters are not global
 storage usage, free-space verification, quota reservations or deletion budgets.
 No age threshold, directory sweep, deletion, move or eviction is implemented.
 
+## Proposed fresh Recovery authorization (C2B-8C-3; not implemented)
+
+The [trust-profile decision and evidence matrix](agent-generation-protected-storage.md)
+define the proposed security scope. Profile A is a recommendation requiring
+human adoption; Profile B requires independently protected producer and
+latest-head custody. Neither is current policy or an authenticity-upgrade input.
+Under either profile, the steps below require a new separately reviewed host
+owner. The existing `HumanRecoveryReviewOwner` remains inspection/intention only.
+Its `RecoveryDecision.permission_granted` stays false, and its projection's
+execution/publication/save/cleanup gates stay false.
+`RecoveryContext(runtime_authority="observed")` is never that new owner.
+
+| Stage | Private binding required in a future owner | Fence / permitted result |
+| --- | --- | --- |
+| 1. Read-only case | Exact bounded Journal revision/digest, expected-tip provenance or explicit absence, independently selected protected roots, file evidence, saved-JSON reconciliation and source/review lineage. | Inspectable evidence only. A copied projection/case ID or matching hash grants nothing. Incomplete or unverified findings remain visible. |
+| 2. Human review intention | Exact privately held case and current case revision; association and discard intentions are different requests. | Existing intention may be recorded after rereading evidence; it cannot queue an effect or supply approval. |
+| 3. Independently verified current host | Host-selected original Project identity/path/content, unique original Illustration IDs, source prompts/negative prompts/Modules/Scene, exact original reviewed request/output mapping, verified current asset bytes/roots, plus a new session/activation/pairing binding. Provenance is checked under the adopted profile and cannot be asserted solely by the Journal or MCP request. | Missing, changed, duplicate or ambiguous evidence blocks association. No active/last Project fallback, silently substituted source or restored old claim. |
+| 4. Fresh explicit human action | Complete current recovery differences, all proposed output associations, already-saved members, unresolved external/save outcomes and the profile's limits are shown. Action binds that exact freshly checked review and host context. | A separate host confirmation, not old ACK, checkbox state, agent flag or persisted intention. Changed evidence invalidates it. |
+| 5. One-shot authorized plan | Host-private custody binds the exact case/evidence and reviewed plan, selected original Project, unique targets, source/review fingerprints, job/manifest/request/run/output correlations, asset identities/hashes, latest-tip state, and fresh host/session/activation/pairing. | Single admitted attempt only; never serialize a runnable token in the Journal or expose it through MCP. Plan IDs/digests are identity, not authority. Loss, close, stale target or conflicting attempt fences it. |
+| 6. Original-target host publication/save | Reconcile current Project and Candidate provenance again, check protected assets and all bindings immediately before mutation, then use separately reviewed host appender/history/Gallery/save owners. | Publish only the reviewed missing associations, retain observed partial/unknown outcomes and save through the exact original selected destination. No repeated mutation or automatic save retry. |
+
+After process loss, "original-target host" means a newly explicitly chosen host
+bound to the original persisted Project and separately verified source/review
+lineage. It does not mean the old Python object, claim, session, activation,
+pairing or approval survived. Reopening the same path, or switching back to the
+same Project, does not satisfy stages 3..5. Missing lineage remains a blocker;
+intentional transfer to a changed Project/Illustration would be a different
+reviewed operation, not a force/ignore-stale Recovery option.
+
+The immediate pre-mutation gate must follow current reviewed-operation custody:
+recompute the complete plan from current host/evidence, require exact reviewed
+equality, then reject drift before history, Candidate mutation, Gallery/session
+publication or save. Recheck the original destination and source/activation
+binding immediately before any separate save effect. A stale result publishes
+no side effect or accepted confirmation. This design does not introduce a
+cross-file transaction or claim to close hostile same-user read/use races.
+
+Idempotence requires a bounded host-owned attempt record and reconciliation of
+each exact output association, not a new claim inferred from the Journal. An
+already exact saved Candidate is reported as present without attachment. A
+partial result may propose only provably missing exact members after conflicts
+and persistence uncertainty are resolved and a new human review/action occurs;
+never replay the batch. If mutation or save raises after a possible effect,
+record observed partial/unknown state, consume the admitted attempt and require
+read-only reconciliation. A matching saved Candidate does not retrospectively
+authorize the attempt or turn an unknown save callback into success. Recovery
+must not resubmit remote generation or take an executor inbox envelope.
+
+**Discard is a separate authorization path.** Its review must bind exact owned
+files/roots and retained evidence, prove sufficient inventory and saved-Project
+reference coverage, and resolve save/external-operation uncertainty. A missing
+Project, uninspected reference, unknown ownership or reparse/identity drift blocks
+discard; age, job expiry, capacity pressure, association approval and failed save
+do not authorize deletion. Its own fresh human action and one-shot plan require
+an immediate pre-deletion ownership/reference recheck. No recursive retry or
+uncertain-evidence deletion is approved. Retention/defer remains available for
+unresolved cases without granting cleanup authority.
+
+These contracts are design gates only. A future implementation must document
+host lock ordering and callback boundaries, and characterize concurrent stale
+transitions, repeated action, partial append and save failure against the
+existing publication owners. Production activation and operational tests remain
+separate human decisions in the protected-storage go/no-go matrix.
+
 ## Characterization and remaining gates
 
 `tests/test_agent_generation_human_recovery.py` uses disposable journal roots,
@@ -178,12 +242,13 @@ verify no Project save/mutation, journal write, deletion/move, network or worker
 restart. Existing C2B-1..8A and Scene Module Swap focused regressions remain the
 compatibility baseline; no full suite or live operational execution is claimed.
 
-Production still needs independent authenticated journal ownership, protected
-roots/ACLs and durability, fresh original Project/source/review/session/activation/
+Production still needs an explicitly adopted threat/ownership policy (including
+independent authentication if Profile B is required), protected roots/ACLs and
+durability policy, fresh original Project/source/review/session/activation/
 pairing authority, exact human recovery authorization, idempotent association
 and original-host publication/save gates. Cleanup needs its own explicit
-authorization, authenticated ownership and saved-reference/external uncertainty
-resolution. Global quota/reservation, truthful bounded real transport, worker
+authorization, ownership verified under the adopted profile and saved-reference/
+external uncertainty resolution. Global quota/reservation, truthful bounded real transport, worker
 lifecycle and authorized operational restart/failure exercises remain separate.
 This characterization foundation supplies none of those capabilities and does
 not change C2B-1..8A or Scene Module Swap runtime owners.
