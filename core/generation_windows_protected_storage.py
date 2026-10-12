@@ -157,6 +157,18 @@ def _open(path, directory, api):
         raise
 
 
+def _revalidate(observations, api, user):
+    # Retain the original observations, not merely a fresh pair of equal reads.
+    # Two bounded passes also reject changes while the chain is being checked.
+    for _ in range(2):
+        for path, directory, handle, identity, acl in observations:
+            if (_identity(handle) != identity
+                    or _ordinary(path, directory=directory) != identity):
+                _fail("identity_changed")
+            if _acl(handle, api, user) != acl:
+                _fail("native_observation_changed")
+
+
 class WindowsProtectedRootCharacterization:
     execution_available = False
 
@@ -189,6 +201,7 @@ class WindowsProtectedRootCharacterization:
         user = _current_user(api)
         handles = ExitStack()
         scope_handle = None
+        observations = []
         try:
             # Pin the full existing ancestor chain without DELETE sharing.
             parent = scope if provision else path.parent
@@ -198,7 +211,11 @@ class WindowsProtectedRootCharacterization:
                 if ancestor == scope:
                     scope_handle = handle
                     _filesystem(handle)
-                    _acl(handle, api, user)  # writable scope must already be owner-only
+                # Every in-scope directory must already be protected owner-only.
+                # Pin ancestors above scope, but do not impose this ACL policy there.
+                if ancestor.is_relative_to(scope):
+                    observations.append((ancestor, True, handle, _identity(handle),
+                                         _acl(handle, api, user)))
             if provision:
                 # CreateDirectory is exclusive; the protected DACL is supplied at
                 # creation. Existing names are never repaired or overwritten.
@@ -208,36 +225,32 @@ class WindowsProtectedRootCharacterization:
             identity = _identity(handle)
             filesystem = _filesystem(handle)
             acl = _acl(handle, api, user)
-            if _acl(handle, api, user) != acl or _identity(handle) != identity:
-                _fail("native_observation_changed")
+            observations.append((path, purpose != "selected_project_json", handle, identity, acl))
+            observations = tuple(observations)
+            _revalidate(observations, api, user)
             return cls(path, purpose, handle, scope_handle, handles, identity, filesystem,
-                       api, user, _factory=_FACTORY)
+                       api, user, observations, _factory=_FACTORY)
         except BaseException:
             handles.close()
             # If creation succeeded, retain evidence. Never delete on failure.
             raise
 
-    def __init__(self, path, purpose, handle, scope_handle, handles, identity, filesystem, api, user, *, _factory=None):
+    def __init__(self, path, purpose, handle, scope_handle, handles, identity, filesystem, api, user,
+                 observations, *, _factory=None):
         if _factory is not _FACTORY:
             _fail("host_storage_required")
         self._path, self._purpose, self._handle, self._handles = path, purpose, handle, handles
         self._scope_handle = scope_handle
         self._identity, self._filesystem, self._api, self._user = identity, filesystem, api, user
+        self._observations = observations
         self._closed = False
 
     def readiness(self):
         state = "closed" if self._closed else "unavailable"
         if not self._closed:
             try:
-                if (_identity(self._handle) != self._identity
-                        or _ordinary(self._path, directory=self._purpose != "selected_project_json") != self._identity):
-                    _fail("identity_changed")
                 _filesystem(self._handle)
-                scope_acl = _acl(self._scope_handle, self._api, self._user)
-                first = _acl(self._handle, self._api, self._user)
-                if (_acl(self._handle, self._api, self._user) != first
-                        or _acl(self._scope_handle, self._api, self._user) != scope_acl):
-                    _fail("native_observation_changed")
+                _revalidate(self._observations, self._api, self._user)
                 state = "owner_only_acl_observed"
             except Exception:
                 state = "unsafe_or_unavailable"

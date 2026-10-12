@@ -114,8 +114,11 @@ The final handle path must match the selected path, be non-UNC, and report
 `DRIVE_FIXED`; a mapped remote drive cannot pass merely by reporting NTFS.
 The same handle's volume must report NTFS and persistent ACL support.
 
-The writable scope must **already** have a protected current-user-only DACL.
-No existing scope is repaired. `provision_journal_for_characterization` chooses
+The writable scope and every existing intermediate directory through the selected
+target must **already** have protected current-user-only DACLs. Ancestors above the
+approved scope remain pinned for path checks without imposing this ACL policy.
+No existing scope, intermediate directory or target is repaired.
+`provision_journal_for_characterization` chooses
 one new UUID private-journal child and supplies a protected owner-only DACL
 atomically to exclusive `CreateDirectory`. A collision is an error, never a
 repair/overwrite. If subsequent verification fails, new evidence is retained;
@@ -129,8 +132,11 @@ and optional object/container inheritance flags. Inherited, other-principal,
 deny/object/callback or unmodeled ACEs are unsupported/unsafe. Thread impersonation
 is unsupported. Token/group/privilege cases outside this narrow owner-only model
 are not accepted as a general effective-access proof. No privilege is enabled.
-The descriptor and identity are rechecked before returning the private owner;
-each readiness call rechecks native ACL, filesystem and original identity.
+The complete in-scope chain's descriptor and identity observations are retained
+and rechecked before returning the private owner. Each readiness call compares
+every pinned in-scope handle's ACL and identity with those original observations,
+checks the paths for identity/reparse changes, and rechecks the target filesystem.
+Even a change to another supported owner-only ACL invalidates the observation.
 
 The native projection can report `owner_only_acl_observed` and `acl_verified=true`
 for this snapshot while handles remain open. Closing releases handles and changes
@@ -192,8 +198,11 @@ principals, modeled/unmodeled ACLs, fsync failure, old/new file interruptions,
 ambiguous acknowledgment, digest-valid forgery, rollback and Human Recovery
 inspect-only behavior. True native Windows tests separately cover atomic secured
 private-journal creation, same-handle descriptor/identity inspection, read-only
-existing-root inspection, live scope/root rename refusal, actual Everyone and
-inheritance ACL changes, unsupported/mapped filesystems, absent dependencies,
+existing-root inspection, fully protected nested directory/JSON inspection,
+live scope/intermediate/root rename refusal, writable intermediate principals,
+inheritance/unsupported ACEs, and intermediate ACL changes during capture or
+readiness (including changed owner-only snapshots). They also cover actual Everyone
+and inheritance ACL changes, unsupported/mapped filesystems, absent dependencies,
 unapproved paths and retained evidence after post-creation interruption.
 Synthetic ACL/reparse samples are distinguished from these native tests. The
 existing publication symlink test may skip when Windows disallows symlink creation;
