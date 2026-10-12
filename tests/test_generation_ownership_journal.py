@@ -586,3 +586,63 @@ def test_substituted_root_refuses_replace_and_lock_cleanup(rig):
     assert (original / "operation.json").read_bytes() == before
     assert (original / "operation.lock").exists()
     assert not list(root.iterdir())
+
+
+@pytest.mark.parametrize("field,value", [("request_id", "different-request"),
+                                         ("job_id", "different-job"), ("output_index", 2)])
+def test_exact_asset_illustration_with_different_provenance_is_conflicting(rig, field, value):
+    roots, _, candidate, writer = rig
+    journal = append_all(writer, candidate)
+    record = saved_record(candidate, roots)
+    record["generation_provenance"][field] = value
+    write_candidates(roots, [record])
+    result = j.reconcile_selected_project(journal, roots[1], "project.json", roots[2:])
+    assert result.state == "conflicting" and result.matched == 0 and result.expected == 1
+    assert not result.attachment_allowed and result.trust == "inspect_only"
+    # A hash match at another path is genuinely absent for this expected pair.
+    record["path"] = str(Path(roots[3].path) / "different.png")
+    write_candidates(roots, [record])
+    absent = j.reconcile_selected_project(journal, roots[1], "project.json", roots[2:])
+    assert absent.state == "absent" and not absent.attachment_allowed
+
+
+def test_candidate_reference_without_file_evidence_is_missing_or_unverified(rig):
+    roots, _, candidate, writer = rig
+    journal = append_all(writer, candidate)
+    inventory = j.inspect_inventory(roots[0], roots[2:])
+    assert inventory.files == (("promoted", "image.png", "missing"),)
+    asset = Path(roots[3].path) / "image.png"
+    asset.write_bytes(b"unverified bytes")
+    # Without size/identity evidence, Candidate hash is never used to verify it.
+    with patch.object(j, "_read", wraps=j._read) as reads:
+        inventory = j.inspect_inventory(roots[0], roots[2:])
+        assert inventory.files == (("promoted", "image.png", "unverified"),)
+        assert all(call.args[0] is roots[0] for call in reads.call_args_list)
+    assert not inventory.orphans
+    write_candidates(roots, [saved_record(candidate, roots)])
+    result = j.reconcile_selected_project(journal, roots[1], "project.json", roots[2:])
+    assert result.state == "exact" and not result.attachment_allowed
+
+
+@pytest.mark.parametrize("state", ["missing", "tampered", "conflicting"])
+def test_candidate_asset_with_promoted_evidence_is_checked(rig, state):
+    roots, _, candidate, writer = rig
+    asset = Path(roots[3].path) / "image.png"
+    data = image_bytes()
+    asset.write_bytes(data)
+    image = j.FileObservation("promoted", roots[3].path, roots[3].identity, "image.png",
+            j._file_identity(asset.stat()), hashlib.sha256(data).hexdigest(), len(data), "promoted", "PNG", 4, 3,
+            "request", "descriptor", 1, "verified")
+    candidate = replace(candidate, content_sha256=image.content_sha256)
+    if state == "conflicting":
+        candidate = replace(candidate, content_sha256="f" * 64)
+    journal = append_all(writer, candidate, files=(image,))
+    if state == "missing":
+        asset.unlink()
+    elif state == "tampered":
+        asset.write_bytes(b"changed image bytes")
+    inventory = j.inspect_inventory(roots[0], roots[2:])
+    assert inventory.files == (("promoted", "image.png", state),)
+    write_candidates(roots, [saved_record(candidate, roots)])
+    result = j.reconcile_selected_project(journal, roots[1], "project.json", roots[2:])
+    assert result.state == "exact" and not result.attachment_allowed

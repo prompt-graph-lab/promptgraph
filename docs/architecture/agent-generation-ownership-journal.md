@@ -154,6 +154,10 @@ budget-exceeded observations are separate. Unindexed direct entries are
 `unverified` orphans, never reconstructed receipts. Truncated inventory is
 explicit and cannot prove global absence. Inventory reads no remote history,
 downloads nothing and never relocates, adopts, cleans up or deletes files.
+Candidate asset references participate in this bounded inventory even without
+promoted file evidence: an absent asset is `missing`, a present asset without
+original identity/size evidence is `unverified`, and a disagreeing promoted
+record is `conflicting`. Candidate hashes alone do not verify or adopt an asset.
 
 ## Explicit selected-Project reconciliation
 

@@ -760,6 +760,23 @@ def inspect_inventory(journal_root, asset_roots=(), *, max_entries=64, max_file_
                     expected[key] = None
                 elif key not in expected:
                     expected[key] = item
+    associations = {}
+    for journal in journals:
+        for obs in journal.observations:
+            for candidate in obs.candidates:
+                key = (candidate.asset_root_key, candidate.asset_relative_path)
+                if key in associations and associations[key] != candidate:
+                    expected[key] = None
+                associations[key] = candidate
+                if key not in expected:
+                    expected[key] = candidate
+                elif type(expected[key]) is FileObservation:
+                    image = expected[key]
+                    if (image.role, image.request_id, image.descriptor_identity,
+                            image.output_index, image.content_sha256) != (
+                            "promoted", candidate.request_id, candidate.descriptor_identity,
+                            candidate.output_index, candidate.content_sha256):
+                        expected[key] = None
     # One aggregate entry and byte budget, including unindexed files.
     total_bytes = 0
     for key, item in list(expected.items())[:max_entries]:
@@ -768,6 +785,20 @@ def inspect_inventory(journal_root, asset_roots=(), *, max_entries=64, max_file_
             continue
         if key[0] not in roots:
             files.append((*key, "unapproved_root"))
+            continue
+        if type(item) is CandidateObservation:
+            # A Candidate fingerprint supplies no original file identity/size.
+            # Inspect only presence under the approved root; do not hash/adopt.
+            try:
+                path = roots[key[0]].check() / _relative(key[1])
+                _ordinary(path, directory=False)
+                _canonical(path)
+                roots[key[0]].check()
+                files.append((*key, "unverified"))
+            except FileNotFoundError:
+                files.append((*key, "missing"))
+            except (ValueError, OSError) as error:
+                files.append((*key, str(error) if isinstance(error, ValueError) else "unreadable"))
             continue
         if roots[key[0]].path != item.root_path or roots[key[0]].identity != tuple(item.root_identity):
             files.append((*key, "root_identity_changed"))
@@ -872,8 +903,25 @@ def reconcile_selected_project(journal, selected_root, selected_relative_path, a
                 if type(record) is not dict:
                     return result("uncertain", matched)
                 provenance = record.get("generation_provenance")
-                if type(provenance) is dict and provenance.get("job_id") == candidate.job_id and provenance.get("request_id") == candidate.request_id and provenance.get("output_index") == candidate.output_index:
-                    related.append((line, record, provenance))
+                same_asset = False
+                path_value = record.get("path")
+                if str(line.get("id")) == candidate.illustration_id and type(path_value) is str and path_value:
+                    try:
+                        path = Path(path_value)
+                        if not path.is_absolute():
+                            _relative(path_value)
+                            path = selected_root.check() / Path(selected_relative_path).parent / path
+                        _observed_absolute(str(path))
+                        same_asset = path == expected_path
+                    except (ValueError, OSError):
+                        pass
+                same_provenance = (type(provenance) is dict and provenance.get("job_id") == candidate.job_id
+                                   and provenance.get("request_id") == candidate.request_id
+                                   and provenance.get("output_index") == candidate.output_index)
+                # Exact original Illustration/path is a conflict signal even
+                # when provenance was altered or removed; it grants no custody.
+                if same_provenance or same_asset:
+                    related.append((line, record, provenance if type(provenance) is dict else {}))
         if not related:
             continue
         if len(related) != 1:
