@@ -145,6 +145,10 @@ rollback, save retry or changed-target convenience save occurs.
 
 ## Remaining gates
 
+The [C2B-7 integration and recovery audit](agent-generation-integration-recovery.md)
+maps these characterized boundaries together, records crash/evidence limitations,
+and proposes human recovery, inventory, retention and production prerequisites.
+
 This slice characterizes one original-runtime publisher for one accepted
 envelope. Explicit recovery/inventory, session restart reconstruction, owner
 retirement/replacement, durable retention/cleanup and protected filesystem policy
