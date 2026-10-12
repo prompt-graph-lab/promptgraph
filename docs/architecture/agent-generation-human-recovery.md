@@ -7,6 +7,11 @@ read-only inspection and explicit saved-Project reconciliation. Production
 `execution_available` remains false. There is no Candidate association,
 Project save, cleanup, worker resume or ComfyUI submission in this owner.
 
+The C2B-8C-1 [protected-storage characterization](agent-generation-protected-storage.md)
+adds explicit disposable purpose-root and fail-closed Windows capability
+contracts. Matching identities and synthetic ACL-policy samples cannot upgrade
+this owner's journal authenticity or current recovery authorization.
+
 ## Private case and presentation
 
 `HumanRecoveryReviewOwner` holds one frozen `RecoveryCase` and at most one
