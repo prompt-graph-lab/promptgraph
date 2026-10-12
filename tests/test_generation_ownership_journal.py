@@ -274,6 +274,72 @@ def test_selected_saved_exact_absent_partial_conflicting_is_read_only(rig, save)
     assert j.reconcile_selected_project(journal, roots[1], "other.json", roots[2:]).state == "conflicting"
 
 
+@pytest.mark.parametrize("candidate_count", [1, 2])
+@pytest.mark.parametrize("duplicate_record", ["absent", "conflicting"])
+def test_duplicate_source_illustration_is_conflicting(rig, candidate_count, duplicate_record):
+    roots, _, candidate, writer = rig
+    second = replace(candidate, output_index=2, descriptor_identity="second", asset_relative_path="second.png")
+    for i, (checkpoint, outcome) in enumerate(zip(j.CHECKPOINTS,
+            ("intent", "accepted", "intent", "verified", "intent", "registered", "intent", "saved"))):
+        journal = writer.append_for_characterization(j.Observation(checkpoint, outcome,
+                   candidates=(candidate, second)[:candidate_count] if i == 5 else (),
+                   save=j.ProjectSaveObservation("project", "project.json", outcome) if i in (6, 7) else None))
+    record = saved_record(candidate, roots)
+    other = saved_record(candidate, roots)
+    other["generation_provenance"]["content_sha256"] = "f" * 64
+    path = Path(roots[1].path) / "project.json"
+    path.write_text(json.dumps({"prompt_lines": [
+        {"id": candidate.illustration_id, "generated_candidates": [record]},
+        {"id": candidate.illustration_id, "generated_candidates": [other] if duplicate_record == "conflicting" else []},
+    ], "unknown": {"keep": 7}}))
+    before = {str(p): p.read_bytes() for root in roots for p in Path(root.path).iterdir() if p.is_file()}
+    result = j.reconcile_selected_project(journal, roots[1], "project.json", roots[2:])
+    assert result.state == "conflicting" and result.matched == 0 and result.expected == candidate_count
+    assert result.trust == "inspect_only" and not result.attachment_allowed and not result.execution_available
+    assert before == {str(p): p.read_bytes() for root in roots for p in Path(root.path).iterdir() if p.is_file()}
+
+
+@pytest.mark.parametrize("source_fields", [{}, {"id": None}, {"id": False}, {"id": 17},
+                                          {"id": ""}, {"id": []}, {"id": {}}, {"id": "../line"}])
+def test_malformed_saved_source_identity_is_uncertain(rig, source_fields):
+    roots, op, candidate, _ = rig
+    # A numeric/bool ID must not become an exact match through string coercion.
+    source_id = source_fields.get("id")
+    illustration_id = str(source_id) if type(source_id) in (bool, int) else candidate.illustration_id
+    op = replace(op, requests=(replace(op.requests[0], illustration_id=illustration_id),))
+    candidate = replace(candidate, illustration_id=illustration_id)
+    writer = j.OfflineJournalWriter(roots[0], op, characterization=True)
+    journal = append_all(writer, candidate)
+    path = Path(roots[1].path) / "project.json"
+    path.write_text(json.dumps({"prompt_lines": [
+        {**source_fields, "generated_candidates": [saved_record(candidate, roots)]},
+    ]}))
+    before = path.read_bytes()
+    result = j.reconcile_selected_project(journal, roots[1], "project.json", roots[2:])
+    assert result.state == "uncertain" and result.matched == 0
+    assert result.trust == "inspect_only" and not result.attachment_allowed and not result.execution_available
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("source", ["unique", "missing", "moved"])
+def test_unique_or_missing_original_illustration_keeps_saved_association_state(rig, source):
+    roots, _, candidate, writer = rig
+    journal = append_all(writer, candidate)
+    lines = [{"id": "other", "generated_candidates": []}]
+    if source == "unique":
+        lines.append({"id": candidate.illustration_id, "generated_candidates": [saved_record(candidate, roots)]})
+    elif source == "moved":
+        lines[0]["generated_candidates"] = [saved_record(candidate, roots)]
+    path = Path(roots[1].path) / "project.json"
+    path.write_text(json.dumps({"prompt_lines": lines, "unknown": {"keep": 7}}))
+    before = path.read_bytes()
+    result = j.reconcile_selected_project(journal, roots[1], "project.json", roots[2:])
+    assert result.state == {"unique": "exact", "missing": "absent", "moved": "conflicting"}[source]
+    assert result.matched == (1 if source == "unique" else 0) and result.expected == 1
+    assert result.trust == "inspect_only" and not result.attachment_allowed and not result.execution_available
+    assert path.read_bytes() == before
+
+
 def test_conflicting_hash_path_missing_unreadable_unknown_fields(rig):
     roots, _, candidate, writer = rig
     journal = append_all(writer, candidate, save="uncertain")

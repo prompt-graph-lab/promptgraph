@@ -886,6 +886,15 @@ def reconcile_selected_project(journal, selected_root, selected_relative_path, a
     if len(set(keys)) != len(keys):
         return result("uncertain")
     roots = {r.key: r for r in asset_roots}
+    line_id_counts = {}
+    for line in value["prompt_lines"]:
+        if type(line) is not dict:
+            return result("uncertain")
+        try:
+            line_id = _id(line.get("id"))
+        except ValueError:
+            return result("uncertain")
+        line_id_counts[line_id] = line_id_counts.get(line_id, 0) + 1
     matched, conflict = 0, False
     for candidate in candidates:
         root = roots.get(candidate.asset_root_key)
@@ -895,6 +904,10 @@ def reconcile_selected_project(journal, selected_root, selected_relative_path, a
             expected_path = root.check() / _relative(candidate.asset_relative_path)
         except (ValueError, OSError):
             return result("uncertain", matched)
+        # A matching record on one duplicate Line does not identify the source.
+        if line_id_counts.get(candidate.illustration_id, 0) > 1:
+            conflict = True
+            continue
         related = []
         for line in value["prompt_lines"]:
             if type(line) is not dict or type(line.get("generated_candidates", [])) is not list:
@@ -905,7 +918,7 @@ def reconcile_selected_project(journal, selected_root, selected_relative_path, a
                 provenance = record.get("generation_provenance")
                 same_asset = False
                 path_value = record.get("path")
-                if str(line.get("id")) == candidate.illustration_id and type(path_value) is str and path_value:
+                if line["id"] == candidate.illustration_id and type(path_value) is str and path_value:
                     try:
                         path = Path(path_value)
                         if not path.is_absolute():
@@ -939,7 +952,7 @@ def reconcile_selected_project(journal, selected_root, selected_relative_path, a
                 _relative(path_value)
                 path = selected_root.check() / Path(selected_relative_path).parent / path
             _observed_absolute(str(path))
-            exact = (path == expected_path and str(line.get("id")) == candidate.illustration_id
+            exact = (path == expected_path and line["id"] == candidate.illustration_id
                      and all(type(provenance.get(k)) is type(v) and provenance.get(k) == v for k, v in expected_provenance.items()))
         except (ValueError, OSError):
             exact = False
