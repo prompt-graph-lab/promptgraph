@@ -1,4 +1,4 @@
-# Agent Generation protected-storage characterization (C2B-8C-1)
+# Agent Generation protected-storage characterization (C2B-8C-1 / C2B-8C-2)
 
 `core/generation_protected_storage.py` characterizes the protected-storage policy
 required by the [Ownership Journal](agent-generation-ownership-journal.md),
@@ -7,8 +7,11 @@ and [Human Recovery](agent-generation-human-recovery.md). It has **no production
 call site**. `execution_available` and every execution, association, publication,
 save and cleanup status remain false. Recovery remains inspect-only.
 `core/generation_windows_protected_storage.py` adds a separate opt-in native
-Windows observation owner for narrowly supported disposable roots. It does not
-wire the existing journal, containment, promotion or Recovery owners.
+Windows observation owner for narrowly supported disposable roots.
+`core/generation_protected_journal.py` adds an offline disposable Journal lifecycle
+over that native owner and the existing Journal and Human Recovery inspection
+owners. It has no production call site; containment, promotion and execution
+remain unconnected.
 
 ## Threat model and separate evidence
 
@@ -188,6 +191,73 @@ NTFS handle. ReFS, FAT/exFAT, remote shares, mapped drives and unknown filesyste
 are unsupported. The path/stat owner has no filesystem verification. Even a
 successful native NTFS ACL observation lacks overall protected-storage readiness;
 directory durability remains `unsupported`, and execution stays closed.
+
+## Protected Journal lifecycle (C2B-8C-2)
+
+`WindowsProtectedJournalCharacterization.provision_for_characterization` requires
+both explicit opt-ins, delegates private-directory creation to the native root
+owner, and retains its complete pinned ancestor chain until explicit close.
+The host supplies the disposable scope independently. The resulting native root
+identity must equal the separately captured `ApprovedRoot`; Journal paths never
+construct authority. Only this newly provisioned owner may initialize one private
+writer. Its process-local lock serializes operations; exclusive native file
+creation still fences competing writers for the same operation.
+
+The ordinary `OfflineJournalWriter` retains its existing public constructor and
+default filesystem behavior. Three private I/O methods permit the disposable
+subclass to create lock and temporary files with `CREATE_NEW` and the same
+protected current-user-only DACL at creation, verify observed file identities,
+and release only its acknowledged live lock. Existing file ACLs are never repaired.
+The temporary inode and its DACL move to the final Journal name on replacement.
+Native tests inspect real lock, temporary and final file security descriptors.
+
+Before and after initialization, append, reopen, inventory and Human Recovery
+inspection, the host rechecks the pinned root chain, filesystem and bounded direct
+child files. Native file checks reject reparses, multiple links, unsupported DACLs
+and changed observed ACLs. They hold handles while inspecting and revalidating the
+snapshot; all opened file handles are released afterward so the existing atomic
+replacement can proceed. Direct-child inspection is limited to 64 entries and
+fails closed above that bound rather than inspecting a partial set as safe.
+The initial created-file ACL snapshot is retained before the creation fault seam;
+changing it to another otherwise supported owner-only DACL still invalidates the
+observation. Post-operation verification also runs when a read or parse fails.
+
+Inside an append, checks surround exclusive lock/temp creation, precede replacement
+after file flush/fsync, follow the final reread and surround verified lock release.
+The fault seams characterize file creation, pre-replace, post-replace/pre-ACK and
+operation-return boundaries. These are bounded observations, not handle-relative
+file content I/O or a proof against hostile same-user check/use races. Retained
+directory handles fence the tested directory substitutions. No claim of complete
+same-user file-writer isolation or continuous ACL protection is made.
+
+Every failed append pins its writer uncertain with no retry. Pre-replace failures
+retain old complete bytes, lock and temporary evidence; post-replace failures can
+leave complete new bytes and unknown acknowledgment. Failed post-operation
+verification withholds the return value and cannot count as a successful write.
+No stale-lock takeover, temp cleanup, uncertain-evidence deletion or automatic
+replay is performed. Releasing the unchanged lock after an acknowledged live
+append is the normal writer operation, not recovery cleanup. File fsync and
+replacement do not establish directory/power-loss durability or a transaction
+with assets or Project JSON.
+
+Closing native handles invalidates the entire lifecycle. A host may explicitly
+reopen an independently selected Journal directory through fresh native root
+verification. That owner exposes inspection only and cannot initialize a writer.
+Reopened records remain `authenticity=unverified` / `trust=inspect_only`.
+Human Recovery returns only its existing bounded projection, not a retained case
+or decision owner. An original selected Project root is separately supplied;
+missing Projects and incomplete or rolled-back Journals remain inspection
+findings. Native protection applies to the Journal directory/files only, not an
+independently supplied Project or asset root. This slice does not inspect assets.
+
+ACL snapshots, original producer observations, digest-chain integrity, separately
+supplied expected revision/digest, independently authenticated authorship, trusted
+latest-head custody and current Project/session authorization remain different
+evidence. A digest-valid older prefix is not detectable without an independently
+retained expected tip, and even that tip does not authenticate an author.
+`execution_available=False`, `protected_storage_available=False` and
+`authorship=unverified` remain unchanged. No keys, HMAC, DPAPI, network, worker,
+Candidate mutation, Project save, Start or Recovery execution are introduced.
 
 ## Validation and remaining production gates
 
