@@ -14,6 +14,12 @@ explicit selected saved-Project Candidate reconciliation. It has no production
 call site and does not restore claims, publish, save, retry or clean up. The audit
 below records C2B-1..7 runtime behavior; its memory-only boundaries remain unchanged.
 
+[C2B-8B Human Recovery Review foundation](agent-generation-human-recovery.md)
+adds private immutable inspection cases, redacted bounded projections, scoped
+non-executable review intentions and read-only retention assessment. It has no
+production Recovery UI or call site. Fresh recovery/cleanup authorization,
+authenticated journal ownership and publication/save authority remain gates.
+
 ## Evidence scope and current owners
 
 The surrounding contracts are authoritative:
@@ -284,7 +290,7 @@ classification is scoped to the owners and tests cited, not a broad code audit.
 | Already covered | Composed fake path/reopen/provenance/no replay, promoted-before-append failure, partial insertion with later distinct requests/save block, definitive/uncertain save, post-promotion event race, incomplete/quarantined refusal and lost-memory refusal: `tests/test_agent_generation_integration_recovery_audit.py`. No actual crash journal/recovery is simulated. |
 | Already covered | Independent Module Swap custody/ACK: `tests/test_agent_generation_candidate_publication.py::test_publication_preserves_pending_scene_swap_and_its_ack`; actual Apply/save failure boundaries: `tests/test_agent_scene_module_swap_apply_lifecycle.py::test_success_revalidates_applies_one_scene_and_publishes_in_order`, `test_autosave_failure_keeps_project_and_history_and_consumes_approval`. |
 | Production blocker | Claims/receipt indexes/attempts are memory-only; no crash-consistent submission intent, restart inventory or saved-JSON reconciliation. Existing paths/hashes cannot recover exact authority. |
-| Production blocker | No human recovery/retention owner or safe cleanup authorization; global storage quota/reservation and protected Windows roots/ACLs not established. |
+| Production blocker | No production human recovery/retention owner or safe cleanup authorization; global storage quota/reservation and protected Windows roots/ACLs not established. |
 | Production blocker | No trusted real submission/result/download transport with deadlines, origin/redirect/authentication policy and truthful unknown classifications; no bounded production worker/host event delivery. |
 | Production blocker | No production exact Human Start action, host publication wiring or reviewed retirement/replacement lifecycle; one pinned publisher currently supports one envelope/runtime. |
 | Operational improvement | Later richer progress, reminders and visual inventory grouping can follow correctness gates. They must keep counts/privacy/retention budgets and never imply completion or cancellation from elapsed time. |

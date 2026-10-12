@@ -4,7 +4,10 @@
 for bounded observations and restart inspection. It has no production call
 site. `execution_available` remains false. This is not a recovery executor,
 publication owner, Project writer, Start UI or restart reconstruction of a live
-claim. The C2B-7 [integration/recovery audit](agent-generation-integration-recovery.md),
+claim. The C2B-8B [Human Recovery Review foundation](agent-generation-human-recovery.md)
+now composes its read-only observations into private immutable review cases and
+non-executable review intentions; authenticity remains unverified. The C2B-7
+[integration/recovery audit](agent-generation-integration-recovery.md),
 C2B-5 [containment](agent-generation-output-containment.md) and C2B-6
 [Candidate publication](agent-generation-candidate-publication.md) still define
 the runtime boundaries.
