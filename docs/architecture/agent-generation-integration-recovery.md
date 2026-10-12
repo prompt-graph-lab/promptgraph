@@ -4,9 +4,15 @@ This is the production-readiness audit of C2B-1 through C2B-6 at main
 `3956bb29ec9e1d82fceedd482d4e7c307d3f4438` (PR #153 merge). It records
 implemented characterization guarantees and a proposed recovery design.
 **Production execution remains unavailable.** There is no production Start,
-worker, ComfyUI transport, restart journal, recovery publication or cleanup
+worker, ComfyUI transport, production restart journal, recovery publication or cleanup
 implementation in this slice. Passing injected-fake tests does not establish a
 working production ComfyUI integration or crash durability.
+
+[C2B-8A ownership journal foundation](agent-generation-ownership-journal.md)
+now characterizes bounded offline journaling, inspect-only restart inventory and
+explicit selected saved-Project Candidate reconciliation. It has no production
+call site and does not restore claims, publish, save, retry or clean up. The audit
+below records C2B-1..7 runtime behavior; its memory-only boundaries remain unchanged.
 
 ## Evidence scope and current owners
 
