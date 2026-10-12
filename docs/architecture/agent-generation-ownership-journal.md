@@ -12,6 +12,13 @@ C2B-5 [containment](agent-generation-output-containment.md) and C2B-6
 [Candidate publication](agent-generation-candidate-publication.md) still define
 the runtime boundaries.
 
+The C2B-8C-1 [protected-storage characterization](agent-generation-protected-storage.md)
+now separates observed identity, ACL policy, integrity, digest-chain validity,
+authorship and current authorization. A separate opt-in disposable Windows owner
+can provision/observe a protected owner-only private-journal root on local NTFS;
+production integration and directory durability remain unavailable. Neither
+readiness projection grants execution or Recovery authority.
+
 ## Ownership and schema
 
 An explicitly enabled `OfflineJournalWriter` receives a host-captured
