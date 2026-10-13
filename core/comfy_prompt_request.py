@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field
 import hashlib
+import weakref
 from urllib.parse import urlsplit
 
 from core.generation_executable_manifest import (
@@ -48,6 +49,31 @@ class FrozenPromptRequest:
     prompt_url: str = field(repr=False)
     body_json: bytes = field(repr=False)
     output_nodes: tuple  # (node identity, expected remote bucket)
+    _prepared_origin: object = field(default=None, init=False, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class _PreparedOrigin:
+    instance: object = field(repr=False)
+    fields: tuple = field(repr=False)
+
+
+def _frozen_fields(request):
+    return (request.request_id, request.request_index, request.workflow_identity,
+            request.client_id, request.prompt_url, request.body_json, request.output_nodes)
+
+
+def is_owner_prepared_frozen_request(request):
+    """Private in-process preparation provenance, not cryptographic authority.
+
+    Replacements/manual copies have no issuance record. Equality remains based
+    on the original payload fields for existing remote receipt validation.
+    """
+    if type(request) is not FrozenPromptRequest:
+        return False
+    origin = request._prepared_origin
+    return (type(origin) is _PreparedOrigin and origin.instance() is request
+            and origin.fields == _frozen_fields(request))
 
 
 def prepare_frozen_prompt_request(manifest, request, *, client_id):
@@ -120,5 +146,7 @@ def prepare_frozen_prompt_request(manifest, request, *, client_id):
         nodes.append((node, "temp" if kind == "PreviewImage" else "output"))
     # Embed the exact reviewed bytes rather than decoding and rewriting seeds.
     body = b'{"prompt":' + request.workflow_json + b',"client_id":' + json.dumps(client_id).encode("ascii") + b'}'
-    return FrozenPromptRequest(request.request_id, request.request_index, request.workflow_identity,
-                               client_id, url.rstrip("/") + "/prompt", body, tuple(nodes))
+    prepared = FrozenPromptRequest(request.request_id, request.request_index, request.workflow_identity,
+                                   client_id, url.rstrip("/") + "/prompt", body, tuple(nodes))
+    object.__setattr__(prepared, "_prepared_origin", _PreparedOrigin(weakref.ref(prepared), _frozen_fields(prepared)))
+    return prepared
