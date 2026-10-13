@@ -234,7 +234,7 @@ def test_stdlib_characterization_wire_uses_exact_http_no_ambient_proxies_cookies
     native = Mock()
     response = Mock(status=200, length=0)
     response.getheaders.return_value = []
-    response.read.side_effect = [raw({'prompt_id': str(uuid.uuid4())}), b'']
+    response.read1.side_effect = [raw({'prompt_id': str(uuid.uuid4())}), b'']
     native.getresponse.return_value = response
     with patch.object(owner.http.client, 'HTTPConnection', return_value=native) as ctor, \
          patch('urllib.request.urlopen', side_effect=AssertionError('ambient opener')):
@@ -252,7 +252,7 @@ def test_tls_wire_and_incomplete_declared_length_fail_closed(prepared):
     native = Mock()
     response = Mock(status=200, length=2)
     response.getheaders.return_value = [('Content-Length', '42')]
-    response.read.side_effect = [raw({'prompt_id': str(uuid.uuid4())}), b'']
+    response.read1.side_effect = [raw({'prompt_id': str(uuid.uuid4())}), b'']
     native.getresponse.return_value = response
     prepared = issued('https://example.test:443')
     with patch.object(owner.http.client, 'HTTPSConnection', return_value=native) as ctor:
@@ -260,6 +260,85 @@ def test_tls_wire_and_incomplete_declared_length_fail_closed(prepared):
     ctor.assert_called_once_with('example.test', 443, timeout=5)
     response.close.assert_called_once()
     native.close.assert_called_once()
+
+
+@pytest.mark.parametrize('scheme,address,port', [
+    ('http', '::1', None), ('http', '::1', 8188),
+    ('https', '2001:db8::1', None), ('https', '2001:db8::1', 8443),
+])
+def test_stdlib_ipv6_constructor_preserves_default_and_explicit_ports(scheme, address, port):
+    endpoint = f'{scheme}://[{address}]' + (f':{port}' if port is not None else '')
+    request = issued(endpoint)
+    origin = owner._destination(request)
+    connection = owner.stdlib_prompt_wire_for_characterization(origin, 5)
+    try:
+        assert origin.host == f'[{address}]'
+        assert connection._connection.host == address
+        default_port = 80 if scheme == 'http' else 443
+        assert connection._connection.port == (port if port is not None else default_port)
+        assert connection._connection.default_port == default_port
+    finally:
+        connection.close()
+
+
+def test_stdlib_connection_close_body_reads_keep_the_shared_deadline():
+    now = [0]
+    prompt_body = raw({'prompt_id': str(uuid.uuid4())})
+    sock_timeouts = []
+
+    class Socket:
+        def settimeout(self, timeout):
+            sock_timeouts.append(timeout)
+
+    class DribblingResponse:
+        status = 200
+        length = None
+
+        def getheaders(self):
+            return [('Connection', 'close')]
+
+        def __init__(self):
+            self.parts = [prompt_body[:12], prompt_body[12:]]
+            self.closed = False
+
+        def read1(self, size):
+            part = self.parts.pop(0)
+            now[0] += 2
+            return part
+
+        def close(self):
+            self.closed = True
+
+    response = DribblingResponse()
+
+    class NativeConnection:
+        def __init__(self):
+            self.sock = Socket()
+            self.closed = False
+
+        def connect(self):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            self.sock = None  # CPython's Connection: close ownership transfer.
+            return response
+
+        def close(self):
+            self.closed = True
+
+    native = NativeConnection()
+    request = issued('http://example.test')
+    with patch.object(owner.http.client, 'HTTPConnection', return_value=native):
+        send = transport(stdlib_prompt_wire_for_characterization,
+                         policy=PromptHTTPPolicy(1, 3), clock=lambda: now[0])
+        assert send(request).status == 'unknown'
+
+    assert send.observation().failure_class == 'timeout'
+    assert sock_timeouts[-2:] == [3, 1]
+    assert native.sock is None and native.closed and response.closed
 
 
 @pytest.mark.parametrize('unknown', [False, True])
@@ -330,7 +409,7 @@ def test_stdlib_ambiguous_or_unsupported_http_framing_is_unknown_and_closed(prep
     native.getresponse.return_value = response
     with patch.object(owner.http.client, 'HTTPConnection', return_value=native):
         assert transport(stdlib_prompt_wire_for_characterization)(prepared).status == 'unknown'
-    response.read.assert_not_called()
+    response.read1.assert_not_called()
     response.close.assert_called_once()
     native.close.assert_called_once()
 

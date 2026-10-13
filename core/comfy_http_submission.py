@@ -81,7 +81,11 @@ def _destination(prepared):
             or expected != prepared.output_nodes
             or any(workflow[node].get("class_type") not in {"SaveImage", "PreviewImage"} for node in outputs)):
         raise ValueError("invalid_output_provenance")
-    return _Origin(parts.scheme, parts.hostname, parts.port)
+    # http.client interprets an unbracketed IPv6 literal as host:port. Keep
+    # the URI brackets through its constructor; it removes them only after
+    # parsing the authority correctly, including when the port is implicit.
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    return _Origin(parts.scheme, host, parts.port)
 
 
 class PromptHTTPSubmissionTransport:
@@ -146,6 +150,11 @@ class PromptHTTPSubmissionTransport:
                     if remaining <= 0:
                         raise TimeoutError()
                     chunk = response.read(min(8192, MAX_REMOTE_BYTES + 1 - size), remaining)
+                    # A read can return only after its socket timeout, or
+                    # after a peer has trickled bytes past the shared budget.
+                    # Do not let a final EOF/result arriving late be accepted.
+                    if self._clock() >= deadline:
+                        raise TimeoutError()
                     if type(chunk) is not bytes:
                         raise ValueError()
                     size += len(chunk)
@@ -189,8 +198,8 @@ class PromptHTTPSubmissionTransport:
 
 
 class _HTTPResponse:
-    def __init__(self, response, connection):
-        self._response, self._connection = response, connection
+    def __init__(self, response, response_socket):
+        self._response, self._response_socket = response, response_socket
         self.status = response.status
         headers = response.getheaders()
         lengths = [value for name, value in headers if name.lower() == "content-length"]
@@ -201,9 +210,11 @@ class _HTTPResponse:
             raise ValueError("unverifiable_http_framing")
 
     def read(self, size, timeout):
-        if self._connection.sock is not None:
-            self._connection.sock.settimeout(timeout)
-        return self._response.read(size)
+        if self._response_socket is not None:
+            self._response_socket.settimeout(timeout)
+        # read1 returns currently available bytes rather than trying to fill
+        # the requested buffer, yielding control back to the shared deadline.
+        return self._response.read1(size)
 
     def finish(self):
         if self._response.length not in {None, 0}:
@@ -225,9 +236,13 @@ class _HTTPConnection:
         self._connection.sock.settimeout(read_timeout)
         self._connection.request("POST", "/prompt", body=body,
                                  headers={"Content-Type": "application/json", "Accept": "application/json"})
+        response_socket = self._connection.sock
         response = self._connection.getresponse()
         try:
-            return _HTTPResponse(response, self._connection)
+            # getresponse() may clear connection.sock for Connection: close;
+            # retain the response's socket so body reads still receive the
+            # shrinking per-read timeout.
+            return _HTTPResponse(response, response_socket)
         except Exception:
             response.close()
             raise

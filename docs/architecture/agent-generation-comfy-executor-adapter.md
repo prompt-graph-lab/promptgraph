@@ -70,9 +70,12 @@ contacts a real ComfyUI server.
 
 Connect and read timeouts are explicit finite values in (0,120] seconds (defaults
 5 and 10). Socket operations use those timeouts; body consumption additionally
-has a non-renewing monotonic read budget. These socket timeouts do not establish
-a hard process-wide wall-clock deadline for platform DNS resolution or slow
-HTTP header delivery; production scheduling needs its own reviewed loss/deadline
+has a non-renewing monotonic read budget. Standard-library response reads use
+incremental `read1`, update the captured response socket with the remaining
+budget even when `HTTPConnection` has cleared its socket reference, and check
+the deadline again after each read. These socket timeouts do not establish a
+hard process-wide wall-clock deadline for platform DNS resolution or slow HTTP
+header delivery; production scheduling needs its own reviewed loss/deadline
 policy. Response bodies are read in chunks of at most 8 KiB, with at most
 64 KiB + one overflow-detection byte. Duplicate/unsupported/ambiguous HTTP framing,
 incomplete declared-length bodies, duplicate JSON keys, malformed metadata,
