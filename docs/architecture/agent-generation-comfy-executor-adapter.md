@@ -102,11 +102,58 @@ exactly-once protection: future production integration must durably record the
 exact Journal intent **before** the possible-send boundary and retain unknown
 outcomes after restart.
 
-Remaining bounded transport work is separately reviewed `GET /history`, then
+Remaining bounded transport work is separately reviewed
 `GET /view`/downloads into verified protected storage. Those operations, worker
 scheduling, production Journal wiring, Human Start, Candidate publication/save,
 Recovery and MCP execution are not enabled by this owner. Authorizing a real
 ComfyUI exercise requires separate human authorization and production gates.
+
+## C2B-8D-3 offline HTTP history transport
+
+`core.comfy_http_history.PromptHTTPHistoryTransport` supplies one explicit
+`GET /history/{prompt_id}` per invocation. It requires characterization opt-in
+and an injected wire; `execution_available=False` remains unconditional. The
+request must be the original host-issued `FrozenPromptRequest`, and the prompt
+ID must be a canonical UUID supplied by the executor's accepted-request owner.
+The HTTP destination is only the verified frozen origin plus that fixed path.
+It accepts no separate URL, workflow, Project path or filename. The transport
+does not itself grant accepted-prompt ownership; the existing executor's exact
+request/prompt correlation remains authoritative.
+
+The optional explicit `stdlib_history_wire_for_characterization` reuses the
+submission wire's HTTP(S), IPv4/IPv6 and port handling, TLS verification,
+response-framing checks, captured response socket, finite socket timeouts,
+nonrenewing body-read budget and explicit resource closure. The GET has no
+body and only a fixed JSON Accept header. It adds no redirect, proxy, ambient
+authentication, cookie handling or retries. As for submission, DNS and HTTP
+header delivery have no promised whole-operation wall-clock deadline.
+
+The strict existing JSON decoder bounds private response bytes to 64 KiB.
+A valid empty JSON object is `pending`. Exactly one top-level key matching
+the supplied prompt UUID with an object record is `ready`; its original bytes
+are passed unchanged to `validate_remote_outputs`. This is metadata readiness,
+not descriptor validation or execution success. That existing validator still
+owns output-node/descriptor correlation and explicit-success interpretation.
+Status-less metadata cannot authorize local containment, and an unresolved
+execution status is quarantined downstream. Malformed, incomplete, oversized,
+unrelated or conflicting history, redirects, HTTP errors and connection loss
+remain `unknown`; timeouts remain `timeout`. Neither is definitive execution
+failure. A failed close also withholds an otherwise valid result. Observations
+contain only fixed failure classes, without response details or destinations.
+
+`ui.agent_generation_comfy_executor.history_result_provider_for_characterization`
+is a minimal explicit adapter to the existing `fake_result_provider(prepared,
+prompt_id)` contract. It returns the existing `ExecutionResult` type. It has no
+POST or scheduler path. After a pending result, a host may explicitly invoke
+it again and deliver the result through the existing receive-result gate; this
+never resubmits the accepted prompt or changes original-host authorization.
+
+Offline tests replace native HTTP connections and exercise correlation,
+framing/limits, body deadlines, closure, later explicit observation, downstream
+quarantine and status-less containment refusal. No real network/ComfyUI request
+is made. GET `/view`, protected downloads, background workers/polling, Journal
+integration, production Human Start, Recovery, Candidate publication, Project
+save and MCP execution remain separate reviewed production gates.
 
 ## Private executor integration seam
 
