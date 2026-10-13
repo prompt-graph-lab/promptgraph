@@ -39,8 +39,8 @@ class ContainmentLimits:
 class ImageDownloadLookup:
     """Frozen /view lookup, no arbitrary URL or local destination parameter.
 
-    Future transport must build /view on endpoint_origin and refuse redirects
-    outside that origin. This PR supplies no transport implementation.
+    The optional characterization transport binds /view to this exact frozen
+    origin and refuses redirects. No production transport is registered.
     """
     endpoint_origin: str = field(repr=False)
     filename: str = field(repr=False)

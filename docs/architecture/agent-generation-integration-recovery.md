@@ -24,9 +24,14 @@ authenticated journal ownership and publication/save authority remain gates.
 now provides bounded offline-tested `POST /prompt` over original frozen request
 instances, with an explicit optional stdlib wire and truthful possible-send
 uncertainty. It is not a production default and performs no real server requests
-in its tests. `GET /history`, `GET /view`, durable intent-before-send wiring,
-worker/host deadlines and production authorization remain separately reviewed
-gates. Profile A and `authorship=unverified` are unchanged.
+in its tests. C2B-8D-3 adds the offline history GET owner, and
+[C2B-8D-4 view characterization](agent-generation-output-containment.md#c2b-8d-4-offline-http-view-transport)
+adds streamed `/view` bytes bound to the exact frozen request and revalidated
+remote receipt. None is a production default. Protected-storage transport
+integration, durable intent-before-send wiring, worker/host deadlines and
+production authorization remain separately reviewed gates. Profile A,
+`authorship=unverified`, `execution_available=false` and
+`protected_storage_available=false` are unchanged.
 
 ## Evidence scope and current owners
 
@@ -320,7 +325,7 @@ classification is scoped to the owners and tests cited, not a broad code audit.
 | Already covered | Independent Module Swap custody/ACK: `tests/test_agent_generation_candidate_publication.py::test_publication_preserves_pending_scene_swap_and_its_ack`; actual Apply/save failure boundaries: `tests/test_agent_scene_module_swap_apply_lifecycle.py::test_success_revalidates_applies_one_scene_and_publishes_in_order`, `test_autosave_failure_keeps_project_and_history_and_consumes_approval`. |
 | Production blocker | Claims/receipt indexes/attempts are memory-only; no crash-consistent submission intent, restart inventory or saved-JSON reconciliation. Existing paths/hashes cannot recover exact authority. |
 | Production blocker | No production human recovery/retention owner or safe cleanup authorization; global storage quota/reservation and protected Windows roots/ACLs not established. |
-| Production blocker | POST /prompt now has an offline-tested characterization owner; no production submission/Journal integration, GET /history or GET /view/download owner, or bounded production worker/host event delivery. DNS/header loss deadlines require production policy. |
+| Production blocker | POST /prompt, GET /history and streamed GET /view now have offline-tested characterization owners; no production transport/protected-storage integration, submission/Journal wiring or bounded production worker/host event delivery. DNS/header loss deadlines require production policy. |
 | Production blocker | No production exact Human Start action, host publication wiring or reviewed retirement/replacement lifecycle; one pinned publisher currently supports one envelope/runtime. |
 | Operational improvement | Later richer progress, reminders and visual inventory grouping can follow correctness gates. They must keep counts/privacy/retention budgets and never imply completion or cancellation from elapsed time. |
 

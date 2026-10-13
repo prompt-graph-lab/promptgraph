@@ -83,9 +83,9 @@ storage IDs; paths stay solely in the store's private index.
 The injected provider receives one frozen `ImageDownloadLookup`: validated
 filename, subfolder, bucket, descriptor identity, and the host-approved endpoint
 origin derived from the frozen prepared request. It receives no destination or
-arbitrary caller URL. A future transport must build ComfyUI `/view` on that exact
-origin and refuse uncontrolled cross-origin redirects. No real transport is
-implemented or registered here.
+arbitrary caller URL. The [C2B-8D-4 characterization transport](#c2b-8d-4-offline-http-view-transport)
+builds ComfyUI `/view` on that exact origin and refuses all redirects. It is
+optional, tested with offline wires, and has no production registration.
 
 `DownloadStream` declares an exact positive content length, `read(max_bytes)`
 and `close()`. Every read is at most 64 KiB, including the final one-byte overrun
@@ -122,6 +122,82 @@ Supported: single-frame PNG (`png`), JPEG (`jpg`/`jpeg`), WebP (`webp`) and BMP
 (`bmp`). Unsupported: GIF, animated PNG/WebP, TIFF, ICO, SVG, AVIF and all other
 formats. C2B-4 may recognize a GIF remote descriptor; C2B-5 explicitly refuses it.
 There is no extension-based reinterpretation or conversion.
+
+## C2B-8D-4 offline HTTP view transport
+
+`core.comfy_http_view.PromptHTTPViewTransport` is an opt-in private stream owner.
+It accepts the original host-issued `FrozenPromptRequest`, an envelope and the
+validated `RemoteOutputReceipt`, together with one exact `ImageDownloadLookup`.
+Every call reuses the existing remote receipt/binding validator against the
+original bounded history, and independently verifies original prepared-instance
+provenance. A copied prepared request, changed receipt/descriptor, arbitrary
+origin or mismatched lookup cannot reach the wire. Status-less metadata and a
+forged summary success flag cannot authorize downloading: the original history
+must explicitly establish completed successful execution. All remote formats
+must be supported by containment before any transport attempt.
+
+`provider_for_characterization(envelope, prepared, remote)` supplies the existing
+lookup callback shape without creating HTTP or storage. Calling it returns the
+unchanged `DownloadStream(content_length, read(max_bytes), close())` contract;
+test composition uses this callback with the existing containment owner. No
+production adapter, protected-store integration or automatic callback is added.
+The endpoint comes only from the frozen `/prompt` origin. The fixed `/view` path
+has exactly `filename`, `subfolder` and `type` query parameters, encoded by
+`urlencode` from validated remote components. Remote names never become a local
+destination, and MIME/extension metadata never replaces Pillow verification.
+
+An injected trusted wire is required even with explicit characterization opt-in.
+The optional `stdlib_view_wire_for_characterization` uses `http.client` with
+standard verifying HTTPS, no environment proxies, auth/cookie jars, redirects,
+custom CA/client certificates or retries. IPv4 and bracketed IPv6 preserve
+default and explicit ports. Non-2xx responses, including all redirects, fail
+without consuming image bodies or following a `Location` header.
+
+Supported body framing is one positive ASCII decimal `Content-Length` header,
+at most ten digits and at most 32 MiB. Missing, duplicate (including identical),
+conflicting, zero, negative, comma-list or nondecimal lengths are rejected.
+Transfer-Encoding is unsupported; Content-Encoding must be absent or a single
+`identity` value. Chunked, compressed and close-delimited bodies without a
+declared length are not accepted. This is a deliberately narrow compatibility
+surface; a server requiring other framing needs a separately reviewed change.
+
+Bytes stream incrementally with reads of at most 64 KiB and a final one-byte
+overrun probe. The transport independently enforces declared length and the
+32 MiB per-image ceiling; request bytes, aggregate storage, image count,
+dimensions/pixels, hashing and actual image validity stay authoritative in
+containment. The stdlib wire requests `Connection: close`, reads bounded raw
+body chunks after header parsing, and requires EOF at exactly the declared byte
+count. Using the raw body stream avoids `HTTPResponse.read1` clipping an
+overlong body at Content-Length. A peer retaining the connection beyond the
+budget is refused rather than accepted without closure evidence.
+
+The connect timeout defaults to five seconds. One nonrenewing ten-second read
+budget starts before GET/response headers and covers all body reads, EOF and
+framing completion; each body read receives the remaining budget, and a chunk,
+EOF or completion arriving late is rejected. Test policies may choose positive
+finite timeouts up to 120 seconds. Synchronous DNS and header parsing remain
+subject to stdlib limitations; this is not a production hard wall-clock deadline.
+
+Each request/descriptor attempt is pinned before the factory/connect callback,
+including failure and callback reentry. At most 1,600 distinct image attempts
+are retained; no automatic eviction, retry, second download or regeneration
+occurs for the same attempted descriptor. The first attempt also pins the exact
+request and remote receipt: substituting another prepared client or a newly
+correlated receipt cannot bypass a failed attempt. Short/overlong/nonbyte responses,
+timeouts, connection loss, framing failures and response/connection close errors
+fail with fixed redacted codes. Both resources are closed on failure, and a
+successful stream is complete only after EOF/framing and successful close.
+Observation `downloaded` describes transport bytes only; it grants no verified
+image, local-output, publication or persistence authority.
+
+`tests/test_comfy_http_view.py` uses fake responses and mocked stdlib sockets,
+never a real ComfyUI server. It covers binding, URL encoding, ports, strict
+framing, incremental caps/deadlines, cleanup, no retry, existing PNG/JPEG/WebP/BMP
+containment/verifier behavior and corrupt image rejection. Both
+`execution_available=False` and `protected_storage_available=False` remain
+unconditional. Profile A, `authorship=unverified`, worker/polling, Journal and
+Recovery, Human Start, Candidate/Project mutation/save and MCP execution gain no
+authorization from this owner.
 
 ## Atomic batches, quarantine and retention
 
