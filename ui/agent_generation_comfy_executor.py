@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import uuid
 
 from core.comfy_prompt_request import prepare_frozen_prompt_request
+from core.comfy_http_submission import SubmissionResult
 from core.comfy_output_containment import ContainedOutputStore
 from core.comfy_remote_output_receipts import (
     validate_remote_outputs, valid_prompt_id, decode_remote_json,
@@ -20,17 +21,6 @@ from ui.agent_generation_job import GenerationJobRegistry, JobRequest, WorkerEve
 MAX_PROGRESS_PER_REQUEST = 4
 MAX_RECEIPT_BYTES = 512 * 1024
 MAX_LATE_BATCHES = 16
-
-
-@dataclass(frozen=True)
-class SubmissionResult:
-    """Trusted transport classification, not an exception-to-rejection guess.
-
-    Only rejected_before_submission proves that no send happened. Every thrown
-    error or malformed/missing accepted response is uncertain and not retried.
-    """
-    status: str
-    response_json: bytes = field(default=b"", repr=False)
 
 
 @dataclass(frozen=True)

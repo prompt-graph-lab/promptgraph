@@ -2,9 +2,10 @@
 
 Phase 4-C2B-4 characterizes a synchronous executor seam with injected fakes.
 **Production execution remains unavailable.** There is no transport default,
-worker thread, ComfyUI connection, download, output file, Candidate/history
-mutation, save, Start control or MCP execution tool. All executor entry points
-require explicit characterization owners. The existing
+worker thread, production/default live ComfyUI connection, download, output file,
+Candidate/history mutation, save, Start control or MCP execution tool. The
+explicit characterization HTTP wire is opt-in; tests never contact a server.
+All executor entry points require explicit characterization owners. The existing
 [C2B-3 handoff](agent-generation-executor-handoff.md), Executable Review and
 exact human confirmation remain the custody authority; characterization is
 not permission to enable production execution.
@@ -32,6 +33,77 @@ Legacy `prepare_prompt_request`, `comfy_prompt_submission`, `comfyui` and Galler
 callers retain their existing behavior, including submission-time random seeds.
 The new executor must not call that legacy request randomizer. The real legacy
 submission/download owners are not called or wired by this slice.
+
+## C2B-8D-2 offline HTTP submission transport
+
+`core.comfy_http_submission.PromptHTTPSubmissionTransport` adds an explicit
+characterization-only `POST /prompt` callable at the existing executor seam.
+There is no production default. Construction requires `characterization=True`
+and an explicit wire factory; `execution_available=False` remains unconditional.
+`SubmissionResult` now lives in this core owner and remains importable from the
+existing executor module, with the same exact type/fields and classifications.
+
+Only an original `prepare_frozen_prompt_request` instance is accepted. A private
+in-process issuance record binds that instance and every frozen field; manual
+construction, `dataclasses.replace`, endpoint substitution and body/digest
+substitution fail before touching the wire. This record is excluded from
+repr/equality, preserving existing recomputed request/remote-receipt comparisons.
+It is host provenance, not cryptographic authorship or an independently trusted
+latest revision. Compromised host Python code remains outside Profile A.
+
+The owner preserves exact body bytes, finalized seed/noise_seed and client UUID.
+It takes no separate URL, workflow, credential or output-directory argument.
+The frozen endpoint model remains unauthenticated HTTP(S) root origins with an
+optional port; this wire supports ASCII hosts/IPv4/IPv6 and ports 1..65535. URL
+userinfo, query/fragment, non-root paths, percent-encoded/backslash authorities,
+Unicode hosts, custom authentication and custom TLS configuration are unsupported.
+The destination is the frozen origin plus the fixed `/prompt` path.
+
+The injected wire has a separate no-HTTP `connect()` phase, then
+`post_prompt(exact_body, read_timeout)`. The optional explicit
+`stdlib_prompt_wire_for_characterization` uses `http.client.HTTPConnection` or
+`HTTPSConnection` with standard TLS certificate verification. It never consults
+proxy environment variables, cookie jars, ambient authentication or a urllib
+opener, and supplies only fixed JSON headers. It implements no redirect or retry.
+Tests replace native connection classes and use deterministic wires; no test
+contacts a real ComfyUI server.
+
+Connect and read timeouts are explicit finite values in (0,120] seconds (defaults
+5 and 10). Socket operations use those timeouts; body consumption additionally
+has a non-renewing monotonic read budget. These socket timeouts do not establish
+a hard process-wide wall-clock deadline for platform DNS resolution or slow
+HTTP header delivery; production scheduling needs its own reviewed loss/deadline
+policy. Response bodies are read in chunks of at most 8 KiB, with at most
+64 KiB + one overflow-detection byte. Duplicate/unsupported/ambiguous HTTP framing,
+incomplete declared-length bodies, duplicate JSON keys, malformed metadata,
+noncanonical/duplicate prompt UUIDs and oversized bodies remain unknown.
+Responses and connections are explicitly closed on every owned path; cleanup
+failure prevents an accepted classification.
+
+Local validation or failure in the separate no-HTTP connect phase proves no
+POST was attempted and returns `rejected_before_submission`. Immediately before
+invoking `post_prompt`, the owner crosses the possible-send boundary. Thereafter
+all timeouts, resets, redirects, non-2xx statuses, incomplete/malformed responses
+or cleanup failures return `unknown`, with fixed redacted failure classes. A
+server error is not evidence that it did not queue the prompt. Rejected raw data,
+URL, credentials and arbitrary exception text never enter observations. Successful
+bounded response bytes are private `SubmissionResult` material; they prove only
+prompt acceptance, not execution, images, Candidate registration or saving.
+
+Before callbacks, an in-memory request-ID fence reserves one attempt (at most
+100 distinct requests per transport owner). Reentry, duplicate calls and a new
+client UUID for the same request cannot resubmit, including after uncertainty.
+The existing executor independently retains exact envelope correlation, unique
+prompt IDs and one-attempt scheduling. This fence is not durable network
+exactly-once protection: future production integration must durably record the
+exact Journal intent **before** the possible-send boundary and retain unknown
+outcomes after restart.
+
+Remaining bounded transport work is separately reviewed `GET /history`, then
+`GET /view`/downloads into verified protected storage. Those operations, worker
+scheduling, production Journal wiring, Human Start, Candidate publication/save,
+Recovery and MCP execution are not enabled by this owner. Authorizing a real
+ComfyUI exercise requires separate human authorization and production gates.
 
 ## Private executor integration seam
 
