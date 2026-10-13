@@ -19,6 +19,13 @@ can provision/observe a protected owner-only private-journal root on local NTFS;
 production integration and directory durability remain unavailable. Neither
 readiness projection grants execution or Recovery authority.
 
+The C2B-8C-3 [trust and authorization design](agent-generation-protected-storage.md)
+compares a local single-user Profile A with independently isolated authorship in
+Profile B. Profile A is recommended but requires a human product/security decision;
+neither is adopted. The [fresh Recovery boundary](agent-generation-human-recovery.md)
+separates inspection, intention and new host authorization. Existing unverified
+authenticity/inspect-only flags remain unchanged under this design.
+
 ## Ownership and schema
 
 An explicitly enabled `OfflineJournalWriter` receives a host-captured
@@ -212,8 +219,9 @@ schema does not persist claim IDs. No new public Candidate field is introduced.
 
 This foundation has no production integration into submission, containment,
 publication or JSON save. Those owners retain their existing contracts. Future
-production work must approve protected roots, platform durability, authenticated
-ownership policy, a multi-request recording lifecycle and safe journal storage
+production work must approve protected roots, platform durability, an explicit
+threat/ownership policy (independent authentication if Profile B is required),
+a multi-request recording lifecycle and safe journal storage
 limits. A separately reviewed human recovery contract must re-establish current
 Project/source/session/activation/pairing authority. Retention/cleanup requires
 its own human decision and Project-reference/external-operation uncertainty

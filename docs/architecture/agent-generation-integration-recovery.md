@@ -144,6 +144,14 @@ they do not prove survival of power failure at every point.
 
 ## Proposed human recovery authority
 
+The later C2B-8C-3 [trust-profile decision](agent-generation-protected-storage.md)
+and [fresh Recovery authorization design](agent-generation-human-recovery.md)
+refine the policy gates below. Profile A is a proposed minimum, not adopted policy;
+independent authorship against same-user processes would require Profile B.
+All current production and Recovery gates remain closed. Those canonical designs
+distinguish policy decisions from implementation/Windows validation and recommend
+an offline inspection projection as the next assumption-independent slice.
+
 Recovery of already existing bytes and generation/resubmission are distinct
 operations. Inventory never takes an inbox envelope, sends `/prompt`, consumes
 a new proposal, publishes Candidates, saves or deletes anything. It reports
