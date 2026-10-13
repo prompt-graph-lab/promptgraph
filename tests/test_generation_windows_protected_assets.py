@@ -184,16 +184,23 @@ def test_injected_host_name_collision_retains_verified_original(owner):
 
 def test_real_native_fresh_reopen_only_observes_no_old_authority(owner):
     store, scope, _ = owner
-    image = store.create_image_for_characterization("promoted_assets", png())
+    originals = [store.create_image_for_characterization(purpose, png()) for purpose in a._PURPOSES]
     paths = {p: str(r._path) for p, r in store._roots.items()}
     store.close()
     with a.WindowsProtectedAssetsCharacterization.reopen_for_characterization(
             str(scope), paths, characterization=True, disposable_opt_in=True) as reopened:
         images = reopened.inspect_existing_for_characterization()
-        assert len(images) == 1 and images[0].content_sha256 == image.content_sha256
-        assert_closed_gates(reopened.readiness())
-        with pytest.raises(ValueError, match="image_owner_mismatch"):
-            reopened.inspect_image_for_characterization(image)
+        assert len(images) == 2
+        assert {image.purpose for image in images} == set(a._PURPOSES)
+        assert all(image.content_sha256 == originals[0].content_sha256 for image in images)
+        for image in images:
+            assert reopened.inspect_image_for_characterization(image) is image
+        view = reopened.readiness()
+        assert view["image_count"] == 2 and view["integrity"] == "verified_bytes"
+        assert_closed_gates(view)
+        for image in originals:
+            with pytest.raises(ValueError, match="image_owner_mismatch"):
+                reopened.inspect_image_for_characterization(image)
         with pytest.raises(ValueError, match="inspect_only_or_uncertain"):
             reopened.create_image_for_characterization("promoted_assets", png())
 
@@ -214,6 +221,39 @@ def test_real_native_incomplete_file_fresh_reopen_retains_evidence(owner):
         with pytest.raises(ValueError, match="image_byte_limit"):
             reopened.inspect_existing_for_characterization()
     assert path.exists() and path.read_bytes() == b""
+
+
+def test_real_native_failed_inventory_cannot_retry_or_publish_partial_images(owner):
+    store, scope, _ = owner
+    originals = [store.create_image_for_characterization(purpose, png()) for purpose in a._PURPOSES]
+    files = [store._files[(image.purpose, image.storage_identity)][0] for image in originals]
+    paths = {p: str(r._path) for p, r in store._roots.items()}
+    store.close()
+    # The staging image decodes first; the promoted image makes the full inventory fail.
+    files[1].write_bytes(b"invalid image")
+    with a.WindowsProtectedAssetsCharacterization.reopen_for_characterization(
+            str(scope), paths, characterization=True, disposable_opt_in=True) as reopened:
+        with pytest.raises(Exception, match="invalid_image_content"):
+            reopened.inspect_existing_for_characterization()
+        assert not reopened._images
+        assert reopened.readiness()["image_count"] == 0
+        assert reopened.readiness()["integrity"] == "not_verified"
+        assert files[0].read_bytes() == png() and files[1].read_bytes() == b"invalid image"
+        # Repairing retained evidence does not permit a retry by its uncertain owner.
+        files[1].write_bytes(png())
+        with pytest.raises(ValueError, match="fresh_inspect_only_owner_required"):
+            reopened.inspect_existing_for_characterization()
+        assert not reopened._images
+        assert_closed_gates(reopened.readiness())
+    assert all(path.exists() and path.read_bytes() == png() for path in files)
+    with a.WindowsProtectedAssetsCharacterization.reopen_for_characterization(
+            str(scope), paths, characterization=True, disposable_opt_in=True) as fresh:
+        images = fresh.inspect_existing_for_characterization()
+        assert len(images) == 2
+        assert all(fresh.inspect_image_for_characterization(image) is image for image in images)
+        assert fresh.readiness()["image_count"] == 2
+        assert fresh.readiness()["integrity"] == "verified_bytes"
+        assert_closed_gates(fresh.readiness())
 
 
 def test_native_hardlink_and_identity_substitution_refused_after_close(owner):

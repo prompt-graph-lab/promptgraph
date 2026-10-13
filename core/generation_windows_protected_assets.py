@@ -240,7 +240,7 @@ class WindowsProtectedAssetsCharacterization:
     def inspect_existing_for_characterization(self):
         """Fresh inspect-only snapshot; cannot restore earlier file observations."""
         with self._lock:
-            if self._writable:
+            if self._writable or self._uncertain:
                 w._fail("fresh_inspect_only_owner_required")
             self._check()
             try:
@@ -278,6 +278,8 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("storage_capacity")
             images.append(image)
         self._check()
+        # Publish only a complete successful inventory owned by this fresh capture.
+        self._images = {(image.purpose, image.storage_identity): image for image in images}
         return tuple(images)
 
     def readiness(self):
