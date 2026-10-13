@@ -102,8 +102,9 @@ exactly-once protection: future production integration must durably record the
 exact Journal intent **before** the possible-send boundary and retain unknown
 outcomes after restart.
 
-Remaining bounded transport work is separately reviewed
-`GET /view`/downloads into verified protected storage. Those operations, worker
+The [C2B-8D-4 offline view transport](agent-generation-output-containment.md#c2b-8d-4-offline-http-view-transport)
+now characterizes bounded `/view` streams with exact receipt/request binding.
+Production downloads into protected storage, worker
 scheduling, production Journal wiring, Human Start, Candidate publication/save,
 Recovery and MCP execution are not enabled by this owner. Authorizing a real
 ComfyUI exercise requires separate human authorization and production gates.
@@ -151,7 +152,7 @@ never resubmits the accepted prompt or changes original-host authorization.
 Offline tests replace native HTTP connections and exercise correlation,
 framing/limits, body deadlines, closure, later explicit observation, downstream
 quarantine and status-less containment refusal. No real network/ComfyUI request
-is made. GET `/view`, protected downloads, background workers/polling, Journal
+is made. Production GET `/view`, protected downloads, background workers/polling, Journal
 integration, production Human Start, Recovery, Candidate publication, Project
 save and MCP execution remain separate reviewed production gates.
 
