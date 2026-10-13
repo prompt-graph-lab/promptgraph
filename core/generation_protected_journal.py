@@ -226,6 +226,31 @@ class WindowsProtectedJournalCharacterization:
                     "trusted_latest_revision": "unavailable", "original_producer": "observation_only",
                     "digest_chain": "separate_inspection_required"}
 
+    def inspect_trust_evidence_for_characterization(self, filename, *,
+            selected_project_root=None, selected_relative_path="project.json", asset_roots=(),
+            expected_revision=None, expected_digest=None, max_entries=64,
+            max_file_bytes=32 * 1024 * 1024):
+        """Private native observations composed into diagnostics, never authority."""
+        from ui import agent_generation_trust_evidence as evidence
+        expected = evidence._expected_tip(expected_revision, expected_digest)
+        with self._lock:
+            def inspect():
+                writer = self._writer
+                producer = None
+                if writer is not None and not self._uncertain and not writer._uncertain:
+                    producer = (writer.operation, writer._revision, writer._digest, writer._file_identity)
+                return evidence._inspect(self._approved, filename, selected_project_root,
+                    selected_relative_path, asset_roots, max_entries, max_file_bytes,
+                    expected, native=True, producer=producer)
+            try:
+                # Keep the existing before/after ACL and handle checks. A failed
+                # post-read check withholds the entire otherwise readable case.
+                return self._observe(inspect)
+            except (ValueError, OSError):
+                view = evidence._empty("closed" if self._closed else "unsafe_or_unavailable", expected)
+                view["reasons"].append("protected_observation_unavailable")
+                return evidence._bounded(view)
+
     def close(self):
         with self._lock:
             self._closed = True

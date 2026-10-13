@@ -1,4 +1,4 @@
-# Agent Generation protected storage and trust design (C2B-8C-1..3)
+# Agent Generation protected storage and trust design (C2B-8C-1..4)
 
 `core/generation_protected_storage.py` characterizes the protected-storage policy
 required by the [Ownership Journal](agent-generation-ownership-journal.md),
@@ -368,7 +368,7 @@ and an unsupported guarantee (U). Completing one row does not clear the rest.
 | Transport, worker and Human Start | I, V | Review truthful bounded real transport, one-shot worker/host event lifecycle, loss/shutdown and exact fresh human Start; policy adoption cannot enable them. |
 | Operational validation | D, V | Separately authorize disposable real ComfyUI/Project restart/failure/capacity exercises only after implementation gates. Fake/offline success is not activation approval. |
 
-**Recommended next PR:** a bounded offline trust-evidence inspection projection
+**C2B-8C-3 recommendation, implemented by the C2B-8C-4 slice below:** a bounded offline trust-evidence inspection projection
 composing the existing native Journal and Human Recovery observations. Expose
 separate root/file, chain, observed-producer, expected-tip provenance/lifetime,
 source/review and current-context states with fixed redacted reasons. A supplied
@@ -408,3 +408,63 @@ implement independent authentication if Profile B is required; and establish fre
 recovery authorization. Quota/retention, approved cleanup, real transport,
 worker lifecycle, Human Start and original-host publication/save gates from
 C2B-7 still apply. This characterization grants none of them.
+
+## C2B-8C-4: bounded trust-evidence inspection projection
+
+`ui.agent_generation_trust_evidence.inspect_trust_evidence_for_characterization`
+composes the existing Journal and Human Recovery owners over explicitly supplied
+`ApprovedRoot` objects. It requires characterization opt-in and never derives a
+root from Journal text. The portable entry point reports native ACL/root evidence
+as `not_inspected`. For real disposable Windows inspection,
+`WindowsProtectedJournalCharacterization.inspect_trust_evidence_for_characterization`
+uses its already opted-in retained native handles and existing before/after
+root, intermediate-directory and direct-child ACL checks. Failed checks,
+including after-read drift or closed handles, withhold the Recovery case and
+report a fixed unavailable state.
+
+The detached `promptgraph.generation-trust-evidence.v1` result has a 64 KiB
+serialized bound. The nested Recovery representation retains existing 100-request
+and 64-image bounds and fixed diagnostic reasons. An overgrown combined result
+withholds the case; it never truncates a case into apparently complete evidence.
+No paths, SIDs, prompts, credentials, raw digests, or private correlation IDs
+are displayed. It exposes separate root/ACL, file observation, chain validity,
+checkpoint coverage, producer, expected tip, authorship, original Project,
+source/review, session/activation/pairing, Candidate association, save, external
+submission, inventory and retention axes. It offers no generic trusted/safe flag.
+
+A complete supplied revision/digest pair is comparative context only. States
+include no expected tip, matches, conflicts, `behind_supplied_tip`, and unavailable
+observed tip. The supplied tip's provenance and custody remain unverified even
+when bytes match; a lower observed revision cannot alone prove an actual rollback.
+A digest-valid same-user rewrite without a comparator also remains unauthenticated.
+No persistent head store or automatic repair is added. A matching native retained
+writer operation/revision/digest/file identity is labeled a live acknowledged
+snapshot observation; reopening without that writer supplies only a reopened
+assertion. Neither authenticates a producer or establishes the latest head.
+
+Source/review digests in the Journal are `recorded_unverified`; independent
+source/review comparisons are explicitly unavailable. This projection does not
+accept caller flags asserting fresh source, review or session state. A changed
+selected saved Project can be observed by the existing Recovery owner, while
+independent live source/review drift requires a later reviewed host observation
+interface. Stored session/process identifiers never confer current authority.
+The current session is missing, activation/pairing unavailable and runtime
+authorization absent. Candidate matches and saved-byte observations remain
+separate from save uncertainty, authorship and fresh human authorization.
+
+Focused portable and actual native Windows fixtures cover unverified matching
+tips, valid prefixes and resealed source/review changes, invalid/missing Journals,
+missing/changed Projects, partial Candidates, uncertain save/remote submission,
+truncated inventory, detached/redacted/bounded output, forged-parameter refusal,
+closed handles and pre/post-read root/file ACL drift. Byte comparisons and guarded
+write/deletion/network APIs check read-only behavior. Runtime integration,
+Generation/Recovery execution, Candidate publication and save remain disabled:
+`execution_available=false`, `protected_storage_available=false`,
+`authorship=unverified`, and Recovery inspect-only.
+
+**Next bounded step:** a documentation decision recording human adoption or
+rejection of Profile A/B and the expected-head provenance/loss policy. If an
+independent source/review/session comparison owner is proposed instead, review
+its exact private observation and invalidation contract first. Neither choice
+activates execution, persistent tip custody, keys/services, publication or cleanup;
+the production go/no-go matrix above still applies in full.

@@ -252,3 +252,19 @@ external uncertainty resolution. Global quota/reservation, truthful bounded real
 lifecycle and authorized operational restart/failure exercises remain separate.
 This characterization foundation supplies none of those capabilities and does
 not change C2B-1..8A or Scene Module Swap runtime owners.
+
+## C2B-8C-4 diagnostic composition
+
+The characterization-only [trust-evidence projection](agent-generation-protected-storage.md#c2b-8c-4-bounded-trust-evidence-inspection-projection)
+composes this owner's bounded projection with distinct native/portable Journal,
+producer and caller-supplied expected-tip observations. It creates an ephemeral
+inspection case using default missing runtime/source/review context, retains no
+review intention, accepts no trust flags and grants no capability. Native Journal
+composition checks protection before and after the whole inspection and withholds
+the case on failure. Independent source/review comparison remains unavailable;
+recorded hashes and stored session/process identifiers cannot provide it.
+Expected-tip conflict or a lower revision is only a mismatch against unverified
+caller context. Candidate association, save uncertainty, external execution,
+inventory/retention uncertainty and fresh authorization requirements retain the
+existing Recovery meanings. Recovery stays inspect-only with every permission
+false; no new production caller, API transport, mutation or deletion is wired.
