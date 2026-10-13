@@ -100,6 +100,7 @@ class WindowsProtectedAssetsCharacterization:
         if _factory is not _FACTORY:
             w._fail("host_storage_required")
         self._roots, self._limits, self._writable, self._fault = roots, limits, writable, fault
+        # Names are unique only inside one purpose root; never key by filename alone.
         self._files, self._images = {}, {}
         self._used_bytes = 0
         self._closed = self._uncertain = False
@@ -148,7 +149,8 @@ class WindowsProtectedAssetsCharacterization:
 
     def _observe(self, name, purpose, extension):
         self._check()
-        data = self._bytes(self._files[name])
+        key = (purpose, name)
+        data = self._bytes(self._files[key])
         image_format, width, height = self._verifier._verify(io.BytesIO(data), extension)
         self._check()
         return ProtectedImageObservation(name, purpose, hashlib.sha256(data).hexdigest(),
@@ -167,22 +169,25 @@ class WindowsProtectedAssetsCharacterization:
             self._check()
             root = self._roots[purpose]
             # Reject unknown existing evidence without deleting or adopting it.
-            if set(path.name for _, _, path in self._inventory()) != set(self._files):
+            inventory = {(stored_purpose, path.name)
+                         for stored_purpose, _, path in self._inventory()}
+            if inventory != set(self._files):
                 self._uncertain = True
                 w._fail("unexpected_existing_file")
             name = uuid.uuid4().hex + "." + extension
+            key = (purpose, name)
             path = root._path / name
             _, c, f, _, _, _ = root._api
             handle = None
             try:
-                if name in self._files and self._files[name][0] != path:
+                if key in self._files and self._files[key][0] != path:
                     w._fail("exclusive_file_unavailable")
                 handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
                     c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
                     c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
                 # Capture BEFORE any callbacks/write. Keep the original handle until close.
                 record = path, handle, w._identity(handle), _file_acl(handle, root)
-                self._files[name] = record
+                self._files[key] = record
                 self._used_bytes += len(data)  # reserve failed writes too; no retry
                 self._fault("after_file_create")
                 self._check()
@@ -198,21 +203,23 @@ class WindowsProtectedAssetsCharacterization:
                 image = self._observe(name, purpose, extension)
                 if image.content_sha256 != hashlib.sha256(data).hexdigest():
                     w._fail("content_changed")
-                self._images[name] = image
+                self._images[key] = image
                 return image
             except BaseException:
                 self._uncertain = True
-                if handle is not None and name not in self._files:
+                if handle is not None and key not in self._files:
                     handle.Close()
                 raise  # Retain incomplete/uncertain evidence; never remove it.
 
     def inspect_image_for_characterization(self, image):
         with self._lock:
+            key = ((image.purpose, image.storage_identity)
+                   if type(image) is ProtectedImageObservation else None)
             if (type(image) is not ProtectedImageObservation
-                    or self._images.get(image.storage_identity) is not image):
+                    or self._images.get(key) is not image):
                 w._fail("image_owner_mismatch")
             try:
-                extension = self._files[image.storage_identity][0].suffix[1:]
+                extension = self._files[key][0].suffix[1:]
                 if self._observe(image.storage_identity, image.purpose, extension) != image:
                     w._fail("content_changed")
                 return image
@@ -249,15 +256,15 @@ class WindowsProtectedAssetsCharacterization:
         for purpose, root, path in paths:
             if not re.fullmatch(r"[0-9a-f]{32}\.(png|jpg|jpeg|webp|bmp)", path.name):
                 w._fail("unexpected_existing_file")
-            name = purpose + ":" + path.name
-            if name not in self._files:
+            key = (purpose, path.name)
+            if key not in self._files:
                 handle = w._open(path, False, root._api)
                 try:
-                    self._files[name] = path, handle, w._identity(handle), _file_acl(handle, root)
+                    self._files[key] = path, handle, w._identity(handle), _file_acl(handle, root)
                 except BaseException:
                     handle.Close()
                     raise
-            size = root._api[2].GetFileSize(self._files[name][1])
+            size = root._api[2].GetFileSize(self._files[key][1])
             if not 0 < size <= min(self._limits.image_bytes, self._limits.request_bytes):
                 w._fail("image_byte_limit")
             total += size
@@ -265,8 +272,7 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("storage_capacity")
         total = 0
         for purpose, root, path in paths:
-            name = purpose + ":" + path.name
-            image = self._observe(name, purpose, path.suffix[1:])
+            image = self._observe(path.name, purpose, path.suffix[1:])
             total += image.byte_count
             if total > self._limits.aggregate_bytes:
                 w._fail("storage_capacity")

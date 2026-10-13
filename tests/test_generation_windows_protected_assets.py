@@ -44,7 +44,7 @@ def assert_closed_gates(view):
 def test_real_native_creation_pins_initial_file_and_checks_bytes(owner, purpose):
     store, scope, api = owner
     image = store.create_image_for_characterization(purpose, png())
-    path, handle, identity, acl = store._files[image.storage_identity]
+    path, handle, identity, acl = store._files[(image.purpose, image.storage_identity)]
     assert w._identity(handle) == identity == w._ordinary(path, directory=False)
     assert w._acl(handle, api, w._current_user(api)) == acl[0]
     assert len(acl[0]) == 1 and acl[0][0][1] == 3
@@ -70,7 +70,7 @@ def test_real_native_creation_pins_initial_file_and_checks_bytes(owner, purpose)
 def test_real_native_acl_drift_invalidates_original_snapshot(owner, purpose, target, mutation):
     store, _, api = owner
     image = store.create_image_for_characterization(purpose, png())
-    path = store._files[image.storage_identity][0]
+    path = store._files[(image.purpose, image.storage_identity)][0]
     mutate_disposable_acl(path if target == "file" else path.parent, api, mutation)
     with pytest.raises(ValueError, match="native_observation_changed|unsafe_acl|unsupported_acl|protected_root_unavailable"):
         store.inspect_image_for_characterization(image)
@@ -105,7 +105,7 @@ def test_injected_interruption_retains_real_native_evidence_no_retry(owner, purp
 def test_real_native_content_change_is_retained_and_never_verified(owner, purpose):
     store, _, _ = owner
     image = store.create_image_for_characterization(purpose, png())
-    path = store._files[image.storage_identity][0]
+    path = store._files[(image.purpose, image.storage_identity)][0]
     changed = io.BytesIO()
     Image.new("RGB", (2, 3), "black").save(changed, format="PNG")
     path.write_bytes(changed.getvalue())
@@ -125,13 +125,57 @@ def test_unexpected_existing_file_exclusive_collision_never_overwritten(owner):
     assert unexpected.read_bytes() == b"retain" and not store._files
 
 
+def test_same_filename_in_other_purpose_is_unmanaged_and_blocks_creation(owner):
+    store, _, _ = owner
+    managed = store.create_image_for_characterization("temporary_containment", png())
+    managed_path = store._files[(managed.purpose, managed.storage_identity)][0]
+    promoted_root = store._roots["promoted_assets"]
+    unmanaged_path = promoted_root._path / managed_path.name
+    _, c, f, _, _, _ = promoted_root._api
+    handle = f.CreateFile(str(unmanaged_path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
+        c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(promoted_root._api, promoted_root._user),
+        c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL, None)
+    try:
+        _, written = f.WriteFile(handle, b"unmanaged retained evidence")
+        assert written == len(b"unmanaged retained evidence")
+        f.FlushFileBuffers(handle)
+    finally:
+        handle.Close()
+    managed_before = managed_path.read_bytes()
+    unmanaged_before = unmanaged_path.read_bytes()
+
+    with pytest.raises(ValueError, match="unexpected_existing_file"):
+        store.create_image_for_characterization("promoted_assets", png())
+
+    assert managed_path.exists() and unmanaged_path.exists()
+    assert managed_path.read_bytes() == managed_before
+    assert unmanaged_path.read_bytes() == unmanaged_before
+    assert {path.name for path in store._roots["temporary_containment"]._path.iterdir()} == {managed_path.name}
+    assert {path.name for path in promoted_root._path.iterdir()} == {unmanaged_path.name}
+    assert set(store._files) == {("temporary_containment", managed_path.name)}
+    assert store.readiness()["asset_observation"] == "retained_uncertain"
+
+
+def test_normal_staging_and_promoted_creation_remain_available(owner):
+    store, _, _ = owner
+    staging = store.create_image_for_characterization("temporary_containment", png())
+    promoted = store.create_image_for_characterization("promoted_assets", png())
+
+    assert staging.purpose == "temporary_containment"
+    assert promoted.purpose == "promoted_assets"
+    assert (staging.purpose, staging.storage_identity) != (promoted.purpose, promoted.storage_identity)
+    assert store.inspect_image_for_characterization(staging) is staging
+    assert store.inspect_image_for_characterization(promoted) is promoted
+    assert store.readiness()["image_count"] == 2
+
+
 def test_injected_host_name_collision_retains_verified_original(owner):
     store, _, _ = owner
     class Name:
         hex = "a" * 32
     with patch.object(a.uuid, "uuid4", return_value=Name()):
         image = store.create_image_for_characterization("promoted_assets", png())
-        path = store._files[image.storage_identity][0]
+        path = store._files[(image.purpose, image.storage_identity)][0]
         with pytest.raises(Exception):
             store.create_image_for_characterization("promoted_assets", png())
         assert path.read_bytes() == png() and len(store._files) == 1
@@ -175,7 +219,7 @@ def test_real_native_incomplete_file_fresh_reopen_retains_evidence(owner):
 def test_native_hardlink_and_identity_substitution_refused_after_close(owner):
     store, scope, _ = owner
     image = store.create_image_for_characterization("promoted_assets", png())
-    path = store._files[image.storage_identity][0]
+    path = store._files[(image.purpose, image.storage_identity)][0]
     paths = {p: str(r._path) for p, r in store._roots.items()}
     store.close()
     replaced = path.with_name("b" * 32 + ".png")
@@ -323,7 +367,7 @@ def test_real_native_junction_refused_without_following_or_cleanup(native_scope)
 def test_observed_acl_change_cannot_restore_old_file_observation(owner):
     store, _, api = owner
     image = store.create_image_for_characterization("temporary_containment", png())
-    path = store._files[image.storage_identity][0]
+    path = store._files[(image.purpose, image.storage_identity)][0]
     mutate_disposable_acl(path, api, "changed_owner_only")
     assert store.readiness()["asset_observation"] == "unsafe_or_unavailable"
     # Restore the initial descriptor in a disposable fixture only.
@@ -336,7 +380,7 @@ def test_observed_acl_change_cannot_restore_old_file_observation(owner):
 def test_real_native_owner_only_acl_revision_change_invalidates_file(owner):
     store, scope, api = owner
     image = store.create_image_for_characterization("promoted_assets", png())
-    path = store._files[image.storage_identity][0]
+    path = store._files[(image.purpose, image.storage_identity)][0]
     paths = {p: str(r._path) for p, r in store._roots.items()}
     store.close()
     # SetSecurityInfo normalizes file inheritance flags to zero on this host.
