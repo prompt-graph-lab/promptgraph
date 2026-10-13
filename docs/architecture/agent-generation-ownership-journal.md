@@ -20,9 +20,10 @@ production integration and directory durability remain unavailable. Neither
 readiness projection grants execution or Recovery authority.
 
 The C2B-8C-3 [trust and authorization design](agent-generation-protected-storage.md)
-compares a local single-user Profile A with independently isolated authorship in
-Profile B. Profile A is recommended but requires a human product/security decision;
-neither is adopted. The [fresh Recovery boundary](agent-generation-human-recovery.md)
+records Profile A: Local Single-User Application as the adopted supported Pro
+security scope. Profile B is an unsupported optional future deployment design;
+its key/service infrastructure is not a prerequisite for normal local Pro work.
+The [fresh Recovery boundary](agent-generation-human-recovery.md)
 separates inspection, intention and new host authorization. Existing unverified
 authenticity/inspect-only flags remain unchanged under this design.
 
@@ -138,8 +139,10 @@ exclusive lock. It is not a hostile-process compare-and-swap or ACL sandbox.
 There is no parent-directory flush, asset/Project/journal transaction, Windows
 power-loss guarantee or proof of persistence across every hardware failure.
 The tested interruption hooks establish old-or-new readable file behavior in
-disposable fixtures only. Protected-root provisioning/ACLs, directory durability
-and hostile filesystem concurrency remain production gates.
+disposable fixtures only. Protected-root provisioning/ACLs and an explicit
+durability/uncertainty contract remain production gates within Profile A.
+Hostile same-Windows-user processes, Administrator/SYSTEM and compromised host
+code are outside its supported scope; LLM/MCP instructions remain untrusted.
 
 ## Authenticity and read-only inventory
 
@@ -150,6 +153,14 @@ chain can also be rolled back to a valid prefix without an independently trusted
 latest revision/digest. Every reopened journal reports `authenticity=unverified`,
 `trust=inspect_only` and `execution_available=false`; hashes/IDs never grant
 attachment, approval, retry, worker take, publication or save authority.
+
+Under adopted Profile A, bounded acknowledged live-writer observations may serve
+as a current host tip during the live host/process lifetime. After restart,
+absent an independently retained host-observed tip, latest-head custody is
+unavailable. Where/how to retain that checkpoint and its write/acknowledgment
+order and uncertainty contract remain unresolved. Digest-valid prefixes and
+identical paths grant no automatic rollback repair, replay, Recovery association
+or execution; neither hashes nor ACL observations authenticate authorship.
 
 `inspect_inventory` directly lists at most 64 entries in one explicitly approved
 journal root and at most 64 entries total across at most seven explicitly approved
@@ -220,7 +231,7 @@ schema does not persist claim IDs. No new public Candidate field is introduced.
 This foundation has no production integration into submission, containment,
 publication or JSON save. Those owners retain their existing contracts. Future
 production work must approve protected roots, platform durability, an explicit
-threat/ownership policy (independent authentication if Profile B is required),
+implementation within adopted Profile A's threat/ownership policy,
 a multi-request recording lifecycle and safe journal storage
 limits. A separately reviewed human recovery contract must re-establish current
 Project/source/session/activation/pairing authority. Retention/cleanup requires
