@@ -38,6 +38,22 @@ class ExecutionResult:
     progress: tuple[ComfyProgress, ...] = ()
 
 
+def history_result_provider_for_characterization(transport):
+    """Explicit one-read adapter for the existing injected result-provider seam.
+
+    The executor supplies its accepted prepared request and prompt UUID. A
+    caller may explicitly request later history and deliver it through the
+    existing receive-result gate; this adapter never schedules or submits.
+    """
+    from core.comfy_http_history import PromptHTTPHistoryTransport
+    if type(transport) is not PromptHTTPHistoryTransport:
+        raise ValueError("invalid_history_transport")
+    def read(prepared, prompt_id):
+        history = transport(prepared, prompt_id)
+        return ExecutionResult(prepared.request_id, prompt_id, history.status, history.history_json)
+    return read
+
+
 @dataclass(frozen=True)
 class ExecutorObservation:
     status: str

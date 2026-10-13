@@ -233,9 +233,19 @@ class _HTTPConnection:
         self._connection.connect()
 
     def post_prompt(self, body, read_timeout):
+        return self._request("POST", "/prompt", body, read_timeout)
+
+    def get_history(self, prompt_id, read_timeout):
+        if not valid_prompt_id(prompt_id):
+            raise ValueError("invalid_prompt_correlation")
+        return self._request("GET", "/history/" + prompt_id, None, read_timeout)
+
+    def _request(self, method, path, body, read_timeout):
         self._connection.sock.settimeout(read_timeout)
-        self._connection.request("POST", "/prompt", body=body,
-                                 headers={"Content-Type": "application/json", "Accept": "application/json"})
+        headers = {"Accept": "application/json"}
+        if method == "POST":
+            headers["Content-Type"] = "application/json"
+        self._connection.request(method, path, body=body, headers=headers)
         response_socket = self._connection.sock
         response = self._connection.getresponse()
         try:
