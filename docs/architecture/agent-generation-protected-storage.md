@@ -481,11 +481,89 @@ Generation/Recovery execution, Candidate publication and save remain disabled:
 `execution_available=false`, `protected_storage_available=false`,
 `authorship=unverified`, and Recovery inspect-only.
 
-**Next bounded engineering work:** prioritize protected staging and promoted-asset
-ownership, then offline contracts for real transport (origin/authentication,
+**Next bounded engineering work:** review the protected asset owner integration
+boundary below, then offline contracts for real transport (origin/authentication,
 redirects, deadlines, bounded result/download evidence and truthful unknown
 outcomes). Review source/review/session comparison and restart-checkpoint
 retention/order/uncertainty contracts as separate bounded owners. Speculative
 Profile B keys/services are not prerequisites. None of these plans activates
 execution, persistent tip custody, publication or cleanup; the remaining
 production go/no-go gates above still apply.
+
+## C2B-8D-1: disposable protected staging and promoted assets
+
+`core.generation_windows_protected_assets.WindowsProtectedAssetsCharacterization`
+is a separate offline owner for `temporary_containment` and `promoted_assets`.
+The host explicitly opts into an existing disposable owner-only scope. Native
+provisioning exclusively creates two host UUID directories with protected
+owner-only DACLs at creation. Independently selected host-provisioned directories
+can instead be reopened for inspection only. Overlap, aliasing and out-of-scope
+paths are refused. No root authority comes from Journal or ComfyUI metadata.
+No existing Project/user directory ACL is repaired. Private Journal provisioning,
+writer receipts and latest-head ownership are unchanged.
+
+The existing native root owner pins the complete path chain without delete
+sharing, verifies fixed local NTFS and file identity, rejects reparse points,
+and compares the initial owner-only protected DACL snapshots of every in-scope
+ancestor and root. The asset owner retains its native file handles and initial
+file identity/DACL snapshots before callbacks or writes. Each file is exclusively
+created with a host UUID and supported image extension and a protected owner-only
+DACL. Native writes, flush, bounded reads, Pillow verification/decode and SHA-256
+comparisons precede a private `ProtectedImageObservation`. Initial ACL snapshots
+are compared at lifecycle boundaries; another valid owner-only ACL also invalidates
+the observation. File snapshots include the complete native owner/DACL descriptor bytes,
+so changed ACL revision/control bytes cannot pass merely by retaining equal ACEs.
+An observed identity/ACL failure permanently invalidates this
+owner, even if a fixture later restores the original ACL. Closing handles invalidates
+the observations. Changes made and restored between inspections are not proven
+detectable; Profile A excludes hostile same-user processes.
+
+The existing containment image limits apply: encoded image/request/aggregate
+bytes, image count, dimensions and pixels can only be reduced. Inventory and
+read sizes are bounded. Failed writes reserve capacity and retain all created
+files; unknown existing entries, invalid/incomplete images and uncertain outcomes
+never trigger deletion, overwrite, retry or automatic recovery. A successful
+flush/read proves only currently observed bytes, not directory or power-loss
+durability or a cross-file transaction. Evidence files and root directories survive
+close and failed allocation. A fresh reopen supplies new inspect-only observations;
+it cannot validate an old observation or reconstruct a writable owner. Invalid
+inventory withholds the complete result and retains the files.
+
+### Integration boundary and remaining gates
+
+This owner supplies neither `LocalOutputReceipt` nor `PromotedImage`, does not
+implement download/copy/promotion between roots, and has no production call site.
+`ContainedOutputStore` still allocates under OS temporary storage;
+`DurableGenerationAssets` still creates a directory under its approved parent.
+Those constructors have not acquired native-protected semantics. Only the existing
+containment image verifier is reused, without binding an envelope or recording
+a request receipt. Native observation of image/root bytes never confers Candidate
+publication authority.
+
+A future bounded integration must connect native exclusive allocation and retained
+identity/ACL validation to containment download and durable-copy boundaries while
+preserving exact accepted-envelope/remote/local receipt custody, one-attempt behavior,
+original-host freshness and publication/save ordering. It must separately define
+the handle lifetime across original-host shutdown and Recovery, aggregate retained
+evidence accounting and human-approved retention/discard. Host scope provisioning,
+latest-head custody, current human authorization, transport, worker and Human Start
+remain separate production gates. Profile A is adopted; no Profile B signing,
+keys or services were added. All current authorization gates still apply to
+LLM/MCP instructions. `execution_available=false`,
+`protected_storage_available=false`, `authorship=unverified`, Recovery inspect-only,
+and Candidate attachment/publication, Project save and cleanup remain disabled.
+
+### Native characterization evidence
+
+Disposable tests on Windows 11 build 26200 exercise real `CreateDirectory`,
+`CreateFile(CREATE_NEW)`, `GetSecurityInfo`, `SetSecurityInfo`, handle identity,
+native read/write/flush and rename refusal for root/scope/file handles. They cover
+both asset purposes, protected creation, fully protected nested host-provisioned
+roots reopened without ACL changes, changed owner-only/writable/inherited
+file/root ACLs, unsafe scope/intermediate ACLs, retained interrupted or invalid
+files, closed handles and fresh inspect-only reopen. A real disposable NTFS
+junction created with `mklink /J` is refused; actual hardlinks are refused.
+Interruption callbacks, unavailable dependency/platform/filesystem observations
+and deterministic UUID collisions are explicitly injected tests, not actual
+crash, non-NTFS-volume or hostile-race observations. The runtime and exact focused
+commands/results are recorded with the PR. No ComfyUI network transport ran.

@@ -1,6 +1,6 @@
 """Opt-in disposable Windows ACL observations. Never production readiness.
 
-Only a new private-journal child may be provisioned. Existing purpose paths are
+Only new private-journal or disposable asset children may be provisioned. Existing purpose paths are
 inspected read-only. Handles deny delete sharing until explicit close; no cleanup.
 """
 from contextlib import ExitStack
@@ -186,13 +186,22 @@ class WindowsProtectedRootCharacterization:
                             characterization, disposable_opt_in, provision=True)
 
     @classmethod
+    def provision_asset_for_characterization(cls, disposable_scope, purpose, *,
+                                            characterization=False, disposable_opt_in=False):
+        if purpose not in ("temporary_containment", "promoted_assets"):
+            _fail("unsupported_asset_purpose")
+        return cls._capture(disposable_scope, None, purpose,
+                            characterization, disposable_opt_in, provision=True)
+
+    @classmethod
     def _capture(cls, scope_value, selected_path, purpose, characterization, opt_in, provision):
         if characterization is not True or opt_in is not True:
             _fail("execution_unavailable")
         scope = _path(scope_value)
         if scope.drive.startswith("\\\\") or purpose not in PURPOSES:
             _fail("unsupported_path")
-        path = scope / ("promptgraph-protected-journal-" + uuid.uuid4().hex) if provision else _path(selected_path)
+        prefix = "journal" if purpose == "private_journal" else purpose
+        path = scope / ("promptgraph-protected-" + prefix + "-" + uuid.uuid4().hex) if provision else _path(selected_path)
         if path == scope or not path.is_relative_to(scope):
             _fail("unapproved_root")
         if purpose == "selected_project_json" and path.suffix.lower() != ".json":

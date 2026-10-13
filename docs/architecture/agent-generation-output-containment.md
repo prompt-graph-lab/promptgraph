@@ -47,6 +47,12 @@ request. Test multi-run settlement uses registry counts only.
 
 ## Storage owner and filesystem boundaries
 
+C2B-8D-1 adds a separate [disposable Windows protected asset owner](agent-generation-protected-storage.md#c2b-8d-1-disposable-protected-staging-and-promoted-assets).
+It reuses the image verifier but does not bind this store's envelope or issue a
+local receipt. This store's OS temporary allocation and file lifecycle have not
+acquired native-protected semantics. Future integration must preserve correlation,
+receipt identity, original-host freshness and retained-evidence ordering.
+
 `core.comfy_output_containment.ContainedOutputStore.create_for_characterization`
 is the sole factory. It requires explicit characterization mode and creates an
 exclusive application-prefixed root in the host's canonical OS temporary
