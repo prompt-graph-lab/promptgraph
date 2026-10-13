@@ -146,11 +146,16 @@ they do not prove survival of power failure at every point.
 
 The later C2B-8C-3 [trust-profile decision](agent-generation-protected-storage.md)
 and [fresh Recovery authorization design](agent-generation-human-recovery.md)
-refine the policy gates below. Profile A is a proposed minimum, not adopted policy;
-independent authorship against same-user processes would require Profile B.
-All current production and Recovery gates remain closed. Those canonical designs
-distinguish policy decisions from implementation/Windows validation and recommend
-an offline inspection projection as the next assumption-independent slice.
+refine the policy gates below. Profile A: Local Single-User Application is
+formally adopted as Pro's supported security scope: locally operated personal
+Windows illustration production. Public online service deployments are outside
+that threat model; online self-deployers add and maintain their own protection.
+The PromptGraph Lite hosted demo does not expand Pro's guarantee. Hostile
+same-Windows-user processes, Administrator/SYSTEM and compromised host code are
+out of scope. LLM/MCP instructions remain untrusted, and human Start, Recovery
+and Discard custody and all existing agent safety boundaries remain.
+Profile B is an unsupported optional future deployment design, not a prerequisite
+for normal Pro development. All current production and Recovery gates stay closed.
 
 Recovery of already existing bytes and generation/resubmission are distinct
 operations. Inventory never takes an inbox envelope, sends `/prompt`, consumes
@@ -215,16 +220,24 @@ prompt/path/endpoint evidence stays private and is redacted from public jobs/MCP
 Endpoint secrets should not be journaled; frozen endpoint identity and a
 separately protected transport configuration suffice.
 
-Records are untrusted on restart until strict bounded schema, root ownership,
-sequence/digest and integrity checks succeed. A future protected installation
-key may authenticate records (no key in journal; rotation/loss means inspect-only),
-but that policy needs a reviewed supported key store and explicit threat model.
+Records remain unauthenticated on restart even when strict bounded schema, root
+ownership, sequence/digest and integrity checks succeed. SHA-256/digest chains
+and ACL observations do not authenticate their author. Optional future Profile B
+authentication needs independent protected producer/key/service custody; it is
+not a supported local-use prerequisite.
 Reject unknown schema, absolute/escaping references, fabricated/rolled-back or
 conflicting journal revisions and stale owner incarnations. Even an authenticated
 journal proves retained observations, not current publication authorization.
 The same-user process with write access to all roots is outside the current
 integrity-only guarantee; do not claim cryptographic or ACL protection without
 implementing and testing it.
+
+Profile A permits bounded acknowledged writer observations as a current host tip
+within the live host/process lifetime. After restart, absent an independently
+retained host-observed tip, latest-head custody is unavailable. Where/how to retain
+a checkpoint and its write/acknowledgment order and uncertainty contract remain
+unresolved. A digest-valid prefix or identical path grants no automatic rollback
+repair, replay, Recovery association or execution.
 
 ### Write order and crash states
 
@@ -305,18 +318,24 @@ classification is scoped to the owners and tests cited, not a broad code audit.
 
 ## Next bounded PR sequence and production go/no-go
 
-1. **Private inventory/ownership journal foundation:** implement bounded schema,
-   protected journal owner and crash ordering; test interruption after each intent/
-   commit, malformed/stale record refusal and read-only saved-JSON reconciliation.
-   Include the policy needed to protect journal authenticity; no execution/adoption.
+The offline Journal, Human Recovery and trust-evidence foundations now exist;
+their inspect-only status does not establish production integration. The next
+bounded engineering priorities under adopted Profile A are:
+
+1. **Protected staging/promoted-asset ownership and offline real-transport
+   contracts:** extend approved root/file ownership to staging and promoted assets;
+   review endpoint origin, authentication, redirects, deadlines and bounded
+   submission/history/download outcomes with offline/fake contracts first.
+   No real send or execution; Journal intent must precede any later external send.
 2. **Human recovery/retention controls:** inventory/verify/reconcile/review
    decisions, fresh recovery custody and idempotent association boundaries,
    explicit cleanup controls/quota reservation. Include publisher/inbox retirement
    and replacement for distinct work; uncertain outcomes remain fenced.
-3. **Protected filesystem and real transport policy:** approved staging/durable
-   ACLs, filesystem durability threat model, exact endpoint origin, bounded `/prompt`,
-   history and `/view` with redirect/auth/deadline policy. Initially offline/fake
-   contract tests; journal intent must precede any later external send.
+3. **Journal production lifecycle and restart checkpoint contract:** integrate
+   bounded intent/outcome recording and writer retirement; decide checkpoint
+   retention/order/uncertainty and supported durability behavior. Preserve
+   source/review provenance, Project integrity, Candidate idempotence and save
+   uncertainty. Profile B key/service infrastructure is not a prerequisite.
 4. **Production worker integration:** bounded sequential worker using frozen
    envelope, original-host event delivery, explicit loss/shutdown behavior and
    independent publication/save owner. No enabled Start until prior gates hold.

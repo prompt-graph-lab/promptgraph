@@ -88,7 +88,7 @@ mistaken for recovery authority:
 | Evidence needing further reconciliation | Fixed blockers remain, including authenticity, source/review/runtime context, selected Project, assets, save, external execution or inventory coverage. |
 | Candidate already associated | Current saved JSON has at least one exact recorded association. Partial insertion stays partial; this flag grants no append/save authority. |
 | Recovery request needs fresh authorization | Always true. A review request is not an authorized recovery operation. |
-| Evidence currently unsafe to associate | Always true until a separately implemented/authenticated recovery contract passes review. |
+| Evidence currently unsafe to associate | Always true until a separately implemented fresh host Recovery authorization contract within adopted Profile A passes review. |
 
 Unverified journals, missing/altered/unverified assets, duplicate Illustration
 IDs, changed/missing Project, partial/conflicting Candidate insertion, failed or
@@ -132,13 +132,14 @@ rejects decisions.
 The lock serializes this host owner only. Filesystem reads are sequential
 observations, not a transaction or hostile-writer barrier. A journal difference
 between the explicit read and inventory is reported as conflicting. Final
-freshness checks for any future effect need their own authenticated original
+freshness checks for any future effect need their own freshly authorized original
 host/publication gate; this owner performs no effect after a review decision.
 It retains no automatic retry, resume or future permission grant.
 Metadata changes also invalidate a pending review when an asset remains
 tampered or an orphan remains unverified. Hostile writers that spoof metadata,
 uninspected files beyond budget and atomic inspection across every local read
-still require protected-root/authenticity policy; this owner makes no such claim.
+are outside Profile A's supported process-isolation guarantee; this owner claims
+neither hostile-writer isolation nor atomic inspection.
 
 ## Read-only retention assessment
 
@@ -167,14 +168,25 @@ No age threshold, directory sweep, deletion, move or eviction is implemented.
 ## Proposed fresh Recovery authorization (C2B-8C-3; not implemented)
 
 The [trust-profile decision and evidence matrix](agent-generation-protected-storage.md)
-define the proposed security scope. Profile A is a recommendation requiring
-human adoption; Profile B requires independently protected producer and
-latest-head custody. Neither is current policy or an authenticity-upgrade input.
-Under either profile, the steps below require a new separately reviewed host
+record Profile A: Local Single-User Application as Pro's adopted supported
+security scope. Profile B is an unsupported optional future deployment design
+requiring independent producer/latest-head custody, not a prerequisite for
+normal Pro development. Adoption is not an authenticity-upgrade input.
+LLM/MCP instructions remain untrusted; the same-Windows-user process exclusion
+does not change human Start, Recovery or Discard custody or other agent safety
+boundaries. Under Profile A, the steps below require a new separately reviewed host
 owner. The existing `HumanRecoveryReviewOwner` remains inspection/intention only.
 Its `RecoveryDecision.permission_granted` stays false, and its projection's
 execution/publication/save/cleanup gates stay false.
 `RecoveryContext(runtime_authority="observed")` is never that new owner.
+
+Bounded acknowledged live-writer observations may supply a current host tip
+within the live host/process lifetime. After restart, absent an independently
+retained host-observed tip, latest-head custody is unavailable. Checkpoint
+retention and its order/uncertainty contract remain unresolved implementation
+choices. A digest-valid prefix or identical path permits no automatic rollback
+repair, replay, Recovery association or execution. Authorship remains unverified;
+SHA-256, digest chains and ACL observations cannot authenticate the author.
 
 | Stage | Private binding required in a future owner | Fence / permitted result |
 | --- | --- | --- |
@@ -242,8 +254,7 @@ verify no Project save/mutation, journal write, deletion/move, network or worker
 restart. Existing C2B-1..8A and Scene Module Swap focused regressions remain the
 compatibility baseline; no full suite or live operational execution is claimed.
 
-Production still needs an explicitly adopted threat/ownership policy (including
-independent authentication if Profile B is required), protected roots/ACLs and
+Production still needs implementation within adopted Profile A, protected roots/ACLs and
 durability policy, fresh original Project/source/review/session/activation/
 pairing authority, exact human recovery authorization, idempotent association
 and original-host publication/save gates. Cleanup needs its own explicit

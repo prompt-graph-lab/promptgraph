@@ -29,7 +29,7 @@ DPAPI-backed identity or trusted author are introduced.
 | Verified ACL snapshot (native disposable owner only) | Complete bounded modeled owner-only DACL on the pinned object | Authentication of another process using the same user token or general effective-access certification |
 | File integrity | Existing C2B-8A byte/hash/image checks agree | Authenticated source or current runtime custody |
 | Digest-chain validity | Internal ordered journal hashes agree | Author authentication or latest-state proof |
-| Trusted latest head (unavailable here) | Independently retained revision/digest can detect a valid older prefix | Authentication without separately trusted head custody |
+| Latest-head custody | A bounded acknowledged live-writer tip, or an independently retained host-observed restart tip, can detect an older prefix within its custody scope | Authorship or restart custody derived from journal bytes alone |
 | Authorship authentication (unverified here) | Separately designed trusted writer policy | Current Project/source/session/activation/pairing authorization |
 | Current authorization (absent here) | Separately reviewed fresh host capability | Authority derived from paths, ACLs, checksums, IDs or human inspection |
 
@@ -259,10 +259,20 @@ retained expected tip, and even that tip does not authenticate an author.
 `authorship=unverified` remain unchanged. No keys, HMAC, DPAPI, network, worker,
 Candidate mutation, Project save, Start or Recovery execution are introduced.
 
-## Proposed product trust profiles (C2B-8C-3; decision pending)
+## Adopted product security scope: Profile A
 
-This section is design only. Neither profile is adopted product policy, and no
-runtime trust flag changes. The current owners still report
+**Profile A: Local Single-User Application is formally adopted as PromptGraph
+Pro's supported security scope.** Pro is a locally operated personal Windows
+illustration-production application. Public online service deployments are
+outside its supported threat model; online self-deployers add and maintain
+their own protection. The PromptGraph Lite hosted demo does not expand Pro's
+security guarantee. Hostile processes running as the same Windows user,
+Administrator/SYSTEM and compromised host code are out of scope.
+
+This process-isolation exclusion does not make LLM/MCP instructions trusted.
+LLM/MCP input remains untrusted, with existing agent safety boundaries and
+human Start, Recovery and Discard custody preserved. Policy adoption changes
+no runtime trust flag. The current owners still report
 `execution_available=false`, `protected_storage_available=false` and unverified
 authorship; reopened Recovery remains inspect-only. Earlier requirements for
 authenticated ownership must be resolved explicitly against the chosen threat
@@ -273,16 +283,23 @@ profile, rather than implemented by renaming a digest or ACL observation.
 | Security boundary | Verified owner-only Windows ACLs constrain ordinary other-user access on supported local storage. | A separately protected signer/key custodian or distinct Windows identity/service must constrain hostile same-user clients as well. |
 | Exclusions | Same-user malicious processes, administrators/SYSTEM, compromised host code and hardware failure remain outside the guarantee. ACL checks are bounded snapshots, not continuous file isolation. | Administrator/SYSTEM or compromise of the trusted service/key custodian remains outside any proposed guarantee unless separately designed. Isolation from ordinary same-user processes must be demonstrated. |
 | Journal evidence | Schema, hashes and original live producer observations support corruption detection and reconciliation. They do not independently authenticate the author. | Author verification needs an independently pinned verifier identity and protected key custody. A signature identifies an authorized producer, not the truth/completeness of its observations or current action authority. |
-| Latest revision | An independently retained host tip can detect accidental prefix rollback within its stated lifetime; loss of that tip leaves freshness unknown. Same-user rewriting of both stores remains out of scope. | Latest-head custody must also resist same-user rewrite/rollback, independently of the journal and signing key. A valid old signature alone is insufficient. |
+| Latest revision | Acknowledged live-writer observations may be the current host tip within the live host/process lifetime. After restart, absent an independently retained host-observed tip, custody is unavailable. Same-user rewriting of both stores remains out of scope. | Latest-head custody must also resist same-user rewrite/rollback, independently of the journal and signing key. A valid old signature alone is insufficient. |
 | Operational cost | Native root/file policy, truthful uncertainty, fresh human review, retention and current publication gates are still required. | Also requires installation/IPC authorization, verifier provisioning, service availability, migration, rotation/revocation/loss and restart/head reconciliation policy. |
 
-**Recommendation:** use Profile A as the minimum viable target for PromptGraph's
-local single-user workflow. A human product/security decision must explicitly
-accept its same-user/privileged/compromised-host exclusions and the inspect-only
-treatment of missing lineage or latest-head evidence before it becomes policy.
-If authenticated authorship against hostile same-user processes is a requirement,
-Profile A is no-go; review Profile B's custody and operational design first.
-This recommendation grants no production activation or Recovery permission.
+Profile B is an unsupported optional future deployment design, not a prerequisite
+for normal Pro development or supported local use. A future deployment requiring
+authenticated authorship against hostile same-user processes needs a separate
+Profile B custody and operational review. Profile A adoption grants no production
+activation or Recovery permission; authorship remains unverified.
+
+The Profile A latest-head policy accepts bounded acknowledged live-writer
+observations as a current host tip within the live host/process lifetime. After
+restart, absent an independently retained host-observed tip, latest-head custody
+is unavailable. Where/how to retain a restart checkpoint and its intent/ACK order
+and uncertainty contract remain unresolved implementation choices. Journal bytes,
+a digest-valid prefix or an identical path cannot bootstrap that checkpoint.
+Missing/conflicting custody stays inspect-only: no automatic rollback repair,
+replay, Recovery association or execution.
 
 Profile B cannot be supplied by a key stored beside the journal, a fabricated
 secret, or same-user DPAPI alone. Microsoft's [CryptProtectData example](https://learn.microsoft.com/en-us/windows/win32/SecCrypto/example-c-program-using-cryptprotectdata)
@@ -308,15 +325,15 @@ either copy. No cryptography, key store or service is implemented here.
 These are independent axes, not levels in a ladder. A future projection should
 retain explicit missing/unknown/conflicting states rather than compute one
 overall "trusted" boolean. The runtime's `authenticity=unverified` continues to
-mean exactly that even if a human later accepts Profile A's scope.
+mean exactly that under the adopted Profile A scope.
 
 | Axis / current owner | Current observation and limitation | After process loss | Prerequisite for a future effect |
 | --- | --- | --- | --- |
 | Root ACL and file identity / native storage | Pinned handles, local NTFS, modeled owner-only DACLs and before/after identity checks; no hostile same-user content-I/O proof. | Bytes/ACLs may remain; handles and original live observation do not. Fresh native verification must compare independently selected roots and retained provenance, not recapture journal-supplied authority. | Separately approved Journal, staging, promoted-asset and Project scopes; fresh file/ancestor checks at use. Journal protection does not protect asset roots. |
 | Schema/revision/digest / Journal | Strict complete chain and bounded correlation checks detect malformed/inconsistent bytes. | Surviving bytes can be revalidated; a valid prefix/recomputed chain can still pass. | Complete necessary evidence and current integrity; never a claim or permission. |
 | Original producer / live writer | Exact live owner, expected predecessor and acknowledged append are observations. Process/session IDs in reopened records are assertions. | Owner object, lock custody and knowledge of acknowledgment do not survive. A retained lock is evidence, not a transferable lease. | Host-owned lineage under approved profile; no reconstruction of the old writer/claim. |
-| Trusted latest revision | No head custodian implemented. `expected_revision/digest` compares a supplied tip, without authenticating its provenance or asserting directory durability. | Only a separately retained tip may remain; its custody, completeness and durability must be established afresh. | Adopted latest-head policy; missing/conflicting tip remains unknown. Never derive the expected tip from the journal being checked. |
-| Authenticated authorship | Unverified; SHA-256/ACL/file identity are not a signature. | Nothing can upgrade authorship on reopen. Profile B would require surviving independently protected verification/custody evidence. | Profile A's explicit limitation decision or separately implemented Profile B verification; neither authorizes an action. |
+| Latest-head custody | Bounded acknowledged live-writer observations may supply the current host tip. No restart checkpoint custodian is implemented; `expected_revision/digest` only compares a supplied tip. | Absent an independently retained host-observed tip, latest-head custody is unavailable; checkpoint retention/order/uncertainty contracts remain unresolved. | Missing/conflicting custody permits inspection only. Never derive the expected tip from the journal being checked or an identical path. |
+| Authenticated authorship | Unverified; SHA-256/ACL/file identity are not a signature. | Nothing can upgrade authorship on reopen. Profile B would require surviving independently protected verification/custody evidence. | Adopted Profile A limitations apply; optional future Profile B verification is separate. Neither authorizes an action. |
 | Original Project/source/review provenance | Journal correlations and saved JSON are inspectable evidence. Source/review fingerprints cannot establish their own trusted origin. | Files may survive; original Project object, exact source/review carrier and approval custody do not. | Independently verified original lineage, explicit unique Illustration targets, source/Scene/Module state and exact reviewed evidence. Changed/missing lineage blocks Recovery association. |
 | Fresh session/activation/pairing/human review | RecoveryContext strings and review intentions are observations; no current capability. | Session, activation epoch, pairing generation, ACK and pending intention are not restored from disk. | A new exact host context and explicit human action under the future Recovery contract; switching back never revives old authority. |
 | Candidate publication/save | Current JSON may show exact/partial/absent/conflicting association; callback and persistence outcome remain separate. | Saved bytes may remain; appender/publisher one-shot indexes and runtime attempts do not. | New host-only publication/save custody, idempotent reconciliation and immediate stale gate. Exact saved Candidates are not appended again. |
@@ -324,7 +341,7 @@ mean exactly that even if a human later accepts Profile A's scope.
 
 ## Rollback, rewrite and failure interpretation
 
-The distinction below is part of the proposed decision, not a new classifier.
+The distinction below applies within the adopted scope; it is not a new classifier.
 Existing [Journal](agent-generation-ownership-journal.md) and
 [Human Recovery](agent-generation-human-recovery.md) states remain authoritative.
 
@@ -332,7 +349,7 @@ Existing [Journal](agent-generation-ownership-journal.md) and
 | --- | --- | --- |
 | Malformed JSON, missing middle revision, wrong digest or request correlation | Existing bounded schema/chain checks reject it. | Detectable inconsistency; retain evidence, no reconstruction or retry. |
 | Digest-valid older prefix | Detectable only against an independently retained expected tip. With no tip, it is indistinguishable from a journal that stopped there. | Latest-state/completeness unknown; no inference of unsent requests or absent later effects. |
-| Same-user rewrite with recomputed digests | Can pass schema, chain and owner-only ACL observations. A rewritten same-user tip store can also agree. | Indistinguishable authorship attack under Profile A and outside its proposed guarantee. Profile B must protect both producer and latest-head custody. |
+| Same-user rewrite with recomputed digests | Can pass schema, chain and owner-only ACL observations. A rewritten same-user tip store can also agree. | Indistinguishable authorship attack under Profile A and outside its supported guarantee. Optional future Profile B must protect both producer and latest-head custody. |
 | Missing latest head | There is no independent evidence that the observed revision is latest. File timestamps, IDs, directory order and largest revision do not supply it. | Inspect-only freshness uncertainty; no reset/new-tip bootstrap from these bytes. |
 | Interruption before/after replacement or post-write verification failure | Old or new readable bytes, lock/temp evidence, unknown acknowledgment; actual file observations are testable. | Writer remains uncertain, no replay/takeover/automatic cleanup. New bytes do not prove acknowledged persistence or any external effect. |
 | Uncertain remote submission | Intent or accepted prompt evidence may exist without definitive result; local expiry is not remote cancellation. | Keep unresolved ownership; no automatic resubmission. Inspect remote evidence only through a separately approved future transport. |
@@ -353,7 +370,8 @@ not new execution or power-loss observations made by this design slice.
 ## Production decision matrix and next bounded slice
 
 **Current overall result: no-go for production Generation and executable
-Recovery under either profile.** Categories below distinguish a human decision
+Recovery under adopted Profile A.** Profile B key/service infrastructure is not
+a prerequisite for supported local use. Categories below distinguish a human decision
 (D), required implementation (I), required Windows/operational validation (V)
 and an unsupported guarantee (U). Completing one row does not clear the rest.
 
@@ -361,10 +379,10 @@ and an unsupported guarantee (U). Completing one row does not clear the rest.
 | --- | --- | --- |
 | Journal lifecycle | I, V | Integrate bounded intent-before-effect/observed-outcome recording, exclusive writer retirement and truthful unknown states; disposable C2B-8C-2 alone is insufficient. |
 | Protected roots and assets | I, V | Approve/provision production scopes and native Journal, staging, promoted-file and original Project use; validate ACL/identity/reparse behavior throughout. Never repair existing Project ACLs implicitly. |
-| Threat scope/authorship | D; B also I, V | Human adopts Profile A's exclusions or requires Profile B's independent producer/key/service custody. Same-user/privileged resistance remains U under A. |
-| Latest-head policy | D, I, V | Define tip provenance, survival/loss and conflicting-head behavior. A host tip only detects rollback within its custody scope; same-user-resistant custody is U under A. |
+| Threat scope/authorship | A adopted; B optional U | Apply Profile A's local-use exclusions; authorship stays unverified. Independent producer/key/service custody belongs only to an optional future Profile B design. |
+| Latest-head implementation | I, V | Implement the adopted live-tip/missing-restart-tip policy. Decide checkpoint retention and ordering/uncertainty contracts; missing/conflicting custody permits inspection only. Same-user-resistant custody is U under A. |
 | Crash/durability | D, I, V; current guarantees U | Approve supported filesystem and unknown-outcome policy, characterize restart ordering and any chosen durability barrier. File fsync/replacement supplies no power-loss or cross-file transaction guarantee. |
-| Recovery and retention | D, I, V | Review the separate fresh association/discard contracts, idempotence, quotas/reference completeness and original-host publication/save. Current intentions grant nothing. |
+| Recovery and retention | D, I, V | Review separate human association/discard authorization, source/review provenance, Project integrity, Candidate idempotence, quotas/reference completeness and original-host publication/save uncertainty. Current intentions grant nothing. |
 | Transport, worker and Human Start | I, V | Review truthful bounded real transport, one-shot worker/host event lifecycle, loss/shutdown and exact fresh human Start; policy adoption cannot enable them. |
 | Operational validation | D, V | Separately authorize disposable real ComfyUI/Project restart/failure/capacity exercises only after implementation gates. Fake/offline success is not activation approval. |
 
@@ -376,7 +394,7 @@ tip must remain explicitly host-supplied observational context; the slice must
 not implement a trusted head store or claim authenticated authorship. Exercise
 valid prefix/rewrite, missing tip, closed handles, changed source and conflicting
 evidence; keep every permission false and Recovery inspect-only. This can make
-the decision matrix visible and testable without assuming Profile A/B adoption,
+the decision matrix visible and testable without granting runtime authority,
 adding keys/services, reconstructing a claim or performing an effect.
 
 ## Validation and remaining production gates
@@ -402,9 +420,8 @@ Before production activation, separately review and integrate protected-root
 ownership for journal/containment/promotion, approved scope provisioning and
 child-file ACL propagation; expand native substitution/ACE/race validation in
 the locked Windows environment and define supported long-lived handle lifecycles;
-establish an explicit file/replacement/directory durability policy; adopt the
-threat/ownership profile and define latest-head custody within that scope;
-implement independent authentication if Profile B is required; and establish fresh human
+establish an explicit file/replacement/directory durability policy; implement
+latest-head custody within adopted Profile A's scope; and establish fresh human
 recovery authorization. Quota/retention, approved cleanup, real transport,
 worker lifecycle, Human Start and original-host publication/save gates from
 C2B-7 still apply. This characterization grants none of them.
@@ -440,7 +457,9 @@ A digest-valid same-user rewrite without a comparator also remains unauthenticat
 No persistent head store or automatic repair is added. A matching native retained
 writer operation/revision/digest/file identity is labeled a live acknowledged
 snapshot observation; reopening without that writer supplies only a reopened
-assertion. Neither authenticates a producer or establishes the latest head.
+assertion. Neither authenticates a producer. Policy permits the acknowledged
+live snapshot as a bounded current host tip; this projection does not establish
+independent restart latest-head custody.
 
 Source/review digests in the Journal are `recorded_unverified`; independent
 source/review comparisons are explicitly unavailable. This projection does not
@@ -462,9 +481,11 @@ Generation/Recovery execution, Candidate publication and save remain disabled:
 `execution_available=false`, `protected_storage_available=false`,
 `authorship=unverified`, and Recovery inspect-only.
 
-**Next bounded step:** a documentation decision recording human adoption or
-rejection of Profile A/B and the expected-head provenance/loss policy. If an
-independent source/review/session comparison owner is proposed instead, review
-its exact private observation and invalidation contract first. Neither choice
-activates execution, persistent tip custody, keys/services, publication or cleanup;
-the production go/no-go matrix above still applies in full.
+**Next bounded engineering work:** prioritize protected staging and promoted-asset
+ownership, then offline contracts for real transport (origin/authentication,
+redirects, deadlines, bounded result/download evidence and truthful unknown
+outcomes). Review source/review/session comparison and restart-checkpoint
+retention/order/uncertainty contracts as separate bounded owners. Speculative
+Profile B keys/services are not prerequisites. None of these plans activates
+execution, persistent tip custody, publication or cleanup; the remaining
+production go/no-go gates above still apply.
