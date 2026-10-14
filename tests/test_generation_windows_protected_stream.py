@@ -86,6 +86,17 @@ def test_portable_types_and_gates_do_not_gain_receipt_authority():
     assert not issubclass(a.VerifiedProtectedImageObservation, (LocalOutputReceipt, PromotedImage))
 
 
+def test_portable_batch_refuses_non_tuple_before_native_or_host_callback():
+    values = bound()
+    store = object.__new__(a.WindowsProtectedAssetsCharacterization)
+    fresh = Mock(return_value=True)
+    with patch.object(w, "_api", side_effect=AssertionError("native IO")):
+        with pytest.raises(ValueError, match="remote_correlation_mismatch"):
+            store.commit_verified_remote_image_batch_for_characterization(
+                *values, [], host_freshness=fresh)
+    fresh.assert_not_called()
+
+
 @pytest.mark.parametrize("fmt,extension", [("PNG", "png"), ("JPEG", "jpg"), ("WEBP", "webp"), ("BMP", "bmp")])
 def test_real_native_success_exact_correlation_and_dacl_at_first_callback(owner, fmt, extension):
     store, scope, api = owner
@@ -584,6 +595,216 @@ def test_real_native_close_failure_fences_observation_and_attempts_all_handles(o
     assert store._closed and store._invalid and store._uncertain
     assert all(root._closed for root in store._roots.values()) and path.exists()
     with pytest.raises(ValueError): store.inspect_verified_remote_image_for_characterization(observed)
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_real_native_batch_receipt_commits_all_exact_images_and_is_owner_held(owner, count):
+    store, _, _ = owner
+    values, data = bound(images=count), image_bytes()
+    observations = tuple(stage(store, values, Stream(data), index=index) for index in range(count))
+    envelope, prepared, remote = values
+    receipt = store.commit_verified_remote_image_batch_for_characterization(
+        envelope, prepared, remote, observations, host_freshness=lambda e, r: e is envelope and r is remote)
+
+    assert type(receipt) is a.VerifiedProtectedImageBatchReceipt
+    assert not issubclass(a.VerifiedProtectedImageBatchReceipt, (LocalOutputReceipt, PromotedImage))
+    assert (receipt.job_id, receipt.claim_id, receipt.manifest_identity, receipt.request_id,
+            receipt.request_index, receipt.workflow_identity, receipt.prompt_id,
+            receipt.remote_receipt_identity) == (
+        remote.job_id, remote.claim_id, remote.manifest_identity, prepared.request_id,
+        prepared.request_index, prepared.workflow_identity, remote.prompt_id, remote.identity)
+    assert receipt.observations == observations
+    assert tuple(item.descriptor_identity for item in receipt.observations) == tuple(
+        descriptor.identity for descriptor in remote.images)
+    assert store.inspect_verified_remote_image_batch_for_characterization(receipt) is receipt
+    with pytest.raises(ValueError, match="batch_owner_mismatch"):
+        store.inspect_verified_remote_image_batch_for_characterization(replace(receipt))
+    with pytest.raises(ValueError, match="already_attempted"):
+        store.commit_verified_remote_image_batch_for_characterization(
+            envelope, prepared, remote, observations, host_freshness=lambda e, r: True)
+    assert store.inspect_verified_remote_image_batch_for_characterization(receipt) is receipt
+    assert store.readiness()["verified_batch_count"] == 1
+    assert_closed_gates(store.readiness())
+
+
+@pytest.mark.parametrize("variant,code", [
+    ("missing", "batch_observation_incomplete"),
+    ("duplicate", "batch_observation_ambiguous"),
+    ("substituted", "batch_observation_substitution"),
+    ("extra", "batch_observation_ambiguous"),
+])
+def test_real_native_incomplete_or_substituted_batch_never_partially_commits(owner, variant, code):
+    store, _, _ = owner
+    values, data = bound(images=2), image_bytes()
+    observations = tuple(stage(store, values, Stream(data), index=index) for index in range(2))
+    envelope, prepared, remote = values
+    if variant == "missing": candidate = observations[:1]
+    elif variant == "duplicate": candidate = (observations[0], observations[0])
+    elif variant == "substituted": candidate = (replace(observations[0], request_id="other"), observations[1])
+    else: candidate = (observations[0], replace(observations[1], descriptor_identity="extra"))
+
+    with pytest.raises(ValueError, match=code):
+        store.commit_verified_remote_image_batch_for_characterization(
+            envelope, prepared, remote, candidate, host_freshness=lambda e, r: True)
+    assert not store._stream_batches and store._uncertain
+    assert len(store._stream_images) == 2 and all(record[0].exists() for record in store._files.values())
+    with pytest.raises(ValueError, match="inspect_only_or_uncertain"):
+        store.commit_verified_remote_image_batch_for_characterization(
+            envelope, prepared, remote, observations, host_freshness=lambda e, r: True)
+
+
+@pytest.mark.parametrize("binding", ["envelope", "prepared", "remote"])
+def test_real_native_batch_requires_exact_original_objects_without_consuming_correct_binding(owner, binding):
+    store, _, _ = owner
+    values = bound(images=2)
+    observations = tuple(stage(store, values, Stream(image_bytes()), index=index) for index in range(2))
+    envelope, prepared, remote = values
+    altered = [envelope, prepared, remote]
+    if binding == "envelope": altered[0] = copy.copy(envelope)
+    elif binding == "prepared": altered[1] = replace(prepared)
+    else: altered[2] = replace(remote)
+    fresh = Mock(return_value=True)
+    expected = "remote_correlation_mismatch" if binding == "prepared" else (
+        "storage_owner_mismatch" if binding == "envelope" else "remote_binding_conflict")
+    with pytest.raises(ValueError, match=expected):
+        store.commit_verified_remote_image_batch_for_characterization(
+            *altered, observations, host_freshness=fresh)
+    fresh.assert_not_called()
+    assert not store._stream_batch_attempts and not store._uncertain
+    receipt = store.commit_verified_remote_image_batch_for_characterization(
+        envelope, prepared, remote, observations, host_freshness=lambda e, r: True)
+    assert store.inspect_verified_remote_image_batch_for_characterization(receipt) is receipt
+
+
+@pytest.mark.parametrize("failure", ["content", "acl", "freshness"])
+def test_real_native_batch_revalidates_bytes_acl_and_host_freshness(owner, failure):
+    store, _, api = owner
+    values, data = bound(), image_bytes()
+    observation = stage(store, values, Stream(data))
+    path = next(iter(store._files.values()))[0]
+    if failure == "content": path.write_bytes(image_bytes("PNG", (4, 4)))
+    elif failure == "acl": mutate_disposable_acl(path, api, "changed_owner_only")
+    fresh = Mock(return_value=False if failure == "freshness" else True)
+    with pytest.raises(ValueError, match="host_freshness_lost|content_changed|native_observation_changed"):
+        store.commit_verified_remote_image_batch_for_characterization(
+            *values, (observation,), host_freshness=fresh)
+    assert fresh.call_count == (0 if failure == "acl" else 1)
+    assert not store._stream_batches and store._uncertain
+    if failure == "acl": mutate_disposable_acl(path, api, "original")
+    assert path.exists()
+
+
+def test_real_native_batch_rechecks_host_freshness_after_slow_native_verification(owner):
+    store, _, _ = owner
+    values, data = bound(), image_bytes()
+    observation = stage(store, values, Stream(data))
+    current, freshness_calls = [True], []
+
+    def fresh(envelope, remote):
+        assert envelope is values[0] and remote is values[2]
+        assert not store._lock._is_owned()
+        freshness_calls.append(current[0])
+        return current[0]
+
+    inspect = store.inspect_image_for_characterization
+
+    def inspect_then_expire(image):
+        result = inspect(image)
+        current[0] = False
+        return result
+
+    with patch.object(store, "inspect_image_for_characterization", side_effect=inspect_then_expire):
+        with pytest.raises(ValueError, match="host_freshness_lost"):
+            store.commit_verified_remote_image_batch_for_characterization(
+                *values, (observation,), host_freshness=fresh)
+
+    assert freshness_calls == [True, False]
+    assert not store._stream_batches and store._uncertain
+    assert next(iter(store._files.values()))[0].read_bytes() == data
+
+
+def test_real_native_batch_failed_stream_has_no_receipt_and_no_retry(owner):
+    store, _, _ = owner
+    values = bound()
+    provider = Stream(image_bytes())
+    provider.read_hook = lambda limit: b""
+    with pytest.raises(ValueError, match="short_download"):
+        stage(store, values, provider)
+    fresh = Mock(return_value=True)
+    with pytest.raises(ValueError, match="inspect_only_or_uncertain"):
+        store.commit_verified_remote_image_batch_for_characterization(
+            *values, (), host_freshness=fresh)
+    fresh.assert_not_called()
+    assert not store._stream_batches and provider.closes == 1
+    assert all(record[0].exists() for record in store._files.values())
+
+
+def test_real_native_batch_duplicate_call_during_host_check_is_one_shot(owner):
+    store, _, _ = owner
+    values = bound(images=2)
+    observations = tuple(stage(store, values, Stream(image_bytes()), index=index) for index in range(2))
+    envelope, prepared, remote = values
+    entered, resume = threading.Event(), threading.Event()
+    results, errors = [], []
+
+    def slow_freshness(e, r):
+        assert e is envelope and r is remote and not store._lock._is_owned()
+        entered.set()
+        assert resume.wait(5)
+        return True
+
+    def commit_worker():
+        try:
+            results.append(store.commit_verified_remote_image_batch_for_characterization(
+                envelope, prepared, remote, observations, host_freshness=slow_freshness))
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=commit_worker)
+    worker.start()
+    assert entered.wait(5)
+    with pytest.raises(ValueError, match="already_attempted"):
+        store.commit_verified_remote_image_batch_for_characterization(
+            envelope, prepared, remote, observations, host_freshness=Mock(return_value=True))
+    resume.set()
+    worker.join(10)
+    assert not worker.is_alive() and not errors and len(results) == 1
+    assert store.inspect_verified_remote_image_batch_for_characterization(results[0]) is results[0]
+    assert not store._uncertain
+
+
+def test_real_native_batch_close_during_host_check_withholds_receipt_and_retains_files(owner):
+    store, _, _ = owner
+    values = bound(images=2)
+    observations = tuple(stage(store, values, Stream(image_bytes()), index=index) for index in range(2))
+    envelope, prepared, remote = values
+    entered, resume = threading.Event(), threading.Event()
+    errors = []
+
+    def slow_freshness(e, r):
+        assert e is envelope and r is remote and not store._lock._is_owned()
+        entered.set()
+        assert resume.wait(5)
+        return True
+
+    def commit_worker():
+        try:
+            store.commit_verified_remote_image_batch_for_characterization(
+                envelope, prepared, remote, observations, host_freshness=slow_freshness)
+        except BaseException as exc:
+            errors.append(exc)
+
+    paths = [record[0] for record in store._files.values()]
+    worker = threading.Thread(target=commit_worker)
+    worker.start()
+    assert entered.wait(5)
+    store.close()
+    resume.set()
+    worker.join(10)
+    assert not worker.is_alive() and len(errors) == 1
+    assert isinstance(errors[0], ValueError) and not store._stream_batches
+    assert store._closed and store._uncertain
+    assert all(path.exists() and path.read_bytes() == image_bytes() for path in paths)
 
 
 def test_modules_resolve_to_this_isolated_worktree():

@@ -222,6 +222,13 @@ The C2B-5 partial-file cleanup and atomic batch semantics below describe the
 existing containment owner, not the new protected observation bridge. Production
 integration and all execution/protected-storage gates remain disabled.
 
+The separate [C2B-8D-6 protected batch receipt](agent-generation-protected-storage.md#c2b-8d-6-protected-batch-receipt-custody)
+aggregates every exact staged image for one prepared request under its original
+protected-assets owner. It is a private characterization receipt and is not a
+`LocalOutputReceipt`; no executor count, promotion, Candidate or Project
+publication is authorized by it. Any later integration must pass through an
+explicitly reviewed `ContainedOutputStore` acceptance boundary.
+
 ## Atomic batches, quarantine and retention
 
 The store inserts a `verified` receipt only after **all** images download,

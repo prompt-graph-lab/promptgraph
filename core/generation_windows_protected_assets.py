@@ -1,4 +1,4 @@
-"""Disposable native staging/durable image observations; no receipt authority.
+"""Disposable native staging observations; no publication receipt authority.
 
 This adapter deliberately does not implement ContainedOutputStore or
 DurableGenerationAssets. Their correlation/publication contracts stay separate.
@@ -7,6 +7,7 @@ No retries, overwrite, cleanup, transport or production call sites.
 from dataclasses import dataclass, field
 import hashlib
 import io
+import json
 import os
 import re
 import threading
@@ -18,6 +19,7 @@ from core.comfy_output_containment import (
     DownloadStream, ImageDownloadLookup, _validate_binding,
 )
 from core.comfy_prompt_request import is_owner_prepared_frozen_request
+from core.comfy_remote_output_receipts import MAX_REMOTE_IMAGES
 
 _FACTORY = object()
 _PURPOSES = ("temporary_containment", "promoted_assets")
@@ -58,6 +60,21 @@ class VerifiedProtectedImageObservation:
     remote_receipt_identity: str = field(repr=False)
     descriptor_identity: str = field(repr=False)
     image: ProtectedImageObservation = field(repr=False)
+
+
+@dataclass(frozen=True)
+class VerifiedProtectedImageBatchReceipt:
+    """Owner-held all-images observation; never local-output or publication authority."""
+    job_id: str
+    claim_id: str = field(repr=False)
+    manifest_identity: str = field(repr=False)
+    request_id: str = field(repr=False)
+    request_index: int
+    workflow_identity: str = field(repr=False)
+    prompt_id: str = field(repr=False)
+    remote_receipt_identity: str = field(repr=False)
+    identity: str
+    observations: tuple[VerifiedProtectedImageObservation, ...] = field(repr=False)
 
 
 class WindowsProtectedAssetsCharacterization:
@@ -126,10 +143,13 @@ class WindowsProtectedAssetsCharacterization:
         self._lock = threading.RLock()
         self._stream_envelope = None
         self._stream_bindings, self._stream_attempts, self._stream_images = {}, set(), {}
+        self._stream_batch_attempts, self._stream_batches = set(), {}
         self._stream_request_bytes = {}
         self._stream_busy = False
+        self._stream_batch_busy = False
         self._unobserved_files = []
-        # Only the existing pure image verifier is shared; no staging receipt exists.
+        # Only the existing pure image verifier is shared; local-output receipt
+        # custody remains with ContainedOutputStore.
         self._verifier = object.__new__(ContainedOutputStore)
         self._verifier._limits = limits
 
@@ -189,7 +209,7 @@ class WindowsProtectedAssetsCharacterization:
 
     def create_image_for_characterization(self, purpose, data, *, extension="png"):
         with self._lock:
-            if self._stream_busy:
+            if self._stream_busy or self._stream_batch_busy:
                 w._fail("storage_busy")
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
@@ -277,7 +297,7 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("remote_binding_conflict")
             if attempt in self._stream_attempts:
                 w._fail("already_attempted")
-            if self._stream_busy:
+            if self._stream_busy or self._stream_batch_busy:
                 w._fail("storage_busy")
             if (len(self._stream_bindings) >= 100 and previous is None
                     or len(self._files) + len(self._unobserved_files) >= self._limits.images):
@@ -447,6 +467,138 @@ class WindowsProtectedAssetsCharacterization:
         finally:
             self._stream_fresh(fresh)
 
+    def commit_verified_remote_image_batch_for_characterization(
+            self, envelope, prepared, remote, observations, *, host_freshness):
+        """Commit one immutable all-descriptor receipt after final host/native checks.
+
+        This is a private characterization receipt, not a LocalOutputReceipt.
+        It is one-shot per exact host-prepared request and successful remote
+        receipt. Any incomplete or uncertain first attempt retains evidence and
+        makes this owner inspect-only; no image or batch is retried or cleaned.
+        """
+        try:
+            if (not is_owner_prepared_frozen_request(prepared)
+                    or type(observations) is not tuple
+                    or len(observations) > MAX_REMOTE_IMAGES
+                    or not callable(host_freshness)):
+                raise ValueError()
+            _validate_binding(envelope, prepared, remote)
+            if remote.execution_succeeded is not True:
+                raise ValueError()
+        except Exception:
+            w._fail("remote_correlation_mismatch")
+
+        key = (prepared.request_id, remote.identity)
+        with self._lock:
+            if not self._writable or self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            self._check()
+            if self._stream_envelope is not envelope:
+                w._fail("storage_owner_mismatch")
+            binding = self._stream_bindings.get(prepared.request_id)
+            if binding is None:
+                w._fail("unknown_submission")
+            if binding[0] is not prepared or binding[1] is not remote:
+                w._fail("remote_binding_conflict")
+            if key in self._stream_batch_attempts:
+                # A repeat after a successful commit must not poison the original
+                # receipt; a concurrent repeat likewise cannot disturb its owner.
+                w._fail("already_attempted")
+            if self._stream_busy or self._stream_batch_busy:
+                w._fail("storage_busy")
+            self._stream_batch_attempts.add(key)
+            self._stream_batch_busy = True
+
+        fresh = lambda: host_freshness(envelope, remote)
+        try:
+            descriptors = tuple(remote.images)
+            expected_ids = tuple(item.identity for item in descriptors)
+            expected_id_set = set(expected_ids)
+            if (not descriptors or len(descriptors) > MAX_REMOTE_IMAGES
+                    or len(set(expected_ids)) != len(expected_ids)
+                    or len(observations) != len(descriptors)):
+                w._fail("batch_observation_incomplete")
+            supplied = {}
+            for observation in observations:
+                if type(observation) is not VerifiedProtectedImageObservation:
+                    w._fail("batch_observation_invalid")
+                descriptor_id = observation.descriptor_identity
+                if descriptor_id in supplied or descriptor_id not in expected_id_set:
+                    w._fail("batch_observation_ambiguous")
+                supplied[descriptor_id] = observation
+
+            canonical = tuple(supplied[descriptor_id] for descriptor_id in expected_ids)
+            for descriptor, observation in zip(descriptors, canonical):
+                expected_attempt = (prepared.request_id, descriptor.identity)
+                with self._lock:
+                    if (observation is not self._stream_images.get(expected_attempt)
+                            or observation.job_id != remote.job_id
+                            or observation.claim_id != remote.claim_id
+                            or observation.manifest_identity != remote.manifest_identity
+                            or observation.request_id != prepared.request_id
+                            or observation.request_index != prepared.request_index
+                            or observation.workflow_identity != prepared.workflow_identity
+                            or observation.prompt_id != remote.prompt_id
+                            or observation.remote_receipt_identity != remote.identity):
+                        w._fail("batch_observation_substitution")
+
+            # The host callback stays outside the owner lock. The native lock is
+            # reacquired for byte/ACL checks, then freshness is observed again
+            # outside the lock before the guarded receipt publication.
+            self._stream_fresh(fresh)
+            with self._lock:
+                self._check()
+                for observation in canonical:
+                    self.inspect_verified_remote_image_for_characterization(observation)
+                self._check()
+
+            # Native rereads and Pillow decoding may take long enough for the
+            # original Project/session custody to change. Keep this callback
+            # outside the owner lock, then serialize the final owner check and
+            # publication against close and other storage operations.
+            self._stream_fresh(fresh)
+            with self._lock:
+                self._check()
+                if key in self._stream_batches:
+                    w._fail("already_attempted")
+                payload = [
+                    "promptgraph.protected-image-batch.v1", remote.job_id, remote.claim_id,
+                    remote.manifest_identity, prepared.request_id, prepared.request_index,
+                    prepared.workflow_identity, remote.prompt_id, remote.identity,
+                    [[item.descriptor_identity, item.image.storage_identity, item.image.purpose,
+                      item.image.content_sha256, item.image.byte_count, item.image.image_format,
+                      item.image.width, item.image.height] for item in canonical],
+                ]
+                identity = hashlib.sha256(json.dumps(
+                    payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+                receipt = VerifiedProtectedImageBatchReceipt(
+                    remote.job_id, remote.claim_id, remote.manifest_identity,
+                    prepared.request_id, prepared.request_index, prepared.workflow_identity,
+                    remote.prompt_id, remote.identity, identity, canonical)
+                self._stream_batches[key] = receipt
+                return receipt
+        except BaseException:
+            with self._lock:
+                self._uncertain = True
+            raise
+        finally:
+            with self._lock:
+                self._stream_batch_busy = False
+
+    def inspect_verified_remote_image_batch_for_characterization(self, receipt):
+        """Recheck exact owner custody and all current native bytes for a batch."""
+        with self._lock:
+            if (type(receipt) is not VerifiedProtectedImageBatchReceipt
+                    or self._stream_batches.get((receipt.request_id, receipt.remote_receipt_identity))
+                    is not receipt):
+                w._fail("batch_owner_mismatch")
+            if self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            self._check()
+            for observation in receipt.observations:
+                self.inspect_verified_remote_image_for_characterization(observation)
+            return receipt
+
     def inspect_verified_remote_image_for_characterization(self, observation):
         with self._lock:
             if (type(observation) is not VerifiedProtectedImageObservation
@@ -545,6 +697,7 @@ class WindowsProtectedAssetsCharacterization:
             view.update(purpose="protected_assets", asset_observation=state,
                         integrity="verified_bytes" if state == "observed" and self._images else "not_verified",
                         image_count=len(self._images), retained_file_count=len(self._files) + len(self._unobserved_files),
+                        verified_batch_count=len(self._stream_batches),
                         retained_byte_reservation=self._used_bytes,
                         retry_allowed=False, fresh_reopen="inspect_only", cross_file_transaction=False)
             if state in ("closed", "unsafe_or_unavailable"):
