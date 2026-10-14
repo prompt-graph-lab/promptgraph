@@ -199,6 +199,29 @@ unconditional. Profile A, `authorship=unverified`, worker/polling, Journal and
 Recovery, Human Start, Candidate/Project mutation/save and MCP execution gain no
 authorization from this owner.
 
+## C2B-8D-5 protected staging observation
+
+The [native protected staging bridge](agent-generation-protected-storage.md#c2b-8d-5-offline-protected-staging-stream-bridge)
+now composes an explicitly supplied `DownloadStream` provider, including the
+characterization HTTP `/view` provider, with an explicitly provisioned Windows
+asset owner. It checks original preparation provenance, exact envelope/receipt
+binding and descriptor ownership, revalidates original successful history, pins
+each attempt before callbacks, and checks trusted host freshness with the exact
+envelope and receipt around remote operations. Exclusive native owner-DACL
+allocation, retained handle/ACL/identity checks, bounded incremental writes,
+close/flush, Pillow decode and stored-vs-stream hashing precede a separate
+`VerifiedProtectedImageObservation`.
+
+This observation grants no atomic local receipt or publication authority.
+`ContainedOutputStore` and its existing constructor, `LocalOutputReceipt`,
+executor settlement, publication and persistence ordering remain unchanged.
+The new native bridge always retains partial/uncertain evidence, reserves declared
+bytes conservatively, withholds verification on failure and allows no retry or
+cleanup. Fresh reopen is inspect-only and cannot recover remote correlation.
+The C2B-5 partial-file cleanup and atomic batch semantics below describe the
+existing containment owner, not the new protected observation bridge. Production
+integration and all execution/protected-storage gates remain disabled.
+
 ## Atomic batches, quarantine and retention
 
 The store inserts a `verified` receipt only after **all** images download,

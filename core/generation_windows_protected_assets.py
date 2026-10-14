@@ -15,7 +15,9 @@ import uuid
 from core import generation_windows_protected_storage as w
 from core.comfy_output_containment import (
     ContainedOutputStore, ContainmentLimits, SUPPORTED_EXTENSIONS, CHUNK_BYTES,
+    DownloadStream, ImageDownloadLookup, _validate_binding,
 )
+from core.comfy_prompt_request import is_owner_prepared_frozen_request
 
 _FACTORY = object()
 _PURPOSES = ("temporary_containment", "promoted_assets")
@@ -43,8 +45,24 @@ class ProtectedImageObservation:
     height: int
 
 
+@dataclass(frozen=True)
+class VerifiedProtectedImageObservation:
+    """Exact remote-to-native byte observation; never publication authority."""
+    job_id: str
+    claim_id: str = field(repr=False)
+    manifest_identity: str = field(repr=False)
+    request_id: str = field(repr=False)
+    request_index: int
+    workflow_identity: str = field(repr=False)
+    prompt_id: str = field(repr=False)
+    remote_receipt_identity: str = field(repr=False)
+    descriptor_identity: str = field(repr=False)
+    image: ProtectedImageObservation = field(repr=False)
+
+
 class WindowsProtectedAssetsCharacterization:
     execution_available = False
+    protected_storage_available = False
 
     @classmethod
     def provision_for_characterization(cls, disposable_scope, *, characterization=False,
@@ -106,26 +124,35 @@ class WindowsProtectedAssetsCharacterization:
         self._closed = self._uncertain = False
         self._invalid = False
         self._lock = threading.RLock()
+        self._stream_envelope = None
+        self._stream_bindings, self._stream_attempts, self._stream_images = {}, set(), {}
+        self._stream_request_bytes = {}
+        self._stream_busy = False
+        self._unobserved_files = []
         # Only the existing pure image verifier is shared; no staging receipt exists.
         self._verifier = object.__new__(ContainedOutputStore)
         self._verifier._limits = limits
 
     def _check(self):
-        if self._closed:
-            w._fail("closed_observation")
-        if self._invalid:
-            w._fail("invalidated_observation")
+        with self._lock:
+            if self._closed:
+                w._fail("closed_observation")
+            if self._invalid:
+                w._fail("invalidated_observation")
+            files = tuple(self._files.values())
+            roots = tuple(self._roots.items())
         try:
-            for root in self._roots.values():
+            for _, root in roots:
                 if not root.readiness()["acl_verified"]:
                     w._fail("protected_root_unavailable")
-            for path, handle, identity, acl in self._files.values():
-                root = self._roots[next(p for p, r in self._roots.items() if path.parent == r._path)]
+            for path, handle, identity, acl in files:
+                root = next(r for _, r in roots if path.parent == r._path)
                 w._revalidate(((path, False, handle, identity, acl[0]),), root._api, root._user)
                 if _file_acl(handle, root) != acl:
                     w._fail("native_observation_changed")
         except BaseException:
-            self._invalid = self._uncertain = True
+            with self._lock:
+                self._invalid = self._uncertain = True
             raise
 
     def _bytes(self, record):
@@ -138,7 +165,11 @@ class WindowsProtectedAssetsCharacterization:
         f.SetFilePointer(handle, 0, c.FILE_BEGIN)
         chunks, count = [], 0
         while count < size:
-            _, chunk = f.ReadFile(handle, min(CHUNK_BYTES, size - count))
+            self._check()
+            try:
+                _, chunk = f.ReadFile(handle, min(CHUNK_BYTES, size - count))
+            finally:
+                self._check()
             if not chunk:
                 w._fail("incomplete_image")
             chunks.append(chunk)
@@ -158,6 +189,8 @@ class WindowsProtectedAssetsCharacterization:
 
     def create_image_for_characterization(self, purpose, data, *, extension="png"):
         with self._lock:
+            if self._stream_busy:
+                w._fail("storage_busy")
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
             if purpose not in _PURPOSES or extension not in SUPPORTED_EXTENSIONS:
@@ -210,6 +243,220 @@ class WindowsProtectedAssetsCharacterization:
                 if handle is not None and key not in self._files:
                     handle.Close()
                 raise  # Retain incomplete/uncertain evidence; never remove it.
+
+    def stage_remote_image_for_characterization(self, envelope, prepared, remote, descriptor, *,
+                                               stream_provider, host_freshness):
+        """One explicit offline stream into protected staging, with no receipts.
+
+        The trusted original host supplies freshness, not a remote/job flag.
+        External callbacks run outside the reservation lock. Every callback is
+        surrounded by native checks; remote operations also by freshness checks.
+        No other file creation is permitted during this owner's stream attempt.
+        """
+        try:
+            if not is_owner_prepared_frozen_request(prepared):
+                raise ValueError()
+            _validate_binding(envelope, prepared, remote)
+            if (remote.execution_succeeded is not True
+                    or not any(item is descriptor for item in remote.images)
+                    or descriptor.image_format not in SUPPORTED_EXTENSIONS
+                    or not callable(stream_provider) or not callable(host_freshness)):
+                raise ValueError()
+        except Exception:
+            w._fail("remote_correlation_mismatch")
+        fresh = lambda: host_freshness(envelope, remote)
+        attempt = (prepared.request_id, descriptor.identity)
+        with self._lock:
+            if not self._writable or self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            self._check()
+            if self._stream_envelope is not None and self._stream_envelope is not envelope:
+                w._fail("storage_owner_mismatch")
+            previous = self._stream_bindings.get(prepared.request_id)
+            if previous is not None and (previous[0] is not prepared or previous[1] is not remote):
+                w._fail("remote_binding_conflict")
+            if attempt in self._stream_attempts:
+                w._fail("already_attempted")
+            if self._stream_busy:
+                w._fail("storage_busy")
+            if (len(self._stream_bindings) >= 100 and previous is None
+                    or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                w._fail("storage_capacity")
+            self._stream_envelope = envelope
+            self._stream_bindings[prepared.request_id] = (prepared, remote)
+            self._stream_attempts.add(attempt)  # before freshness/provider/fault/reentry
+            self._stream_busy = True
+        stream = None
+        try:
+            self._stream_fresh(fresh)
+            if {(purpose, path.name) for purpose, _, path in self._inventory()} != set(self._files):
+                w._fail("unexpected_existing_file")
+            root = self._roots["temporary_containment"]
+            name = uuid.uuid4().hex + "." + descriptor.image_format
+            key, path = ("temporary_containment", name), root._path / name
+            _, c, f, _, _, _ = root._api
+            # Allocation and earliest handle retention share the lifecycle lock
+            # with close(). Once CreateFile succeeds, shutdown must see this
+            # handle even if it wins before metadata capture or stream callbacks.
+            with self._lock:
+                self._check()
+                handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
+                    c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
+                    c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+                try:
+                    # Even failed initial metadata capture retains the file and handle.
+                    self._unobserved_files.append((path, handle))
+                except BaseException:
+                    try:
+                        handle.Close()
+                    except BaseException:
+                        self._invalid = self._uncertain = True
+                    raise
+            try:
+                record = path, handle, w._identity(handle), _file_acl(handle, root)
+                with self._lock:
+                    self._check()
+                    self._files[key] = record
+                    self._unobserved_files.remove((path, handle))
+                    self._check()
+            except BaseException:
+                with self._lock:
+                    self._invalid = self._uncertain = True
+                raise
+            self._stream_callback(self._fault, "after_file_create")
+            lookup = ImageDownloadLookup(prepared.prompt_url.removesuffix("/prompt"),
+                descriptor.filename, descriptor.subfolder, descriptor.bucket, descriptor.identity)
+            # Assign before the post-provider checks so stale/drift still closes it.
+            self._stream_fresh(fresh)
+            try:
+                try:
+                    stream = stream_provider(lookup)
+                except Exception:
+                    raise ValueError("download_interrupted") from None
+            finally:
+                self._stream_fresh(fresh)
+            if (type(stream) is not DownloadStream or type(stream.content_length) is not int
+                    or not callable(stream.read) or not callable(stream.close)):
+                w._fail("download_contract_invalid")
+            length = stream.content_length
+            request_bytes = self._stream_request_bytes.get(prepared.request_id, 0)
+            if (not 0 < length <= self._limits.image_bytes
+                    or request_bytes + length > self._limits.request_bytes
+                    or self._used_bytes + length > self._limits.aggregate_bytes):
+                w._fail("download_size_limit")
+            # Reserve the entire declared body before writes, including partial
+            # native writes that raise without reporting their actual byte count.
+            self._used_bytes += length
+            self._stream_request_bytes[prepared.request_id] = request_bytes + length
+            count, digest = 0, hashlib.sha256()
+            while True:
+                limit = min(CHUNK_BYTES, length - count + 1)
+                chunk = self._stream_remote(fresh, stream.read, limit)
+                if type(chunk) is not bytes or len(chunk) > limit:
+                    w._fail("download_contract_invalid")
+                if not chunk:
+                    if count != length:
+                        w._fail("short_download")
+                    break
+                if count + len(chunk) > length:
+                    w._fail("extra_download")
+                self._check()
+                try:
+                    _, written = f.WriteFile(handle, chunk)
+                finally:
+                    self._check()
+                if written != len(chunk):
+                    w._fail("incomplete_write")
+                count += len(chunk)
+                digest.update(chunk)
+                self._stream_callback(self._fault, "after_file_write")
+            closing, stream = stream, None
+            self._stream_close(closing, fresh)
+            self._check()
+            try:
+                f.FlushFileBuffers(handle)
+            finally:
+                self._check()
+            self._stream_callback(self._fault, "after_file_sync")
+            image = self._observe(name, "temporary_containment", descriptor.image_format)
+            if image.byte_count != count or image.content_sha256 != digest.hexdigest():
+                w._fail("content_changed")
+            self._stream_fresh(fresh)
+            observed = VerifiedProtectedImageObservation(remote.job_id, remote.claim_id,
+                remote.manifest_identity, remote.request_id, remote.request_index,
+                remote.workflow_identity, remote.prompt_id, remote.identity, descriptor.identity, image)
+            # Publish success while serialized with close(): either this
+            # observation commits first, or a completed close fences it.
+            with self._lock:
+                self._check()
+                self._images[key] = image
+                self._stream_images[attempt] = observed
+                return observed
+        except BaseException:
+            with self._lock:
+                self._uncertain = True
+            raise  # No deletion, overwrite, retry or receipt/publication event.
+        finally:
+            try:
+                if type(stream) is DownloadStream and callable(stream.close):
+                    # Always close acquired streams, including stale/unsafe ones.
+                    # A failed pre-check must not suppress resource closure.
+                    self._stream_close(stream, fresh)
+            finally:
+                with self._lock:
+                    self._stream_busy = False
+
+    def _stream_callback(self, callback, *args):
+        self._check()
+        try:
+            return callback(*args)
+        finally:
+            self._check()
+
+    def _stream_fresh(self, callback):
+        self._check()
+        try:
+            try:
+                current = callback()
+            except Exception:
+                raise ValueError("host_freshness_lost") from None
+        finally:
+            self._check()
+        if current is not True:
+            w._fail("host_freshness_lost")
+
+    def _stream_remote(self, fresh, callback, *args):
+        self._stream_fresh(fresh)
+        try:
+            try:
+                return callback(*args)
+            except Exception:
+                raise ValueError("download_interrupted") from None
+        finally:
+            self._stream_fresh(fresh)
+
+    def _stream_close(self, stream, fresh):
+        try:
+            try:
+                self._stream_fresh(fresh)
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    raise ValueError("download_close_failed") from None
+        finally:
+            self._stream_fresh(fresh)
+
+    def inspect_verified_remote_image_for_characterization(self, observation):
+        with self._lock:
+            if (type(observation) is not VerifiedProtectedImageObservation
+                    or self._stream_images.get((observation.request_id, observation.descriptor_identity))
+                    is not observation):
+                w._fail("image_owner_mismatch")
+            if self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            self.inspect_image_for_characterization(observation.image)
+            return observation
 
     def inspect_image_for_characterization(self, image):
         with self._lock:
@@ -265,9 +512,12 @@ class WindowsProtectedAssetsCharacterization:
                     handle.Close()
                     raise
             size = root._api[2].GetFileSize(self._files[key][1])
+            total += size
+            # Fresh inspection never recreates a writable budget. Still retain
+            # the observed size even if decode/limits reject this inventory.
+            self._used_bytes = max(self._used_bytes, total)
             if not 0 < size <= min(self._limits.image_bytes, self._limits.request_bytes):
                 w._fail("image_byte_limit")
-            total += size
             if total > self._limits.aggregate_bytes:
                 w._fail("storage_capacity")
         total = 0
@@ -294,7 +544,8 @@ class WindowsProtectedAssetsCharacterization:
                 state = "closed" if self._closed else "unsafe_or_unavailable"
             view.update(purpose="protected_assets", asset_observation=state,
                         integrity="verified_bytes" if state == "observed" and self._images else "not_verified",
-                        image_count=len(self._images), retained_file_count=len(self._files),
+                        image_count=len(self._images), retained_file_count=len(self._files) + len(self._unobserved_files),
+                        retained_byte_reservation=self._used_bytes,
                         retry_allowed=False, fresh_reopen="inspect_only", cross_file_transaction=False)
             if state in ("closed", "unsafe_or_unavailable"):
                 view.update(acl_verified=False, identity="unavailable", native_observation=state)
@@ -304,10 +555,21 @@ class WindowsProtectedAssetsCharacterization:
         with self._lock:
             if not self._closed:
                 self._closed = True
-                for _, handle, _, _ in self._files.values():
-                    handle.Close()
+                failed = False
+                for handle in ([r[1] for r in self._files.values()]
+                               + [r[1] for r in self._unobserved_files]):
+                    try:
+                        handle.Close()
+                    except BaseException:
+                        failed = True
                 for root in self._roots.values():
-                    root.close()
+                    try:
+                        root.close()
+                    except BaseException:
+                        failed = True
+                if failed:
+                    self._invalid = self._uncertain = True
+                    w._fail("native_close_failed")
 
     def __enter__(self):
         return self
