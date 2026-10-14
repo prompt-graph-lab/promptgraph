@@ -531,18 +531,19 @@ inventory withholds the complete result and retains the files.
 
 ### Integration boundary and remaining gates
 
-This owner supplies neither `LocalOutputReceipt` nor `PromotedImage`, does not
-implement download/copy/promotion between roots, and has no production call site.
+This owner supplies neither `LocalOutputReceipt` nor `PromotedImage` and has no
+production call site. C2B-8D-5 below adds an explicit offline stream observation
+into staging; copy/promotion between roots remains unavailable.
 `ContainedOutputStore` still allocates under OS temporary storage;
 `DurableGenerationAssets` still creates a directory under its approved parent.
-Those constructors have not acquired native-protected semantics. Only the existing
-containment image verifier is reused, without binding an envelope or recording
-a request receipt. Native observation of image/root bytes never confers Candidate
-publication authority.
+Those constructors have not acquired native-protected semantics. The existing
+containment image verifier is reused; the byte-create API records no request
+receipt. Native observation of image/root bytes never confers Candidate publication
+authority.
 
-A future bounded integration must connect native exclusive allocation and retained
-identity/ACL validation to containment download and durable-copy boundaries while
-preserving exact accepted-envelope/remote/local receipt custody, one-attempt behavior,
+A future bounded integration must connect these offline observations to the
+complete containment receipt and durable-copy boundaries while preserving exact
+accepted-envelope/remote/local receipt custody, one-attempt behavior,
 original-host freshness and publication/save ordering. It must separately define
 the handle lifetime across original-host shutdown and Recovery, aggregate retained
 evidence accounting and human-approved retention/discard. Host scope provisioning,
@@ -567,3 +568,91 @@ Interruption callbacks, unavailable dependency/platform/filesystem observations
 and deterministic UUID collisions are explicitly injected tests, not actual
 crash, non-NTFS-volume or hostile-race observations. The runtime and exact focused
 commands/results are recorded with the PR. No ComfyUI network transport ran.
+
+## C2B-8D-5: offline protected staging stream bridge
+
+`stage_remote_image_for_characterization` explicitly composes the existing
+`DownloadStream` provider with an already provisioned, writable disposable
+Windows asset owner. It accepts the original host-issued `FrozenPromptRequest`,
+exact envelope and `RemoteOutputReceipt`, and an exact descriptor object from
+that receipt. Preparation provenance and the complete original history are
+revalidated before any native allocation or callback. Explicit successful
+execution is required; status-less metadata and a replaced success summary
+cannot authorize a transfer. The first accepted attempt pins the exact envelope,
+prepared request and receipt objects. Copies, substituted bindings and repeated
+request/descriptor attempts are refused before invoking the provider.
+
+Only `temporary_containment` receives stream bytes. Remote paths never enter the
+local destination: a host UUID name is exclusively allocated with
+`CreateFile(CREATE_NEW)` and the native owner-only protected DACL supplied at
+creation. The original root/file handles, identity and DACL observations are
+retained before the first external callback. Failed initial file observation
+retains the new file and handle and permanently fences the owner. Root/file
+validation brackets provider/read/close callbacks, writes, flush and stored-byte
+reads. Observed ACL/identity loss permanently invalidates the owner, even if the
+original descriptor is later restored. Existing byte-create behavior remains
+available outside a stream attempt; callback reentry cannot start a second
+stream or a concurrent byte-create operation.
+
+The trusted original host supplies `host_freshness(envelope, remote)` with those
+exact objects. Its return must be literal `True`; exceptions or stale context
+fail closed. It runs before allocation, before and after each remote operation,
+and after stored-byte verification. These callbacks run outside the asset
+reservation lock. This bridge supplies no current-session/job freshness owner
+itself, and no application call site installs a permissive callback by default.
+Lost freshness withholds the observation and retains evidence. An acquired stream
+is closed once even when a native/freshness pre-check fails; failed close cannot
+produce verified evidence. Provider/read/close errors expose fixed bounded
+failure codes rather than callback exception text.
+
+Reads request at most 64 KiB and write each accepted chunk natively before the
+next read; there is no download prebuffer or OS-temp staging file. Positive
+integer declared length, actual byte count, exact EOF, image count and reduced
+image/request/aggregate limits are enforced. One extra byte is requested to
+detect an overrun. Declared body bytes are reserved before writes, so partial or
+ambiguous write failures cannot release capacity or permit retry. Readiness
+reports retained file count and byte reservation; fresh inspect-only inventory
+also accounts for observed sizes, including rejected bytes. Failed attempts
+make the owner permanently uncertain for further writes. Files, including empty,
+partial, malformed, stale or uncertain files, survive failure and close.
+
+Only exact-length completion, successful stream close, native flush, bounded
+stored-byte reread, existing Pillow verification/full decode and stored-vs-stream
+SHA-256 equality produce a `VerifiedProtectedImageObservation`. Extensions are
+checked against decoded image format; extension and Content-Type do not establish
+validity. This separate type contains exact remote correlation and a private
+`ProtectedImageObservation`. It is neither a `LocalOutputReceipt` nor a
+`PromotedImage`, does not implement their acceptance interfaces, and causes no
+executor count event, Candidate, Project save, Journal or MCP operation. A fresh
+reopen produces only new inspect-only byte observations; it cannot restore remote
+correlation, old observations, retries or writable authority.
+
+### Observed evidence and unresolved guarantees
+
+Portable refusal contracts and actual disposable Windows-native fixtures cover
+PNG/JPEG/WebP/BMP, exact correlation and issuance, DACL/identity at creation and
+rename refusal, incremental writes, short/extra/oversized/nonbyte/malformed
+streams, interruption/timeout/close failure, native write/flush failure, ACL and
+identity drift, freshness loss around callbacks, retained evidence, one-attempt
+reentry, host-name collision and fresh inspect-only reopen. Offline composition
+uses `PromptHTTPViewTransport` with an injected wire and misleading Content-Type;
+the HTTP provider contract is unchanged. Existing byte-create, containment and
+C2B-8D-4 tests remain in the focused validation set. Faults and identity mismatches
+are injected where noted; rename refusal, file ACL changes and file creation/IO
+use real Windows APIs. No network server or production Generation ran.
+
+Stored-byte verification uses the existing bounded reread/decode implementation;
+it is not a constant-memory decoder. Synchronous injected callbacks rely on their
+own deadline/interrupt contract; the HTTP characterization wire supplies its
+existing read budget. This owner adds no thread cancellation or hard wall-clock
+guarantee. Transient changes restored between checks, hostile same-user writers,
+directory durability, crash/power-loss atomicity and cross-file transactions
+remain unproven. Close failures fence observations and retain evidence; they do
+not establish that every underlying OS handle actually closed.
+
+Host scope provisioning, receipt/publication integration, durable promotion,
+latest-head custody, fresh human authority, approved retention/discard, production
+transport registration, worker lifecycle and Human Start remain separate gates.
+`execution_available=false`, `protected_storage_available=false`,
+`authorship=unverified`, Recovery inspect-only, and Candidate/Project/Journal/MCP
+execution and cleanup remain unchanged.
