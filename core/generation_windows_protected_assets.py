@@ -543,12 +543,21 @@ class WindowsProtectedAssetsCharacterization:
                         w._fail("batch_observation_substitution")
 
             # The host callback stays outside the owner lock. The native lock is
-            # reacquired for final byte/ACL checks and the single receipt publish.
+            # reacquired for byte/ACL checks, then freshness is observed again
+            # outside the lock before the guarded receipt publication.
             self._stream_fresh(fresh)
             with self._lock:
                 self._check()
                 for observation in canonical:
                     self.inspect_verified_remote_image_for_characterization(observation)
+                self._check()
+
+            # Native rereads and Pillow decoding may take long enough for the
+            # original Project/session custody to change. Keep this callback
+            # outside the owner lock, then serialize the final owner check and
+            # publication against close and other storage operations.
+            self._stream_fresh(fresh)
+            with self._lock:
                 self._check()
                 if key in self._stream_batches:
                     w._fail("already_attempted")

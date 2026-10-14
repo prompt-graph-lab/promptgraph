@@ -694,6 +694,35 @@ def test_real_native_batch_revalidates_bytes_acl_and_host_freshness(owner, failu
     assert path.exists()
 
 
+def test_real_native_batch_rechecks_host_freshness_after_slow_native_verification(owner):
+    store, _, _ = owner
+    values, data = bound(), image_bytes()
+    observation = stage(store, values, Stream(data))
+    current, freshness_calls = [True], []
+
+    def fresh(envelope, remote):
+        assert envelope is values[0] and remote is values[2]
+        assert not store._lock._is_owned()
+        freshness_calls.append(current[0])
+        return current[0]
+
+    inspect = store.inspect_image_for_characterization
+
+    def inspect_then_expire(image):
+        result = inspect(image)
+        current[0] = False
+        return result
+
+    with patch.object(store, "inspect_image_for_characterization", side_effect=inspect_then_expire):
+        with pytest.raises(ValueError, match="host_freshness_lost"):
+            store.commit_verified_remote_image_batch_for_characterization(
+                *values, (observation,), host_freshness=fresh)
+
+    assert freshness_calls == [True, False]
+    assert not store._stream_batches and store._uncertain
+    assert next(iter(store._files.values()))[0].read_bytes() == data
+
+
 def test_real_native_batch_failed_stream_has_no_receipt_and_no_retry(owner):
     store, _, _ = owner
     values = bound()

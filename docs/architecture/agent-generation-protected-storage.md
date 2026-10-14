@@ -634,10 +634,11 @@ owner-held `VerifiedProtectedImageBatchReceipt` for one exact host-prepared
 request and its original successful `RemoteOutputReceipt`. The caller must supply
 the complete descriptor set as exact `VerifiedProtectedImageObservation`
 instances issued by the same owner. Missing, duplicate, extra, copied or
-substituted observations are rejected. A batch is published only after the
-original host-freshness callback succeeds and the owner rechecks each retained
-native file identity, ACL, stored byte count and decoded-byte observation. Batch
-publication is serialized with owner close; close winning first prevents the
+substituted observations are rejected. The original host-freshness callback
+runs before verification and again after the potentially slow native file
+identity, ACL, stored-byte reread and decoded-byte checks. Both callbacks run
+outside the owner lock. Publication then performs a guarded final owner check
+under that lock, serializing against close; close winning first prevents the
 receipt, while a committed receipt is invalidated for further inspection by
 subsequent close.
 
