@@ -627,6 +627,41 @@ executor count event, Candidate, Project save, Journal or MCP operation. A fresh
 reopen produces only new inspect-only byte observations; it cannot restore remote
 correlation, old observations, retries or writable authority.
 
+### C2B-8D-6: protected batch receipt custody
+
+`commit_verified_remote_image_batch_for_characterization` adds one immutable,
+owner-held `VerifiedProtectedImageBatchReceipt` for one exact host-prepared
+request and its original successful `RemoteOutputReceipt`. The caller must supply
+the complete descriptor set as exact `VerifiedProtectedImageObservation`
+instances issued by the same owner. Missing, duplicate, extra, copied or
+substituted observations are rejected. A batch is published only after the
+original host-freshness callback succeeds and the owner rechecks each retained
+native file identity, ACL, stored byte count and decoded-byte observation. Batch
+publication is serialized with owner close; close winning first prevents the
+receipt, while a committed receipt is invalidated for further inspection by
+subsequent close.
+
+The receipt records only the bounded request/remote correlation, a deterministic
+content identity and the canonical descriptor-ordered observation tuple. Exact
+object custody is retained in the issuing owner; copies and receipts from a
+reopened owner cannot be inspected as its receipt. A failed first batch attempt
+retains all staged evidence, publishes no batch, marks the owner uncertain and
+permits no retry or cleanup. A duplicate call after successful commit is
+rejected without invalidating the original receipt. This owner remains
+characterization-only and is not registered with an executor or
+`ContainedOutputStore`; it does not synthesize a `LocalOutputReceipt`, advance
+execution counts, promote assets, publish Candidates, save Projects, mutate a
+Journal or authorize Recovery.
+
+This batch boundary covers all descriptors for one request, not an atomic
+transaction across requests or filesystem state. It does not establish
+power-loss durability, same-user hostile-process isolation, or cryptographic
+authorship. The existing `execution_available=false`,
+`protected_storage_available=false` and `authorship=unverified` gates remain in
+force. A later integration must define an explicit owner and acceptance contract
+between these private observations and existing containment/publication owners;
+it must not bypass `ContainedOutputStore` by treating this receipt as its input.
+
 ### Observed evidence and unresolved guarantees
 
 Portable refusal contracts and actual disposable Windows-native fixtures cover
