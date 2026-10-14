@@ -134,21 +134,25 @@ class WindowsProtectedAssetsCharacterization:
         self._verifier._limits = limits
 
     def _check(self):
-        if self._closed:
-            w._fail("closed_observation")
-        if self._invalid:
-            w._fail("invalidated_observation")
+        with self._lock:
+            if self._closed:
+                w._fail("closed_observation")
+            if self._invalid:
+                w._fail("invalidated_observation")
+            files = tuple(self._files.values())
+            roots = tuple(self._roots.items())
         try:
-            for root in self._roots.values():
+            for _, root in roots:
                 if not root.readiness()["acl_verified"]:
                     w._fail("protected_root_unavailable")
-            for path, handle, identity, acl in self._files.values():
-                root = self._roots[next(p for p, r in self._roots.items() if path.parent == r._path)]
+            for path, handle, identity, acl in files:
+                root = next(r for _, r in roots if path.parent == r._path)
                 w._revalidate(((path, False, handle, identity, acl[0]),), root._api, root._user)
                 if _file_acl(handle, root) != acl:
                     w._fail("native_observation_changed")
         except BaseException:
-            self._invalid = self._uncertain = True
+            with self._lock:
+                self._invalid = self._uncertain = True
             raise
 
     def _bytes(self, record):
@@ -291,19 +295,33 @@ class WindowsProtectedAssetsCharacterization:
             name = uuid.uuid4().hex + "." + descriptor.image_format
             key, path = ("temporary_containment", name), root._path / name
             _, c, f, _, _, _ = root._api
-            self._check()
-            handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
-                c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
-                c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
-            # Even failed initial metadata capture retains the file and handle.
-            self._unobserved_files.append((path, handle))
+            # Allocation and earliest handle retention share the lifecycle lock
+            # with close(). Once CreateFile succeeds, shutdown must see this
+            # handle even if it wins before metadata capture or stream callbacks.
+            with self._lock:
+                self._check()
+                handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
+                    c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
+                    c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+                try:
+                    # Even failed initial metadata capture retains the file and handle.
+                    self._unobserved_files.append((path, handle))
+                except BaseException:
+                    try:
+                        handle.Close()
+                    except BaseException:
+                        self._invalid = self._uncertain = True
+                    raise
             try:
                 record = path, handle, w._identity(handle), _file_acl(handle, root)
-                self._files[key] = record
-                self._unobserved_files.remove((path, handle))
-                self._check()
+                with self._lock:
+                    self._check()
+                    self._files[key] = record
+                    self._unobserved_files.remove((path, handle))
+                    self._check()
             except BaseException:
-                self._invalid = True
+                with self._lock:
+                    self._invalid = self._uncertain = True
                 raise
             self._stream_callback(self._fault, "after_file_create")
             lookup = ImageDownloadLookup(prepared.prompt_url.removesuffix("/prompt"),
@@ -367,11 +385,16 @@ class WindowsProtectedAssetsCharacterization:
             observed = VerifiedProtectedImageObservation(remote.job_id, remote.claim_id,
                 remote.manifest_identity, remote.request_id, remote.request_index,
                 remote.workflow_identity, remote.prompt_id, remote.identity, descriptor.identity, image)
-            self._images[key] = image
-            self._stream_images[attempt] = observed
-            return observed
+            # Publish success while serialized with close(): either this
+            # observation commits first, or a completed close fences it.
+            with self._lock:
+                self._check()
+                self._images[key] = image
+                self._stream_images[attempt] = observed
+                return observed
         except BaseException:
-            self._uncertain = True
+            with self._lock:
+                self._uncertain = True
             raise  # No deletion, overwrite, retry or receipt/publication event.
         finally:
             try:

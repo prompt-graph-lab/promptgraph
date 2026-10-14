@@ -4,6 +4,7 @@ from dataclasses import replace
 import hashlib
 import io
 from pathlib import Path
+import threading
 import traceback
 from unittest.mock import Mock, patch
 
@@ -141,6 +142,101 @@ def test_real_native_incremental_write_before_next_read_and_no_prebuffer(owner):
     assert consumed == observed.image.byte_count == len(data)
     assert len(provider.reads) >= 4
     assert store.readiness()["retained_byte_reservation"] == len(data)
+
+
+def test_real_native_close_contending_with_allocation_tracks_handle_and_fences_stream(owner):
+    store, _, api = owner
+    values, provider = bound(), Mock()
+    create_returned = threading.Event()
+    close_contending = threading.Event()
+    allow_create_return = threading.Event()
+    close_finished = threading.Event()
+    close_thread_id = [None]
+    stage_errors, close_errors = [], []
+
+    class CloseObservedRLock:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __enter__(self):
+            if threading.get_ident() == close_thread_id[0]:
+                close_contending.set()
+            self.inner.acquire()
+            return self
+
+        def __exit__(self, *_):
+            self.inner.release()
+
+        def _is_owned(self):
+            return self.inner._is_owned()
+
+    store._lock = CloseObservedRLock(store._lock)
+    original_create = api[2].CreateFile
+
+    def create_then_pause(*args):
+        handle = original_create(*args)
+        create_returned.set()
+        assert close_contending.wait(5)
+        assert allow_create_return.wait(5)
+        return handle
+
+    def fault(point):
+        if point == "after_file_create":
+            assert not store._lock._is_owned()
+            assert close_finished.wait(5)
+
+    store._fault = fault
+
+    def stage_worker():
+        try:
+            stage(store, values, provider)
+        except BaseException as exc:
+            stage_errors.append(exc)
+
+    def close_worker():
+        close_thread_id[0] = threading.get_ident()
+        try:
+            store.close()
+        except BaseException as exc:
+            close_errors.append(exc)
+        finally:
+            close_finished.set()
+
+    stage_thread = threading.Thread(target=stage_worker)
+    close_thread = threading.Thread(target=close_worker)
+    try:
+        with patch.object(api[2], "CreateFile", side_effect=create_then_pause):
+            stage_thread.start()
+            assert create_returned.wait(5)
+            close_thread.start()
+            assert close_contending.wait(5)
+            allow_create_return.set()
+            stage_thread.join(10)
+            close_thread.join(10)
+    finally:
+        allow_create_return.set()
+        close_finished.set()
+        if stage_thread.ident is not None:
+            stage_thread.join(5)
+        if close_thread.ident is not None:
+            close_thread.join(5)
+
+    assert not stage_thread.is_alive() and not close_thread.is_alive()
+    assert not close_errors and len(stage_errors) == 1
+    assert store._closed and store._uncertain and not store._stream_busy
+    assert store._stream_attempts and not store._images and not store._stream_images
+    provider.assert_not_called()
+
+    tracked = ([(path, handle) for path, handle in store._unobserved_files]
+               + [(record[0], record[1]) for record in store._files.values()])
+    assert len(tracked) == 1
+    path, handle = tracked[0]
+    assert path.exists() and path.parent == store._roots["temporary_containment"]._path
+    with pytest.raises(ValueError, match="native_identity_unavailable"):
+        w._identity(handle)
+    with pytest.raises(ValueError):
+        stage(store, values, provider)
+    provider.assert_not_called()
 
 
 @pytest.mark.parametrize("failure", ["short", "extra", "oversized", "zero", "bool_length", "nonbyte", "overread",
