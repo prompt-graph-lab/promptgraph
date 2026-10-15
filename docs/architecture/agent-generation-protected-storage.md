@@ -674,9 +674,12 @@ owner-prepared request, successful remote receipt, and exact issued
 same host-freshness callback used to commit that batch. It rechecks the full
 descriptor-ordered batch, current native handles, file identity, ACL and stored
 image bytes, then checks original-host freshness again before committing
-acceptance under the protected owner's lock. Close or invalidation that wins
-before this commit withholds acceptance. A later close or invalidation fences
-further inspection while retaining all evidence.
+acceptance under the protected owner's lock. Publication of the protected and
+acceptance-owner records is serialized under both locks in protected-owner →
+acceptance-owner order. Close or invalidation that wins before this joint
+commit withholds acceptance. If the joint commit wins first, a later close or
+invalidation fences further inspection without reclassifying the committed
+acceptance as uncertain, while retaining all evidence.
 
 The result is the distinct immutable `AcceptedProtectedOutputBatch`. It retains
 private references to the exact issuer, envelope, prepared request, remote

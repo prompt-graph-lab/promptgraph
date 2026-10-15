@@ -198,8 +198,12 @@ class ProtectedOutputAcceptanceCharacterization:
                 self._envelope, self._prepared, self._remote, self._batch_receipt,
                 host_freshness=self._host_freshness, acceptance_owner=self, accepted=accepted)
             with self._lock:
-                if self._closed or self._invalid or self._receipt is not accepted:
-                    raise ValueError("acceptance_invalidated")
+                # The protected owner returns only after atomically publishing
+                # both owner records. A close/invalidation after that point
+                # fences later inspection, but cannot turn the committed
+                # acceptance into an uncertain failed attempt.
+                if self._receipt is not accepted:
+                    raise ValueError("acceptance_commit_missing")
                 return accepted
         except BaseException:
             with self._lock:

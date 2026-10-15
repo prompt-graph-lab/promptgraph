@@ -666,8 +666,13 @@ class WindowsProtectedAssetsCharacterization:
                     w._fail("batch_owner_mismatch")
                 if key in self._stream_batch_acceptances:
                     w._fail("acceptance_already_attempted")
-                acceptance_owner._commit_from_protected_owner(accepted)
-                self._stream_batch_acceptances[key] = accepted
+                # Publish both owners' records as one close/invalidation
+                # boundary. The lock order is protected owner -> acceptance
+                # owner; the acceptance owner uses an RLock so its validating
+                # commit helper can be called while this lock remains held.
+                with acceptance_owner._lock:
+                    acceptance_owner._commit_from_protected_owner(accepted)
+                    self._stream_batch_acceptances[key] = accepted
                 return accepted
         except BaseException:
             with self._lock:

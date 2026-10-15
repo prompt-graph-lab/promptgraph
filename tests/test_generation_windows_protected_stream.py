@@ -1053,6 +1053,95 @@ def test_real_native_acceptance_race_with_close_or_invalidation_withholds_accept
     assert acceptor.readiness()["acceptance"] in ("closed", "invalidated", "uncertain")
 
 
+@pytest.mark.parametrize("terminal_action", ["close", "invalidate"])
+def test_real_native_acceptance_commit_is_atomic_against_close_or_invalidation(owner, terminal_action):
+    store, _, _ = owner
+    values = bound()
+    fresh = lambda envelope, remote: envelope is values[0] and remote is values[2]
+    observation = stage(store, values, Stream(image_bytes()), fresh=fresh)
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, (observation,), host_freshness=fresh)
+    acceptor = acceptance(store, values, batch, fresh)
+    key = (values[1].request_id, values[2].identity)
+    publish_started, allow_publish = threading.Event(), threading.Event()
+    terminal_attempted, terminal_outcome = threading.Event(), []
+    terminal_finished = threading.Event()
+    results, errors = [], []
+
+    class GateAcceptancePublication(dict):
+        def __setitem__(self, item_key, value):
+            if item_key == key:
+                publish_started.set()
+                assert allow_publish.wait(5)
+            super().__setitem__(item_key, value)
+
+    class ObserveTerminalLock:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __enter__(self):
+            if threading.current_thread().name == "acceptance-terminal":
+                if self.inner.acquire(blocking=False):
+                    terminal_outcome.append("acquired_before_publication")
+                    terminal_attempted.set()
+                    return self
+                terminal_outcome.append("blocked_by_publication")
+                terminal_attempted.set()
+            self.inner.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc_value, tb):
+            self.inner.release()
+
+    store._stream_batch_acceptances = GateAcceptancePublication(store._stream_batch_acceptances)
+    acceptor._lock = ObserveTerminalLock(acceptor._lock)
+
+    def accept():
+        try:
+            results.append(acceptor.accept_for_characterization())
+        except BaseException as error:
+            errors.append(error)
+
+    def invalidate_or_close():
+        try:
+            if terminal_action == "close":
+                acceptor.close()
+            else:
+                acceptor.invalidate_for_characterization()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            terminal_finished.set()
+
+    accept_thread = threading.Thread(target=accept)
+    accept_thread.start()
+    terminal_thread = None
+    try:
+        assert publish_started.wait(5)
+        terminal_thread = threading.Thread(target=invalidate_or_close, name="acceptance-terminal")
+        terminal_thread.start()
+        assert terminal_attempted.wait(5)
+        assert terminal_outcome == ["blocked_by_publication"]
+    finally:
+        allow_publish.set()
+    accept_thread.join(10)
+    if terminal_thread is not None:
+        terminal_thread.join(10)
+
+    assert not accept_thread.is_alive()
+    assert terminal_thread is not None and not terminal_thread.is_alive()
+    assert terminal_finished.is_set() and not errors and len(results) == 1
+    accepted = results[0]
+    assert type(accepted) is AcceptedProtectedOutputBatch
+    assert store._stream_batch_acceptances[key] is accepted
+    assert acceptor._receipt is accepted
+    assert acceptor.readiness()["acceptance"] == ("closed" if terminal_action == "close" else "invalidated")
+    with pytest.raises(ValueError, match="acceptance_closed|acceptance_invalidated"):
+        acceptor.inspect_for_characterization(accepted)
+    path = next(iter(store._files.values()))[0]
+    assert path.exists() and path.read_bytes() == image_bytes()
+
+
 def test_modules_resolve_to_this_isolated_worktree():
     root = Path(__file__).resolve().parents[1]
     assert Path(a.__file__).resolve().is_relative_to(root)
