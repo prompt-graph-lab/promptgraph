@@ -401,6 +401,72 @@ def test_promotion_revocation_waits_for_committed_event_sink_without_owner_locks
     values[0].close()
 
 
+@pytest.mark.parametrize("revocation", [
+    "promotion_close", "acceptance_close", "acceptance_invalidate", "protected_close",
+])
+def test_same_dispatch_thread_revocation_is_refused_without_mutating_owner_state(
+        revocation, protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, _ = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    promoter, receipt, _ = protected_promotion_for_active_request(values, adapter, store)
+    runtime = values[0]
+    refused = []
+
+    def terminal_operation():
+        if revocation == "promotion_close":
+            promoter.close()
+        elif revocation == "acceptance_close":
+            receipt._acceptance_owner.close()
+        elif revocation == "acceptance_invalidate":
+            receipt._acceptance_owner.invalidate_for_characterization()
+        else:
+            store.close()
+
+    def sink(event):
+        if event.progress.kind != "outputs_ready":
+            return "unavailable"
+        try:
+            terminal_operation()
+        except ValueError as exc:
+            refused.append(str(exc))
+        else:
+            refused.append("returned")
+        return "unavailable"
+
+    adapter._event_sink = sink
+    outcomes = []
+    worker = threading.Thread(target=lambda: outcomes.append(
+        adapter.accept_protected_promotion_for_characterization(promoter, receipt)), daemon=True)
+    worker.start()
+    worker.join(5)
+    deadlocked = worker.is_alive()
+    if deadlocked:
+        # Release a broken implementation's lease so fixture teardown remains
+        # bounded; the assertion below still fails the regression test.
+        promoter._executor_event_boundary.finish(
+            promoter._executor_event_boundary._active_token)
+        worker.join(5)
+
+    assert not deadlocked
+    assert not worker.is_alive()
+    assert refused == ["protected_event_reentrant_revocation"]
+    assert outcomes[0].status == "protected_outputs_event_uncertain"
+    snapshot = runtime.generation_jobs.snapshot(accepted.job_id)
+    assert snapshot["requests"][0]["state"] == "awaiting_download"
+    assert snapshot["requests"][0]["output_count"] == 0
+    assert snapshot["event_count"] == 3
+    assert promoter.readiness()["promotion"] == "promoted"
+    assert receipt._acceptance_owner.readiness()["acceptance"] == "accepted"
+    assert store.readiness()["asset_observation"] == "observed"
+    assert not promoter._revoking and not promoter._closed
+    assert not receipt._acceptance_owner._revoking
+    assert not receipt._acceptance_owner._closed and not receipt._acceptance_owner._invalid
+    assert not store._revoking and not store._closed
+    values[0].close()
+
+
 def test_inbox_invalidation_at_outputs_ready_delivery_keeps_event_late_and_private(protected_assets_owner):
     store, _, _ = protected_assets_owner
     values, adapter, sent = harness(provider=lambda prepared, prompt: result(

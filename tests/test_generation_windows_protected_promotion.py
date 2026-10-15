@@ -388,10 +388,9 @@ def test_real_native_commit_boundary_serializes_terminal_action(owner, terminal_
             self.inner.release()
 
     store._stream_promotions = GatePublication(store._stream_promotions)
-    if terminal_action == "protected_close":
-        store._lock = ObserveLock(store._lock)
-    else:
-        acceptor._lock = ObserveLock(acceptor._lock)
+    # Both terminal operations enter through the protected owner first, which
+    # preserves the protected -> acceptance lock order used by promotion.
+    store._lock = ObserveLock(store._lock)
 
     def run():
         try:

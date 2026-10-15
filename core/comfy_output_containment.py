@@ -264,8 +264,21 @@ class ProtectedOutputAcceptanceCharacterization:
         for owner in owners:
             owner._revoke_executor_event_for_characterization()
 
+    def _ensure_promotion_event_revocation_allowed(self):
+        """Reject callback-thread reentry before changing acceptance state."""
+        protected = self._protected_owner
+        with protected._lock:
+            owners = tuple({
+                receipt._promotion_owner
+                for receipt in protected._stream_promotions.values()
+                if receipt._acceptance_owner is self
+            })
+        for owner in owners:
+            owner._ensure_executor_event_revocation_allowed()
+
     def invalidate_for_characterization(self):
         """Fence future acceptance/inspection while retaining the evidence."""
+        self._ensure_promotion_event_revocation_allowed()
         with self._lock:
             if self._invalid:
                 return
@@ -291,6 +304,7 @@ class ProtectedOutputAcceptanceCharacterization:
 
     def close(self):
         """Invalidate this view only; protected files and receipts are retained."""
+        self._ensure_promotion_event_revocation_allowed()
         with self._lock:
             if self._closed:
                 return

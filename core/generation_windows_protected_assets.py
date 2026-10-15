@@ -881,19 +881,23 @@ class WindowsProtectedAssetsCharacterization:
 
     def close(self):
         with self._lock:
+            promotion_owners = tuple({
+                receipt._promotion_owner
+                for receipt in self._stream_promotions.values()
+            })
+            # This is intentionally before _revoking or any wait. A callback
+            # cannot close the protected owner while holding its own dispatch
+            # lease; refuse reentry without changing lifecycle state.
+            for owner in promotion_owners:
+                owner._ensure_executor_event_revocation_allowed()
             if self._closed:
                 return
             if self._revoking:
                 wait_for_close = True
-                promotion_owners = ()
             else:
                 wait_for_close = False
                 self._revoking = True
                 self._close_complete.clear()
-                promotion_owners = tuple({
-                    receipt._promotion_owner
-                    for receipt in self._stream_promotions.values()
-                })
         if wait_for_close:
             self._close_complete.wait()
             return

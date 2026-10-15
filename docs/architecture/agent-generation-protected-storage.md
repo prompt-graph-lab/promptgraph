@@ -785,6 +785,10 @@ lease already committed, revocation waits for that callback to return before
 completing. Thus revocation that wins before the commit point fences the event,
 while an already committed event is ordered before completed revocation. The
 lease does not make a rejected or uncertain callback retryable.
+If that callback synchronously attempts to close or invalidate one of these
+owners on the dispatch thread, the terminal call is refused before lifecycle
+flags change; revocation from another thread still waits for the committed
+callback to return.
 
 The event carries only the image count and a truncated opaque promotion
 identity for correlation. That identifier is not custody authority, and the

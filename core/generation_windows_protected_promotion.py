@@ -35,6 +35,7 @@ class _PromotionEventBoundary:
         self._consumed = False
         self._revoked = False
         self._active_token = None
+        self._active_thread = None
 
     def begin(self):
         with self._condition:
@@ -43,7 +44,14 @@ class _PromotionEventBoundary:
             self._active = True
             self._consumed = True
             self._active_token = object()
+            self._active_thread = threading.get_ident()
             return self._active_token
+
+    def ensure_revocation_not_reentrant(self):
+        """Reject terminal owner calls made by their own active event callback."""
+        with self._condition:
+            if self._active and self._active_thread == threading.get_ident():
+                w._fail("protected_event_reentrant_revocation")
 
     def finish(self, token):
         if token is None:
@@ -52,10 +60,13 @@ class _PromotionEventBoundary:
             if self._active and token is self._active_token:
                 self._active = False
                 self._active_token = None
+                self._active_thread = None
                 self._condition.notify_all()
 
     def revoke(self):
         with self._condition:
+            if self._active and self._active_thread == threading.get_ident():
+                w._fail("protected_event_reentrant_revocation")
             self._revoked = True
             while self._active:
                 self._condition.wait()
@@ -426,7 +437,13 @@ class ProtectedDurablePromotionCharacterization:
     def _revoke_executor_event_for_characterization(self):
         self._executor_event_boundary.revoke()
 
+    def _ensure_executor_event_revocation_allowed(self):
+        self._executor_event_boundary.ensure_revocation_not_reentrant()
+
     def close(self):
+        # Check before changing _revoking: a synchronous host callback cannot
+        # wait for the event lease that only this thread can finish.
+        self._ensure_executor_event_revocation_allowed()
         with self._lock:
             if self._closed:
                 return
