@@ -738,15 +738,17 @@ receipt; one after commit fences later inspection but does not rewrite the
 committed result.
 
 The receipt is not legacy `PromotedImage` or `DurableGenerationAssets` custody.
-It cannot be passed to Candidate publication, does not advance executor progress,
-does not populate `ContainedOutputStore`, and authorizes no Project save, Journal
-mutation or Recovery. There is no restart-time adoption, overwrite, retry or
-cleanup. If a copy or final validation fails, any created destination files and
-handles remain as partial/uncertain evidence, no batch receipt is published,
-and the attempt cannot be repeated. Capacity accounts for staging and promoted
-files together under the existing conservative limits, so a known over-capacity
-batch is rejected before copying; write or later verification failures can
-still retain partial destinations.
+It cannot be passed to Candidate publication, does not by itself advance
+executor progress, does not populate `ContainedOutputStore`, and authorizes no
+Project save, Journal mutation or Recovery. The separate C2B-8D-9 bridge below
+can emit one count-only host event after revalidating this receipt; that event
+still grants none of those authorities. There is no restart-time adoption,
+overwrite, retry or cleanup. If a copy or final validation fails, any created
+destination files and handles remain as partial/uncertain evidence, no batch
+receipt is published, and the attempt cannot be repeated. Capacity accounts for
+staging and promoted files together under the existing conservative limits, so
+a known over-capacity batch is rejected before copying; write or later
+verification failures can still retain partial destinations.
 
 This characterization verifies native file identity, ACL and byte integrity at
 the observed checks. It does not establish same-user hostile-process isolation,
@@ -756,6 +758,58 @@ not constant-memory. Reopening storage is inspect-only and cannot reconstruct
 the promotion owner or its authority. `execution_available=false`,
 `protected_storage_available=false`, `promotion_available=false`, and
 `authorship=unverified` remain in force.
+
+### C2B-8D-9: protected promotion to executor outputs-ready event
+
+`ComfyExecutorAdapter.accept_protected_promotion_for_characterization` is the
+explicit offline bridge from a `VerifiedProtectedPromotionReceipt` to the
+existing `ExecutorEvent(kind="outputs_ready")`. It accepts only the exact
+receipt held by its issuing `ProtectedDurablePromotionCharacterization` and
+checks that the receipt still binds the adapter's active envelope, the exact
+host-prepared request, accepted successful `RemoteOutputReceipt`, request
+index, prompt UUID, workflow identity and complete descriptor count/order.
+The promotion owner then re-inspects the full promoted batch, including its
+current native handles, identities, ACLs, stored bytes, original accepted
+batch and original-host freshness. The adapter performs the host-local
+freshness gate and confirms the job still awaits download immediately before
+emitting. These callbacks and native checks run outside job/inbox locks and
+protected-owner locks; the existing event sink retains its target, pairing,
+sequence, one-shot and job-before-inbox checks.
+
+After that inspection, the issuing promotion owner establishes a separate
+one-shot event-dispatch lease while checking the live protected → acceptance →
+promotion owner chain under its normal lock order. This lease is the event
+commit point. Owner locks are released before the host callback. Close or
+invalidation first prevents new leases and revokes the dispatch boundary; if a
+lease already committed, revocation waits for that callback to return before
+completing. Thus revocation that wins before the commit point fences the event,
+while an already committed event is ordered before completed revocation. The
+lease does not make a rejected or uncertain callback retryable.
+If that callback synchronously attempts to close or invalidate one of these
+owners on the dispatch thread, the terminal call is refused before lifecycle
+flags change; revocation from another thread still waits for the committed
+callback to return.
+
+The event carries only the image count and a truncated opaque promotion
+identity for correlation. That identifier is not custody authority, and the
+protected promotion receipt is never converted into `LocalOutputReceipt`,
+`OutputReceipt` custody, `PromotedImage` or `ContainedOutputStore` state. One
+attempt is retained per request. A copied, cross-owner, stale, late, invalidated
+or uncertain attempt, including a rejected or ambiguous event-sink result,
+cannot be automatically retried or used to emit a second successful event.
+The registry transition ends at `awaiting_host_registration`; no Candidate
+append, publication settlement or Project save occurs. A later explicit host
+publication result and save remain separate owners, as do real transport,
+production worker registration, Human Start, Journal and Recovery.
+
+This boundary characterizes the event handoff only. It does not make protected
+storage or executor production-ready: `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`, and
+`authorship=unverified` remain in force. Closing or invalidating custody before
+the event's host checks fences the event; if event delivery is uncertain, the
+attempt and protected evidence remain retained rather than resent. The event
+does not claim Candidate registration count, Project save, durable recovery or
+cryptographic authorship.
 
 ### Observed evidence and unresolved guarantees
 
@@ -782,6 +836,16 @@ identity and ACL evidence, decoded byte/size/hash equality, source preservation,
 copy/write/flush interruption, capacity refusal, stale host state, copied or
 substituted acceptance, close/invalidation races at and before the commit
 boundary, duplicate attempts and retained partial evidence.
+
+C2B-8D-9's focused executor integration cases exercise exact one- and
+multi-image promotion receipts, count-only `outputs_ready`, request ordering,
+copied/cross-owner/closed receipts, promoted content/ACL drift, original-host
+freshness loss, event-sink rejection or uncertain acknowledgement, close and
+acceptance invalidation in the gap after successful inspection but before the
+event commit point, revocation waiting for an already committed callback,
+concurrent promotion close during unlocked freshness verification, and
+duplicate/late event fencing. The offline suite does not call a real ComfyUI
+endpoint, create Candidates, save a Project or enable production execution.
 
 Stored-byte verification uses the existing bounded reread/decode implementation;
 it is not a constant-memory decoder. Synchronous injected callbacks rely on their

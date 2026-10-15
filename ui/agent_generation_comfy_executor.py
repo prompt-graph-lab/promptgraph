@@ -5,6 +5,7 @@ delivers count-only events; this owner never sees Project/Streamlit objects.
 """
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
+import threading
 import uuid
 
 from core.comfy_prompt_request import prepare_frozen_prompt_request
@@ -81,6 +82,10 @@ class ComfyExecutorAdapter:
         self._local_gate = host_local_output_gate
         self._local_store = None
         self._local_receipts = OrderedDict()
+        # Separate from legacy LocalOutputReceipt custody. The promoted receipt
+        # is retained only as private evidence for one count-only event attempt.
+        self._protected_bridge_lock = threading.Lock()
+        self._protected_promotion_attempts = OrderedDict()
         self._envelope = self._acceptance = None
         self._index = 0
         self._phase = "not_taken"
@@ -336,6 +341,121 @@ class ComfyExecutorAdapter:
 
     def local_receipts(self):
         return tuple(self._local_receipts.values())
+
+    def accept_protected_promotion_for_characterization(self, promotion_owner, receipt):
+        """Emit one host ``outputs_ready`` event from exact protected promotion evidence.
+
+        This does not adapt the protected receipt into legacy local-output
+        custody. Native verification and original-host freshness remain with
+        the issuing promotion owner; the opaque event receipt id is correlation
+        only. Candidate registration and save remain later host-owned steps.
+        """
+        from core.generation_windows_protected_promotion import (
+            ProtectedDurablePromotionCharacterization,
+            VerifiedProtectedPromotionReceipt,
+        )
+
+        if (not self._enabled
+                or type(promotion_owner) is not ProtectedDurablePromotionCharacterization
+                or type(receipt) is not VerifiedProtectedPromotionReceipt):
+            return self._observe("protected_promotion_unavailable")
+        if (self._envelope is None or self._phase != "awaiting_download"
+                or self._active_prepared is None or self._active_prompt is None):
+            return self._observe("protected_promotion_fenced")
+
+        index = self._index
+        prepared, prompt = self._active_prepared, self._active_prompt
+        remote = next((item for item in self._receipts.values()
+                       if item.request_index == index), None)
+        if remote is None:
+            return self._observe("remote_receipt_required")
+        if index in self._protected_promotion_attempts:
+            return self._observe("duplicate_protected_promotion")
+        if (index >= len(self._envelope.manifest.requests)
+                or prepared.request_index != index or prepared.request_id != remote.request_id
+                or prompt != remote.prompt_id or remote.execution_succeeded is not True):
+            return self._observe("protected_promotion_correlation_mismatch")
+
+        request = self._envelope.manifest.requests[index]
+        descriptor_ids = tuple(item.identity for item in remote.images)
+        if (not descriptor_ids or len(descriptor_ids) > 16 or len(set(descriptor_ids)) != len(descriptor_ids)
+                or (request.request_id, request.request_index, request.workflow_identity)
+                != (prepared.request_id, prepared.request_index, prepared.workflow_identity)):
+            return self._observe("protected_promotion_correlation_mismatch")
+
+        # Reserve the one-shot attempt before any callback or native inspection.
+        # Other result/containment paths see the non-awaiting phase and cannot
+        # race a second event from this request.
+        with self._protected_bridge_lock:
+            if (self._phase != "awaiting_download" or self._index != index
+                    or index in self._protected_promotion_attempts):
+                return self._observe("protected_promotion_fenced")
+            self._protected_promotion_attempts[index] = {
+                "owner": promotion_owner, "receipt": receipt, "status": "checking",
+            }
+            self._phase = "checking_protected_promotion"
+
+        try:
+            if (receipt._promotion_owner is not promotion_owner
+                    or receipt._accepted._envelope is not self._envelope
+                    or receipt._accepted._prepared is not prepared
+                    or receipt._accepted._remote is not remote
+                    or (receipt.job_id, receipt.claim_id, receipt.manifest_identity,
+                        receipt.request_id, receipt.request_index, receipt.workflow_identity,
+                        receipt.prompt_id, receipt.remote_receipt_identity)
+                    != (self._envelope.job_id, self._envelope.claim_id,
+                        self._envelope.manifest.manifest_identity, prepared.request_id,
+                        index, prepared.workflow_identity, prompt, remote.identity)
+                    or tuple(row.descriptor_identity for row in receipt.images) != descriptor_ids):
+                raise ValueError("protected_promotion_correlation_mismatch")
+
+            if not callable(self._local_gate) or self._local_gate(self._envelope, remote, None) is not True:
+                raise ValueError("host_invalidated")
+
+            snapshot = self._jobs.snapshot(self._envelope.job_id)
+            rows = snapshot.get("requests", [])
+            if (len(rows) <= index or rows[index].get("state") != "awaiting_download"
+                    or self._phase != "checking_protected_promotion" or self._index != index):
+                raise ValueError("protected_promotion_late")
+
+            # Last full check before event construction/dispatch: this rechecks
+            # the exact promotion, acceptance, native file identity/ACL/bytes
+            # and original-host freshness without job/inbox locks. No host
+            # callback runs under protected-owner locks.
+            if promotion_owner.inspect_for_characterization(receipt) is not receipt:
+                raise ValueError("protected_promotion_owner_mismatch")
+
+            # ExecutorEvent carries only a bounded count and opaque correlation
+            # id. The host event sink still performs its normal target/pairing
+            # and job/inbox sequence checks.
+            with self._protected_bridge_lock:
+                if (self._phase != "checking_protected_promotion" or self._index != index):
+                    raise ValueError("protected_promotion_invalidated")
+                self._phase = "emitting_protected_promotion"
+                self._protected_promotion_attempts[index]["status"] = "emitting"
+            # Acquire the exact promotion owner's event lease after full native
+            # inspection and immediately before host dispatch. Close/invalidate
+            # either wins before this commit point or waits for the callback;
+            # owner locks are all released before the host event sink runs.
+            event_lease = promotion_owner.begin_executor_event_for_characterization(receipt)
+            try:
+                delivered = self._emit("outputs_ready", count=len(descriptor_ids),
+                                       receipt_id=receipt.identity[:32])
+            finally:
+                promotion_owner.finish_executor_event_for_characterization(event_lease)
+        except Exception:
+            with self._protected_bridge_lock:
+                self._protected_promotion_attempts[index]["status"] = "uncertain"
+                self._phase = "stopped"
+            return self._observe("protected_promotion_uncertain")
+
+        with self._protected_bridge_lock:
+            self._protected_promotion_attempts[index]["status"] = (
+                "accepted" if delivered == "accepted" else "uncertain")
+            self._phase = "awaiting_download" if delivered == "accepted" else "stopped"
+        if delivered != "accepted":
+            return self._observe("protected_outputs_event_uncertain", len(descriptor_ids))
+        return self._observe("protected_outputs_ready", len(descriptor_ids))
 
     def late_receipts(self):
         return tuple(self._late)

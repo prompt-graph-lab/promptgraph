@@ -264,11 +264,17 @@ or transport exception detail.
 The [C2B-8D-5 native stream bridge](agent-generation-protected-storage.md#c2b-8d-5-offline-protected-staging-stream-bridge)
 separately characterizes exact successful remote evidence through the existing
 `DownloadStream` provider into protected Windows staging. Its
-`VerifiedProtectedImageObservation` is private byte evidence, does not satisfy
-this adapter's `ContainedOutputStore`/`LocalOutputReceipt` interface, and never
-emits `outputs_ready` or advances a request. The adapter and transport defaults
-have no new registration or call site; protected receipt integration remains
-separately gated.
+`VerifiedProtectedImageObservation` is private byte evidence and does not
+satisfy this adapter's `ContainedOutputStore`/`LocalOutputReceipt` interface.
+The distinct [C2B-8D-8 protected promotion](agent-generation-protected-storage.md#c2b-8d-8-protected-durable-promotion)
+can copy that evidence into protected promoted storage, and the
+[C2B-8D-9 event bridge](agent-generation-protected-storage.md#c2b-8d-9-protected-promotion-to-executor-outputs-ready-event)
+can revalidate its exact `VerifiedProtectedPromotionReceipt` and emit one
+count-only `outputs_ready` event. The event's opaque `OutputReceipt` identifier
+is correlation only; no legacy receipt custody is fabricated. The transition
+stops at `awaiting_host_registration`, without Candidate registration,
+publication settlement or Project save. Transport/adapter defaults remain
+unregistered and production gates remain closed.
 
 The [C2B-5 output containment slice](agent-generation-output-containment.md)
 now characterizes host-created isolated storage, bounded injected fake streams,

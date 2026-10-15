@@ -141,6 +141,9 @@ class WindowsProtectedAssetsCharacterization:
         self._used_bytes = 0
         self._closed = self._uncertain = False
         self._invalid = False
+        self._revoking = False
+        self._close_complete = threading.Event()
+        self._close_complete.set()
         self._lock = threading.RLock()
         self._stream_envelope = None
         self._stream_bindings, self._stream_attempts, self._stream_images = {}, set(), {}
@@ -163,6 +166,8 @@ class WindowsProtectedAssetsCharacterization:
         with self._lock:
             if self._closed:
                 w._fail("closed_observation")
+            if self._revoking:
+                w._fail("closing_observation")
             if self._invalid:
                 w._fail("invalidated_observation")
             files = tuple(self._files.values())
@@ -876,7 +881,33 @@ class WindowsProtectedAssetsCharacterization:
 
     def close(self):
         with self._lock:
-            if not self._closed:
+            promotion_owners = tuple({
+                receipt._promotion_owner
+                for receipt in self._stream_promotions.values()
+            })
+            # This is intentionally before _revoking or any wait. A callback
+            # cannot close the protected owner while holding its own dispatch
+            # lease; refuse reentry without changing lifecycle state.
+            for owner in promotion_owners:
+                owner._ensure_executor_event_revocation_allowed()
+            if self._closed:
+                return
+            if self._revoking:
+                wait_for_close = True
+            else:
+                wait_for_close = False
+                self._revoking = True
+                self._close_complete.clear()
+        if wait_for_close:
+            self._close_complete.wait()
+            return
+        try:
+            # Revoke event leases without holding native-owner locks. An event
+            # already committed at the separate boundary completes first;
+            # otherwise close prevents a later outputs_ready dispatch.
+            for owner in promotion_owners:
+                owner._revoke_executor_event_for_characterization()
+            with self._lock:
                 self._closed = True
                 failed = False
                 for handle in ([r[1] for r in self._files.values()]
@@ -893,6 +924,10 @@ class WindowsProtectedAssetsCharacterization:
                 if failed:
                     self._invalid = self._uncertain = True
                     w._fail("native_close_failed")
+        finally:
+            with self._lock:
+                self._revoking = False
+            self._close_complete.set()
 
     def __enter__(self):
         return self
