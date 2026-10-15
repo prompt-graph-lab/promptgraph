@@ -811,6 +811,51 @@ attempt and protected evidence remain retained rather than resent. The event
 does not claim Candidate registration count, Project save, durable recovery or
 cryptographic authorship.
 
+### C2B-8D-10: original-host Candidate publication admission observation
+
+`GenerationProtectedCandidateAdmission` is a separate one-shot, offline owner
+for asking whether one exact `VerifiedProtectedPromotionReceipt` is currently
+eligible to enter the original-host Candidate publication process. It is
+pinned to the runtime's exact `GenerationPublicationOrigin` and accepted
+envelope. Admission also requires the exact issuing promotion owner, exact
+promotion receipt and original successful remote receipt, plus the complete
+ordered descriptor set and exact active prepared request.
+
+Before issuing its immutable private `ProtectedCandidateAdmissionObservation`,
+the owner revalidates the full native promotion through its issuer and checks
+the exact original Project object/path/source snapshot, session and process,
+activation/target epoch, current pairing generation, job/claim/manifest,
+request index and the single accepted `outputs_ready` event. The event's
+truncated promotion identity is only a correlation value: the promotion owner
+must still retain the exact receipt object and full protected custody chain.
+Both the corresponding `remote_outputs_ready` and `outputs_ready` event records
+must remain present and consistent with job event history and ordered counts.
+Missing, duplicate, conflicting, stale, copied, substituted, cross-owner or
+uncertain evidence is refused. Native file work and original-host callbacks run
+outside the job/inbox and protected-owner locks. A bounded final host check
+holds the original publication gate, route operation lock, protected →
+acceptance → promotion locks, then job → inbox locks while issuing the
+observation; no external callback or native I/O runs in that commit section.
+
+The admission owner does not append Candidates, mutate Undo history, settle the
+job's publication count, call an appender, or save a Project. The result is
+eligibility evidence only, not approval or a reusable capability. It does not
+convert protected receipts into `LocalOutputReceipt`, `ContainedOutputStore`
+custody or legacy `PromotedImage`. Failed or uncertain one-shot attempts retain
+their exact evidence and cannot be retried automatically; close fences further
+observation without deleting files or receipts.
+
+The next separate boundary must decide whether and how this observation enters
+the existing single Candidate writer while preserving that writer's strict
+legacy receipt validation, exact original-host authority, Undo ordering and
+save uncertainty behavior. No parallel Project mutation path is implied.
+Production remains disabled: `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`,
+`candidate_publication_allowed=false`, and `authorship=unverified`. This
+characterization does not prove hostile same-user process isolation,
+cryptographic authorship, restart-time authority reconstruction, crash
+durability, or hostile mutation between bounded checks.
+
 ### Observed evidence and unresolved guarantees
 
 Portable refusal contracts and actual disposable Windows-native fixtures cover

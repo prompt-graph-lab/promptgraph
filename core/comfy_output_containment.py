@@ -231,6 +231,14 @@ class ProtectedOutputAcceptanceCharacterization:
             return accepted
 
     def inspect_for_characterization(self, accepted=None):
+        return self._inspect_for_characterization(accepted, None)
+
+    def _inspect_for_candidate_admission_for_characterization(self, accepted, host_freshness):
+        if not callable(host_freshness):
+            raise ValueError("acceptance_host_freshness_unavailable")
+        return self._inspect_for_characterization(accepted, host_freshness)
+
+    def _inspect_for_characterization(self, accepted, freshness_check):
         with self._lock:
             if self._closed or self._revoking:
                 raise ValueError("acceptance_closed")
@@ -242,7 +250,9 @@ class ProtectedOutputAcceptanceCharacterization:
         try:
             self._protected_owner._inspect_accepted_batch_for_containment_for_characterization(
                 self._envelope, self._prepared, self._remote, self._batch_receipt,
-                host_freshness=self._host_freshness, acceptance_owner=self, accepted=receipt)
+                host_freshness=self._host_freshness,
+                freshness_check=self._host_freshness if freshness_check is None else freshness_check,
+                acceptance_owner=self, accepted=receipt)
         except BaseException:
             with self._lock:
                 self._uncertain = True
