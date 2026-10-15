@@ -49,6 +49,7 @@ class ProjectAgentSessionRuntime:
     # Private original-host publication evidence; never sent to the executor.
     _generation_publication_origin: object = field(default=None, init=False, repr=False)
     _generation_candidate_publication: object = field(default=None, init=False, repr=False)
+    _generation_protected_candidate_admission: object = field(default=None, init=False, repr=False)
     # Host-only, one bounded detached executable carrier and acknowledgment.
     # These are never session widget values, mailbox replies or Start authority.
     _executable_review: object = field(default=None, init=False, repr=False)
@@ -541,6 +542,9 @@ class ProjectAgentSessionRuntime:
                 return
             self._closed = True
             self._clear_executable_review_locked()
+            admission = self._generation_protected_candidate_admission
+            if admission is not None:
+                admission._close_under_runtime_gate()
             # This shares the publication gate with final Apply commit, then
             # closes the mailbox/custodian under their fixed lock order.
             self.mailbox.close(review_custodian=self.review_custodian)

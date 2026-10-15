@@ -699,8 +699,12 @@ class WindowsProtectedAssetsCharacterization:
 
     def _inspect_accepted_batch_for_containment_for_characterization(
             self, envelope, prepared, remote, batch_receipt, *, host_freshness,
-            acceptance_owner, accepted):
+            acceptance_owner, accepted, freshness_check=None):
         """Revalidate an accepted view against current original-owner evidence."""
+        if freshness_check is None:
+            freshness_check = host_freshness
+        if not callable(freshness_check):
+            w._fail("protected_acceptance_binding_invalid")
         try:
             if (type(acceptance_owner) is not ProtectedOutputAcceptanceCharacterization
                     or type(accepted) is not AcceptedProtectedOutputBatch
@@ -728,7 +732,7 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("protected_acceptance_owner_mismatch")
             self._check()
 
-        fresh = lambda: host_freshness(envelope, remote)
+        fresh = lambda: freshness_check(envelope, remote)
         try:
             self._stream_fresh(fresh)
             with self._lock:

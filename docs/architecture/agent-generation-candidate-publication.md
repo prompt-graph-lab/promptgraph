@@ -52,10 +52,11 @@ That owner can copy one exact accepted staging batch into its existing native
 protected `promoted_assets` root and retain a distinct immutable
 `VerifiedProtectedPromotionReceipt`. It does not return `PromotedImage`, create
 `DurableGenerationAssets` custody, or confer Candidate publication authority.
-The approved-parent constructor and receipt custody below retain their existing
-semantics; integration of protected promotion with executor settlement,
-Candidate publication and Project save remains a later bounded slice with
-original-host freshness and publication/save ordering preserved.
+The [C2B-8D-10 admission observation](agent-generation-protected-storage.md#c2b-8d-10-original-host-candidate-publication-admission-observation)
+rechecks exact promotion custody and its accepted host `outputs_ready` event,
+then issues private immutable eligibility evidence. It still does not enter
+Candidate publication or Project save. The existing approved-parent legacy
+publisher below retains its strict receipt validation and behavior.
 
 `core.generation_output_promotion.DurableGenerationAssets` owns filesystem work.
 It creates an exclusive UUID directory under the explicitly approved existing
@@ -168,3 +169,25 @@ real ComfyUI transport/redirect policy, worker lifecycle, Start UI, exact human
 confirmation and operational validation. Scene Module Swap custody and ACK
 continue to belong to their existing owners and are unchanged by publication.
 No execution or publication capability is exposed through MCP.
+
+## Protected Candidate admission is not Candidate publication
+
+C2B-8D-10 adds an offline, original-host observation for the exact protected
+promotion receipt and accepted `outputs_ready` event. Its source snapshot,
+Project object/path, session/process, activation/epoch/pairing, request, manifest,
+job/claim and ordered descriptors are rechecked before the observation is
+issued. The promotion owner performs native file/ACL/content verification
+outside host mutation gates; the final in-memory commit is serialized against
+protected-owner revocation, runtime close, target/pairing changes and job/inbox
+event changes.
+
+The observation is private evidence only. It does not satisfy the legacy
+`LocalOutputReceipt` and `PromotedImage` checks in
+`GenerationCandidatePublication`, does not create another Candidate writer,
+and does not append, settle publication counts, change Undo history or save.
+The next bounded engineering step is a separately reviewed handoff into the
+existing single Candidate writer (or a narrowly audited extension of that
+owner) without relaxing its legacy receipt validation or save/Undo contracts.
+Until that exists, protected promotion can be observed as admission-eligible but
+cannot be registered as a Candidate through this slice. `authorship=unverified`
+and all production execution/storage/promotion/publication gates remain false.

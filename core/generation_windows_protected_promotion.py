@@ -5,6 +5,7 @@ DurableGenerationAssets. It retains native protected files and owner-held
 evidence only; it grants no Candidate, Project, executor or Recovery authority.
 """
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -361,6 +362,14 @@ class ProtectedDurablePromotionCharacterization:
                         protected._promotion_owner = protected._promotion_thread = None
 
     def inspect_for_characterization(self, receipt=None):
+        return self._inspect_for_characterization(receipt, None)
+
+    def _inspect_for_candidate_admission_for_characterization(self, receipt, host_freshness):
+        if not callable(host_freshness):
+            w._fail("host_freshness_unavailable")
+        return self._inspect_for_characterization(receipt, host_freshness)
+
+    def _inspect_for_characterization(self, receipt, host_freshness_override):
         with self._lock:
             if self._closed or self._revoking:
                 w._fail("promotion_closed")
@@ -375,10 +384,18 @@ class ProtectedDurablePromotionCharacterization:
                 or current._acceptance_owner is not acceptance or current._accepted is not accepted):
             w._fail("promotion_owner_mismatch")
         try:
-            acceptance.inspect_for_characterization(accepted)
+            if host_freshness_override is None:
+                acceptance.inspect_for_characterization(accepted)
+            else:
+                acceptance._inspect_for_candidate_admission_for_characterization(
+                    accepted, host_freshness_override)
             for item in current.images:
                 protected.inspect_image_for_characterization(item.promoted_image)
-            acceptance.inspect_for_characterization(accepted)
+            if host_freshness_override is None:
+                acceptance.inspect_for_characterization(accepted)
+            else:
+                acceptance._inspect_for_candidate_admission_for_characterization(
+                    accepted, host_freshness_override)
             key = (accepted._prepared.request_id, accepted._remote.identity)
             with protected._lock:
                 protected._check()
@@ -397,6 +414,40 @@ class ProtectedDurablePromotionCharacterization:
             with self._lock:
                 self._uncertain = True
             raise
+
+    @contextmanager
+    def _admission_custody_guard_for_characterization(self, receipt):
+        """Hold the exact in-memory custody chain for a bounded host commit.
+
+        Callers may do only in-memory checks while this guard is held. Native
+        file verification and host-freshness callbacks belong in
+        ``inspect_for_characterization`` before acquiring this guard.
+        Lock order is protected assets -> acceptance -> promotion.
+        """
+        protected, acceptance, accepted = self._protected_owner, self._acceptance_owner, self._accepted
+        key = (accepted._prepared.request_id, accepted._remote.identity)
+        with protected._lock:
+            with acceptance._lock:
+                with self._lock:
+                    current = bool(
+                        not protected._closed and not protected._revoking
+                        and not protected._invalid and not protected._uncertain
+                        and protected._writable
+                        and protected._stream_envelope is accepted._envelope
+                        and protected._stream_promotions.get(key) is receipt
+                        and protected._stream_batch_acceptances.get(key) is accepted
+                        and not acceptance._closed and not acceptance._revoking
+                        and not acceptance._invalid and not acceptance._uncertain
+                        and not acceptance._busy and acceptance._receipt is accepted
+                        and accepted._protected_owner is protected
+                        and not self._closed and not self._revoking
+                        and not self._uncertain and not self._busy
+                        and self._receipt is receipt
+                        and receipt._promotion_owner is self
+                        and receipt._protected_owner is protected
+                        and receipt._acceptance_owner is acceptance
+                        and receipt._accepted is accepted)
+                    yield current
 
     def begin_executor_event_for_characterization(self, receipt):
         """Commit one count-only host event against the exact live custody chain.
