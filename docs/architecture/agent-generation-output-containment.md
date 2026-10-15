@@ -53,6 +53,13 @@ local receipt. This store's OS temporary allocation and file lifecycle have not
 acquired native-protected semantics. Future integration must preserve correlation,
 receipt identity, original-host freshness and retained-evidence ordering.
 
+The separate C2B-8D-7
+[protected containment acceptance](agent-generation-protected-storage.md#c2b-8d-7-protected-containment-acceptance)
+accepts only an exact owner-held protected batch and returns a distinct
+`AcceptedProtectedOutputBatch`. It does not feed or populate this legacy store,
+and it does not issue `LocalOutputReceipt` or publication authority. Durable
+promotion remains a separate future owner.
+
 `core.comfy_output_containment.ContainedOutputStore.create_for_characterization`
 is the sole factory. It requires explicit characterization mode and creates an
 exclusive application-prefixed root in the host's canonical OS temporary
