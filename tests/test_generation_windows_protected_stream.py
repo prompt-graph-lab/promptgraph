@@ -1075,12 +1075,15 @@ def test_real_native_acceptance_commit_is_atomic_against_close_or_invalidation(o
                 assert allow_publish.wait(5)
             super().__setitem__(item_key, value)
 
-    class ObserveTerminalLock:
+    class ObserveProtectedOwnerLock:
         def __init__(self, inner):
             self.inner = inner
+            self.terminal_attempt_observed = False
 
         def __enter__(self):
-            if threading.current_thread().name == "acceptance-terminal":
+            if (threading.current_thread().name == "acceptance-terminal"
+                    and not self.terminal_attempt_observed):
+                self.terminal_attempt_observed = True
                 if self.inner.acquire(blocking=False):
                     terminal_outcome.append("acquired_before_publication")
                     terminal_attempted.set()
@@ -1094,7 +1097,9 @@ def test_real_native_acceptance_commit_is_atomic_against_close_or_invalidation(o
             self.inner.release()
 
     store._stream_batch_acceptances = GateAcceptancePublication(store._stream_batch_acceptances)
-    acceptor._lock = ObserveTerminalLock(acceptor._lock)
+    # close() / invalidate() enter the protected owner before the acceptance
+    # owner, matching the production lock order (protected -> acceptance).
+    store._lock = ObserveProtectedOwnerLock(store._lock)
 
     def accept():
         try:
@@ -1122,6 +1127,8 @@ def test_real_native_acceptance_commit_is_atomic_against_close_or_invalidation(o
         terminal_thread.start()
         assert terminal_attempted.wait(5)
         assert terminal_outcome == ["blocked_by_publication"]
+        assert key not in store._stream_batch_acceptances
+        assert not terminal_finished.is_set()
     finally:
         allow_publish.set()
     accept_thread.join(10)
