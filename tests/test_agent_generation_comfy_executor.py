@@ -1,14 +1,23 @@
 """C2B-4 frozen submission and remote receipts, deterministic fakes only."""
 import copy
 from dataclasses import replace, FrozenInstanceError
+import io
 import json
+import sys
+import threading
 from unittest.mock import patch
 import uuid
 
 import pytest
+from PIL import Image
 
 from core.comfy_prompt_request import prepare_frozen_prompt_request
 from core.comfy_remote_output_receipts import validate_remote_outputs, MAX_REMOTE_BYTES, MAX_REMOTE_IMAGES
+from core.comfy_output_containment import (
+    DownloadStream, LocalOutputReceipt, ProtectedOutputAcceptanceCharacterization,
+)
+from core import generation_windows_protected_promotion as protected_promotion
+from core import generation_windows_protected_storage as protected_storage
 from ui import agent_generation_comfy_executor as owner
 from ui.agent_generation_comfy_executor import ComfyExecutorAdapter, SubmissionResult, ExecutionResult, ComfyProgress
 from ui.agent_generation_executor_inbox import GenerationExecutorInbox
@@ -16,7 +25,22 @@ from ui.agent_generation_job import GenerationJobRegistry
 from test_agent_generation_executor_handoff import ready, start, deliver, event, safe_capture
 from test_agent_generation_executable_review_ui import queued, prepare, confirm, identity
 from ui.agent_generation_executor_handoff import capture_executor_human_start_for_characterization as capture_start
+from ui.agent_generation_executor_handoff import local_output_custody_current_for_characterization
 from test_agent_generation_executable_manifest import host_for
+from test_generation_windows_protected_assets import owner as protected_assets_owner
+from test_generation_windows_protected_storage import mutate_disposable_acl
+
+
+@pytest.fixture
+def native_scope(tmp_path):
+    if sys.platform != "win32":
+        pytest.skip("Windows native characterization only")
+    pytest.importorskip("win32security")
+    api = protected_storage._api()
+    scope = tmp_path / "protected-executor-bridge-scope"
+    api[2].CreateDirectory(str(scope), protected_storage._security_attributes(
+        api, protected_storage._current_user(api)))
+    return scope, api
 
 
 def raw(value):
@@ -33,16 +57,19 @@ def result(prepared, prompt, status="ready", **kwargs):
         kwargs.pop("history_json", metadata(prompt) if status == "ready" else b""), **kwargs)
 
 
-def harness(values=None, transport=None, provider=None, *, characterization=True):
+def harness(values=None, transport=None, provider=None, *, characterization=True, event_sink=None):
     values = values or ready()
     runtime, _, state, *_ = values
     sent = []
     def send(prepared):
         sent.append(prepared)
         return transport(prepared) if transport else SubmissionResult("accepted", raw({"prompt_id": str(uuid.uuid4())}))
+    default_sink = lambda value: deliver(state, runtime, value)
     adapter = ComfyExecutorAdapter(runtime.generation_jobs, runtime._generation_executor_inbox,
         fake_transport=send, fake_result_provider=provider or result,
-        host_event_sink=lambda value: deliver(state, runtime, value), characterization=characterization)
+        host_event_sink=event_sink or default_sink, characterization=characterization,
+        host_local_output_gate=lambda envelope, remote, local: local_output_custody_current_for_characterization(
+            state, runtime, envelope, remote, local))
     return values, adapter, sent
 
 
@@ -56,6 +83,255 @@ def settle(values, adapter):
         "outputs_ready", index=index, count=count)) == "accepted"
     assert runtime.generation_jobs.publication_for_characterization(envelope.job_id, envelope.claim_id,
         binding=envelope.binding, request_index=index, registered_count=count) == "accepted"
+
+
+def protected_promotion_for_active_request(values, adapter, store, *, freshness_override=None):
+    runtime, _, state, *_ = values
+    envelope, prepared = adapter._envelope, adapter._active_prepared
+    remote = next(item for item in adapter.remote_receipts() if item.request_index == adapter._index)
+    def fresh(source_envelope, source_remote):
+        if freshness_override is not None and not freshness_override():
+            return False
+        return local_output_custody_current_for_characterization(
+            state, runtime, source_envelope, source_remote)
+    observations = []
+    for index, descriptor in enumerate(remote.images):
+        output = io.BytesIO()
+        Image.new("RGB", (17 + index, 23 + index), "white").save(output, format="PNG")
+        body = output.getvalue()
+        def stream_provider(_lookup, data=body):
+            offset = 0
+            def read(limit):
+                nonlocal offset
+                chunk = data[offset:offset + limit]
+                offset += len(chunk)
+                return chunk
+            return DownloadStream(len(data), read, lambda: None)
+        observations.append(store.stage_remote_image_for_characterization(
+            envelope, prepared, remote, descriptor, stream_provider=stream_provider,
+            host_freshness=fresh))
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        envelope, prepared, remote, tuple(observations), host_freshness=fresh)
+    acceptor = ProtectedOutputAcceptanceCharacterization.create_for_characterization(
+        store, envelope, prepared, remote, batch, host_freshness=fresh,
+        characterization=True, disposable_opt_in=True)
+    accepted = acceptor.accept_for_characterization()
+    promoter = protected_promotion.ProtectedDurablePromotionCharacterization.create_for_characterization(
+        store, acceptor, accepted, characterization=True, disposable_opt_in=True)
+    receipt = promoter.promote_for_characterization()
+    return promoter, receipt, fresh
+
+
+def successful_history(prompt, count=1):
+    records = [{"filename": f"private-{index}.png", "subfolder": "private", "type": "output"}
+               for index in range(count)]
+    payload = json.loads(metadata(prompt, images=records))
+    payload[prompt]["status"] = {"status_str": "success", "completed": True}
+    return raw(payload)
+
+
+@pytest.mark.parametrize("image_count", [1, 2])
+def test_exact_protected_promotion_emits_one_count_only_outputs_ready(image_count, protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, sent = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt, image_count)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    runtime, _, state, *_ = values
+    before_state = copy.deepcopy(state)
+    promoter, receipt, _ = protected_promotion_for_active_request(values, adapter, store)
+
+    outcome = adapter.accept_protected_promotion_for_characterization(promoter, receipt)
+
+    snapshot = runtime.generation_jobs.snapshot(accepted.job_id)
+    assert outcome.status == "protected_outputs_ready"
+    assert outcome.request_index == 0 and outcome.remote_output_count == image_count
+    assert len(sent) == 1
+    assert snapshot["requests"][0]["state"] == "awaiting_host_registration"
+    assert snapshot["requests"][0]["output_count"] == image_count
+    assert snapshot["requests"][0]["registered_count"] == 0
+    assert snapshot["requests"][1]["state"] == "unsent"
+    assert snapshot["save_state"] == "not_attempted"
+    assert state == before_state
+    assert adapter.local_receipts() == ()
+    assert type(receipt) is protected_promotion.VerifiedProtectedPromotionReceipt
+    assert not isinstance(receipt, LocalOutputReceipt)
+    duplicate = adapter.accept_protected_promotion_for_characterization(promoter, receipt)
+    assert duplicate.status == "duplicate_protected_promotion"
+    assert runtime.generation_jobs.snapshot(accepted.job_id)["event_count"] == snapshot["event_count"]
+    event = next(item for item in runtime._generation_executor_inbox._events.values()
+                 if item.progress.kind == "outputs_ready")
+    assert event.progress.request_index == 0 and event.progress.output_count == image_count
+    assert event.outputs.output_count == image_count and event.outputs.receipt_id == receipt.identity[:32]
+    # The bridge itself did not register Candidates or save the Project.
+    assert runtime.generation_jobs.snapshot(accepted.job_id)["save_state"] == "not_attempted"
+    values[0].close()
+
+
+@pytest.mark.parametrize("substitution", ["copy", "cross_owner", "closed"])
+def test_protected_promotion_substitution_or_close_never_emits_outputs_ready(
+        substitution, protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, _ = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    promoter, receipt, _ = protected_promotion_for_active_request(values, adapter, store)
+    supplied_owner = promoter
+    if substitution == "copy":
+        receipt = replace(receipt)
+    elif substitution == "cross_owner":
+        supplied_owner = protected_promotion.ProtectedDurablePromotionCharacterization.create_for_characterization(
+            store, receipt._acceptance_owner, receipt._accepted,
+            characterization=True, disposable_opt_in=True)
+    else:
+        promoter.close()
+
+    outcome = adapter.accept_protected_promotion_for_characterization(supplied_owner, receipt)
+
+    snapshot = values[0].generation_jobs.snapshot(accepted.job_id)
+    assert outcome.status == "protected_promotion_uncertain"
+    assert snapshot["requests"][0]["state"] == "awaiting_download"
+    assert snapshot["requests"][0]["output_count"] == 0
+    assert snapshot["event_count"] == 3
+    assert adapter._protected_promotion_attempts[0]["receipt"] is receipt
+    assert adapter._protected_promotion_attempts[0]["status"] == "uncertain"
+    values[0].close()
+
+
+@pytest.mark.parametrize("drift", ["content", "acl", "host"])
+def test_protected_promotion_revalidation_refuses_drift_without_executor_event(drift, protected_assets_owner):
+    store, _, api = protected_assets_owner
+    freshness = {"current": True}
+    values, adapter, _ = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    promoter, receipt, _ = protected_promotion_for_active_request(
+        values, adapter, store, freshness_override=lambda: freshness["current"])
+    if drift == "content":
+        image = receipt.images[0].promoted_image
+        changed = io.BytesIO()
+        Image.new("RGB", (33, 34), "black").save(changed, format="PNG")
+        store._files[(image.purpose, image.storage_identity)][0].write_bytes(changed.getvalue())
+    elif drift == "acl":
+        image = receipt.images[0].promoted_image
+        mutate_disposable_acl(store._files[(image.purpose, image.storage_identity)][0], api, "writable_principal")
+    else:
+        freshness["current"] = False
+
+    outcome = adapter.accept_protected_promotion_for_characterization(promoter, receipt)
+
+    snapshot = values[0].generation_jobs.snapshot(accepted.job_id)
+    assert outcome.status == "protected_promotion_uncertain"
+    assert snapshot["requests"][0]["state"] == "awaiting_download"
+    assert snapshot["requests"][0]["output_count"] == 0
+    assert snapshot["event_count"] == 3
+    values[0].close()
+
+
+@pytest.mark.parametrize("sink_result", ["reject", "accept_then_uncertain"])
+def test_protected_outputs_ready_event_sink_is_one_shot_even_when_uncertain(
+        sink_result, protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, sent = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    runtime, _, state, *_ = values
+    promoter, receipt, _ = protected_promotion_for_active_request(values, adapter, store)
+    delivered = []
+    def sink(event):
+        if event.progress.kind != "outputs_ready":
+            return deliver(state, runtime, event)
+        delivered.append(event)
+        if sink_result == "accept_then_uncertain":
+            assert deliver(state, runtime, event) == "accepted"
+        return "unavailable"
+    adapter._event_sink = sink
+
+    first = adapter.accept_protected_promotion_for_characterization(promoter, receipt)
+    event_count = runtime.generation_jobs.snapshot(accepted.job_id)["event_count"]
+    second = adapter.accept_protected_promotion_for_characterization(promoter, receipt)
+
+    assert first.status == "protected_outputs_event_uncertain"
+    assert second.status == "protected_promotion_fenced"
+    assert len(delivered) == 1 and len(sent) == 1
+    assert runtime.generation_jobs.snapshot(accepted.job_id)["event_count"] == event_count
+    assert runtime.generation_jobs.snapshot(accepted.job_id)["save_state"] == "not_attempted"
+    values[0].close()
+
+
+def test_promotion_close_during_unlocked_freshness_check_fences_event(protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, _ = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    entered, release = threading.Event(), threading.Event()
+    block = {"enabled": False, "used": False}
+    def barrier():
+        if block["enabled"] and not block["used"]:
+            block["used"] = True
+            entered.set()
+            assert release.wait(5)
+        return True
+    promoter, receipt, _ = protected_promotion_for_active_request(
+        values, adapter, store, freshness_override=barrier)
+    block["enabled"] = True
+    outcomes = []
+    thread = threading.Thread(target=lambda: outcomes.append(
+        adapter.accept_protected_promotion_for_characterization(promoter, receipt)))
+    thread.start()
+    assert entered.wait(5)
+    promoter.close()
+    release.set()
+    thread.join(10)
+    assert not thread.is_alive()
+    assert outcomes[0].status == "protected_promotion_uncertain"
+    snapshot = values[0].generation_jobs.snapshot(accepted.job_id)
+    assert snapshot["requests"][0]["state"] == "awaiting_download"
+    assert snapshot["requests"][0]["output_count"] == 0 and snapshot["event_count"] == 3
+    values[0].close()
+
+
+def test_inbox_invalidation_at_outputs_ready_delivery_keeps_event_late_and_private(protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, sent = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    runtime, _, state, *_ = values
+    promoter, receipt, _ = protected_promotion_for_active_request(values, adapter, store)
+    delivered = []
+    def sink(event):
+        if event.progress.kind == "outputs_ready":
+            runtime._generation_executor_inbox.invalidate()
+            delivered.append(event)
+        return deliver(state, runtime, event)
+    adapter._event_sink = sink
+
+    outcome = adapter.accept_protected_promotion_for_characterization(promoter, receipt)
+
+    snapshot = runtime.generation_jobs.snapshot(accepted.job_id)
+    assert outcome.status == "protected_outputs_event_uncertain"
+    assert len(delivered) == 1 and len(sent) == 1
+    assert snapshot["requests"][0]["state"] == "awaiting_download"
+    assert snapshot["requests"][0]["output_count"] == 0 and snapshot["event_count"] == 3
+    assert len(runtime._generation_executor_inbox.late_receipts()) == 1
+    values[0].close()
+
+
+def test_protected_outputs_ready_waits_for_current_request_host_settlement(protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, sent = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    promoter, receipt, _ = protected_promotion_for_active_request(values, adapter, store)
+    assert adapter.accept_protected_promotion_for_characterization(promoter, receipt).status == "protected_outputs_ready"
+
+    adapter.advance_for_characterization()
+
+    snapshot = values[0].generation_jobs.snapshot(accepted.job_id)
+    assert len(sent) == 1
+    assert adapter.observation().request_index == 0
+    assert snapshot["requests"][0]["state"] == "awaiting_host_registration"
+    assert snapshot["requests"][1]["state"] == "unsent"
+    values[0].close()
 
 
 def test_frozen_order_and_remote_receipts_are_distinct_from_local_publication():
