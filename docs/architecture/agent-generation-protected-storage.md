@@ -776,6 +776,16 @@ emitting. These callbacks and native checks run outside job/inbox locks and
 protected-owner locks; the existing event sink retains its target, pairing,
 sequence, one-shot and job-before-inbox checks.
 
+After that inspection, the issuing promotion owner establishes a separate
+one-shot event-dispatch lease while checking the live protected → acceptance →
+promotion owner chain under its normal lock order. This lease is the event
+commit point. Owner locks are released before the host callback. Close or
+invalidation first prevents new leases and revokes the dispatch boundary; if a
+lease already committed, revocation waits for that callback to return before
+completing. Thus revocation that wins before the commit point fences the event,
+while an already committed event is ordered before completed revocation. The
+lease does not make a rejected or uncertain callback retryable.
+
 The event carries only the image count and a truncated opaque promotion
 identity for correlation. That identifier is not custody authority, and the
 protected promotion receipt is never converted into `LocalOutputReceipt`,
@@ -826,10 +836,12 @@ boundary, duplicate attempts and retained partial evidence.
 C2B-8D-9's focused executor integration cases exercise exact one- and
 multi-image promotion receipts, count-only `outputs_ready`, request ordering,
 copied/cross-owner/closed receipts, promoted content/ACL drift, original-host
-freshness loss, event-sink rejection or uncertain acknowledgement, concurrent
-promotion close during unlocked freshness verification, and duplicate/late
-event fencing. The offline suite does not call a real ComfyUI endpoint, create
-Candidates, save a Project or enable production execution.
+freshness loss, event-sink rejection or uncertain acknowledgement, close and
+acceptance invalidation in the gap after successful inspection but before the
+event commit point, revocation waiting for an already committed callback,
+concurrent promotion close during unlocked freshness verification, and
+duplicate/late event fencing. The offline suite does not call a real ComfyUI
+endpoint, create Candidates, save a Project or enable production execution.
 
 Stored-byte verification uses the existing bounded reread/decode implementation;
 it is not a constant-memory decoder. Synchronous injected callbacks rely on their

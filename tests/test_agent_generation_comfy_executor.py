@@ -290,6 +290,117 @@ def test_promotion_close_during_unlocked_freshness_check_fences_event(protected_
     values[0].close()
 
 
+@pytest.mark.parametrize("revocation", [
+    "promotion_close", "acceptance_close", "acceptance_invalidate", "protected_close",
+])
+def test_promotion_revocation_after_inspection_before_event_commit_fences_outputs_ready(
+        revocation, protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, _ = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    promoter, receipt, _ = protected_promotion_for_active_request(values, adapter, store)
+    inspected, resume = threading.Event(), threading.Event()
+    begin_event = promoter.begin_executor_event_for_characterization
+
+    def pause_before_event_commit(supplied):
+        inspected.set()  # Full native/host inspection has returned at this seam.
+        assert resume.wait(5)
+        return begin_event(supplied)
+
+    promoter.begin_executor_event_for_characterization = pause_before_event_commit
+    outcomes = []
+    thread = threading.Thread(target=lambda: outcomes.append(
+        adapter.accept_protected_promotion_for_characterization(promoter, receipt)))
+    thread.start()
+    assert inspected.wait(5)
+    if revocation == "promotion_close":
+        promoter.close()
+    elif revocation == "acceptance_close":
+        receipt._acceptance_owner.close()
+    elif revocation == "acceptance_invalidate":
+        receipt._acceptance_owner.invalidate_for_characterization()
+    else:
+        store.close()
+    resume.set()
+    thread.join(10)
+
+    assert not thread.is_alive()
+    assert outcomes[0].status == "protected_promotion_uncertain"
+    snapshot = values[0].generation_jobs.snapshot(accepted.job_id)
+    assert snapshot["requests"][0]["state"] == "awaiting_download"
+    assert snapshot["requests"][0]["output_count"] == 0
+    assert snapshot["event_count"] == 3
+    assert adapter._protected_promotion_attempts[0]["receipt"] is receipt
+    assert adapter._protected_promotion_attempts[0]["status"] == "uncertain"
+    values[0].close()
+
+
+@pytest.mark.parametrize("revocation", [
+    "promotion_close", "acceptance_close", "acceptance_invalidate", "protected_close",
+])
+def test_promotion_revocation_waits_for_committed_event_sink_without_owner_locks(
+        revocation, protected_assets_owner):
+    store, _, _ = protected_assets_owner
+    values, adapter, _ = harness(provider=lambda prepared, prompt: result(
+        prepared, prompt, history_json=successful_history(prompt)))
+    accepted = start(values, adapter.accept_and_run_for_characterization)
+    promoter, receipt, _ = protected_promotion_for_active_request(values, adapter, store)
+    runtime, _, state, *_ = values
+    sink_entered, sink_checked, sink_release = threading.Event(), threading.Event(), threading.Event()
+    revoke_entered, close_done = threading.Event(), threading.Event()
+    original_revoke = promoter._revoke_executor_event_for_characterization
+    outcomes = []
+
+    def blocking_sink(event):
+        if event.progress.kind == "outputs_ready":
+            sink_entered.set()
+            assert promoter.readiness()["promotion"] == "promoted"
+            assert receipt._acceptance_owner.readiness()["acceptance"] == "accepted"
+            assert store.readiness()["asset_observation"] == "observed"
+            sink_checked.set()
+            assert sink_release.wait(5)
+        return deliver(state, runtime, event)
+
+    def observed_revoke():
+        revoke_entered.set()
+        original_revoke()
+
+    adapter._event_sink = blocking_sink
+    promoter._revoke_executor_event_for_characterization = observed_revoke
+    worker = threading.Thread(target=lambda: outcomes.append(
+        adapter.accept_protected_promotion_for_characterization(promoter, receipt)))
+    worker.start()
+    assert sink_entered.wait(5)
+    assert sink_checked.wait(5)
+    def revoke():
+        if revocation == "promotion_close":
+            promoter.close()
+        elif revocation == "acceptance_close":
+            receipt._acceptance_owner.close()
+        elif revocation == "acceptance_invalidate":
+            receipt._acceptance_owner.invalidate_for_characterization()
+        else:
+            store.close()
+        close_done.set()
+
+    closer = threading.Thread(target=revoke)
+    closer.start()
+    assert revoke_entered.wait(5)
+    assert not close_done.is_set()
+    sink_release.set()
+    worker.join(10)
+    closer.join(10)
+
+    assert not worker.is_alive() and not closer.is_alive()
+    assert close_done.is_set()
+    assert outcomes[0].status == "protected_outputs_ready"
+    snapshot = runtime.generation_jobs.snapshot(accepted.job_id)
+    assert snapshot["requests"][0]["state"] == "awaiting_host_registration"
+    assert snapshot["requests"][0]["output_count"] == 1
+    values[0].close()
+
+
 def test_inbox_invalidation_at_outputs_ready_delivery_keeps_event_late_and_private(protected_assets_owner):
     store, _, _ = protected_assets_owner
     values, adapter, sent = harness(provider=lambda prepared, prompt: result(

@@ -168,6 +168,9 @@ class ProtectedOutputAcceptanceCharacterization:
         self._batch_receipt, self._host_freshness = batch_receipt, host_freshness
         self._lock = threading.RLock()
         self._attempted = self._busy = self._closed = self._invalid = self._uncertain = False
+        self._revoking = False
+        self._revocation_complete = threading.Event()
+        self._revocation_complete.set()
         self._receipt = None
 
     def _build_receipt(self):
@@ -185,7 +188,7 @@ class ProtectedOutputAcceptanceCharacterization:
 
     def accept_for_characterization(self):
         with self._lock:
-            if self._closed:
+            if self._closed or self._revoking:
                 raise ValueError("acceptance_closed")
             if self._invalid or self._uncertain:
                 raise ValueError("acceptance_invalidated")
@@ -215,7 +218,7 @@ class ProtectedOutputAcceptanceCharacterization:
 
     def _commit_from_protected_owner(self, accepted):
         with self._lock:
-            if (not self._busy or self._closed or self._invalid or self._uncertain
+            if (not self._busy or self._closed or self._revoking or self._invalid or self._uncertain
                     or self._receipt is not None or type(accepted) is not AcceptedProtectedOutputBatch
                     or accepted._protected_owner is not self._protected_owner
                     or accepted._envelope is not self._envelope
@@ -229,7 +232,7 @@ class ProtectedOutputAcceptanceCharacterization:
 
     def inspect_for_characterization(self, accepted=None):
         with self._lock:
-            if self._closed:
+            if self._closed or self._revoking:
                 raise ValueError("acceptance_closed")
             if self._invalid or self._uncertain:
                 raise ValueError("acceptance_invalidated")
@@ -245,19 +248,69 @@ class ProtectedOutputAcceptanceCharacterization:
                 self._uncertain = True
             raise
         with self._lock:
-            if self._closed or self._invalid or self._receipt is not receipt:
+            if self._closed or self._revoking or self._invalid or self._receipt is not receipt:
                 raise ValueError("acceptance_invalidated")
             return receipt
+
+    def _revoke_promotion_event_boundaries_for_characterization(self):
+        """Find issued promotion owners and fence their count-only event leases."""
+        protected = self._protected_owner
+        with protected._lock:
+            owners = tuple({
+                receipt._promotion_owner
+                for receipt in protected._stream_promotions.values()
+                if receipt._acceptance_owner is self
+            })
+        for owner in owners:
+            owner._revoke_executor_event_for_characterization()
 
     def invalidate_for_characterization(self):
         """Fence future acceptance/inspection while retaining the evidence."""
         with self._lock:
-            self._invalid = True
+            if self._invalid:
+                return
+            if self._closed:
+                return
+            if self._revoking:
+                wait_for_revocation = True
+            else:
+                wait_for_revocation = False
+                self._revoking = True
+                self._revocation_complete.clear()
+        if wait_for_revocation:
+            self._revocation_complete.wait()
+            self.invalidate_for_characterization()
+            return
+        try:
+            self._revoke_promotion_event_boundaries_for_characterization()
+        finally:
+            with self._lock:
+                self._invalid = True
+                self._revoking = False
+            self._revocation_complete.set()
 
     def close(self):
         """Invalidate this view only; protected files and receipts are retained."""
         with self._lock:
-            self._closed = True
+            if self._closed:
+                return
+            if self._revoking:
+                wait_for_revocation = True
+            else:
+                wait_for_revocation = False
+                self._revoking = True
+                self._revocation_complete.clear()
+        if wait_for_revocation:
+            self._revocation_complete.wait()
+            self.close()
+            return
+        try:
+            self._revoke_promotion_event_boundaries_for_characterization()
+        finally:
+            with self._lock:
+                self._closed = True
+                self._revoking = False
+            self._revocation_complete.set()
 
     def readiness(self):
         with self._lock:

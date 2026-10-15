@@ -26,6 +26,41 @@ _FACTORY = object()
 _SAFE_ERROR = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
 
 
+class _PromotionEventBoundary:
+    """Linearize one executor event against revocation without holding owner locks."""
+
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._active = False
+        self._consumed = False
+        self._revoked = False
+        self._active_token = None
+
+    def begin(self):
+        with self._condition:
+            if self._revoked or self._consumed or self._active:
+                w._fail("protected_promotion_invalidated")
+            self._active = True
+            self._consumed = True
+            self._active_token = object()
+            return self._active_token
+
+    def finish(self, token):
+        if token is None:
+            return
+        with self._condition:
+            if self._active and token is self._active_token:
+                self._active = False
+                self._active_token = None
+                self._condition.notify_all()
+
+    def revoke(self):
+        with self._condition:
+            self._revoked = True
+            while self._active:
+                self._condition.wait()
+
+
 @dataclass(frozen=True)
 class ProtectedPromotedImage:
     """One exact descriptor's staging-to-protected-root byte correspondence."""
@@ -96,7 +131,8 @@ class ProtectedDurablePromotionCharacterization:
             _validate_binding(accepted._envelope, prepared, remote)
             key = (prepared.request_id, remote.identity)
             with protected_owner._lock:
-                if (protected_owner._closed or protected_owner._invalid or protected_owner._uncertain
+                if (protected_owner._closed or protected_owner._revoking
+                        or protected_owner._invalid or protected_owner._uncertain
                         or not protected_owner._writable):
                     raise ValueError()
                 binding = protected_owner._stream_bindings.get(prepared.request_id)
@@ -107,7 +143,7 @@ class ProtectedDurablePromotionCharacterization:
                         or protected_owner._stream_batch_acceptances.get(key) is not accepted):
                     raise ValueError()
                 with acceptance_owner._lock:
-                    if (acceptance_owner._closed or acceptance_owner._invalid
+                    if (acceptance_owner._closed or acceptance_owner._revoking or acceptance_owner._invalid
                             or acceptance_owner._uncertain or acceptance_owner._busy
                             or acceptance_owner._receipt is not accepted):
                         raise ValueError()
@@ -150,8 +186,9 @@ class ProtectedDurablePromotionCharacterization:
         self._protected_owner, self._acceptance_owner, self._accepted = (
             protected_owner, acceptance_owner, accepted)
         self._lock = threading.RLock()
-        self._attempted = self._busy = self._closed = self._uncertain = False
+        self._attempted = self._busy = self._closed = self._uncertain = self._revoking = False
         self._receipt = None
+        self._executor_event_boundary = _PromotionEventBoundary()
 
     def _build_receipt(self, images):
         accepted = self._accepted
@@ -204,7 +241,7 @@ class ProtectedDurablePromotionCharacterization:
 
     def promote_for_characterization(self):
         with self._lock:
-            if self._closed:
+            if self._closed or self._revoking:
                 w._fail("promotion_closed")
             if self._attempted:
                 w._fail("promotion_already_attempted")
@@ -289,7 +326,7 @@ class ProtectedDurablePromotionCharacterization:
                             or accepted._batch_receipt is not batch):
                         w._fail("protected_promotion_invalidated")
                     with self._lock:
-                        if self._closed or self._uncertain or self._receipt is not None:
+                        if self._closed or self._revoking or self._uncertain or self._receipt is not None:
                             w._fail("protected_promotion_invalidated")
                         protected._stream_promotions[key] = receipt
                         self._receipt = receipt
@@ -314,7 +351,7 @@ class ProtectedDurablePromotionCharacterization:
 
     def inspect_for_characterization(self, receipt=None):
         with self._lock:
-            if self._closed:
+            if self._closed or self._revoking:
                 w._fail("promotion_closed")
             if self._uncertain:
                 w._fail("promotion_uncertain")
@@ -341,7 +378,8 @@ class ProtectedDurablePromotionCharacterization:
                             or acceptance._receipt is not accepted):
                         w._fail("protected_promotion_invalidated")
                     with self._lock:
-                        if self._closed or self._uncertain or self._receipt is not current:
+                        if (self._closed or self._revoking or self._uncertain
+                                or self._receipt is not current):
                             w._fail("protected_promotion_invalidated")
                         return current
         except BaseException:
@@ -349,9 +387,54 @@ class ProtectedDurablePromotionCharacterization:
                 self._uncertain = True
             raise
 
+    def begin_executor_event_for_characterization(self, receipt):
+        """Commit one count-only host event against the exact live custody chain.
+
+        The returned private token keeps close/invalidation from completing
+        until the event sink returns. Owner locks are released before the host
+        callback; revocation and event delivery are ordered by the separate
+        boundary condition.
+        """
+        if type(receipt) is not VerifiedProtectedPromotionReceipt:
+            w._fail("promotion_owner_mismatch")
+        protected, acceptance, accepted = self._protected_owner, self._acceptance_owner, self._accepted
+        key = (accepted._prepared.request_id, accepted._remote.identity)
+        with protected._lock:
+            protected._check()
+            with acceptance._lock:
+                if (acceptance._closed or acceptance._revoking or acceptance._invalid
+                        or acceptance._uncertain or acceptance._busy
+                        or acceptance._receipt is not accepted
+                        or accepted._protected_owner is not protected
+                        or accepted._batch_receipt is not acceptance._batch_receipt):
+                    w._fail("protected_promotion_invalidated")
+                with self._lock:
+                    if (self._closed or self._revoking or self._uncertain
+                            or self._receipt is not receipt
+                            or receipt._promotion_owner is not self
+                            or receipt._protected_owner is not protected
+                            or receipt._acceptance_owner is not acceptance
+                            or receipt._accepted is not accepted
+                            or protected._stream_promotions.get(key) is not receipt
+                            or protected._stream_batch_acceptances.get(key) is not accepted):
+                        w._fail("protected_promotion_invalidated")
+                    return self._executor_event_boundary.begin()
+
+    def finish_executor_event_for_characterization(self, token):
+        self._executor_event_boundary.finish(token)
+
+    def _revoke_executor_event_for_characterization(self):
+        self._executor_event_boundary.revoke()
+
     def close(self):
         with self._lock:
+            if self._closed:
+                return
+            self._revoking = True
+        self._revoke_executor_event_for_characterization()
+        with self._lock:
             self._closed = True
+            self._revoking = False
 
     def readiness(self):
         with self._lock:

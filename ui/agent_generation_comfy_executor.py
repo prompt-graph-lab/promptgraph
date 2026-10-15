@@ -433,8 +433,16 @@ class ComfyExecutorAdapter:
                     raise ValueError("protected_promotion_invalidated")
                 self._phase = "emitting_protected_promotion"
                 self._protected_promotion_attempts[index]["status"] = "emitting"
-            delivered = self._emit("outputs_ready", count=len(descriptor_ids),
-                                   receipt_id=receipt.identity[:32])
+            # Acquire the exact promotion owner's event lease after full native
+            # inspection and immediately before host dispatch. Close/invalidate
+            # either wins before this commit point or waits for the callback;
+            # owner locks are all released before the host event sink runs.
+            event_lease = promotion_owner.begin_executor_event_for_characterization(receipt)
+            try:
+                delivered = self._emit("outputs_ready", count=len(descriptor_ids),
+                                       receipt_id=receipt.identity[:32])
+            finally:
+                promotion_owner.finish_executor_event_for_characterization(event_lease)
         except Exception:
             with self._protected_bridge_lock:
                 self._protected_promotion_attempts[index]["status"] = "uncertain"
