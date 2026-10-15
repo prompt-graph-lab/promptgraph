@@ -663,6 +663,42 @@ force. A later integration must define an explicit owner and acceptance contract
 between these private observations and existing containment/publication owners;
 it must not bypass `ContainedOutputStore` by treating this receipt as its input.
 
+### C2B-8D-7: protected containment acceptance
+
+`ProtectedOutputAcceptanceCharacterization` is a separate offline
+containment-side owner for one exact batch. Creation requires explicit
+characterization and disposable opt-in. Acceptance is one-shot and requires the
+original `WindowsProtectedAssetsCharacterization` issuer, exact envelope,
+owner-prepared request, successful remote receipt, and exact issued
+`VerifiedProtectedImageBatchReceipt`. The issuing owner retains and checks the
+same host-freshness callback used to commit that batch. It rechecks the full
+descriptor-ordered batch, current native handles, file identity, ACL and stored
+image bytes, then checks original-host freshness again before committing
+acceptance under the protected owner's lock. Close or invalidation that wins
+before this commit withholds acceptance. A later close or invalidation fences
+further inspection while retaining all evidence.
+
+The result is the distinct immutable `AcceptedProtectedOutputBatch`. It retains
+private references to the exact issuer, envelope, prepared request, remote
+receipt, batch receipt and host-freshness callback. Copied receipts, substituted
+bindings, incomplete batches, callback substitution, stale host state, native
+content/ACL drift, repeated acceptance, and cross-owner evidence fail closed.
+Accepted results are inspectable only through that same acceptance owner while
+the original protected owner and host binding remain current. Failures do not
+retry, clean up, overwrite or discard retained evidence.
+
+This is acceptance evidence only. It is not `LocalOutputReceipt`, does not
+populate `ContainedOutputStore` or its private indexes, does not grant executor
+progress, does not move bytes into `promoted_assets`, and does not authorize
+Candidate or Project publication. The next explicit handoff must be a separate
+protected durable-promotion owner that verifies accepted evidence and owns the
+promoted bytes. Promotion, executor settlement, publication approval and save
+remain distinct authority steps. No protected promotion or integration is
+implemented here. `execution_available=false`,
+`protected_storage_available=false`, `authorship=unverified`, Human Start,
+Recovery execution, Candidate/Project/Journal mutation and cleanup remain
+disabled.
+
 ### Observed evidence and unresolved guarantees
 
 Portable refusal contracts and actual disposable Windows-native fixtures cover
@@ -676,6 +712,11 @@ the HTTP provider contract is unchanged. Existing byte-create, containment and
 C2B-8D-4 tests remain in the focused validation set. Faults and identity mismatches
 are injected where noted; rename refusal, file ACL changes and file creation/IO
 use real Windows APIs. No network server or production Generation ran.
+
+C2B-8D-7's disposable Windows cases also exercise successful protected
+acceptance, exact issuer/callback binding, copied and incomplete receipts,
+cross-owner refusal, stale host state, content/ACL drift, repeated acceptance,
+concurrent duplicate attempts, close/invalidation races, and retained bytes.
 
 Stored-byte verification uses the existing bounded reread/decode implementation;
 it is not a constant-memory decoder. Synchronous injected callbacks rely on their

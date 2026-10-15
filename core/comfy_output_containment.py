@@ -10,12 +10,15 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import threading
 import uuid
 import warnings
 
 from PIL import Image, ImageFile
 
-from core.comfy_prompt_request import FrozenPromptRequest, prepare_frozen_prompt_request
+from core.comfy_prompt_request import (
+    FrozenPromptRequest, is_owner_prepared_frozen_request, prepare_frozen_prompt_request,
+)
 from core.comfy_remote_output_receipts import (
     RemoteOutputReceipt, validate_remote_outputs,
     MAX_REMOTE_BYTES, MAX_REMOTE_IMAGES,
@@ -89,6 +92,180 @@ class LocalOutputReceipt:
     @property
     def verified_count(self):
         return len(self.images)
+
+
+@dataclass(frozen=True)
+class AcceptedProtectedOutputBatch:
+    """Separate protected acceptance evidence; never a legacy local receipt."""
+    identity: str
+    batch_identity: str
+    image_count: int
+    _protected_owner: object = field(repr=False, compare=False)
+    _envelope: object = field(repr=False, compare=False)
+    _prepared: object = field(repr=False, compare=False)
+    _remote: object = field(repr=False, compare=False)
+    _batch_receipt: object = field(repr=False, compare=False)
+    _host_freshness: object = field(repr=False, compare=False)
+
+
+_PROTECTED_ACCEPTANCE_FACTORY = object()
+
+
+class ProtectedOutputAcceptanceCharacterization:
+    """One-batch, offline acceptance boundary over the issuing native owner.
+
+    This owner deliberately does not populate ContainedOutputStore indexes or
+    manufacture LocalOutputReceipt custody. Accepted evidence is valid only
+    while the original protected owner and exact host binding remain current.
+    """
+    execution_available = False
+    protected_storage_available = False
+    promotion_available = False
+    recovery_execution_allowed = False
+
+    @classmethod
+    def create_for_characterization(cls, protected_owner, envelope, prepared, remote,
+                                    batch_receipt, *, host_freshness,
+                                    characterization=False, disposable_opt_in=False):
+        if characterization is not True or disposable_opt_in is not True:
+            raise ValueError("execution_unavailable")
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+            VerifiedProtectedImageBatchReceipt,
+        )
+        if (type(protected_owner) is not WindowsProtectedAssetsCharacterization
+                or type(batch_receipt) is not VerifiedProtectedImageBatchReceipt
+                or not callable(host_freshness)):
+            raise ValueError("protected_acceptance_binding_invalid")
+        try:
+            _validate_binding(envelope, prepared, remote)
+            if (not is_owner_prepared_frozen_request(prepared)
+                    or remote.execution_succeeded is not True
+                    or batch_receipt.job_id != remote.job_id
+                    or batch_receipt.claim_id != remote.claim_id
+                    or batch_receipt.manifest_identity != remote.manifest_identity
+                    or batch_receipt.request_id != prepared.request_id
+                    or batch_receipt.request_index != prepared.request_index
+                    or batch_receipt.workflow_identity != prepared.workflow_identity
+                    or batch_receipt.prompt_id != remote.prompt_id
+                    or batch_receipt.remote_receipt_identity != remote.identity
+                    or type(batch_receipt.observations) is not tuple
+                    or len(batch_receipt.observations) != len(remote.images)
+                    or tuple(item.descriptor_identity for item in batch_receipt.observations)
+                    != tuple(item.identity for item in remote.images)):
+                raise ValueError()
+        except Exception:
+            raise ValueError("protected_acceptance_binding_invalid") from None
+        return cls(protected_owner, envelope, prepared, remote, batch_receipt,
+                   host_freshness, _factory=_PROTECTED_ACCEPTANCE_FACTORY)
+
+    def __init__(self, protected_owner, envelope, prepared, remote, batch_receipt,
+                 host_freshness, *, _factory=None):
+        if _factory is not _PROTECTED_ACCEPTANCE_FACTORY:
+            raise ValueError("host_protected_acceptance_required")
+        self._protected_owner = protected_owner
+        self._envelope, self._prepared, self._remote = envelope, prepared, remote
+        self._batch_receipt, self._host_freshness = batch_receipt, host_freshness
+        self._lock = threading.RLock()
+        self._attempted = self._busy = self._closed = self._invalid = self._uncertain = False
+        self._receipt = None
+
+    def _build_receipt(self):
+        batch = self._batch_receipt
+        payload = ["promptgraph.protected-output-acceptance.v1", batch.identity,
+                   batch.job_id, batch.claim_id, batch.manifest_identity,
+                   batch.request_id, batch.request_index, batch.workflow_identity,
+                   batch.prompt_id, batch.remote_receipt_identity,
+                   [item.descriptor_identity for item in batch.observations]]
+        identity = hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return AcceptedProtectedOutputBatch(identity, batch.identity, len(batch.observations),
+            self._protected_owner, self._envelope, self._prepared, self._remote, batch,
+            self._host_freshness)
+
+    def accept_for_characterization(self):
+        with self._lock:
+            if self._closed:
+                raise ValueError("acceptance_closed")
+            if self._invalid or self._uncertain:
+                raise ValueError("acceptance_invalidated")
+            if self._attempted:
+                raise ValueError("acceptance_already_attempted")
+            self._attempted = self._busy = True
+        try:
+            accepted = self._build_receipt()
+            self._protected_owner._accept_batch_for_containment_for_characterization(
+                self._envelope, self._prepared, self._remote, self._batch_receipt,
+                host_freshness=self._host_freshness, acceptance_owner=self, accepted=accepted)
+            with self._lock:
+                if self._closed or self._invalid or self._receipt is not accepted:
+                    raise ValueError("acceptance_invalidated")
+                return accepted
+        except BaseException:
+            with self._lock:
+                self._uncertain = True
+            raise
+        finally:
+            with self._lock:
+                self._busy = False
+
+    def _commit_from_protected_owner(self, accepted):
+        with self._lock:
+            if (not self._busy or self._closed or self._invalid or self._uncertain
+                    or self._receipt is not None or type(accepted) is not AcceptedProtectedOutputBatch
+                    or accepted._protected_owner is not self._protected_owner
+                    or accepted._envelope is not self._envelope
+                    or accepted._prepared is not self._prepared
+                    or accepted._remote is not self._remote
+                    or accepted._batch_receipt is not self._batch_receipt
+                    or accepted._host_freshness is not self._host_freshness):
+                raise ValueError("acceptance_invalidated")
+            self._receipt = accepted
+            return accepted
+
+    def inspect_for_characterization(self, accepted=None):
+        with self._lock:
+            if self._closed:
+                raise ValueError("acceptance_closed")
+            if self._invalid or self._uncertain:
+                raise ValueError("acceptance_invalidated")
+            receipt = self._receipt
+            if type(receipt) is not AcceptedProtectedOutputBatch or (accepted is not None and accepted is not receipt):
+                raise ValueError("acceptance_owner_mismatch")
+        try:
+            self._protected_owner._inspect_accepted_batch_for_containment_for_characterization(
+                self._envelope, self._prepared, self._remote, self._batch_receipt,
+                host_freshness=self._host_freshness, acceptance_owner=self, accepted=receipt)
+        except BaseException:
+            with self._lock:
+                self._uncertain = True
+            raise
+        with self._lock:
+            if self._closed or self._invalid or self._receipt is not receipt:
+                raise ValueError("acceptance_invalidated")
+            return receipt
+
+    def invalidate_for_characterization(self):
+        """Fence future acceptance/inspection while retaining the evidence."""
+        with self._lock:
+            self._invalid = True
+
+    def close(self):
+        """Invalidate this view only; protected files and receipts are retained."""
+        with self._lock:
+            self._closed = True
+
+    def readiness(self):
+        with self._lock:
+            state = ("closed" if self._closed else "invalidated" if self._invalid
+                     else "uncertain" if self._uncertain else "accepted" if self._receipt else "available")
+            return {"acceptance": state, "image_count": self._receipt.image_count if self._receipt else 0,
+                    "execution_available": False, "protected_storage_available": False,
+                    "promotion_available": False, "recovery_execution_allowed": False,
+                    "human_start_allowed": False, "attachment_allowed": False,
+                    "publication_allowed": False, "project_save_allowed": False,
+                    "journal_mutation_allowed": False, "cleanup_allowed": False,
+                    "retry_allowed": False, "authorship": "unverified"}
 
 
 class _ContainmentFailure(Exception):

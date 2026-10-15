@@ -15,7 +15,8 @@ import uuid
 
 from core import generation_windows_protected_storage as w
 from core.comfy_output_containment import (
-    ContainedOutputStore, ContainmentLimits, SUPPORTED_EXTENSIONS, CHUNK_BYTES,
+    AcceptedProtectedOutputBatch, ContainedOutputStore, ContainmentLimits,
+    ProtectedOutputAcceptanceCharacterization, SUPPORTED_EXTENSIONS, CHUNK_BYTES,
     DownloadStream, ImageDownloadLookup, _validate_binding,
 )
 from core.comfy_prompt_request import is_owner_prepared_frozen_request
@@ -144,6 +145,8 @@ class WindowsProtectedAssetsCharacterization:
         self._stream_envelope = None
         self._stream_bindings, self._stream_attempts, self._stream_images = {}, set(), {}
         self._stream_batch_attempts, self._stream_batches = set(), {}
+        self._stream_batch_freshness = {}
+        self._stream_batch_acceptance_attempts, self._stream_batch_acceptances = set(), {}
         self._stream_request_bytes = {}
         self._stream_busy = False
         self._stream_batch_busy = False
@@ -576,6 +579,7 @@ class WindowsProtectedAssetsCharacterization:
                     prepared.request_id, prepared.request_index, prepared.workflow_identity,
                     remote.prompt_id, remote.identity, identity, canonical)
                 self._stream_batches[key] = receipt
+                self._stream_batch_freshness[key] = host_freshness
                 return receipt
         except BaseException:
             with self._lock:
@@ -598,6 +602,126 @@ class WindowsProtectedAssetsCharacterization:
             for observation in receipt.observations:
                 self.inspect_verified_remote_image_for_characterization(observation)
             return receipt
+
+    def _accept_batch_for_containment_for_characterization(
+            self, envelope, prepared, remote, batch_receipt, *, host_freshness,
+            acceptance_owner, accepted):
+        """Atomically accept one exact batch through this issuing native owner.
+
+        The containment acceptance owner never treats a batch receipt as a
+        legacy local receipt. It supplies the separate immutable result, which
+        is published only while this original owner still verifies the native
+        batch and exact original host-freshness callback.
+        """
+        try:
+            if (type(acceptance_owner) is not ProtectedOutputAcceptanceCharacterization
+                    or type(accepted) is not AcceptedProtectedOutputBatch
+                    or not is_owner_prepared_frozen_request(prepared)):
+                raise ValueError()
+            _validate_binding(envelope, prepared, remote)
+            if remote.execution_succeeded is not True:
+                raise ValueError()
+            if (accepted._protected_owner is not self or accepted._envelope is not envelope
+                    or accepted._prepared is not prepared or accepted._remote is not remote
+                    or accepted._batch_receipt is not batch_receipt
+                    or accepted._host_freshness is not host_freshness):
+                raise ValueError()
+        except Exception:
+            w._fail("protected_acceptance_binding_invalid")
+
+        key = (prepared.request_id, remote.identity)
+        with self._lock:
+            if not self._writable or self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            self._check()
+            if self._stream_envelope is not envelope:
+                w._fail("storage_owner_mismatch")
+            binding = self._stream_bindings.get(prepared.request_id)
+            if binding is None:
+                w._fail("unknown_submission")
+            if binding[0] is not prepared or binding[1] is not remote:
+                w._fail("remote_binding_conflict")
+            if self._stream_batches.get(key) is not batch_receipt:
+                w._fail("batch_owner_mismatch")
+            if self._stream_batch_freshness.get(key) is not host_freshness:
+                w._fail("host_freshness_owner_mismatch")
+            if key in self._stream_batch_acceptance_attempts:
+                w._fail("acceptance_already_attempted")
+            self._stream_batch_acceptance_attempts.add(key)
+
+        fresh = lambda: host_freshness(envelope, remote)
+        try:
+            self._stream_fresh(fresh)
+            with self._lock:
+                self._check()
+                self.inspect_verified_remote_image_batch_for_characterization(batch_receipt)
+                self._check()
+
+            # Native reread/decode can be slow; check the exact original host
+            # callback again before the final lock-serialized acceptance.
+            self._stream_fresh(fresh)
+            with self._lock:
+                self._check()
+                if self._stream_batches.get(key) is not batch_receipt:
+                    w._fail("batch_owner_mismatch")
+                if key in self._stream_batch_acceptances:
+                    w._fail("acceptance_already_attempted")
+                acceptance_owner._commit_from_protected_owner(accepted)
+                self._stream_batch_acceptances[key] = accepted
+                return accepted
+        except BaseException:
+            with self._lock:
+                self._uncertain = True
+            raise
+
+    def _inspect_accepted_batch_for_containment_for_characterization(
+            self, envelope, prepared, remote, batch_receipt, *, host_freshness,
+            acceptance_owner, accepted):
+        """Revalidate an accepted view against current original-owner evidence."""
+        try:
+            if (type(acceptance_owner) is not ProtectedOutputAcceptanceCharacterization
+                    or type(accepted) is not AcceptedProtectedOutputBatch
+                    or not is_owner_prepared_frozen_request(prepared)):
+                raise ValueError()
+            _validate_binding(envelope, prepared, remote)
+            if remote.execution_succeeded is not True:
+                raise ValueError()
+            if (accepted._protected_owner is not self or accepted._envelope is not envelope
+                    or accepted._prepared is not prepared or accepted._remote is not remote
+                    or accepted._batch_receipt is not batch_receipt
+                    or accepted._host_freshness is not host_freshness):
+                raise ValueError()
+        except Exception:
+            w._fail("protected_acceptance_binding_invalid")
+
+        key = (prepared.request_id, remote.identity)
+        with self._lock:
+            binding = self._stream_bindings.get(prepared.request_id)
+            if (self._stream_envelope is not envelope
+                    or binding is None or binding[0] is not prepared or binding[1] is not remote
+                    or self._stream_batches.get(key) is not batch_receipt
+                    or self._stream_batch_freshness.get(key) is not host_freshness
+                    or self._stream_batch_acceptances.get(key) is not accepted):
+                w._fail("protected_acceptance_owner_mismatch")
+            self._check()
+
+        fresh = lambda: host_freshness(envelope, remote)
+        try:
+            self._stream_fresh(fresh)
+            with self._lock:
+                self._check()
+                self.inspect_verified_remote_image_batch_for_characterization(batch_receipt)
+                self._check()
+            self._stream_fresh(fresh)
+            with self._lock:
+                self._check()
+                if self._stream_batch_acceptances.get(key) is not accepted:
+                    w._fail("protected_acceptance_owner_mismatch")
+                return accepted
+        except BaseException:
+            with self._lock:
+                self._uncertain = True
+            raise
 
     def inspect_verified_remote_image_for_characterization(self, observation):
         with self._lock:
@@ -698,6 +822,7 @@ class WindowsProtectedAssetsCharacterization:
                         integrity="verified_bytes" if state == "observed" and self._images else "not_verified",
                         image_count=len(self._images), retained_file_count=len(self._files) + len(self._unobserved_files),
                         verified_batch_count=len(self._stream_batches),
+                        accepted_batch_count=len(self._stream_batch_acceptances),
                         retained_byte_reservation=self._used_bytes,
                         retry_allowed=False, fresh_reopen="inspect_only", cross_file_transaction=False)
             if state in ("closed", "unsafe_or_unavailable"):

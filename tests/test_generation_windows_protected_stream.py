@@ -13,7 +13,10 @@ import pytest
 from core import generation_windows_protected_assets as a
 from core import generation_windows_protected_storage as w
 from core.comfy_http_view import PromptHTTPViewTransport
-from core.comfy_output_containment import CHUNK_BYTES, ContainmentLimits, DownloadStream, LocalOutputReceipt
+from core.comfy_output_containment import (
+    AcceptedProtectedOutputBatch, CHUNK_BYTES, ContainmentLimits, DownloadStream,
+    LocalOutputReceipt, ProtectedOutputAcceptanceCharacterization,
+)
 from core.generation_output_promotion import PromotedImage
 from test_comfy_http_view import binding, Wire, Response
 from test_comfy_output_containment import image_bytes
@@ -30,6 +33,12 @@ def stage(store, values, provider, fresh=lambda envelope, remote: True, index=0)
     envelope, prepared, remote = values
     return store.stage_remote_image_for_characterization(envelope, prepared, remote, remote.images[index],
                                                         stream_provider=provider, host_freshness=fresh)
+
+
+def acceptance(store, values, batch, fresh):
+    return ProtectedOutputAcceptanceCharacterization.create_for_characterization(
+        store, *values, batch, host_freshness=fresh,
+        characterization=True, disposable_opt_in=True)
 
 
 class Stream:
@@ -805,6 +814,243 @@ def test_real_native_batch_close_during_host_check_withholds_receipt_and_retains
     assert isinstance(errors[0], ValueError) and not store._stream_batches
     assert store._closed and store._uncertain
     assert all(path.exists() and path.read_bytes() == image_bytes() for path in paths)
+
+
+def test_real_native_protected_batch_acceptance_is_distinct_exact_and_one_shot(owner):
+    store, _, _ = owner
+    values = bound(images=2)
+    fresh = lambda e, r: e is values[0] and r is values[2]
+    observations = tuple(stage(store, values, Stream(image_bytes()), fresh=fresh, index=index)
+                         for index in range(2))
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, observations, host_freshness=fresh)
+    acceptor = acceptance(store, values, batch, fresh)
+
+    accepted = acceptor.accept_for_characterization()
+
+    assert type(accepted) is AcceptedProtectedOutputBatch
+    assert not isinstance(accepted, (LocalOutputReceipt, PromotedImage, a.VerifiedProtectedImageBatchReceipt))
+    assert accepted.batch_identity == batch.identity and accepted.image_count == 2
+    assert accepted._protected_owner is store and accepted._batch_receipt is batch
+    assert accepted._envelope is values[0] and accepted._prepared is values[1] and accepted._remote is values[2]
+    assert store._stream_batch_acceptances[(values[1].request_id, values[2].identity)] is accepted
+    assert acceptor.inspect_for_characterization(accepted) is accepted
+    with pytest.raises(ValueError, match="acceptance_owner_mismatch"):
+        acceptor.inspect_for_characterization(replace(accepted))
+    with pytest.raises(ValueError, match="acceptance_already_attempted"):
+        acceptor.accept_for_characterization()
+    assert not hasattr(store, "_records") and not hasattr(store, "_remote") and not hasattr(store, "_storage")
+    assert all(path.exists() and path.read_bytes() == image_bytes() for path, *_ in store._files.values())
+    assert store.readiness()["accepted_batch_count"] == 1
+    assert acceptor.readiness()["authorship"] == "unverified"
+    assert acceptor.readiness()["execution_available"] is False
+    assert acceptor.readiness()["protected_storage_available"] is False
+    assert acceptor.readiness()["promotion_available"] is False
+    assert acceptor.readiness()["recovery_execution_allowed"] is False
+    assert acceptor.readiness()["human_start_allowed"] is False
+    assert acceptor.readiness()["publication_allowed"] is False
+    paths = [path for path, *_ in store._files.values()]
+    store.close()
+    with pytest.raises(ValueError, match="closed_observation"):
+        acceptor.inspect_for_characterization(accepted)
+    assert all(path.exists() and path.read_bytes() == image_bytes() for path in paths)
+
+
+@pytest.mark.parametrize("substitution", ["copied_batch", "other_freshness"])
+def test_real_native_acceptance_rejects_copied_or_substituted_evidence_without_consuming_batch(owner, substitution):
+    store, _, _ = owner
+    values = bound()
+    fresh = Mock(return_value=True)
+    observation = stage(store, values, Stream(image_bytes()), fresh=fresh)
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, (observation,), host_freshness=fresh)
+    current = replace(batch) if substitution == "copied_batch" else batch
+    other_freshness = Mock(return_value=True) if substitution == "other_freshness" else fresh
+    acceptor = acceptance(store, values, current, other_freshness)
+    fresh_calls, other_calls = fresh.call_count, other_freshness.call_count
+
+    with pytest.raises(ValueError, match="batch_owner_mismatch|host_freshness_owner_mismatch"):
+        acceptor.accept_for_characterization()
+
+    assert fresh.call_count == fresh_calls
+    assert other_freshness.call_count == other_calls
+    assert not store._stream_batch_acceptances
+    assert next(iter(store._files.values()))[0].exists()
+    assert not store._uncertain
+    correct = acceptance(store, values, batch, fresh)
+    assert correct.accept_for_characterization().batch_identity == batch.identity
+
+
+def test_real_native_acceptance_rejects_incomplete_batch_before_host_freshness(owner):
+    store, _, _ = owner
+    values = bound(images=2)
+    fresh = Mock(return_value=True)
+    observations = tuple(stage(store, values, Stream(image_bytes()), fresh=fresh, index=index)
+                         for index in range(2))
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, observations, host_freshness=fresh)
+    incomplete = replace(batch, observations=observations[:1])
+    calls = fresh.call_count
+
+    with pytest.raises(ValueError, match="protected_acceptance_binding_invalid"):
+        acceptance(store, values, incomplete, fresh)
+
+    assert fresh.call_count == calls
+    assert store._stream_batch_acceptances == {}
+    assert all(path.exists() and path.read_bytes() == image_bytes() for path, *_ in store._files.values())
+
+
+def test_real_native_acceptance_rejects_receipt_from_another_protected_owner(owner):
+    store, scope, _ = owner
+    values = bound()
+    fresh = lambda e, r: e is values[0] and r is values[2]
+    observation = stage(store, values, Stream(image_bytes()), fresh=fresh)
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, (observation,), host_freshness=fresh)
+    path = next(iter(store._files.values()))[0]
+
+    with a.WindowsProtectedAssetsCharacterization.provision_for_characterization(
+            str(scope), characterization=True, disposable_opt_in=True) as other_owner:
+        acceptor = acceptance(other_owner, values, batch, fresh)
+        with pytest.raises(ValueError, match="storage_owner_mismatch"):
+            acceptor.accept_for_characterization()
+        assert not other_owner._stream_batch_acceptances
+        assert not store._stream_batch_acceptances
+        assert path.exists() and path.read_bytes() == image_bytes()
+
+    correct = acceptance(store, values, batch, fresh)
+    assert correct.accept_for_characterization().batch_identity == batch.identity
+
+
+@pytest.mark.parametrize("drift", ["content", "acl"])
+def test_real_native_acceptance_revalidates_content_and_acl_retaining_evidence(owner, drift):
+    store, _, api = owner
+    values = bound()
+    fresh = lambda e, r: e is values[0] and r is values[2]
+    observation = stage(store, values, Stream(image_bytes()), fresh=fresh)
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, (observation,), host_freshness=fresh)
+    path = next(iter(store._files.values()))[0]
+    retained_bytes = image_bytes()
+    if drift == "content":
+        retained_bytes = image_bytes("PNG", (4, 4))
+        path.write_bytes(retained_bytes)
+    else:
+        mutate_disposable_acl(path, api, "changed_owner_only")
+    acceptor = acceptance(store, values, batch, fresh)
+
+    with pytest.raises(ValueError, match="content_changed|native_observation_changed|unsafe_acl|unsupported_acl"):
+        acceptor.accept_for_characterization()
+
+    assert not store._stream_batch_acceptances and path.exists()
+    assert path.read_bytes() == retained_bytes  # drifted evidence is retained, never cleaned
+    if drift == "acl":
+        mutate_disposable_acl(path, api, "original")
+
+
+def test_real_native_acceptance_rejects_stale_original_host_and_retains_evidence(owner):
+    store, _, _ = owner
+    values = bound()
+    current = [True]
+    fresh = lambda e, r: current[0] and e is values[0] and r is values[2]
+    observation = stage(store, values, Stream(image_bytes()), fresh=fresh)
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, (observation,), host_freshness=fresh)
+    current[0] = False
+    acceptor = acceptance(store, values, batch, fresh)
+
+    with pytest.raises(ValueError, match="host_freshness_lost"):
+        acceptor.accept_for_characterization()
+
+    path = next(iter(store._files.values()))[0]
+    assert not store._stream_batch_acceptances and path.exists() and path.read_bytes() == image_bytes()
+    assert acceptor.readiness()["acceptance"] == "uncertain"
+    with pytest.raises(ValueError, match="acceptance_invalidated"):
+        acceptor.accept_for_characterization()
+
+
+def test_real_native_acceptance_duplicate_race_is_one_shot(owner):
+    store, _, _ = owner
+    values = bound()
+    hold, entered, resume = [False], threading.Event(), threading.Event()
+
+    def fresh(envelope, remote):
+        assert envelope is values[0] and remote is values[2]
+        if hold[0]:
+            entered.set()
+            assert resume.wait(5)
+        return True
+
+    observation = stage(store, values, Stream(image_bytes()), fresh=fresh)
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, (observation,), host_freshness=fresh)
+    first, second = acceptance(store, values, batch, fresh), acceptance(store, values, batch, fresh)
+    hold[0] = True
+    results, errors = [], []
+
+    def worker():
+        try:
+            results.append(first.accept_for_characterization())
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert entered.wait(5)
+    with pytest.raises(ValueError, match="acceptance_already_attempted"):
+        second.accept_for_characterization()
+    resume.set()
+    thread.join(10)
+
+    assert not thread.is_alive() and not errors and len(results) == 1
+    assert store._stream_batch_acceptances[(values[1].request_id, values[2].identity)] is results[0]
+    assert first.inspect_for_characterization(results[0]) is results[0]
+    assert next(iter(store._files.values()))[0].read_bytes() == image_bytes()
+
+
+@pytest.mark.parametrize("loser", ["protected_close", "acceptance_close", "acceptance_invalidation"])
+def test_real_native_acceptance_race_with_close_or_invalidation_withholds_acceptance(owner, loser):
+    store, _, _ = owner
+    values = bound()
+    hold, entered, resume = [False], threading.Event(), threading.Event()
+
+    def fresh(envelope, remote):
+        assert envelope is values[0] and remote is values[2]
+        if hold[0]:
+            entered.set()
+            assert resume.wait(5)
+        return True
+
+    observation = stage(store, values, Stream(image_bytes()), fresh=fresh)
+    batch = store.commit_verified_remote_image_batch_for_characterization(
+        *values, (observation,), host_freshness=fresh)
+    acceptor = acceptance(store, values, batch, fresh)
+    path = next(iter(store._files.values()))[0]
+    hold[0] = True
+    errors = []
+
+    def worker():
+        try:
+            acceptor.accept_for_characterization()
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert entered.wait(5)
+    if loser == "protected_close":
+        store.close()
+    elif loser == "acceptance_close":
+        acceptor.close()
+    else:
+        acceptor.invalidate_for_characterization()
+    resume.set()
+    thread.join(10)
+
+    assert not thread.is_alive() and len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert not store._stream_batch_acceptances and path.exists() and path.read_bytes() == image_bytes()
+    assert acceptor.readiness()["acceptance"] in ("closed", "invalidated", "uncertain")
 
 
 def test_modules_resolve_to_this_isolated_worktree():
