@@ -693,14 +693,69 @@ retry, clean up, overwrite or discard retained evidence.
 This is acceptance evidence only. It is not `LocalOutputReceipt`, does not
 populate `ContainedOutputStore` or its private indexes, does not grant executor
 progress, does not move bytes into `promoted_assets`, and does not authorize
-Candidate or Project publication. The next explicit handoff must be a separate
-protected durable-promotion owner that verifies accepted evidence and owns the
-promoted bytes. Promotion, executor settlement, publication approval and save
-remain distinct authority steps. No protected promotion or integration is
-implemented here. `execution_available=false`,
+Candidate or Project publication. The separate [C2B-8D-8 protected durable
+promotion](#c2b-8d-8-protected-durable-promotion) below copies this exact accepted
+batch into the already provisioned protected root and issues distinct
+owner-held evidence. Promotion, executor settlement, publication approval and
+save remain distinct authority steps. `execution_available=false`,
 `protected_storage_available=false`, `authorship=unverified`, Human Start,
 Recovery execution, Candidate/Project/Journal mutation and cleanup remain
 disabled.
+
+### C2B-8D-8: protected durable promotion
+
+`ProtectedDurablePromotionCharacterization` accepts only the exact
+`AcceptedProtectedOutputBatch` retained by its original
+`ProtectedOutputAcceptanceCharacterization` and the same
+`WindowsProtectedAssetsCharacterization` that issued the staging observations.
+It binds the original host envelope, prepared request, successful remote
+receipt, complete descriptor-ordered batch and original host-freshness callback.
+Copied/substituted acceptances, another acceptance owner, another protected
+owner, incomplete or reordered image correlation, and stale or invalidated
+acceptance fail closed.
+
+Promotion is a one-shot offline copy into that protected owner's already
+provisioned `promoted_assets` root. The owner preserves each source staging
+file, revalidates accepted source identities, native owner-only ACL snapshots,
+stored byte counts and SHA-256 values, and preflights the shared conservative
+image/byte limits. Destinations use the existing native `CREATE_NEW` file path
+with a protected owner-only DACL. The native destination handle, file identity
+and ACL snapshot are retained immediately at creation. Before success, the
+owner rereads and fully decodes every destination, and checks format, dimensions,
+byte count and SHA-256 against its source. Remote filenames and caller-selected
+paths never choose a destination.
+
+The immutable `VerifiedProtectedPromotionReceipt` and its
+`ProtectedPromotedImage` rows are a separate private contract. Each ordered row
+binds one exact remote descriptor, original staging observation and new
+protected `promoted_assets` observation. The receipt is jointly published to
+the promotion owner and original protected owner only after the complete copy
+and final source/host/native checks. Publication is serialized against
+protected-owner close and acceptance close/invalidation under the existing
+protected-owner → acceptance-owner lock order. Host-freshness callbacks run
+outside both locks. A close or invalidation before the joint commit prevents the
+receipt; one after commit fences later inspection but does not rewrite the
+committed result.
+
+The receipt is not legacy `PromotedImage` or `DurableGenerationAssets` custody.
+It cannot be passed to Candidate publication, does not advance executor progress,
+does not populate `ContainedOutputStore`, and authorizes no Project save, Journal
+mutation or Recovery. There is no restart-time adoption, overwrite, retry or
+cleanup. If a copy or final validation fails, any created destination files and
+handles remain as partial/uncertain evidence, no batch receipt is published,
+and the attempt cannot be repeated. Capacity accounts for staging and promoted
+files together under the existing conservative limits, so a known over-capacity
+batch is rejected before copying; write or later verification failures can
+still retain partial destinations.
+
+This characterization verifies native file identity, ACL and byte integrity at
+the observed checks. It does not establish same-user hostile-process isolation,
+cryptographic authorship, directory or power-loss durability, or atomicity across
+files. Reads and Pillow decoding retain the existing bounded size policy but are
+not constant-memory. Reopening storage is inspect-only and cannot reconstruct
+the promotion owner or its authority. `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`, and
+`authorship=unverified` remain in force.
 
 ### Observed evidence and unresolved guarantees
 
@@ -721,6 +776,13 @@ acceptance, exact issuer/callback binding, copied and incomplete receipts,
 cross-owner refusal, stale host state, content/ACL drift, repeated acceptance,
 concurrent duplicate attempts, close/invalidation races, and retained bytes.
 
+C2B-8D-8's disposable Windows cases exercise single and multiple descriptor
+promotion, exact source/destination correlation, native destination `CREATE_NEW`
+identity and ACL evidence, decoded byte/size/hash equality, source preservation,
+copy/write/flush interruption, capacity refusal, stale host state, copied or
+substituted acceptance, close/invalidation races at and before the commit
+boundary, duplicate attempts and retained partial evidence.
+
 Stored-byte verification uses the existing bounded reread/decode implementation;
 it is not a constant-memory decoder. Synchronous injected callbacks rely on their
 own deadline/interrupt contract; the HTTP characterization wire supplies its
@@ -730,9 +792,10 @@ directory durability, crash/power-loss atomicity and cross-file transactions
 remain unproven. Close failures fence observations and retain evidence; they do
 not establish that every underlying OS handle actually closed.
 
-Host scope provisioning, receipt/publication integration, durable promotion,
-latest-head custody, fresh human authority, approved retention/discard, production
-transport registration, worker lifecycle and Human Start remain separate gates.
+Host scope provisioning, production integration of protected promotion with
+executor/publication owners, latest-head custody, fresh human authority,
+approved retention/discard, production transport registration, worker lifecycle
+and Human Start remain separate gates.
 `execution_available=false`, `protected_storage_available=false`,
 `authorship=unverified`, Recovery inspect-only, and Candidate/Project/Journal/MCP
 execution and cleanup remain unchanged.

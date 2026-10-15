@@ -1,4 +1,4 @@
-"""Disposable native staging observations; no publication receipt authority.
+"""Disposable native staging and promoted-asset observations.
 
 This adapter deliberately does not implement ContainedOutputStore or
 DurableGenerationAssets. Their correlation/publication contracts stay separate.
@@ -147,9 +147,12 @@ class WindowsProtectedAssetsCharacterization:
         self._stream_batch_attempts, self._stream_batches = set(), {}
         self._stream_batch_freshness = {}
         self._stream_batch_acceptance_attempts, self._stream_batch_acceptances = set(), {}
+        self._stream_promotion_attempts, self._stream_promotions = set(), {}
         self._stream_request_bytes = {}
         self._stream_busy = False
         self._stream_batch_busy = False
+        self._promotion_busy = False
+        self._promotion_owner = self._promotion_thread = None
         self._unobserved_files = []
         # Only the existing pure image verifier is shared; local-output receipt
         # custody remains with ContainedOutputStore.
@@ -210,9 +213,14 @@ class WindowsProtectedAssetsCharacterization:
         return ProtectedImageObservation(name, purpose, hashlib.sha256(data).hexdigest(),
                                          len(data), image_format, width, height)
 
-    def create_image_for_characterization(self, purpose, data, *, extension="png"):
+    def create_image_for_characterization(self, purpose, data, *, extension="png",
+                                          _promotion_owner=None):
         with self._lock:
-            if self._stream_busy or self._stream_batch_busy:
+            promotion_write = (self._promotion_busy and self._promotion_owner is _promotion_owner
+                               and self._promotion_thread == threading.get_ident())
+            if (self._stream_busy or self._stream_batch_busy
+                    or self._promotion_busy and not promotion_write
+                    or _promotion_owner is not None and not promotion_write):
                 w._fail("storage_busy")
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
@@ -220,7 +228,7 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("unsupported_asset_purpose_or_format")
             if (type(data) is not bytes or not 0 < len(data) <= min(self._limits.image_bytes, self._limits.request_bytes)
                     or self._used_bytes + len(data) > self._limits.aggregate_bytes
-                    or len(self._files) >= self._limits.images):
+                    or len(self._files) + len(self._unobserved_files) >= self._limits.images):
                 w._fail("storage_capacity")
             self._check()
             root = self._roots[purpose]
@@ -241,10 +249,15 @@ class WindowsProtectedAssetsCharacterization:
                 handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
                     c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
                     c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+                # Retain the native handle immediately after CREATE_NEW. If
+                # identity or ACL capture fails, the file remains accounted
+                # evidence and cannot be silently replaced on a later attempt.
+                self._unobserved_files.append((path, handle))
+                self._used_bytes += len(data)  # reserve failed writes too; no retry
                 # Capture BEFORE any callbacks/write. Keep the original handle until close.
                 record = path, handle, w._identity(handle), _file_acl(handle, root)
                 self._files[key] = record
-                self._used_bytes += len(data)  # reserve failed writes too; no retry
+                self._unobserved_files.remove((path, handle))
                 self._fault("after_file_create")
                 self._check()
                 for offset in range(0, len(data), CHUNK_BYTES):
@@ -263,8 +276,8 @@ class WindowsProtectedAssetsCharacterization:
                 return image
             except BaseException:
                 self._uncertain = True
-                if handle is not None and key not in self._files:
-                    handle.Close()
+                # An unobserved file is intentionally retained with its handle
+                # until owner close. No cleanup or retry is attempted.
                 raise  # Retain incomplete/uncertain evidence; never remove it.
 
     def stage_remote_image_for_characterization(self, envelope, prepared, remote, descriptor, *,
@@ -300,7 +313,7 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("remote_binding_conflict")
             if attempt in self._stream_attempts:
                 w._fail("already_attempted")
-            if self._stream_busy or self._stream_batch_busy:
+            if self._stream_busy or self._stream_batch_busy or self._promotion_busy:
                 w._fail("storage_busy")
             if (len(self._stream_bindings) >= 100 and previous is None
                     or len(self._files) + len(self._unobserved_files) >= self._limits.images):
@@ -507,7 +520,7 @@ class WindowsProtectedAssetsCharacterization:
                 # A repeat after a successful commit must not poison the original
                 # receipt; a concurrent repeat likewise cannot disturb its owner.
                 w._fail("already_attempted")
-            if self._stream_busy or self._stream_batch_busy:
+            if self._stream_busy or self._stream_batch_busy or self._promotion_busy:
                 w._fail("storage_busy")
             self._stream_batch_attempts.add(key)
             self._stream_batch_busy = True
@@ -755,6 +768,32 @@ class WindowsProtectedAssetsCharacterization:
                 self._uncertain = True
                 raise
 
+    def _claim_protected_promotion_for_characterization(
+            self, promotion_owner, acceptance_owner, accepted, key):
+        """Pin the one original-owner promotion attempt before callbacks or I/O."""
+        with self._lock:
+            if not self._writable or self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            self._check()
+            with acceptance_owner._lock:
+                if (acceptance_owner._protected_owner is not self
+                        or acceptance_owner._receipt is not accepted
+                        or acceptance_owner._closed or acceptance_owner._invalid
+                        or acceptance_owner._uncertain or acceptance_owner._busy
+                        or accepted._protected_owner is not self
+                        or self._stream_batch_acceptances.get(key) is not accepted):
+                    w._fail("protected_acceptance_owner_mismatch")
+                if key in self._stream_promotion_attempts:
+                    w._fail("promotion_already_attempted")
+                self._stream_promotion_attempts.add(key)
+                # Consume this batch's one attempt before checking capacity or
+                # doing any copy. A transient failure cannot trigger a retry.
+                if self._promotion_busy or self._stream_busy or self._stream_batch_busy:
+                    w._fail("storage_busy")
+                self._promotion_busy = True
+                self._promotion_owner = promotion_owner
+                self._promotion_thread = threading.get_ident()
+
     def _inventory(self):
         paths = []
         for purpose, root in self._roots.items():
@@ -828,6 +867,7 @@ class WindowsProtectedAssetsCharacterization:
                         image_count=len(self._images), retained_file_count=len(self._files) + len(self._unobserved_files),
                         verified_batch_count=len(self._stream_batches),
                         accepted_batch_count=len(self._stream_batch_acceptances),
+                        protected_promotion_count=len(self._stream_promotions),
                         retained_byte_reservation=self._used_bytes,
                         retry_allowed=False, fresh_reopen="inspect_only", cross_file_transaction=False)
             if state in ("closed", "unsafe_or_unavailable"):

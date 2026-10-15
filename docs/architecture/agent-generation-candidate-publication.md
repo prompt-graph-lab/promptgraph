@@ -47,11 +47,15 @@ are not an additional supported writer contract.
 ## Durable promotion
 
 C2B-8D-1's separate [disposable Windows protected asset owner](agent-generation-protected-storage.md#c2b-8d-1-disposable-protected-staging-and-promoted-assets)
-characterizes native protected roots and image files only. It does not copy
-contained output, return `PromotedImage`, or confer Candidate publication
-authority. The approved-parent constructor and receipt custody below retain
-their existing semantics; native-protected integration remains a later bounded
-slice with original-host freshness and publication/save ordering preserved.
+is extended by the offline [C2B-8D-8 protected promotion characterization](agent-generation-protected-storage.md#c2b-8d-8-protected-durable-promotion).
+That owner can copy one exact accepted staging batch into its existing native
+protected `promoted_assets` root and retain a distinct immutable
+`VerifiedProtectedPromotionReceipt`. It does not return `PromotedImage`, create
+`DurableGenerationAssets` custody, or confer Candidate publication authority.
+The approved-parent constructor and receipt custody below retain their existing
+semantics; integration of protected promotion with executor settlement,
+Candidate publication and Project save remains a later bounded slice with
+original-host freshness and publication/save ordering preserved.
 
 `core.generation_output_promotion.DurableGenerationAssets` owns filesystem work.
 It creates an exclusive UUID directory under the explicitly approved existing

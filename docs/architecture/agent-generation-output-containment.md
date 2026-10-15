@@ -232,9 +232,11 @@ integration and all execution/protected-storage gates remain disabled.
 The separate [C2B-8D-6 protected batch receipt](agent-generation-protected-storage.md#c2b-8d-6-protected-batch-receipt-custody)
 aggregates every exact staged image for one prepared request under its original
 protected-assets owner. It is a private characterization receipt and is not a
-`LocalOutputReceipt`; no executor count, promotion, Candidate or Project
-publication is authorized by it. Any later integration must pass through an
-explicitly reviewed `ContainedOutputStore` acceptance boundary.
+`LocalOutputReceipt`; no executor count, Candidate or Project publication is
+authorized by it. The offline [C2B-8D-7 protected acceptance](agent-generation-protected-storage.md#c2b-8d-7-protected-containment-acceptance)
+and [C2B-8D-8 protected promotion](agent-generation-protected-storage.md#c2b-8d-8-protected-durable-promotion)
+remain separate private evidence contracts; neither fabricates
+`ContainedOutputStore` custody or production Candidate authority.
 
 ## Atomic batches, quarantine and retention
 
