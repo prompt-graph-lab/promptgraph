@@ -894,6 +894,7 @@ class WindowsProtectedAssetsCharacterization:
             # lease; refuse reentry without changing lifecycle state.
             for owner in promotion_owners:
                 owner._ensure_executor_event_revocation_allowed()
+                owner._ensure_candidate_publication_revocation_allowed()
             if self._closed:
                 return
             if self._revoking:
@@ -911,6 +912,7 @@ class WindowsProtectedAssetsCharacterization:
             # otherwise close prevents a later outputs_ready dispatch.
             for owner in promotion_owners:
                 owner._revoke_executor_event_for_characterization()
+                owner._revoke_candidate_publication_for_characterization()
             with self._lock:
                 self._closed = True
                 failed = False

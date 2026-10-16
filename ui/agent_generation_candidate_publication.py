@@ -8,6 +8,7 @@ from contextlib import contextmanager, nullcontext
 import copy
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import threading
 
@@ -19,6 +20,10 @@ from ui.agent_generation_executor_inbox import ExecutionEnvelope
 from ui.agent_generation_executor_handoff import GenerationPublicationOrigin
 from ui.agent_generation_job import JobRequest, _PROCESS_INCARNATION
 from ui.project_agent_session_pump import ProjectAgentSessionRuntime
+from ui.agent_generation_protected_candidate_admission import (
+    GenerationProtectedCandidateAdmission,
+    ProtectedCandidateAdmissionObservation,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,25 @@ class GenerationCandidatePublication:
     def create_for_characterization(cls, state, runtime, envelope, *, approved_directory,
                                     candidate_factory, candidate_appender, save_project,
                                     characterization=False):
+        return cls._create_for_characterization(
+            state, runtime, envelope, approved_directory=approved_directory,
+            candidate_factory=candidate_factory, candidate_appender=candidate_appender,
+            save_project=save_project, characterization=characterization, protected_only=False)
+
+    @classmethod
+    def create_protected_for_characterization(cls, state, runtime, envelope, *, approved_directory,
+                                              candidate_factory, candidate_appender, save_project,
+                                              characterization=False):
+        """Create the same single writer without allocating legacy asset custody."""
+        return cls._create_for_characterization(
+            state, runtime, envelope, approved_directory=approved_directory,
+            candidate_factory=candidate_factory, candidate_appender=candidate_appender,
+            save_project=save_project, characterization=characterization, protected_only=True)
+
+    @classmethod
+    def _create_for_characterization(cls, state, runtime, envelope, *, approved_directory,
+                                     candidate_factory, candidate_appender, save_project,
+                                     characterization, protected_only):
         if (characterization is not True or type(runtime) is not ProjectAgentSessionRuntime
                 or not runtime.generation_jobs._characterization
                 or not runtime._generation_executor_inbox._characterization):
@@ -52,33 +76,43 @@ class GenerationCandidatePublication:
         if (type(approved_directory) is not str or not Path(approved_directory).is_absolute()
                 or options.get("output_directory") != approved_directory):
             raise ValueError("destination_not_approved")
+        approved = Path(approved_directory)
+        if not approved.is_dir() or approved.resolve() != approved:
+            raise ValueError("destination_not_approved")
         owner = cls(state, runtime, envelope, candidate_factory, candidate_appender, save_project,
-                    _factory=_FACTORY)
+                    approved_directory=approved_directory,
+                    mode="protected" if protected_only else "legacy", _factory=_FACTORY)
         with owner._authority() as current:
             if not current:
                 raise ValueError("stale_original_host")
             if getattr(runtime, "_generation_candidate_publication", None) is not None:
                 raise ValueError("publication_owner_exists")
             runtime._generation_candidate_publication = owner
-        # Allocation is pinned even if it fails. No implicit recovery/retry.
-        owner._assets = DurableGenerationAssets.create_for_characterization(
-            approved_directory, characterization=True)
+        # Legacy allocation is pinned even if it fails. Protected publication
+        # uses its separate native owner and never fabricates this custody.
+        if not protected_only:
+            owner._assets = DurableGenerationAssets.create_for_characterization(
+                approved_directory, characterization=True)
         with owner._authority() as current:
             if not current:
                 raise ValueError("stale_original_host")
         return owner
 
-    def __init__(self, state, runtime, envelope, factory, appender, save, *, _factory=None):
+    def __init__(self, state, runtime, envelope, factory, appender, save, *,
+                 approved_directory, mode, _factory=None):
         if _factory is not _FACTORY:
             raise ValueError("host_publication_factory_required")
         self._state, self._runtime, self._envelope = state, runtime, envelope
         self._factory, self._appender, self._save = factory, appender, save
+        self._approved_directory = Path(approved_directory)
+        self._mode = mode
         self._origin = runtime._generation_publication_origin
         self._expected = copy.deepcopy(self._origin.source_snapshot)
         self._assets = None
         self._lock = threading.Lock()
         self._busy = False
         self._records, self._evidence = {}, {}
+        self._protected_evidence = {}
         self._save_state = "not_attempted"
 
     @contextmanager
@@ -142,6 +176,10 @@ class GenerationCandidatePublication:
                 yield current  # no job/inbox/mailbox locks cross host mutation
 
     def publish_for_characterization(self, store, remote, local):
+        if self._mode != "legacy":
+            index = getattr(local, "request_index", -1)
+            return PublicationReceipt(index if type(index) is int else -1,
+                                      "not_attempted", "writer_mode_mismatch")
         index = getattr(local, "request_index", -1)
         if type(index) is not int or not 0 <= index < len(self._envelope.manifest.requests):
             return PublicationReceipt(-1, "not_attempted", "invalid_receipt")
@@ -263,7 +301,265 @@ class GenerationCandidatePublication:
                 self._records[index] = receipt
                 self._busy = False
 
+    def publish_protected_for_characterization(self, admission_owner, observation):
+        """Append exact protected promotion images through the existing Gallery writer.
+
+        This is a distinct characterization mode: protected receipts are never
+        adapted into LocalOutputReceipt, ContainedOutputStore or PromotedImage.
+        """
+        if self._mode != "protected":
+            index = getattr(observation, "request_index", -1)
+            return PublicationReceipt(index if type(index) is int else -1,
+                                      "not_attempted", "writer_mode_mismatch")
+        index = getattr(observation, "request_index", -1)
+        if (type(admission_owner) is not GenerationProtectedCandidateAdmission
+                or type(observation) is not ProtectedCandidateAdmissionObservation
+                or type(index) is not int
+                or not 0 <= index < len(self._envelope.manifest.requests)):
+            return PublicationReceipt(-1, "not_attempted", "admission_required")
+        with self._lock:
+            previous = self._records.get(index)
+            if previous is not None:
+                evidence = self._protected_evidence.get(index)
+                exact = (evidence is not None and evidence[0] is admission_owner
+                         and evidence[1] is observation)
+                return previous if exact else PublicationReceipt(
+                    index, "not_attempted", "receipt_conflict")
+            if self._busy or self._save_state != "not_attempted":
+                return PublicationReceipt(index, "not_attempted", "publication_busy")
+            self._busy = True
+            self._records[index] = PublicationReceipt(index, "not_attempted", "publication_in_progress")
+            self._protected_evidence[index] = (admission_owner, observation)
+
+        promotion_state = "not_attempted"
+        mutation_started, observed_count = False, 0
+        receipt = PublicationReceipt(index, promotion_state, "stale_original_host")
+        try:
+            if not self._protected_observation_is_owned(admission_owner, observation):
+                receipt = PublicationReceipt(index, promotion_state, "admission_mismatch")
+                return receipt
+            with self._authority() as current:
+                if not current:
+                    return receipt
+
+            promotion_owner = observation._promotion_owner
+            protected_receipt = observation._promotion_receipt
+            remote = observation._remote_receipt
+            if (promotion_owner._inspect_for_candidate_admission_for_characterization(
+                    protected_receipt, admission_owner._host_freshness_for_admission)
+                    is not protected_receipt):
+                raise ValueError("protected_promotion_unavailable")
+            paths = self._protected_candidate_paths(observation)
+            promotion_state = "protected_verified"
+
+            request = self._envelope.manifest.requests[index]
+            if (request.request_index != index or remote.request_index != index
+                    or protected_receipt.request_index != index):
+                raise ValueError("request_mismatch")
+            row = json.loads(self._origin.review_json)["requests"][index]
+            target_result = resolve_gallery_generation_result_target(self._expected, request.illustration_id)
+            target = target_result["target_line"]
+            actual = resolve_gallery_generation_result_target(
+                self._origin.project, request.illustration_id)["target_line"]
+            if target is None or actual is None:
+                raise ValueError("target_unavailable")
+
+            records = []
+            for ordinal, (promoted, path) in enumerate(zip(protected_receipt.images, paths), 1):
+                # Keep the established app record factory and frozen review
+                # fields; only the exact owner-verified path supplies the image.
+                record = self._factory(path, target, "agent_generation", request.run_index)
+                if type(record) is not dict:
+                    raise ValueError("candidate_factory_failed")
+                record = copy.deepcopy(record)
+                prompts = row["prompts"]
+
+                def prompt(role):
+                    values = [p["text"] for p in prompts if p["role"] == role]
+                    return values[0] if values and len(set(values)) == 1 else None
+
+                seed_values = [s["value"] for s in row["seeds"] if s["input_key"] == "seed"]
+                image = promoted.promoted_image
+                record.update(path=path, prompt_text=prompt("positive"), negative_prompt=prompt("negative"),
+                    candidate_prompt_source="frozen_execution",
+                    seed=seed_values[0] if len(seed_values) == 1 else None,
+                    seed_mode="frozen_execution", run_index=request.run_index,
+                    generation_provenance={"job_id": self._envelope.job_id,
+                        "manifest_identity": self._envelope.manifest.manifest_identity,
+                        "request_id": request.request_id, "request_index": index,
+                        "illustration_id": request.illustration_id, "run_index": request.run_index,
+                        "workflow_identity": request.workflow_identity, "prompt_id": remote.prompt_id,
+                        "remote_receipt_identity": remote.identity,
+                        "protected_promotion_identity": protected_receipt.identity,
+                        "protected_candidate_admission_identity": observation.identity,
+                        "descriptor_identity": promoted.descriptor_identity,
+                        "protected_storage_identity": image.storage_identity,
+                        "protected_purpose": image.purpose,
+                        "content_sha256": image.content_sha256, "output_index": ordinal,
+                        "image_format": image.image_format, "image_byte_count": image.byte_count,
+                        "prompts": prompts, "seeds": row["seeds"], "parameters": row["parameters"],
+                        "prompt_available": prompt("positive") is not None,
+                        "seed_available": len(seed_values) == 1})
+                records.append(record)
+
+            if not records or len(records) != len(paths):
+                raise ValueError("protected_batch_incomplete")
+            history_snapshot = copy.deepcopy(self._expected)
+            normalized_existing = _normalize_candidate_records(target.generated_candidates)
+            normalized_new = _normalize_candidate_records(copy.deepcopy(records))
+            by_path = {record["path"]: record for record in records}
+            if len(by_path) != len(records):
+                raise ValueError("protected_path_conflict")
+
+            # Reverify all native files after factory work and immediately
+            # before entering the host commit gate. The lease acquired by that
+            # gate serializes owner close/invalidation against the appender.
+            if promotion_owner._inspect_for_candidate_admission_for_characterization(
+                    protected_receipt, admission_owner._host_freshness_for_admission) is not protected_receipt:
+                raise ValueError("protected_promotion_unavailable")
+            if self._protected_candidate_paths(observation) != paths:
+                raise ValueError("protected_path_changed")
+
+            with admission_owner._candidate_publication_commit_for_characterization(observation) as current_events:
+                if current_events is None:
+                    receipt = PublicationReceipt(index, promotion_state, "stale_original_host")
+                    return receipt
+                history = self._state.get("history")
+                if type(history) is not list:
+                    raise ValueError("history_unavailable")
+                history.append(history_snapshot)
+                error = False
+                actual = resolve_gallery_generation_result_target(
+                    self._origin.project, request.illustration_id)["target_line"]
+                if actual is None:
+                    history.pop()
+                    raise ValueError("target_unavailable")
+                mutation_started = True
+                try:
+                    ingest_gallery_generation_outputs(self._origin.project,
+                        {"source_line_id": request.illustration_id, "request_id": request.request_id,
+                         "run_index": request.run_index}, paths,
+                        candidate_factory=lambda path, line, generation_request: by_path[path],
+                        candidate_appender=self._appender, resolve_path=lambda path: path,
+                        path_exists=lambda path: path in by_path)
+                except Exception:
+                    error = True  # the appender may have mutated before raising
+
+                observed = [record for record in normalized_new if record in actual.generated_candidates]
+                # Advance only the observed Candidate delta in the detached
+                # expected Project. The original source snapshot remains fixed.
+                expected_target = resolve_gallery_generation_result_target(
+                    self._expected, request.illustration_id)["target_line"]
+                if expected_target is None:
+                    raise ValueError("target_unavailable")
+                expected_target.generated_candidates = [*normalized_existing, *observed]
+                count = len(observed)
+                observed_count = count
+                if not count:
+                    history.pop()
+                elif len(history) > 20:
+                    history.pop(0)
+
+                intact = self._origin.project == self._expected
+                runtime = self._runtime
+                try:
+                    epoch = runtime._synchronize_target_locked(
+                        self._state.get("project"), self._state.get("current_project_path", ""))
+                    available, pairing = runtime._registration.inspect_pairing_generation()
+                    still_current = (not runtime._closed
+                        and runtime._generation_publication_origin is self._origin
+                        and self._state.get("project") is self._origin.project
+                        and self._state.get("current_project_path", "") == self._origin.path
+                        and epoch == self._envelope.binding.target_epoch
+                        and (epoch, epoch) == (self._envelope.binding.target_epoch,
+                                               self._envelope.binding.activation_id)
+                        and available and pairing == self._envelope.binding.pairing_generation)
+                except Exception:
+                    still_current = False
+                if not still_current or not intact:
+                    receipt = PublicationReceipt(index, promotion_state, "registration_uncertain", count)
+                    return receipt
+                result = runtime.generation_jobs.publication_for_characterization(
+                    self._envelope.job_id, self._envelope.claim_id, binding=self._envelope.binding,
+                    request_index=index, registered_count=count)
+
+                status = ("registered" if count == len(records) and not error and result == "accepted"
+                          else "registration_uncertain" if error or result != "accepted"
+                          else "partially_registered" if count else "registration_failed")
+                if status == "registered" and not admission_owner._advance_candidate_snapshot_for_characterization(
+                        observation, history_snapshot, self._expected):
+                    status = "registration_uncertain"
+                receipt = PublicationReceipt(index, promotion_state, status, count)
+                return receipt
+        except Exception:
+            receipt = PublicationReceipt(index,
+                "protected_verification_failed" if promotion_state == "not_attempted" else promotion_state,
+                "registration_uncertain" if mutation_started else "registration_failed", observed_count)
+            return receipt
+        finally:
+            with self._lock:
+                self._records[index] = receipt
+                self._busy = False
+
+    def _protected_observation_is_owned(self, admission_owner, observation):
+        if (admission_owner._runtime is not self._runtime
+                or admission_owner._envelope is not self._envelope
+                or observation._runtime is not self._runtime
+                or observation._origin is not self._origin
+                or observation._envelope is not self._envelope
+                or observation._project is not self._origin.project
+                or observation._source_snapshot != self._origin.source_snapshot):
+            return False
+        index = observation.request_index
+        with admission_owner._lock:
+            attempt = admission_owner._attempts.get(index)
+            return bool(not admission_owner._closed and attempt is not None
+                and attempt.status == "observed"
+                and attempt.promotion_owner is observation._promotion_owner
+                and attempt.receipt is observation._promotion_receipt
+                and attempt.remote is observation._remote_receipt
+                and attempt.result is not None
+                and attempt.result.status == "evidence_observed"
+                and attempt.result.observation is observation
+                and admission_owner._receipt_binding(
+                    observation._promotion_owner, observation._promotion_receipt,
+                    observation._remote_receipt, index))
+
+    def _protected_candidate_paths(self, observation):
+        promotion_owner = observation._promotion_owner
+        receipt = observation._promotion_receipt
+        protected = promotion_owner._protected_owner
+        root_owner = protected._roots.get("promoted_assets")
+        root = Path(root_owner._path) if root_owner is not None else None
+        if (root is None or root == self._approved_directory
+                or not _path_is_within_approved_destination(
+                    root, self._approved_directory, strict=True)):
+            raise ValueError("destination_not_approved")
+        remote = observation._remote_receipt
+        if len(receipt.images) != len(remote.images) or not receipt.images:
+            raise ValueError("protected_batch_incomplete")
+        paths, seen = [], set()
+        for promoted, descriptor in zip(receipt.images, remote.images):
+            image = promoted.promoted_image
+            key = ("promoted_assets", image.storage_identity)
+            file_record = protected._files.get(key)
+            path = Path(file_record[0]) if file_record is not None else None
+            if (promoted.descriptor_identity != descriptor.identity
+                    or image.purpose != "promoted_assets"
+                    or path is None or path.parent != root or path.name != image.storage_identity
+                    or protected._images.get(key) is not image
+                    or not _path_is_within_approved_destination(path, self._approved_directory)):
+                raise ValueError("protected_path_unavailable")
+            normalized = os.path.normcase(os.path.abspath(path))
+            if normalized in seen:
+                raise ValueError("protected_path_conflict")
+            seen.add(normalized)
+            paths.append(str(path))
+        return tuple(paths)
+
     def save_for_characterization(self):
+        if self._mode == "protected":
+            return "protected_save_not_in_scope"
         with self._lock:
             if self._save_state != "not_attempted":
                 return self._save_state
@@ -326,3 +622,16 @@ class GenerationCandidatePublication:
 
 
 _FACTORY = object()
+
+
+def _path_is_within_approved_destination(path, approved_directory, *, strict=False):
+    """Compare canonical absolute Windows paths without accepting prefixes."""
+    try:
+        candidate = os.path.normcase(os.path.abspath(os.fspath(path)))
+        approved = os.path.normcase(os.path.abspath(os.fspath(approved_directory)))
+        if not Path(candidate).is_absolute() or not Path(approved).is_absolute():
+            return False
+        common = os.path.normcase(os.path.commonpath((candidate, approved)))
+        return common == approved and (not strict or candidate != approved)
+    except (OSError, TypeError, ValueError):
+        return False

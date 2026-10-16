@@ -856,6 +856,44 @@ characterization does not prove hostile same-user process isolation,
 cryptographic authorship, restart-time authority reconstruction, crash
 durability, or hostile mutation between bounded checks.
 
+### C2B-8D-11: protected Candidate writer integration
+
+`GenerationCandidatePublication` remains the single Candidate writer. Its
+protected characterization mode accepts only the exact
+`ProtectedCandidateAdmissionObservation` retained by the original admission
+owner and the exact promotion/acceptance owners that issued the evidence. It
+does not translate protected evidence into `LocalOutputReceipt`,
+`PromotedImage`, or `DurableGenerationAssets`, and the legacy writer path keeps
+its existing receipt checks. Before Candidate mutation, the publisher
+revalidates the active prepared request, original host/event authority, exact
+admission and promotion custody, native promoted-file identity/ACL/content,
+and request/descriptor correlation. A bounded private lease serializes final
+publication against protected-owner close and invalidation; expensive native
+verification and host callbacks remain outside protected, job and inbox locks.
+
+The protected image destination is derived only from the retained protected
+assets owner. The pinned `promoted_assets` root must be a strict descendant of
+the exact frozen `output_directory` approved by the original host, and each
+promoted image must be a direct child of that root. Missing roots, an equal or
+outside root, path substitution, or any unapproved destination fail closed.
+Existing app ingestion and the original-host Candidate appender remain the
+only mutation path. The writer records the actual persistent Candidate delta,
+uses the existing Undo ordering, and settles the exact request's registration
+count once. Protected provenance identifies the promotion/admission and
+verified image bytes without claiming a legacy local receipt. Candidate
+registration remains distinct from Project save; protected characterization
+save is explicitly out of scope and never invokes the save callback.
+
+This boundary does not authorize production execution or protected storage,
+does not add retry, cleanup, restart-time authority reconstruction, Journal or
+Recovery behavior, and does not prove protection from hostile same-user
+processes, transient path/ACL races, crash durability or cryptographic
+authorship. `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`, and
+`authorship=unverified` remain in force. See the [Candidate publication
+contract](agent-generation-candidate-publication.md#protected-candidate-admission-is-not-candidate-publication)
+for the shared writer boundary and persistence separation.
+
 ### Observed evidence and unresolved guarantees
 
 Portable refusal contracts and actual disposable Windows-native fixtures cover

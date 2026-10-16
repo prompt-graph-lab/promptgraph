@@ -125,6 +125,9 @@ class GenerationProtectedCandidateAdmission:
         self._envelope = envelope
         self._origin = origin
         self._source_snapshot = source_snapshot
+        # Candidate publication advances only the exact in-memory Candidate
+        # delta. The original source snapshot above remains immutable evidence.
+        self._candidate_expected = copy.deepcopy(source_snapshot)
         self._lock = threading.RLock()
         self._closed = False
         self._attempts = {}
@@ -186,6 +189,81 @@ class GenerationProtectedCandidateAdmission:
             return False
 
     @contextmanager
+    def _locked_request_events_for_characterization(self, remote, receipt, index, pairing):
+        """Hold exact current job/inbox event evidence for a bounded decision."""
+        runtime, envelope = self._runtime, self._envelope
+        jobs, inbox = runtime.generation_jobs, runtime._generation_executor_inbox
+        with jobs._lock:
+            jobs._cleanup_locked(jobs._clock())
+            job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
+            with inbox._lock:
+                if (not jobs._characterization or jobs._closed or not inbox._characterization
+                        or inbox._closed or inbox._state != "accepted"
+                        or inbox._envelope is not envelope
+                        or inbox._manifest is not envelope.manifest
+                        or job is None or job.binding != envelope.binding
+                        or job.binding.session_id != jobs._session_incarnation
+                        or job.binding.process_incarnation != _PROCESS_INCARNATION
+                        or job.binding.plan_identity != envelope.manifest.manifest_identity
+                        or (job.binding.target_epoch, job.binding.activation_id) != jobs._target
+                        or job.binding.pairing_generation != pairing
+                        or job.state in _TERMINAL
+                        or index >= len(job.request_states)
+                        or job.request_states[index] != "awaiting_host_registration"
+                        or job.outputs[index] != len(remote.images)
+                        or job.remote_outputs[index] != len(remote.images)
+                        or job.registered[index] != 0
+                        or job.requests[index] != JobRequest(
+                            envelope.manifest.requests[index].request_id,
+                            envelope.manifest.requests[index].illustration_id,
+                            envelope.manifest.requests[index].run_index,
+                            envelope.manifest.requests[index].workflow_identity)):
+                    yield None
+                    return
+                if any(type(event) is not ExecutorEvent
+                       or type(event.progress) is not WorkerEvent
+                       for event in inbox._events.values()):
+                    yield None
+                    return
+                index_events = tuple((sequence, event) for sequence, event in inbox._events.items()
+                    if event.progress.request_index == index
+                    and event.progress.kind in {"remote_outputs_ready", "outputs_ready"})
+                late_outputs = tuple(event for event in inbox._late
+                    if getattr(getattr(event, "progress", None), "request_index", None) == index
+                    and getattr(getattr(event, "progress", None), "kind", None) == "outputs_ready")
+                remote_events = tuple((sequence, event) for sequence, event in index_events
+                    if event.progress.kind == "remote_outputs_ready")
+                output_events = tuple((sequence, event) for sequence, event in index_events
+                    if event.progress.kind == "outputs_ready")
+                if late_outputs or len(remote_events) != 1 or len(output_events) != 1:
+                    yield None
+                    return
+                remote_sequence, remote_event = remote_events[0]
+                output_sequence, output_event = output_events[0]
+                count = len(remote.images)
+                if (type(remote_event.outputs) is not OutputReceipt
+                        or type(output_event.outputs) is not OutputReceipt
+                        or remote_sequence != remote_event.progress.sequence
+                        or output_sequence != output_event.progress.sequence
+                        or remote_sequence >= output_sequence or output_sequence != job.event_count
+                        or output_sequence not in job.events or remote_sequence not in job.events
+                        or job.events[remote_sequence] != remote_event.progress
+                        or job.events[output_sequence] != output_event.progress
+                        or (remote_event.job_id, remote_event.claim_id, remote_event.manifest_identity)
+                            != (envelope.job_id, envelope.claim_id, envelope.manifest.manifest_identity)
+                        or (remote_event.outputs.receipt_id, remote_event.outputs.output_count,
+                            remote_event.progress.output_count)
+                            != (remote.identity[:32], count, count)
+                        or (output_event.job_id, output_event.claim_id, output_event.manifest_identity)
+                            != (envelope.job_id, envelope.claim_id, envelope.manifest.manifest_identity)
+                        or (output_event.outputs.receipt_id, output_event.outputs.output_count,
+                            output_event.progress.output_count)
+                            != (receipt.identity[:32], count, count)):
+                    yield None
+                    return
+                yield remote_event, output_event
+
+    @contextmanager
     def _host_evidence(self, promotion_owner, receipt, remote, index):
         """Hold the final host/owner/job/inbox evidence through result issue."""
         runtime, envelope = self._runtime, self._envelope
@@ -210,7 +288,7 @@ class GenerationProtectedCandidateAdmission:
                         and self._state.get("project") is self._origin.project
                         and self._state.get("current_project_path", "") == self._origin.path
                         and self._origin.source_snapshot == self._source_snapshot
-                        and self._origin.project == self._source_snapshot)
+                        and self._origin.project == self._candidate_expected)
                 except Exception:
                     source_current, available, pairing, epoch = False, False, None, None
                 if (not source_current or not available
@@ -224,77 +302,9 @@ class GenerationProtectedCandidateAdmission:
                     if not custody_current:
                         yield None
                         return
-                    with jobs._lock:
-                        jobs._cleanup_locked(jobs._clock())
-                        job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
-                        with inbox._lock:
-                            if (not jobs._characterization or jobs._closed or not inbox._characterization
-                                    or inbox._closed or inbox._state != "accepted"
-                                    or inbox._envelope is not envelope
-                                    or inbox._manifest is not envelope.manifest
-                                    or job is None or job.binding != envelope.binding
-                                    or job.binding.session_id != jobs._session_incarnation
-                                    or job.binding.process_incarnation != _PROCESS_INCARNATION
-                                    or job.binding.plan_identity != envelope.manifest.manifest_identity
-                                    or (job.binding.target_epoch, job.binding.activation_id) != jobs._target
-                                    or job.binding.pairing_generation != pairing
-                                    or job.state in _TERMINAL
-                                    or index >= len(job.request_states)
-                                    or job.request_states[index] != "awaiting_host_registration"
-                                    or job.outputs[index] != len(remote.images)
-                                    or job.remote_outputs[index] != len(remote.images)
-                                    or job.registered[index] != 0
-                                    or job.requests[index] != JobRequest(
-                                        envelope.manifest.requests[index].request_id,
-                                        envelope.manifest.requests[index].illustration_id,
-                                        envelope.manifest.requests[index].run_index,
-                                        envelope.manifest.requests[index].workflow_identity)):
-                                yield None
-                                return
-                            if any(type(event) is not ExecutorEvent
-                                   or type(event.progress) is not WorkerEvent
-                                   for event in inbox._events.values()):
-                                yield None
-                                return
-                            index_events = tuple((sequence, event) for sequence, event in inbox._events.items()
-                                if event.progress.request_index == index
-                                and event.progress.kind in {"remote_outputs_ready", "outputs_ready"})
-                            late_outputs = tuple(event for event in inbox._late
-                                if getattr(getattr(event, "progress", None), "request_index", None) == index
-                                and getattr(getattr(event, "progress", None), "kind", None) == "outputs_ready")
-                            remote_events = tuple((sequence, event) for sequence, event in index_events
-                                if event.progress.kind == "remote_outputs_ready")
-                            output_events = tuple((sequence, event) for sequence, event in index_events
-                                if event.progress.kind == "outputs_ready")
-                            if (late_outputs or len(remote_events) != 1 or len(output_events) != 1):
-                                yield None
-                                return
-                            remote_sequence, remote_event = remote_events[0]
-                            output_sequence, output_event = output_events[0]
-                            count = len(remote.images)
-                            if (type(remote_event.outputs) is not OutputReceipt
-                                    or type(output_event.outputs) is not OutputReceipt
-                                    or remote_sequence != remote_event.progress.sequence
-                                    or output_sequence != output_event.progress.sequence
-                                    or remote_sequence >= output_sequence or output_sequence != job.event_count
-                                    or output_sequence not in job.events or remote_sequence not in job.events
-                                    or job.events[remote_sequence] != remote_event.progress
-                                    or job.events[output_sequence] != output_event.progress
-                                    or (remote_event.job_id, remote_event.claim_id, remote_event.manifest_identity)
-                                        != (envelope.job_id, envelope.claim_id,
-                                            envelope.manifest.manifest_identity)
-                                    or (remote_event.outputs.receipt_id, remote_event.outputs.output_count,
-                                        remote_event.progress.output_count)
-                                        != (remote.identity[:32], count, count)
-                                    or (output_event.job_id, output_event.claim_id, output_event.manifest_identity)
-                                        != (envelope.job_id, envelope.claim_id,
-                                            envelope.manifest.manifest_identity)
-                                    or (output_event.outputs.receipt_id, output_event.outputs.output_count,
-                                        output_event.progress.output_count)
-                                        != (receipt.identity[:32], count, count)):
-                                yield None
-                                return
-                            yield (remote_event, output_event)
+                    with self._locked_request_events_for_characterization(
+                            remote, receipt, index, pairing) as evidence:
+                        yield evidence
 
     def admit_for_characterization(self, promotion_owner, receipt, remote, request_index):
         """Observe exact current eligibility; never appends Candidates or saves."""
@@ -370,6 +380,111 @@ class GenerationProtectedCandidateAdmission:
                 attempt.status = "observed"
                 attempt.result = result
                 return result
+
+    @contextmanager
+    def _candidate_publication_commit_for_characterization(self, observation):
+        """Serialize one app Candidate commit with exact host and protected custody.
+
+        Native checks must run immediately before entering this context. The
+        context keeps only the original-host publication/route gates across
+        the app callback. Protected and job/inbox locks are released before
+        yielding; the promotion owner's revocation lease keeps custody live.
+        """
+        if (type(observation) is not ProtectedCandidateAdmissionObservation
+                or observation._runtime is not self._runtime
+                or observation._origin is not self._origin
+                or observation._envelope is not self._envelope):
+            yield None
+            return
+        index = observation.request_index
+        promotion_owner = observation._promotion_owner
+        receipt = observation._promotion_receipt
+        remote = observation._remote_receipt
+        with self._lock:
+            attempt = self._attempts.get(index)
+            owned = bool(not self._closed and attempt is not None
+                and attempt.status == "observed"
+                and attempt.promotion_owner is promotion_owner
+                and attempt.receipt is receipt and attempt.remote is remote
+                and attempt.result is not None
+                and attempt.result.status == "evidence_observed"
+                and attempt.result.observation is observation)
+        if not owned or not self._receipt_binding(promotion_owner, receipt, remote, index):
+            yield None
+            return
+
+        runtime, envelope = self._runtime, self._envelope
+        with runtime._publication_gate:
+            if runtime._closed or runtime._registration is None:
+                yield None
+                return
+            route = runtime._registry._record_for_registration(runtime._registration)
+            if route is None:
+                yield None
+                return
+            with route.operation_lock:
+                try:
+                    epoch = runtime._synchronize_target_locked(
+                        self._state.get("project"), self._state.get("current_project_path", ""))
+                    available, pairing = runtime._registration.inspect_pairing_generation()
+                    with self._lock:
+                        attempt = self._attempts.get(index)
+                        source_current = (not self._closed
+                            and runtime._generation_publication_origin is self._origin
+                            and runtime._generation_protected_candidate_admission is self
+                            and attempt is not None and attempt.result is not None
+                            and attempt.result.observation is observation
+                            and self._origin.envelope is envelope
+                            and self._state.get("project") is self._origin.project
+                            and self._state.get("current_project_path", "") == self._origin.path
+                            and self._origin.source_snapshot == self._source_snapshot
+                            and self._origin.project == self._candidate_expected)
+                except Exception:
+                    source_current, available, pairing, epoch = False, False, None, None
+                if (not source_current or not available
+                        or (epoch, epoch) != (envelope.binding.target_epoch, envelope.binding.activation_id)
+                        or pairing != envelope.binding.pairing_generation):
+                    yield None
+                    return
+
+                token, events = None, None
+                with promotion_owner._admission_custody_guard_for_characterization(receipt) as current:
+                    if current:
+                        with self._locked_request_events_for_characterization(
+                                remote, receipt, index, pairing) as current_events:
+                            if (current_events is not None
+                                    and current_events[0] is observation._remote_event
+                                    and current_events[1] is observation._outputs_ready_event):
+                                token = promotion_owner.begin_candidate_publication_for_characterization(receipt)
+                                events = current_events
+                if token is None:
+                    yield None
+                    return
+                try:
+                    yield events
+                finally:
+                    promotion_owner.finish_candidate_publication_for_characterization(token)
+
+    def _advance_candidate_snapshot_for_characterization(self, observation, before, after):
+        """Track only the exact successful Candidate delta for the next request."""
+        if (type(observation) is not ProtectedCandidateAdmissionObservation
+                or observation._runtime is not self._runtime
+                or observation._origin is not self._origin):
+            return False
+        index = observation.request_index
+        try:
+            with self._lock:
+                attempt = self._attempts.get(index)
+                if (self._closed or attempt is None or attempt.result is None
+                        or attempt.result.observation is not observation
+                        or self._candidate_expected != before
+                        or self._origin.source_snapshot != self._source_snapshot
+                        or self._origin.project != after):
+                    return False
+                self._candidate_expected = copy.deepcopy(after)
+                return self._candidate_expected == self._origin.project
+        except Exception:
+            return False
 
     def _host_freshness_for_admission(self, envelope, remote):
         """Recheck the exact original host after its accepted outputs_ready event."""
