@@ -154,6 +154,92 @@ inspection-only and cannot recreate a claim, original-host authorization or
 permission to send/replay. This is characterization, not proof of power-loss
 durability or author authenticity. `execution_available` remains false.
 
+### C2B-8D-15A bounded multi-request Journal contract
+
+`core.generation_multi_request_journal` adds a separately identified offline
+contract for sequential request recording. It uses schema
+`promptgraph-generation-multi-request-ownership`, version 1, in the same
+`<operation_id>.json` slot. V1's eight aggregate checkpoints, decoder,
+revision meaning and writer remain unchanged. The two schemas cannot occupy the
+same operation file simultaneously; neither writer migrates, overwrites or
+reinterprets the other's evidence. This contract is persistence-only and is not
+connected to `ComfyExecutorAdapter`.
+
+The selected model keeps one bounded full-snapshot digest chain with three
+ordered records per frozen request. Extending or reinterpreting the v1
+eight-checkpoint sequence was rejected because it would change existing
+revision meaning and inspection behavior. Splitting requests across separate
+files was rejected because it would add a cross-file commit boundary without
+making the remote-send outcome more knowable.
+
+Each frozen request is represented in order by three possible revisions:
+
+| Event | Meaning and next-send rule |
+| --- | --- |
+| `submission_intent` | Exact request correlation is written, reopened and acknowledged by the live writer before its possible-send boundary. Without this exact live acknowledgment, the caller must not invoke transport. |
+| `submission_outcome` | Records `accepted`, definite `pre_send_rejected`, or `unknown`. An accepted prompt ID proves submission acceptance only; it does not prove that execution has finished. Unknown is terminal for this operation and never authorizes another request. |
+| `request_settlement` | Records a separately validated original-host observation: `execution_completed`, `execution_failed`, or `pre_send_rejected`. Only this exact live typed observation, bound to the prior acknowledged revision/digest and the full operation/request/process/session identity, makes a later frozen request eligible for a new intent. |
+
+Thus accepted submission and remote execution settlement remain separate.
+Even a known pre-send rejection requires a separate original-host observation
+before the following request. A missing outcome after an acknowledged intent,
+an unknown outcome, missing settlement, skipped/reordered request, duplicate
+event, substituted identity or lost acknowledgment cannot authorize the next
+send. The writer does not repair, replay or silently advance any such state.
+
+`MultiRequestJournalWriter` accepts only its exact current in-memory
+`JournalAcknowledgement` object for the immediately preceding revision. Each
+record is bound through the immutable operation snapshot and digest chain to
+operation/job/claim/manifest and the frozen request ID/index, Illustration, run
+and workflow identities. The settlement validator runs outside the Journal
+writer lock and returns a typed host observation; the writer then rechecks the
+exact live tip and binds that observation to it. The private characterization
+issuer is a test seam, not a host authorization source. C2B-8D-15B must connect
+it only to an independently validated current original-host/job settlement,
+never to Journal bytes, a prompt ID or a matching opaque string.
+
+The enforceable per-operation ceilings are:
+
+- at most 100 frozen requests, 300 revisions and 300 retained event records;
+- at most 1 MiB for the complete replaced Journal file;
+- at most 2 MiB live operation data at replacement (old complete file plus one
+  complete temporary file; the exclusive lock is empty); and
+- at most 128 MiB of cumulative full-snapshot bytes written across the complete
+  300-revision worst case.
+
+The writer preflights the worst-case full operation, including maximum bounded
+identifiers and prompt/host-observation IDs, before it can acknowledge the first
+intent. If it cannot fit the supported workload, it refuses before any send.
+Each append rechecks file-size/revision limits; a missing acknowledgment never
+grants that request's possible-send boundary. A failure retains its lock/temp
+or replaced file as uncertain evidence and the writer cannot retry. The
+protected Windows characterization uses the existing pinned protected root and
+CREATE_NEW owner-only ACL writer; focused native tests inspect lock, temporary
+and final file identities/ACLs. This is not a power-loss, hostile same-user or
+cross-file atomicity guarantee. “Acknowledged” means the current process
+reopened and verified the replacement before returning its live acknowledgment;
+it does not claim parent-directory flush, power-loss durability or persistence
+across every hardware failure.
+
+`reopen_multi_request_journal` strictly validates the separate schema and
+sequence but returns `trust=inspect_only`, `authorship=unverified` and
+`execution_available=false`. Reopening cannot construct a writer, settlement
+observation, send authority or restart continuation. A digest-valid settled
+prefix is still not original-host authorization. The v1 Human Recovery reader
+does not interpret this format.
+
+C2B-8D-15B must compose the actual Executor's one-shot intent/send/result flow
+with this writer; preserve the no-integration behavior when it is absent; use
+the accepted `submission_started` host event; persist accepted/rejected/unknown
+outcomes without retry; wait for separately validated terminal host settlement
+before the next intent; and stop later requests on missing, conflicting or
+uncertain evidence. It must keep Journal I/O and transport/host callbacks
+outside job/inbox mutation locks, maintain the existing lock order, and leave
+restart, production worker registration, Start, Recovery, Candidate publication
+and Project save disabled.
+
+### C2B-8A v1 failure and reopen semantics
+
 Failure before replacement leaves the old complete journal (or none for revision
 1). Failure after replacement before acknowledgment may leave the complete new
 journal. Reopen reports observed bytes, never success for an unobserved external
@@ -261,9 +347,9 @@ schema does not persist claim IDs. No new public Candidate field is introduced.
 This foundation has no production integration into submission, containment,
 publication or JSON save. Those owners retain their existing contracts. Future
 production work must approve protected roots, platform durability, an explicit
-implementation within adopted Profile A's threat/ownership policy,
-a multi-request recording lifecycle and safe journal storage
-limits. A separately reviewed human recovery contract must re-establish current
+implementation within adopted Profile A's threat/ownership policy, integration
+of the C2B-8D-15A multi-request contract and safe journal storage limits. A
+separately reviewed human recovery contract must re-establish current
 Project/source/session/activation/pairing authority. Retention/cleanup requires
 its own human decision and Project-reference/external-operation uncertainty
 resolution. Real transport, worker lifecycle, Start UI and operational validation

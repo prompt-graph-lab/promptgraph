@@ -8,6 +8,7 @@ import os
 import threading
 
 from core import generation_ownership_journal as j
+from core import generation_multi_request_journal as multi_journal
 from core import generation_windows_protected_storage as w
 
 
@@ -88,6 +89,58 @@ class _ProtectedWriter(j.OfflineJournalWriter):
         self.root.check()
 
 
+class _ProtectedMultiRequestWriter(multi_journal.MultiRequestJournalWriter):
+    """Native protected file creator for the separate multi-request schema."""
+
+    def __init__(self, owner, operation, fault):
+        self._owner = owner
+        super().__init__(_BoundRoot(owner), operation, characterization=True, fault=fault)
+
+    def _create_exclusive_file(self, path, flags):
+        self.root.check()
+        api = self._owner._native._api
+        _, c, f, _, _, _ = api
+        try:
+            handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
+                c.FILE_SHARE_READ | c.FILE_SHARE_WRITE,
+                w._security_attributes(api, self._owner._native._user), c.CREATE_NEW,
+                c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+        except api[5].error:
+            self._uncertain = True
+            raise ValueError("exclusive_file_unavailable") from None
+        detached = False
+        try:
+            acl = w._acl(handle, api, self._owner._native._user)
+            identity = w._identity(handle)
+            if identity != w._ordinary(path, directory=False):
+                raise ValueError("file_identity_changed")
+            self._owner._file_acls[identity] = acl
+            self._owner._fault("after_file_create")
+            self.root.check()
+            import msvcrt
+            raw_handle = handle.Detach()
+            detached = True
+            try:
+                return msvcrt.open_osfhandle(raw_handle, flags & (os.O_WRONLY | os.O_BINARY))
+            except BaseException:
+                api[0].CloseHandle(raw_handle)
+                raise
+        except BaseException:
+            if not detached:
+                handle.Close()
+            self._uncertain = True
+            raise
+
+    def _check_file(self, path, identity):
+        self.root.check()
+        super()._check_file(path, identity)
+
+    def _release_lock(self, path, identity):
+        self._check_file(path, identity)
+        path.unlink()
+        self.root.check()
+
+
 class WindowsProtectedJournalCharacterization:
     execution_available = False
 
@@ -127,6 +180,7 @@ class WindowsProtectedJournalCharacterization:
         self._native, self._approved = native, approved
         self._writable, self._fault = writable, fault
         self._writer = None
+        self._multi_request_writer = None
         self._closed = False
         self._uncertain = False
         self._lock = threading.RLock()
@@ -179,9 +233,18 @@ class WindowsProtectedJournalCharacterization:
 
     def initialize_for_characterization(self, operation):
         with self._lock:
-            if not self._writable or self._writer is not None or self._uncertain:
+            if (not self._writable or self._writer is not None or self._multi_request_writer is not None
+                    or self._uncertain):
                 raise ValueError("writer_unavailable")
             self._writer = self._observe(lambda: _ProtectedWriter(self, operation, self._fault))
+
+    def initialize_multi_request_for_characterization(self, operation):
+        with self._lock:
+            if (not self._writable or self._writer is not None or self._multi_request_writer is not None
+                    or self._uncertain):
+                raise ValueError("writer_unavailable")
+            self._multi_request_writer = self._observe(
+                lambda: _ProtectedMultiRequestWriter(self, operation, self._fault))
 
     def append_for_characterization(self, observation):
         with self._lock:
@@ -194,9 +257,52 @@ class WindowsProtectedJournalCharacterization:
                 self._writer._uncertain = True
                 raise
 
+    def append_multi_request_intent_for_characterization(self, expected_tip, request_index):
+        with self._lock:
+            writer = self._multi_request_writer
+            if writer is None or self._uncertain:
+                raise ValueError("writer_unavailable")
+            try:
+                return self._observe(lambda: writer.append_intent_for_characterization(expected_tip, request_index))
+            except BaseException:
+                self._uncertain = True
+                writer._uncertain = True
+                raise
+
+    def append_multi_request_outcome_for_characterization(self, expected_tip, outcome, prompt_id=None):
+        with self._lock:
+            writer = self._multi_request_writer
+            if writer is None or self._uncertain:
+                raise ValueError("writer_unavailable")
+            try:
+                return self._observe(lambda: writer.append_submission_outcome_for_characterization(
+                    expected_tip, outcome, prompt_id))
+            except BaseException:
+                self._uncertain = True
+                writer._uncertain = True
+                raise
+
+    def append_multi_request_settlement_for_characterization(self, expected_tip, settlement):
+        with self._lock:
+            writer = self._multi_request_writer
+            if writer is None or self._uncertain:
+                raise ValueError("writer_unavailable")
+            try:
+                return self._observe(lambda: writer.append_settlement_for_characterization(
+                    expected_tip, settlement))
+            except BaseException:
+                self._uncertain = True
+                writer._uncertain = True
+                raise
+
     def reopen_journal_for_characterization(self, filename, **expected_tip):
         with self._lock:
             return self._observe(lambda: j.reopen_journal(_BoundRoot(self), filename, **expected_tip))
+
+    def reopen_multi_request_journal_for_characterization(self, filename, **expected_tip):
+        with self._lock:
+            return self._observe(lambda: multi_journal.reopen_multi_request_journal(
+                _BoundRoot(self), filename, **expected_tip))
 
     def inspect_inventory_for_characterization(self):
         with self._lock:

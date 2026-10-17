@@ -240,10 +240,13 @@ Once the callback may have run, a lost, invalid or unrecordable response is
 unknown and never retried. A failed result append cannot erase the earlier
 acknowledged intent. Reopened Journal bytes remain inspect-only; they never
 reconstruct a live claim, send capability, host authorization or recovery
-action. This characterization is limited to one request because the current
-Journal schema has eight ordered aggregate checkpoints and no reviewed
-per-request repeated submission checkpoint contract. Multi-request use requires
-a separately reviewed schema/lifecycle change.
+action. This Executor integration remains limited to one request because the
+v1 Journal schema has eight ordered aggregate checkpoints. C2B-8D-15A now
+defines a separately identified multi-request persistence contract in
+[`agent-generation-ownership-journal.md`](agent-generation-ownership-journal.md#c2b-8d-15a-bounded-multi-request-journal-contract),
+but it is not connected here. C2B-8D-15B must bind actual per-request intent,
+outcome and separately validated host settlement to this executor lifecycle.
+Reopen remains inspect-only and cannot authorize a later request.
 
 The Journal's successful file acknowledgment is not a claim of power-loss
 durability, cross-file atomicity or cryptographic author authentication. The
