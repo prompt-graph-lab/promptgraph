@@ -193,6 +193,11 @@ does not manufacture `LocalOutputReceipt`, `PromotedImage`, or
 descendant of the exact frozen `output_directory` approved by the original
 host. No arbitrary destination or path fallback is accepted. Registration and
 Project persistence remain separate: this characterization performs no save.
+If an appender leaves an exact, observed subset before raising, that request
+stays `registration_uncertain` and is never retried. The admission comparison
+baseline advances only when the full original Project equals the prior
+expected state plus that observed Candidate subset, allowing a later distinct
+request without resolving the earlier uncertainty. Save remains blocked.
 `authorship=unverified` and all production execution/storage/promotion gates
 remain false. See the [protected Candidate writer integration](agent-generation-protected-storage.md#c2b-8d-11-protected-candidate-writer-integration)
 for its native custody and approved destination contract.

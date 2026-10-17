@@ -486,7 +486,13 @@ class GenerationCandidatePublication:
                 status = ("registered" if count == len(records) and not error and result == "accepted"
                           else "registration_uncertain" if error or result != "accepted"
                           else "partially_registered" if count else "registration_failed")
-                if status == "registered" and not admission_owner._advance_candidate_snapshot_for_characterization(
+                # A safely observed partial delta is current Project state even
+                # when the appender raised or the job records uncertainty.
+                # Advance only the admission comparison baseline; the request
+                # receipt remains uncertain and is never replayed or treated as
+                # successful. This permits a later distinct request only when
+                # the complete Project exactly matches the observed delta.
+                if count and not admission_owner._advance_candidate_snapshot_for_characterization(
                         observation, history_snapshot, self._expected):
                     status = "registration_uncertain"
                 receipt = PublicationReceipt(index, promotion_state, status, count)

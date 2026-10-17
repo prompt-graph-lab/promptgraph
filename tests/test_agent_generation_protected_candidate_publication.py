@@ -321,6 +321,70 @@ def test_next_request_waits_for_exact_prior_candidate_settlement(protected_scope
         case["protected"].close()
 
 
+def test_partial_candidate_append_allows_next_distinct_request_without_resolving_uncertainty(protected_scope):
+    scope, api = protected_scope
+    case = _scenario(scope, api, image_count=2)
+    next_promoter = next_receipt = None
+    try:
+        original_appender = case["publisher"]._appender
+        calls = []
+
+        def append_one_then_raise(line, records):
+            calls.append(tuple(records))
+            original_appender(line, records[:1])
+            raise RuntimeError("injected partial Candidate append")
+
+        case["publisher"]._appender = append_one_then_raise
+        first = case["publisher"].publish_protected_for_characterization(
+            case["admission"], case["observation"])
+        assert first.registration_state == "registration_uncertain"
+        assert first.registered_count == 1
+        assert case["publisher"].publish_protected_for_characterization(
+            case["admission"], case["observation"]) == first
+        assert len(calls) == 1 and len(calls[0]) == 2
+        first_snapshot = case["runtime"].generation_jobs.snapshot(case["accepted"].job_id)
+        assert first_snapshot["requests"][0]["state"] == "partially_failed"
+        assert first_snapshot["requests"][0]["registered_count"] == 1
+        assert len(case["state"]["project"].prompt_lines[1].generated_candidates) == 1
+        assert (case["state"]["project"] == case["publisher"]._expected
+                == case["admission"]._candidate_expected)
+        assert case["admission"]._origin.source_snapshot == case["admission"]._source_snapshot
+
+        case["publisher"]._appender = original_appender
+        case["adapter"].advance_for_characterization()
+        assert case["adapter"]._index == 1 and len(case["sent"]) == 2
+        next_promoter, next_receipt, _freshness = protected_promotion_for_active_request(
+            case["values"], case["adapter"], case["protected"])
+        assert case["adapter"].accept_protected_promotion_for_characterization(
+            next_promoter, next_receipt).status == "protected_outputs_ready"
+        next_remote = next_receipt._accepted._remote
+        admitted = case["admission"].admit_for_characterization(
+            next_promoter, next_receipt, next_remote, 1)
+        assert admitted.status == "evidence_observed"
+        second = case["publisher"].publish_protected_for_characterization(
+            case["admission"], admitted.observation)
+        assert second.registration_state == "registered" and second.registered_count == 2
+
+        snapshot = case["runtime"].generation_jobs.snapshot(case["accepted"].job_id)
+        assert snapshot["state"] == "partially_failed"
+        assert snapshot["requests"][0]["state"] == "partially_failed"
+        assert snapshot["requests"][0]["registered_count"] == 1
+        assert snapshot["requests"][1]["state"] == "completed"
+        assert snapshot["requests"][1]["registered_count"] == 2
+        assert snapshot["save_state"] == "not_attempted"
+        assert case["publisher"].save_for_characterization() == "protected_save_not_in_scope"
+        assert len(case["state"]["history"]) == 2
+    finally:
+        case["runtime"].close()
+        if next_promoter is not None:
+            next_promoter.close()
+        if next_receipt is not None:
+            next_receipt._acceptance_owner.close()
+        case["promoter"].close()
+        case["promotion_receipt"]._acceptance_owner.close()
+        case["protected"].close()
+
+
 def test_candidate_path_uses_existing_relative_persistence_rule(scenario, tmp_path):
     path = str(scenario["promotion_receipt"].images[0].promoted_image.storage_identity)
     actual = scenario["protected"]._files[("promoted_assets", path)][0]

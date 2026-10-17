@@ -882,7 +882,13 @@ uses the existing Undo ordering, and settles the exact request's registration
 count once. Protected provenance identifies the promotion/admission and
 verified image bytes without claiming a legacy local receipt. Candidate
 registration remains distinct from Project save; protected characterization
-save is explicitly out of scope and never invokes the save callback.
+save is explicitly out of scope and never invokes the save callback. If an
+appender raises after leaving a provable subset, the first request remains
+`registration_uncertain` and cannot be replayed. Admission advances its
+comparison baseline only when the complete original Project matches the prior
+baseline plus exactly that observed Candidate subset; this can admit a later
+distinct request while preserving the job's `partially_failed` state and
+blocked save outcome.
 
 This boundary does not authorize production execution or protected storage,
 does not add retry, cleanup, restart-time authority reconstruction, Journal or
