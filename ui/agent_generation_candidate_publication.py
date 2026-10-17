@@ -34,6 +34,15 @@ class PublicationReceipt:
     registered_count: int = 0
 
 
+@dataclass(frozen=True)
+class _ProtectedSettledEventEvidence:
+    """Exact accepted output events retained after bounded logs evict them."""
+
+    request_index: int
+    remote_event: ExecutorEvent
+    outputs_ready_event: ExecutorEvent
+
+
 class GenerationCandidatePublication:
     execution_available = False
 
@@ -113,6 +122,7 @@ class GenerationCandidatePublication:
         self._busy = False
         self._records, self._evidence = {}, {}
         self._protected_evidence = {}
+        self._protected_settled_event_evidence = {}
         self._save_state = "not_attempted"
         self._save_callback_outcome = "not_attempted"
 
@@ -335,6 +345,7 @@ class GenerationCandidatePublication:
         promotion_state = "not_attempted"
         mutation_started, observed_count = False, 0
         receipt = PublicationReceipt(index, promotion_state, "stale_original_host")
+        settled_events = None
         try:
             if not self._protected_observation_is_owned(admission_owner, observation):
                 receipt = PublicationReceipt(index, promotion_state, "admission_mismatch")
@@ -425,6 +436,7 @@ class GenerationCandidatePublication:
                 if current_events is None:
                     receipt = PublicationReceipt(index, promotion_state, "stale_original_host")
                     return receipt
+                settled_events = current_events
                 history = self._state.get("history")
                 if type(history) is not list:
                     raise ValueError("history_unavailable")
@@ -487,6 +499,8 @@ class GenerationCandidatePublication:
                 status = ("registered" if count == len(records) and not error and result == "accepted"
                           else "registration_uncertain" if error or result != "accepted"
                           else "partially_registered" if count else "registration_failed")
+                if status != "registered":
+                    settled_events = None
                 # A safely observed partial delta is current Project state even
                 # when the appender raised or the job records uncertainty.
                 # Advance only the admission comparison baseline; the request
@@ -506,6 +520,12 @@ class GenerationCandidatePublication:
         finally:
             with self._lock:
                 self._records[index] = receipt
+                if (receipt.registration_state == "registered"
+                        and type(settled_events) is tuple and len(settled_events) == 2):
+                    self._protected_settled_event_evidence[index] = _ProtectedSettledEventEvidence(
+                        index, settled_events[0], settled_events[1])
+                else:
+                    self._protected_settled_event_evidence.pop(index, None)
                 self._busy = False
 
     def _protected_observation_is_owned(self, admission_owner, observation):
@@ -651,10 +671,19 @@ class GenerationCandidatePublication:
             return False
 
     @staticmethod
-    def _protected_save_event_current(index, job, inbox, observation):
-        """Require the exact accepted remote and promotion events to remain held."""
+    def _protected_save_event_current(index, job, inbox, observation, settled):
+        """Verify publisher-retained events against any still-live event logs.
+
+        Inbox and job event histories are bounded diagnostic logs. Successful
+        publication retains the exact accepted event pair in this owner, so
+        absence from either log is legitimate eviction while missing private
+        proof, changed retained values, extra events, or late outputs refuse.
+        """
         remote = observation._remote_receipt
         promotion = observation._promotion_receipt
+        if (type(settled) is not _ProtectedSettledEventEvidence
+                or settled.request_index != index or inbox._late_output_seen):
+            return False
         if any(type(event) is not ExecutorEvent or type(event.progress) is not WorkerEvent
                for event in inbox._events.values()):
             return False
@@ -664,28 +693,51 @@ class GenerationCandidatePublication:
         late_events = tuple(event for event in inbox._late
             if getattr(getattr(event, "progress", None), "request_index", None) == index
             and getattr(getattr(event, "progress", None), "kind", None)
-                in {"remote_outputs_ready", "outputs_ready"})
-        remote_events = tuple((sequence, event) for sequence, event in index_events
-            if event.progress.kind == "remote_outputs_ready")
-        output_events = tuple((sequence, event) for sequence, event in index_events
-            if event.progress.kind == "outputs_ready")
-        if late_events or len(remote_events) != 1 or len(output_events) != 1:
+                in {"remote_outputs_ready", "outputs_ready"}
+            and (getattr(event, "job_id", None), getattr(event, "claim_id", None),
+                 getattr(event, "manifest_identity", None))
+                == (job.job_id, job.claim_id, job.binding.plan_identity))
+        if late_events:
             return False
-        remote_sequence, remote_event = remote_events[0]
-        output_sequence, output_event = output_events[0]
+
+        remote_event = settled.remote_event
+        output_event = settled.outputs_ready_event
+        if (type(remote_event) is not ExecutorEvent or type(remote_event.progress) is not WorkerEvent
+                or type(output_event) is not ExecutorEvent or type(output_event.progress) is not WorkerEvent
+                or remote_event is not observation._remote_event
+                or output_event is not observation._outputs_ready_event):
+            return False
+        remote_sequence = remote_event.progress.sequence
+        output_sequence = output_event.progress.sequence
+        expected_events = {remote_sequence: remote_event, output_sequence: output_event}
+        if len(expected_events) != 2:
+            return False
+        if any(sequence not in expected_events or event is not expected_events[sequence]
+               for sequence, event in index_events):
+            return False
+        job_events = tuple((sequence, event) for sequence, event in job.events.items()
+            if type(event) is WorkerEvent and event.request_index == index
+            and event.kind in {"remote_outputs_ready", "outputs_ready"})
+        if (any(type(event) is not WorkerEvent for event in job.events.values())
+                or any(sequence not in expected_events or event != expected_events[sequence].progress
+                       for sequence, event in job_events)
+                or any(sequence in job.events and job.events[sequence] != event.progress
+                       for sequence, event in expected_events.items())
+                or any(sequence in inbox._events and inbox._events[sequence] is not event
+                       for sequence, event in expected_events.items())):
+            return False
+
         count = len(remote.images)
         return bool(
-            remote_event is observation._remote_event
-            and output_event is observation._outputs_ready_event
-            and type(remote_event.outputs) is OutputReceipt
+            type(remote_event.outputs) is OutputReceipt
             and type(output_event.outputs) is OutputReceipt
             and remote_sequence == remote_event.progress.sequence
             and output_sequence == output_event.progress.sequence
-            and remote_sequence < output_sequence
-            and output_sequence <= job.event_count
-            and remote_sequence in job.events and output_sequence in job.events
-            and job.events[remote_sequence] == remote_event.progress
-            and job.events[output_sequence] == output_event.progress
+            and remote_event.progress.request_index == index
+            and remote_event.progress.kind == "remote_outputs_ready"
+            and output_event.progress.request_index == index
+            and output_event.progress.kind == "outputs_ready"
+            and remote_sequence < output_sequence <= job.event_count
             and (remote_event.job_id, remote_event.claim_id, remote_event.manifest_identity)
                 == (job.job_id, job.claim_id, job.binding.plan_identity)
             and (remote_event.outputs.receipt_id, remote_event.outputs.output_count,
@@ -751,6 +803,7 @@ class GenerationCandidatePublication:
                             current = bool(
                                 jobs._characterization and inbox._characterization
                                 and not jobs._closed and not inbox._closed
+                                and not inbox._late_output_seen
                                 and job is not None and job.binding == envelope.binding
                                 and job.binding.session_id == jobs._session_incarnation
                                 and job.binding.process_incarnation == _PROCESS_INCARNATION
@@ -811,7 +864,8 @@ class GenerationCandidatePublication:
                                                 or not self._protected_observation_is_owned(
                                                     admission, observation)
                                                 or not self._protected_save_event_current(
-                                                    index, job, inbox, observation)):
+                                                    index, job, inbox, observation,
+                                                    self._protected_settled_event_evidence.get(index))):
                                             current = False
                                             break
                                         remote = observation._remote_receipt
@@ -879,7 +933,8 @@ class GenerationCandidatePublication:
             receipt = self._records.get(index)
             pair = self._protected_evidence.get(index)
             if row.get("state") == "completed":
-                if pair is None or receipt is None:
+                if (pair is None or receipt is None
+                        or index not in self._protected_settled_event_evidence):
                     return "registration_evidence_missing"
                 if (receipt.registration_state != "registered"
                         or receipt.promotion_state != "protected_verified"

@@ -18,8 +18,8 @@ from core import generation_windows_protected_assets as assets
 from core import generation_windows_protected_storage as storage
 from core.io import load_project_from_json, make_project_relative_path, resolve_project_asset_path
 from ui.agent_generation_candidate_publication import GenerationCandidatePublication
-from ui.agent_generation_executor_inbox import GenerationExecutorInbox
-from ui.agent_generation_job import GenerationJobRegistry
+from ui.agent_generation_executor_inbox import GenerationExecutorInbox, MAX_LATE_RECEIPTS
+from ui.agent_generation_job import GenerationJobRegistry, MAX_EVENT_HISTORY
 from ui.project_agent_session_pump import ProjectAgentSessionRuntime
 from test_agent_generation_candidate_publication import app_owners
 from test_agent_generation_comfy_executor import (
@@ -169,13 +169,24 @@ def _assert_exact_publication(case, image_count):
     assert case["runtime"].generation_jobs.execution_available is False
 
 
-def _register_all_protected_requests(case):
+def _register_all_protected_requests(case, *, progress_events_per_request=0):
     """Settle every request through the existing protected Candidate writer."""
     results = [case["publisher"].publish_protected_for_characterization(
         case["admission"], case["observation"])]
     assert results[0].registration_state == "registered"
     for index in range(1, len(case["adapter"]._envelope.manifest.requests)):
-        case["adapter"].advance_for_characterization()
+        adapter = case["adapter"]
+        original_provider = adapter._result_provider
+        if progress_events_per_request:
+            def provider(prepared, prompt):
+                for _ in range(progress_events_per_request):
+                    assert adapter._emit("execution_progress") == "accepted"
+                return original_provider(prepared, prompt)
+            adapter._result_provider = provider
+        try:
+            adapter.advance_for_characterization()
+        finally:
+            adapter._result_provider = original_provider
         promoter, receipt, _freshness = protected_promotion_for_active_request(
             case["values"], case["adapter"], case["protected"])
         case["promoters"].append(promoter)
@@ -210,14 +221,25 @@ def _change_original_host_authority(case, change):
             bootstrap.process_incarnation, bootstrap.route_id, bootstrap.capability).status == "paired"
 
 
-@pytest.mark.parametrize(("request_count", "image_count"), [(1, 1), (2, 2)])
+@pytest.mark.parametrize(("request_count", "image_count", "progress_events"),
+                         [(1, 1, 0), (2, 2, 0), (8, 1, 8)])
 def test_protected_candidate_json_save_reopens_exact_registered_provenance(
-        protected_scope, request_count, image_count):
+        protected_scope, request_count, image_count, progress_events):
     scope, api = protected_scope
     case = _scenario(scope, api, image_count=image_count, request_count=request_count)
     try:
-        results = _register_all_protected_requests(case)
+        results = _register_all_protected_requests(
+            case, progress_events_per_request=progress_events)
         assert all(result.registration_state == "registered" for result in results)
+        if progress_events:
+            job = case["runtime"].generation_jobs._jobs[case["accepted"].job_id]
+            inbox = case["runtime"]._generation_executor_inbox
+            first = case["observation"]
+            first_sequences = (first._remote_event.progress.sequence,
+                               first._outputs_ready_event.progress.sequence)
+            assert job.event_count > MAX_EVENT_HISTORY
+            assert all(sequence not in inbox._events and sequence not in job.events
+                       for sequence in first_sequences)
         source, path = case["state"]["project"], case["state"]["current_project_path"]
         assert case["publisher"].save_for_characterization() == "saved"
         assert Path(path).is_file()
@@ -261,6 +283,73 @@ def test_protected_candidate_json_save_reopens_exact_registered_provenance(
                                   == case["accepted"].job_id
                                and row.get("generation_provenance", {}).get("request_index") == 0)
         assert first_candidate["seed"] == 0
+    finally:
+        case["runtime"].close()
+        for promoter in reversed(case["promoters"]):
+            promoter.close()
+        for receipt in reversed(case["promotion_receipts"]):
+            receipt._acceptance_owner.close()
+        case["protected"].close()
+
+
+@pytest.mark.parametrize("evidence_gap", ["missing_settled_pair", "tampered_settled_pair"])
+def test_protected_save_refuses_missing_or_tampered_settled_event_evidence(
+        protected_scope, evidence_gap):
+    scope, api = protected_scope
+    case = _scenario(scope, api, request_count=1, image_count=1)
+    try:
+        assert case["publisher"].publish_protected_for_characterization(
+            case["admission"], case["observation"]).registration_state == "registered"
+        proofs = case["publisher"]._protected_settled_event_evidence
+        if evidence_gap == "missing_settled_pair":
+            proofs.pop(0)
+            expected = "registration_evidence_missing"
+        else:
+            from ui.agent_generation_executor_inbox import OutputReceipt
+            proof = proofs[0]
+            changed_output = replace(
+                proof.outputs_ready_event,
+                outputs=OutputReceipt("0" * 32, proof.outputs_ready_event.outputs.output_count))
+            proofs[0] = replace(proof, outputs_ready_event=changed_output)
+            expected = "save_not_authorized"
+        calls = []
+        case["publisher"]._save = lambda *args: calls.append(args) or True
+        assert case["publisher"].save_for_characterization() == expected
+        assert calls == []
+        assert Path(case["state"]["current_project_path"]).exists() is False
+        assert case["publisher"]._protected_evidence[0][1] is case["observation"]
+        assert case["runtime"].generation_jobs.snapshot(case["accepted"].job_id)[
+            "save_state"] == "not_attempted"
+    finally:
+        case["runtime"].close()
+        for promoter in reversed(case["promoters"]):
+            promoter.close()
+        for receipt in reversed(case["promotion_receipts"]):
+            receipt._acceptance_owner.close()
+        case["protected"].close()
+
+
+def test_protected_save_remembers_late_output_after_bounded_log_eviction(protected_scope):
+    scope, api = protected_scope
+    case = _scenario(scope, api, request_count=1, image_count=1)
+    try:
+        assert case["publisher"].publish_protected_for_characterization(
+            case["admission"], case["observation"]).registration_state == "registered"
+        inbox = case["runtime"]._generation_executor_inbox
+        late_source = case["observation"]._outputs_ready_event
+        for offset in range(MAX_LATE_RECEIPTS + 3):
+            late_event = replace(
+                late_source,
+                progress=replace(late_source.progress, sequence=100 + offset))
+            assert inbox.event_for_characterization(
+                case["runtime"].generation_jobs, late_event, target_current=True) == "late_event"
+        assert len(inbox._late) == MAX_LATE_RECEIPTS
+        assert inbox._late_output_seen is True
+        calls = []
+        case["publisher"]._save = lambda *args: calls.append(args) or True
+        assert case["publisher"].save_for_characterization() == "save_not_authorized"
+        assert calls == []
+        assert Path(case["state"]["current_project_path"]).exists() is False
     finally:
         case["runtime"].close()
         for promoter in reversed(case["promoters"]):

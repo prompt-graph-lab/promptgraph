@@ -162,18 +162,27 @@ does not add a second Project writer or bypass the app's existing
 `save_agent_scene_module_swap_project` callback. Save is available only after
 every request is settled and each request that produced outputs has one exact
 `registered` publication receipt whose count matches the job registry, accepted
-event history, private admission observation, promotion receipt and complete
-ordered descriptor set. A failed zero-output request may remain settled in a
-`partially_failed` job. Any missing, partial or uncertain registration blocks
-save, including an earlier uncertain append followed by a later successful
-request.
+event evidence, private admission observation, promotion receipt and complete
+ordered descriptor set. The publisher retains the exact accepted
+`remote_outputs_ready` / `outputs_ready` event pair for each successfully
+settled request in bounded per-request custody. The job and inbox event logs
+remain bounded diagnostic histories and may evict older entries; save permits
+that eviction only when the publisher-held pair is still exact and every
+surviving log entry agrees. Missing or changed private evidence, conflicting
+surviving events, and any observed late output event block save. A single
+sticky inbox marker preserves that late-output refusal even if the bounded late
+event detail is later evicted. A failed zero-output request may remain settled
+in a `partially_failed` job. Any missing, partial or uncertain registration
+blocks save, including an earlier uncertain append followed by a later
+successful request.
 
 Immediately before the callback, the same original protected owners revalidate
 accepted staging and promoted files, native identities, DACLs, verified bytes,
 the pinned promoted root and approved destination. The save-specific host check
 replaces the admission-time `awaiting_host_registration` predicate with the
 exact completed Candidate registration and retained `remote_outputs_ready` /
-`outputs_ready` events. Every persisted Candidate path and provenance tuple is
+`outputs_ready` event proof captured by the original publisher when that exact
+registration commits. Every persisted Candidate path and provenance tuple is
 matched back to its ordered descriptor, frozen prompt/seed data and exact
 promotion/admission identity. The original Project object/path/source snapshot,
 session/process, activation/epoch, pairing and single publisher owner remain

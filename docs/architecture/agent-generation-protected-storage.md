@@ -908,17 +908,25 @@ Protected JSON persistence is a characterization-only extension of the same
 does not register another Candidate writer or Project serializer. Save requires
 all requests to be settled, and every output-producing request to have exactly
 one successful Candidate registration receipt whose count matches the job,
-accepted event history, admission observation, promotion receipt and complete
-ordered descriptor set. A definitive failed request with no outputs may remain
-in a `partially_failed` job. Missing evidence, partial registration, or any
+the exact event pair retained by the original publisher, admission observation,
+promotion receipt and complete ordered descriptor set. The bounded job/inbox
+event logs are diagnostic histories and may evict older entries; save allows
+their absence only while the publisher's private per-request pair remains
+exact and any surviving entry agrees. Missing or changed private proof,
+conflicting surviving events, and observed late outputs block save. A sticky
+inbox marker preserves late-output refusal even after bounded late-event detail
+is evicted. A definitive failed request with no outputs may remain in a
+`partially_failed` job. Missing evidence, partial registration, or any
 `registration_uncertain` result blocks save even when later requests completed.
 
 At save time, the issuing promotion owner revalidates accepted staging and
 promoted files, native identities, DACLs, bytes, approved destination, pinned
 promoted root, exact Candidate paths and recorded provenance. A distinct
-read-only save-time host verifier checks settled job state and the exact retained
-`remote_outputs_ready` / `outputs_ready` event pair; it does not reuse admission's
-pre-registration `awaiting_host_registration` check. The original Project
+read-only save-time host verifier checks settled job state and the exact
+`remote_outputs_ready` / `outputs_ready` event pair captured by the publisher
+at successful registration; it does not require those entries to remain in
+bounded diagnostic logs and does not reuse admission's pre-registration
+`awaiting_host_registration` check. The original Project
 object/path/source snapshot, session/process, activation/epoch, pairing and
 publisher ownership remain bound. The established `save_agent_scene_module_swap_project`
 callback continues to call `core.io.save_project_to_json` on that exact object
