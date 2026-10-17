@@ -123,6 +123,10 @@ class GenerationExecutorInbox:
         self._envelope = None
         self._state = "empty"
         self._late = deque(maxlen=MAX_LATE_RECEIPTS)
+        # Event detail is bounded, but a late output receipt is a sticky
+        # contradiction for this one-shot execution. Retain one bounded bit
+        # so eviction from `_late` cannot make it disappear.
+        self._late_output_seen = False
         self._events = OrderedDict()
 
     def reserve_for_characterization(self, manifest):
@@ -264,8 +268,10 @@ class GenerationExecutorInbox:
                         or self._state in {"unknown", "rejected", "invalidated"}):
                     if job is not None and job.state not in _TERMINAL:
                         jobs._finish_locked(job, "stale_target_outputs_not_registered", jobs._clock())
-                    if event.outputs is not None and event not in self._late:
-                        self._late.append(event)
+                    if event.outputs is not None:
+                        self._late_output_seen = True
+                        if event not in self._late:
+                            self._late.append(event)
                     return "late_event"
                 if self._state != "accepted":
                     return "acceptance_required"
@@ -337,4 +343,5 @@ class GenerationExecutorInbox:
     def _clear_locked(self):
         self._reservation = self._manifest = self._envelope = None
         self._state = "empty"
+        self._late_output_seen = False
         self._events.clear()

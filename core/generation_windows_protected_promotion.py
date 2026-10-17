@@ -204,6 +204,10 @@ class ProtectedDurablePromotionCharacterization:
         # Candidate append is a separate commit from the executor's count-only
         # event. Keep its revocation lease independent and one-shot as well.
         self._candidate_publication_boundary = _PromotionEventBoundary()
+        # Project JSON persistence is a later commit than Candidate append.
+        # Its lease keeps the original native custody alive across the
+        # established host save callback without holding native locks there.
+        self._project_save_boundary = _PromotionEventBoundary()
 
     def _build_receipt(self, images):
         accepted = self._accepted
@@ -372,6 +376,17 @@ class ProtectedDurablePromotionCharacterization:
             w._fail("host_freshness_unavailable")
         return self._inspect_for_characterization(receipt, host_freshness)
 
+    def _inspect_for_project_save_for_characterization(self, receipt, host_freshness):
+        """Revalidate promoted and accepted files using save-time host evidence.
+
+        Candidate publication has already advanced the request beyond the
+        admission-time ``awaiting_host_registration`` state, so the save owner
+        supplies its own read-only original-host and registration check.
+        """
+        if not callable(host_freshness):
+            w._fail("host_freshness_unavailable")
+        return self._inspect_for_characterization(receipt, host_freshness)
+
     def _inspect_for_characterization(self, receipt, host_freshness_override):
         with self._lock:
             if self._closed or self._revoking:
@@ -505,11 +520,29 @@ class ProtectedDurablePromotionCharacterization:
     def finish_candidate_publication_for_characterization(self, token):
         self._candidate_publication_boundary.finish(token)
 
+    def begin_project_save_for_characterization(self, receipt):
+        """Lease exact promotion custody through one original-host JSON save."""
+        if type(receipt) is not VerifiedProtectedPromotionReceipt:
+            w._fail("promotion_owner_mismatch")
+        with self._admission_custody_guard_for_characterization(receipt) as current:
+            if not current:
+                w._fail("protected_promotion_invalidated")
+            return self._project_save_boundary.begin()
+
+    def finish_project_save_for_characterization(self, token):
+        self._project_save_boundary.finish(token)
+
     def _revoke_candidate_publication_for_characterization(self):
         self._candidate_publication_boundary.revoke()
 
     def _ensure_candidate_publication_revocation_allowed(self):
         self._candidate_publication_boundary.ensure_revocation_not_reentrant()
+
+    def _revoke_project_save_for_characterization(self):
+        self._project_save_boundary.revoke()
+
+    def _ensure_project_save_revocation_allowed(self):
+        self._project_save_boundary.ensure_revocation_not_reentrant()
 
     def _revoke_executor_event_for_characterization(self):
         self._executor_event_boundary.revoke()
@@ -522,12 +555,14 @@ class ProtectedDurablePromotionCharacterization:
         # wait for the event lease that only this thread can finish.
         self._ensure_executor_event_revocation_allowed()
         self._ensure_candidate_publication_revocation_allowed()
+        self._ensure_project_save_revocation_allowed()
         with self._lock:
             if self._closed:
                 return
             self._revoking = True
         self._revoke_executor_event_for_characterization()
         self._revoke_candidate_publication_for_characterization()
+        self._revoke_project_save_for_characterization()
         with self._lock:
             self._closed = True
             self._revoking = False
