@@ -103,7 +103,7 @@ module does not perform any of the effects between checkpoints:
 
 | Revision | Checkpoint | Observation/effect boundary |
 | --- | --- | --- |
-| 1 | `submission_intent` | Intent durably acknowledged before simulated external submission. |
+| 1 | `submission_intent` | Intent file revision acknowledged by the live writer before the characterized possible-send callback; not a production durability guarantee. |
 | 2 | `submission_observed` | Accepted/failed/unknown result, separately from intent. |
 | 3 | `download_attempt` | Intent before simulated download/image verification. |
 | 4 | `images_verified` | Complete/partial/failed/unknown batch observations before any publication eligibility decision. |
@@ -123,6 +123,36 @@ or conflicting journal is taken over. A second writer encounters the exclusive
 lock or refuses the existing journal. A real process exit may retain a lock,
 temp file or new journal without an acknowledgment; there is no stale-lock
 takeover. Temporary evidence is retained on injected failure.
+
+### C2B-8D-14 executor intent-before-send boundary
+
+`ui.agent_generation_executor_journal.GenerationExecutorJournalIntent` is the
+current offline-only call site that binds this existing writer to the real
+`ComfyExecutorAdapter` pre-send decision. The original host constructs the
+owner from its current runtime, exact Project/source/review evidence, explicitly
+approved Project root and Journal root. The worker receives no Journal writer
+or send capability. Binding is accepted only after the inbox has taken the
+exact envelope; a single-request manifest is required.
+
+For that request, the host first accepts `submission_started`, the Journal
+owner verifies the exact frozen request and live host/job/claim state, then
+appends and verifies revision 1 (`submission_intent`). Only its exact live
+acknowledgment plus a final host/request recheck grants the adapter's one-shot
+possible-send claim. The injected transport runs unlocked. Its exact accepted,
+definite pre-send rejection, or uncertain outcome is recorded separately in
+revision 2 (`submission_observed`). No acknowledged intent means no callback;
+after a possible send, any missing/invalid response or failed result
+acknowledgment remains unknown and cannot be retried. An acknowledged intent
+remains evidence if writing the later result fails.
+
+This call site deliberately refuses multi-request manifests. The current eight
+ordered checkpoints are aggregate operation stages and do not define how
+repeated per-request submission intents fit into one Journal. Expanding beyond
+one request requires a separately reviewed checkpoint schema and lifecycle;
+the current contract is not silently generalized. Reopen and inventory remain
+inspection-only and cannot recreate a claim, original-host authorization or
+permission to send/replay. This is characterization, not proof of power-loss
+durability or author authenticity. `execution_available` remains false.
 
 Failure before replacement leaves the old complete journal (or none for revision
 1). Failure after replacement before acknowledgment may leave the complete new

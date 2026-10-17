@@ -72,7 +72,8 @@ class ComfyExecutorAdapter:
     execution_available = False
 
     def __init__(self, jobs, inbox, *, fake_transport, fake_result_provider, host_event_sink,
-                 characterization=False, host_local_output_gate=None):
+                 characterization=False, host_local_output_gate=None,
+                 journal_intent_owner=None):
         if (type(jobs) is not GenerationJobRegistry or type(inbox) is not GenerationExecutorInbox
                 or type(characterization) is not bool):
             raise ValueError("invalid_executor_owner")
@@ -80,6 +81,13 @@ class ComfyExecutorAdapter:
         self._jobs, self._inbox = jobs, inbox
         self._transport, self._result_provider, self._event_sink = fake_transport, fake_result_provider, host_event_sink
         self._local_gate = host_local_output_gate
+        if journal_intent_owner is not None:
+            from ui.agent_generation_executor_journal import GenerationExecutorJournalIntent
+            if type(journal_intent_owner) is not GenerationExecutorJournalIntent:
+                raise ValueError("invalid_journal_intent_owner")
+        self._journal_intent_owner = journal_intent_owner
+        self._journal_advance_lock = threading.RLock()
+        self._last_event = None
         self._local_store = None
         self._local_receipts = OrderedDict()
         # Separate from legacy LocalOutputReceipt custody. The promoted receipt
@@ -122,11 +130,31 @@ class ComfyExecutorAdapter:
             self._phase = "stopped"
             self._observe("invalid_envelope")
             return receipt
+        if self._journal_intent_owner is not None:
+            try:
+                bound = self._journal_intent_owner.bind_for_characterization(
+                    envelope, self._jobs, self._inbox, receipt)
+            except Exception:
+                bound = "journal_binding_unavailable"
+            if bound != "bound":
+                self._emit("failed")
+                self._phase = "stopped"
+                self._observe("journal_binding_unavailable")
+                return receipt
         self._phase = "ready"
         self.advance_for_characterization()
         return receipt
 
     def advance_for_characterization(self):
+        if self._journal_intent_owner is not None:
+            # Serialize the optional file-I/O/send path without holding job,
+            # inbox or original-host mutation locks. RLock permits a callback
+            # to reenter; the phase fence then prevents a second attempt.
+            with self._journal_advance_lock:
+                return self._advance_for_characterization()
+        return self._advance_for_characterization()
+
+    def _advance_for_characterization(self):
         if not self._enabled or self._envelope is None:
             return self._observe("execution_unavailable")
         if self._phase not in {"ready", "awaiting_download"}:
@@ -161,10 +189,43 @@ class ComfyExecutorAdapter:
             if self._emit("submission_started") != "accepted":
                 self._phase = "stopped"
                 return self._observe("host_invalidated")
+            if self._journal_intent_owner is not None:
+                intent_status = self._journal_intent_owner.acknowledge_intent_before_send_for_characterization(
+                    self._envelope, prepared, self._last_event, self._jobs, self._inbox, self._acceptance)
+                if intent_status != "acknowledged":
+                    # No transport is invoked unless the Journal owner verifies
+                    # its exact revision/digest/file identity and claims the
+                    # final current-host send boundary.
+                    self._emit("failed")
+                    self._phase = "stopped"
+                    return self._observe(
+                        "journal_host_invalidated_before_send" if intent_status == "host_invalidated_before_send"
+                        else "journal_intent_unacknowledged")
             try:
                 submission = self._transport(prepared)
             except Exception:
                 submission = None
+            if self._journal_intent_owner is not None:
+                journal_outcome, journal_prompt = "unknown", None
+                if (type(submission) is SubmissionResult
+                        and submission.status == "rejected_before_submission"):
+                    journal_outcome = "failed"
+                elif (type(submission) is SubmissionResult and submission.status == "accepted"
+                        and type(submission.response_json) is bytes):
+                    try:
+                        journal_response = decode_remote_json(submission.response_json)
+                        candidate_prompt = (journal_response.get("prompt_id")
+                                            if type(journal_response) is dict else None)
+                        if valid_prompt_id(candidate_prompt) and candidate_prompt not in self._prompts:
+                            journal_outcome, journal_prompt = "accepted", candidate_prompt
+                    except Exception:
+                        pass
+                observed = self._journal_intent_owner.record_submission_result_for_characterization(
+                    journal_outcome, journal_prompt)
+                if journal_outcome == "unknown" or (journal_outcome == "accepted" and observed != "acknowledged"):
+                    self._emit("submission_unknown")
+                    self._phase = "stopped"
+                    return self._observe("submission_outcome_unknown")
             if type(submission) is SubmissionResult and submission.status == "rejected_before_submission":
                 if self._emit("failed") != "accepted":
                     self._phase = "stopped"
@@ -470,8 +531,11 @@ class ComfyExecutorAdapter:
         event = ExecutorEvent(self._envelope.job_id, self._envelope.claim_id,
             self._envelope.manifest.manifest_identity, WorkerEvent(sequence, self._index, kind, count), outputs)
         try:
-            return self._event_sink(event)
+            result = self._event_sink(event)
+            self._last_event = event if result == "accepted" else None
+            return result
         except Exception:
+            self._last_event = None
             return "unavailable"
 
     def _observe(self, status, count=0):
