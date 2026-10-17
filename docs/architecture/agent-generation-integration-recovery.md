@@ -1,13 +1,15 @@
 # Agent Generation integration, recovery and retention (Phase 4-C2B-8D)
 
-This audit reflects `main` after PR #174, merge commit
-`064212a9e78da8456cb5eac4c7b82e224c77bb08`. C2B-8D-1 through C2B-8D-12
-collectively define and test, in separate and partially composed
-characterization slices, a protected route from a frozen request through the
-existing Candidate writer and Project JSON save. **Production execution remains
-unavailable.** The HTTP owners and Windows-protected path are exercised offline
-with injected transports and disposable state; no test in this path proves a
-live ComfyUI run, crash durability, or production worker integration.
+This audit reflects the protected Generation path through PR #174, merge commit
+`064212a9e78da8456cb5eac4c7b82e224c77bb08`, with the C2B-8D-14 update recorded
+below. C2B-8D-1 through C2B-8D-12 collectively define and test, in separate and
+partially composed characterization slices, a protected route from a frozen
+request through the existing Candidate writer and Project JSON save. C2B-8D-14
+connects the one-request offline Journal intent to the existing executor's
+actual pre-send decision. **Production execution remains unavailable.** The
+HTTP owners and Windows-protected path are exercised offline with injected
+transports and disposable state; no test in this path proves a live ComfyUI
+run, crash durability, or production worker integration.
 
 [C2B-8A ownership journal foundation](agent-generation-ownership-journal.md)
 characterizes bounded offline journaling, inspect-only restart inventory and
@@ -25,8 +27,11 @@ instances, with an explicit optional stdlib wire and truthful possible-send
 uncertainty. It is not a production default and performs no real server requests
 in its tests. [C2B-8D-3 history](agent-generation-comfy-executor-adapter.md#c2b-8d-3-offline-http-history-transport)
 and [C2B-8D-4 view](agent-generation-output-containment.md#c2b-8d-4-offline-http-view-transport)
-provide the corresponding offline transport contracts. Durable intent-before-send
-wiring, worker lifecycle, original-host delivery and production authorization
+provide the corresponding offline transport contracts. The
+[C2B-8D-14 executor Journal boundary](agent-generation-comfy-executor-adapter.md#c2b-8d-14-offline-journal-intent-before-send-characterization)
+characterizes intent-before-send for one exact request through the existing
+executor with an injected callback; it is not production durable-intent wiring.
+Worker lifecycle, original-host production delivery and production authorization
 remain separate gates. Profile A, `authorship=unverified`,
 `execution_available=false`, `protected_storage_available=false` and
 `promotion_available=false` are unchanged.
@@ -102,7 +107,7 @@ host UI.
 | Confirmation + new human action -> reserved inbox | `ui/agent_generation_executor_handoff.py`, `ui/agent_generation_executor_inbox.py`; private post-confirmation action and freshly reconstructed review | Bounded reservation; no claim or external authority yet | Capacity/expiry before claim releases reservation and retains review custody; re-inspect before another explicit action. Production returns unavailable. |
 | Reservation -> claimed/offered, consumed proposal | Handoff, `ui/agent_generation_job.py`; exact host/process/session/activation/epoch/pairing, manifest and ordered requests | Under gate -> route -> mailbox -> Generation custodian -> job -> inbox, job claim and committed envelope consume exact proposal/ACK; observable when locks release | One-shot claim. No restoration of consumed proposal. Unknown post-claim outcome pins ownership. The claim is memory-only, not durable. |
 | Offer -> one worker take / handoff response | Inbox; typed exact job/claim/manifest receipt and actual observed take | Inbox moves to accepted under job-before-inbox locks; fake callback runs unlocked | No second take. Normal completed/partially-failed/failed progress before callback return preserves acceptance. Unavailable/unknown/cancelled/expired/invalidated ownership does not. |
-| Accepted request -> submission started/accepted | `ui/agent_generation_comfy_executor.py`, `core/comfy_prompt_request.py`; exact manifest member, workflow bytes, finalized seeds, frozen endpoint | Count event precedes transport; adapter phase pins one attempt before callback; canonical unique prompt ID records acceptance | Sequential requests; no resubmission. Only trusted rejection before send is definite failure. Missing/invalid response becomes submission outcome unknown; later requests remain unsent. |
+| Accepted request -> submission started/accepted | `ui/agent_generation_comfy_executor.py`, optional `ui/agent_generation_executor_journal.py`, `core/comfy_prompt_request.py`; exact manifest member, workflow bytes, finalized seeds, frozen endpoint | Without the optional owner, existing behavior remains unchanged. With it, the host first accepts `submission_started`, then the exact revision-1 Journal intent is acknowledged and host/request state is rechecked before the one-shot injected callback. A valid unique prompt ID may be separately observed in revision 2. | The Journal seam is offline-only and refuses multi-request manifests. No acknowledged intent means zero callback invocations. Only trusted rejection before send is definite failure; missing/invalid response or lost result acknowledgment is unknown and never retried. |
 | Accepted prompt -> pending/timeout/remote metadata | Executor and `core/comfy_remote_output_receipts.py`; exact prompt/request/workflow/output nodes, bounded validated history | Correlated host count event plus retained immutable remote receipt | Timeout/unknown is not execution failure or cancellation. An exact later result may resolve accepted execution without another submit. Invalid or late history cannot advance original-host counts. |
 | Remote receipt -> local verified batch | `core/comfy_output_containment.py` plus original-host gate in handoff; original validated history proves explicit success, exact descriptors, storage ownership, bounded stream, signature/decode/hash/identity | Atomic local receipt insertion only after all files verify; pre/post gate and separate `outputs_ready` event move request to awaiting host registration | One pinned attempt, no redownload. Status-less success is unproven. Incomplete/quarantined/late evidence cannot grant local output or publication authority. |
 | Local batch -> durable promoted assets | `core/generation_output_promotion.py`; exact private store/envelope/receipt objects, approved frozen destination, local identities/SHA-256 | Per-request attempt pinned before IO; complete promoted tuple only after exclusive copy, file fsync and revalidation | No overwrite or replay after failed/partial copy. Retain evidence. Durable files alone do not prove registration. |
@@ -343,24 +348,26 @@ file is narrowly part of a failed stream attempt; it is not this future general
 retention policy. C2B-6 has no destructive cleanup. Restart must never auto-adopt,
 auto-publish, auto-save, replay execution or revive expired authorization.
 
-## Readiness assessment after PR #174
+## Readiness assessment (PR #174 audit, updated for C2B-8D-14)
 
-Within the owners and focused tests cited here, the audit found no concrete
-characterization defect requiring a runtime change. This is not a production
-clearance. The following states distinguish implemented contracts, test
-composition and missing authority.
+At the PR #174 audit baseline, the owners and focused tests showed no concrete
+characterization defect requiring a runtime change. C2B-8D-14 now closes the
+specific offline composition gap identified there: Journal intent is connected
+to the executor's actual one-request pre-send decision. This is still not a
+production clearance. The following states distinguish implemented contracts,
+test composition and missing authority.
 
 | Area | Evidence-backed state | Remaining blocker or dependency | Risk if activated now |
 | --- | --- | --- | --- |
 | Exact original-host binding | Exact Project object/path, source snapshot, session/process, activation/epoch, pairing, job/claim/manifest, request and descriptor order are carried through protected admission, Candidate registration and save checks. | No production caller owns the complete route; only characterized callbacks and the serialized host-run assumption are present. | A stale/switching host or an unowned callback path could not be safely published. |
-| One-shot submission/publication/save | Submission attempts and prompt IDs are retained without resubmit; publication and JSON save are one-shot. Unknown send/save stays unknown. | Durable intent-before-send is not connected to the HTTP submission attempt. Restart cannot prove whether an external request was sent. | Retrying after lost state could duplicate remote work; saving a changed Project is fenced only in the current live owner. |
+| One-shot submission/publication/save | C2B-8D-14 connects the existing executor's `submission_started` event to exact Journal revision-1 intent acknowledgment before one injected send; revision 2 records accepted/failed/unknown separately. No intent acknowledgment means no send; unknown is never retried. Publication and JSON save remain one-shot. | Intent integration is characterization-only and rejects multi-request manifests. Restart cannot prove whether an external request was sent without independently retained live-host latest-head evidence. Production HTTP/worker call sites remain absent. | Retrying after lost state could duplicate remote work; the current one-request Journal contract cannot yet cover the executor's sequential multi-request jobs. |
 | Native identity, DACL, bytes, promoted roots and Candidate paths | Disposable Windows-native tests pin protected roots/files, inspect owner-only ACLs and identities, reject path/reparse drift, verify streamed/copied bytes, and constrain protected Candidate paths to the frozen approved output root. | No production root provisioning, long-lived handle lifecycle, disk-wide quota or supported production path policy. Profile A excludes hostile same-user processes; bounded checks are not continuous isolation. | Production storage could outlive the current custody or exceed capacity; same-user tampering is outside the adopted guarantee. |
 | Owner locks, close/invalidation and callbacks | Commit/terminal races are characterized; expensive native checks and external host callbacks run outside job/inbox locks, and leases fence final commits against close/invalidation. | Synchronous callback deadlines, DNS/header behavior, real event-loop scheduling and process shutdown remain unproven. | A blocked or lost production worker callback may leave an honestly unknown, pinned operation. |
 | Partial registration, uncertainty and Undo | The existing Gallery writer records observed Candidate deltas and existing Undo history. A partial appender result remains `registration_uncertain`, is not replayed, and blocks final JSON save; later distinct requests may continue only after exact observed-state comparison. | No production path reaches this writer from protected receipts; no automatic rollback is authorized. | Partial Project mutation requires human inspection; it cannot be treated as all-or-nothing success. |
 | Bounded events and retained evidence | Job/inbox logs are bounded diagnostic history. The publisher privately retains the exact settled event pair after successful registration; a sticky late-output marker survives detail eviction. PR #174 tests save after the first pair is evicted and refusal after late-output detail eviction. | Evidence is process-local. Its loss on restart does not reconstruct authority. | Treating log presence/absence alone as authority would permit false save or forget late output; current owner refuses when private proof is absent/conflicting. |
 | Restart, Journal and Human Recovery | C2B-8A has native disposable Journal lifecycle and inspect-only reopen/inventory; C2B-8B has redacted, read-only recovery cases and non-executable intentions. Profile A accepts acknowledged live-writer latest-head observations only within the live host/process lifetime. | No production journal call site or restart checkpoint custody. After restart, without an independently retained host-observed tip, latest-head custody is unavailable; missing/conflicting evidence remains uncertain. No replay, Recovery association or Apply. | Old bytes or a digest-valid Journal prefix could be mistaken for current authority. |
 | Retention and cleanup | Evidence is retained on uncertain/failed promotion, registration and save paths; bounded in-memory event logs are not disk-retention policy. No broad cleanup owner exists. | Global staging/quarantine/promoted capacity, reservation, inventory and explicit human discard/cleanup lifecycle remain unimplemented. | Disk exhaustion or unsafe deletion/adoption; elapsed time and expiry cannot authorize cleanup. |
-| Transport, worker and real ComfyUI interoperability | `POST /prompt`, `GET /history/{prompt_id}` and streamed `GET /view` each have bounded offline contracts and injected/monkeypatched wire coverage. The executor consumes injected transport/result providers. | No real ComfyUI request, registered production HTTP wire, background worker, durable submission intent, production host-event delivery or measured deadline behavior. | Remote acceptance, history status, cancellation and output availability remain server/runtime assumptions. |
+| Transport, worker and real ComfyUI interoperability | `POST /prompt`, `GET /history/{prompt_id}` and streamed `GET /view` each have bounded offline contracts and injected/monkeypatched wire coverage. The executor consumes injected transport/result providers. C2B-8D-14 adds a one-request offline Journal intent-before-send seam at the executor's actual pre-send boundary. | No real ComfyUI request, registered production HTTP wire, background worker, multi-request Journal contract, production host-event delivery or measured deadline behavior. | Remote acceptance, history status, cancellation and output availability remain server/runtime assumptions. |
 | UI activation and Human Start | Review/confirmation UI and a separate characterized Start boundary exist. Source search found no non-test call site for `capture_executor_human_start_for_characterization`, `handoff_generation_for_characterization`, or the executor’s characterization entry point. | No production UI activation, exact new Human Start dispatch, production worker registration or shutdown/replacement lifecycle. | Review confirmation could be confused with Start; an activation path could bypass the required fresh human action. |
 | Candidate publication and Project JSON save | PR #174 composes the protected evidence path through the existing Candidate factory/appender, Undo snapshot and exact save callback; its disposable JSON is reopened and provenance checked. | Protected Candidate and save entry points are characterization-only. No production publication or save authority is enabled. | A successful offline fixture does not establish production Project integrity, user confirmation or durability. |
 | Threat scope and authorship | Profile A is adopted for local single-user Pro. LLM/MCP inputs remain untrusted. | `authorship=unverified`; SHA-256 and ACL observations detect bounded corruption/drift but do not authenticate an author. Profile B is optional and unsupported, not a prerequisite for local Pro. | Same-user malicious processes, Administrator/SYSTEM and compromised host code are outside Profile A's guarantee; no digest should be misreported as a signature. |
@@ -371,9 +378,12 @@ publication/save composition and its event-eviction cases in
 native acceptance commit race
 `tests/test_generation_windows_protected_stream.py::test_real_native_acceptance_commit_is_atomic_against_close_or_invalidation`,
 the executor/admission/promotion/asset suites, the HTTP contract suites, and the
-read-only Journal/Recovery suites. No additional test was added: the requested
-invariants already have focused characterization coverage, and an additional
-test would repeat an existing assertion rather than close an evidenced gap.
+read-only Journal/Recovery suites. The C2B-8D-14 follow-up adds
+`tests/test_agent_generation_executor_journal.py` because the earlier audit
+identified that the Journal was not connected to the executor's real send
+decision. These tests compose only disposable original-host state, the existing
+executor and writer, and injected callbacks; they do not establish live HTTP,
+crash durability or production authorization.
 
 ## Production go/no-go and next bounded milestones
 
@@ -387,8 +397,8 @@ uncertainty.
 
 | Milestone | Dependency and risk addressed | Recommended bounded boundary |
 | --- | --- | --- |
-| 1. Protected intent-before-send seam (smallest next step) | Uses the existing offline Journal lifecycle and frozen request owner to prevent a send without an acknowledged intent and to retain an unknown result after possible send. | Characterization-only integration of one exact request with an injected send callback: journal intent is acknowledged before callback invocation; uncertain intent acknowledgement means zero sends; possible-send/response loss is never retried; reopen is inspect-only. No real HTTP or capability activation. |
-| 2. Production transport/worker and original-host lifecycle | Depends on milestone 1, a bounded worker/host event-delivery contract, shutdown/loss semantics and explicit endpoint/auth/deadline policy. | Separate disabled-by-default integration PR for sequential submission/history/view, exact original-host events, worker lifetime and truthful unknown outcomes. Keep Candidate publication/save owners unchanged. |
+| 1. Multi-request Journal intent contract (smallest next step) | C2B-8D-14 proves the actual executor boundary for one request, while ordinary executor jobs may contain sequential requests. The current eight-checkpoint Journal is aggregate and does not define repeated per-request submission intent. | Offline-only contract/design plus focused characterization of exact per-request intent ordering. Preserve one-shot behavior and stop later sends after any unknown request. Version or extend the schema deliberately; do not reinterpret existing revisions, enable a worker or claim restart authority. |
+| 2. Disabled production worker/transport and original-host lifecycle | Depends on an accepted multi-request Journal contract, explicit protected-root lifecycle, bounded worker shutdown/loss semantics and endpoint/auth/deadline policy. | Separate disabled-by-default integration boundary for sequential submission/history/view, exact original-host events, worker lifetime and truthful unknown outcomes. Keep Candidate publication/save owners unchanged. |
 | 3. Real ComfyUI interoperability | Depends on reviewed transport/worker composition, supported version/endpoint behavior and disposable account/Project policy. | Separately human-authorized compatibility exercise; capture actual request/history/output behavior and server-side uncertainty. Offline/fake success is not evidence for this milestone. |
 | 4. Protected filesystem production policy | Depends on root provisioning/handle lifecycle, staging/promoted capacity reservation and exact approved output destination policy. | Specify and validate local production roots, owner-only ACL/reparse/identity checks and cross-session capacity without mutating existing Project/user ACLs. |
 | 5. Human Start and UI activation | Depends on 1, 2 and 4 plus final fresh review, original-host fencing and visible unknown/unsaved states. | Add a distinct user-confirmed Start action; wire no execution until the whole authorization chain is current. Confirmation alone must remain non-executable. |

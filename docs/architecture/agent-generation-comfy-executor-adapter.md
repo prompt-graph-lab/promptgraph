@@ -209,6 +209,47 @@ is terminal for automatic scheduling, leaves later requests unsent, and pins
 consumed custody. Deadline cleanup is not evidence of remote cancellation and
 does not grant another take or attempt.
 
+### C2B-8D-14 offline Journal intent-before-send characterization
+
+The optional `ui.agent_generation_executor_journal.GenerationExecutorJournalIntent`
+seam connects this same `ComfyExecutorAdapter` decision to the existing
+`OfflineJournalWriter`. It is opt-in only, requires a host-created owner with
+the exact original `GenerationPublicationOrigin`, approved Project and Journal
+roots, frozen review/source evidence, and a single-request manifest. It is not
+registered as a production transport or Start path; all capability flags remain
+false and authorship remains unverified.
+
+The characterized ordering is:
+
+1. The executor takes the exact accepted envelope and verifies its request.
+2. The original host accepts `submission_started` for that request.
+3. The Journal owner rechecks the live original Project/path, root and file
+   identity, session/process, activation/epoch/pairing, job/claim/manifest and
+   request state; it appends `submission_intent` through the existing writer.
+4. Send is allowed only after the writer returns the exact expected revision,
+   digest, Journal file identity and request observation, and a final current
+   host/request check claims the one-shot possible-send boundary.
+5. The injected transport runs outside job/inbox and original-host mutation
+   locks. Its accepted/rejected/unknown outcome is appended separately as
+   `submission_observed`.
+
+No acknowledged intent means zero transport invocations. A failure before
+replacement leaves no acknowledged intent; failure after replacement but before
+acknowledgment may leave a complete inspect-only revision and is still no-send.
+Once the callback may have run, a lost, invalid or unrecordable response is
+unknown and never retried. A failed result append cannot erase the earlier
+acknowledged intent. Reopened Journal bytes remain inspect-only; they never
+reconstruct a live claim, send capability, host authorization or recovery
+action. This characterization is limited to one request because the current
+Journal schema has eight ordered aggregate checkpoints and no reviewed
+per-request repeated submission checkpoint contract. Multi-request use requires
+a separately reviewed schema/lifecycle change.
+
+The Journal's successful file acknowledgment is not a claim of power-loss
+durability, cross-file atomicity or cryptographic author authentication. The
+standard writer and native protected Journal fixtures characterize bounded
+offline behavior only. No real HTTP request or ComfyUI execution occurs.
+
 After valid prompt acceptance, an execution timeout/unknown result remains
 `awaiting_result`, not a definite failure or a new submission. Only an explicit
 later exactly correlated result can resolve that accepted execution. No polling
