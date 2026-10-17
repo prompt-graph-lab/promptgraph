@@ -241,6 +241,81 @@ def test_writer_digest_ack_mismatch_withholds_the_send(tmp_path, monkeypatch):
     values[0].close()
 
 
+def test_source_edit_between_detached_check_and_final_send_gate_prevents_send(tmp_path, monkeypatch):
+    values = ready_one_request(tmp_path)
+    runtime, _, state, *_ = values
+    intent_replaced = threading.Event()
+    detached_clone_ready = threading.Event()
+    release_clone = threading.Event()
+    paused = False
+
+    def fault(point):
+        if point == "after_replace_before_ack":
+            intent_replaced.set()
+
+    context, journal_root = context_for(values, tmp_path, fault=fault)
+    adapter, sent = executor(values, context)
+    original_deepcopy = copy.deepcopy
+
+    def pause_final_project_clone(value, memo=None):
+        nonlocal paused
+        cloned = original_deepcopy(value) if memo is None else original_deepcopy(value, memo)
+        origin = runtime._generation_publication_origin
+        if (intent_replaced.is_set() and origin is not None and value is origin.project and not paused):
+            paused = True
+            detached_clone_ready.set()
+            assert release_clone.wait(5)
+        return cloned
+
+    monkeypatch.setattr(executor_journal.copy, "deepcopy", pause_final_project_clone)
+    outcomes, errors = [], []
+
+    def run_handoff():
+        try:
+            outcomes.append(accepted(values, adapter))
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run_handoff)
+    worker.start()
+    assert detached_clone_ready.wait(5), "final detached Project clone was not reached"
+    origin = runtime._generation_publication_origin
+    assert origin is not None and origin.project == origin.source_snapshot
+    host_route = runtime._registry._record_for_registration(runtime._registration)
+    assert host_route is not None
+
+    # Model a cooperating host edit through the same serialized mutation
+    # gates used by the final send claim. The worker is paused after its
+    # detached copy but before acquiring these gates.
+    try:
+        with runtime._publication_gate:
+            with host_route.operation_lock:
+                assert state["project"] is origin.project
+                state["project"].prompt_lines[1].current_text = "edited after detached check"
+    finally:
+        release_clone.set()
+    worker.join(10)
+    assert not worker.is_alive()
+    assert errors == []
+    assert paused is True
+    assert len(outcomes) == 1
+    assert outcomes[0].status in {"characterized_acceptance", "handoff_invalidated"}
+    assert sent == []
+    assert adapter.observation().status in {
+        "journal_host_invalidated_before_send", "host_invalidated", "handoff_invalidated"}
+    assert context.inspection_for_characterization()["state"] == "no_send"
+
+    reopened = journal.reopen_journal(journal_root, "operation.json")
+    assert reopened.revision == 1
+    assert reopened.observations[0].checkpoint == "submission_intent"
+    assert reopened.trust == "inspect_only" and reopened.authenticity == "unverified"
+    assert adapter.advance_for_characterization().status in {
+        "journal_host_invalidated_before_send", "host_invalidated", "handoff_invalidated"}
+    assert sent == []
+    assert journal.reopen_journal(journal_root, "operation.json").revision == 1
+    runtime.close()
+
+
 @pytest.mark.parametrize("drift", ["project", "path", "activation", "pairing", "session", "process", "session_close"])
 def test_host_invalidation_after_intent_ack_prevents_send(tmp_path, drift, monkeypatch):
     case = tmp_path / drift

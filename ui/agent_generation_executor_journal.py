@@ -182,6 +182,15 @@ class GenerationExecutorJournalIntent:
             if route is None:
                 return False
             with route.operation_lock:
+                # The detached copy above is an early rejection check only.
+                # Recompare the complete live source while both host mutation
+                # gates are held, so a cooperating in-place Project edit
+                # cannot slip between that copy and the final send claim.
+                try:
+                    if origin.project != origin.source_snapshot:
+                        return False
+                except Exception:
+                    return False
                 try:
                     epoch = runtime._synchronize_target_locked(state.get("project"), state.get("current_project_path", ""))
                     available, pairing = runtime._registration.inspect_pairing_generation()
