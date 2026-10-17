@@ -185,9 +185,19 @@ The observation is private evidence only. It does not satisfy the legacy
 `LocalOutputReceipt` and `PromotedImage` checks in
 `GenerationCandidatePublication`, does not create another Candidate writer,
 and does not append, settle publication counts, change Undo history or save.
-The next bounded engineering step is a separately reviewed handoff into the
-existing single Candidate writer (or a narrowly audited extension of that
-owner) without relaxing its legacy receipt validation or save/Undo contracts.
-Until that exists, protected promotion can be observed as admission-eligible but
-cannot be registered as a Candidate through this slice. `authorship=unverified`
-and all production execution/storage/promotion/publication gates remain false.
+The C2B-8D-11 protected writer path is a narrowly audited extension of this
+same single Candidate writer. It accepts only the exact admission observation
+retained by its issuing owner, preserves the legacy receipt path unchanged, and
+does not manufacture `LocalOutputReceipt`, `PromotedImage`, or
+`DurableGenerationAssets` custody. Protected `promoted_assets` must be a strict
+descendant of the exact frozen `output_directory` approved by the original
+host. No arbitrary destination or path fallback is accepted. Registration and
+Project persistence remain separate: this characterization performs no save.
+If an appender leaves an exact, observed subset before raising, that request
+stays `registration_uncertain` and is never retried. The admission comparison
+baseline advances only when the full original Project equals the prior
+expected state plus that observed Candidate subset, allowing a later distinct
+request without resolving the earlier uncertainty. Save remains blocked.
+`authorship=unverified` and all production execution/storage/promotion gates
+remain false. See the [protected Candidate writer integration](agent-generation-protected-storage.md#c2b-8d-11-protected-candidate-writer-integration)
+for its native custody and approved destination contract.

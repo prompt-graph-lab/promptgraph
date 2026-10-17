@@ -263,7 +263,7 @@ class ProtectedOutputAcceptanceCharacterization:
             return receipt
 
     def _revoke_promotion_event_boundaries_for_characterization(self):
-        """Find issued promotion owners and fence their count-only event leases."""
+        """Fence issued promotion event and Candidate-commit leases."""
         protected = self._protected_owner
         with protected._lock:
             owners = tuple({
@@ -273,6 +273,7 @@ class ProtectedOutputAcceptanceCharacterization:
             })
         for owner in owners:
             owner._revoke_executor_event_for_characterization()
+            owner._revoke_candidate_publication_for_characterization()
 
     def _ensure_promotion_event_revocation_allowed(self):
         """Reject callback-thread reentry before changing acceptance state."""
@@ -285,6 +286,7 @@ class ProtectedOutputAcceptanceCharacterization:
             })
         for owner in owners:
             owner._ensure_executor_event_revocation_allowed()
+            owner._ensure_candidate_publication_revocation_allowed()
 
     def invalidate_for_characterization(self):
         """Fence future acceptance/inspection while retaining the evidence."""
