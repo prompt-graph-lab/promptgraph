@@ -16,9 +16,9 @@ from core.candidate_record_normalization import _normalize_candidate_records
 from core.gallery_generation import ingest_gallery_generation_outputs, resolve_gallery_generation_result_target
 from core.generation_output_promotion import DurableGenerationAssets
 from core.io import _project_to_serializable_data
-from ui.agent_generation_executor_inbox import ExecutionEnvelope
+from ui.agent_generation_executor_inbox import ExecutionEnvelope, ExecutorEvent, OutputReceipt
 from ui.agent_generation_executor_handoff import GenerationPublicationOrigin
-from ui.agent_generation_job import JobRequest, _PROCESS_INCARNATION
+from ui.agent_generation_job import JobRequest, WorkerEvent, _PROCESS_INCARNATION
 from ui.project_agent_session_pump import ProjectAgentSessionRuntime
 from ui.agent_generation_protected_candidate_admission import (
     GenerationProtectedCandidateAdmission,
@@ -114,6 +114,7 @@ class GenerationCandidatePublication:
         self._records, self._evidence = {}, {}
         self._protected_evidence = {}
         self._save_state = "not_attempted"
+        self._save_callback_outcome = "not_attempted"
 
     @contextmanager
     def _authority(self, index=None, remote=None, local=None, *, source=True, _gate_held=False):
@@ -563,9 +564,346 @@ class GenerationCandidatePublication:
             paths.append(str(path))
         return tuple(paths)
 
+    def _protected_candidate_records_current(self, evidence):
+        """Match persisted in-memory Candidate records to exact protected bytes."""
+        try:
+            review = json.loads(self._origin.review_json)
+            requests = review["requests"]
+            if len(requests) != len(self._envelope.manifest.requests):
+                return False
+            for index, (admission_owner, observation) in evidence.items():
+                if not self._protected_observation_is_owned(admission_owner, observation):
+                    return False
+                request = self._envelope.manifest.requests[index]
+                remote = observation._remote_receipt
+                promotion = observation._promotion_receipt
+                row = requests[index]
+                paths = self._protected_candidate_paths(observation)
+                target = resolve_gallery_generation_result_target(
+                    self._origin.project, request.illustration_id)["target_line"]
+                if (target is None or request.request_index != index
+                        or remote.request_index != index or promotion.request_index != index
+                        or len(paths) != len(remote.images) or len(paths) != len(promotion.images)):
+                    return False
+                candidates = target.generated_candidates
+                if type(candidates) is not list:
+                    return False
+                matching = []
+                for candidate in candidates:
+                    provenance = candidate.get("generation_provenance") if type(candidate) is dict else None
+                    if (type(provenance) is dict
+                            and provenance.get("job_id") == self._envelope.job_id
+                            and provenance.get("request_id") == request.request_id
+                            and provenance.get("request_index") == index):
+                        matching.append(candidate)
+                if len(matching) != len(paths):
+                    return False
+
+                prompt_rows = row["prompts"]
+                positive = [item["text"] for item in prompt_rows if item["role"] == "positive"]
+                negative = [item["text"] for item in prompt_rows if item["role"] == "negative"]
+                prompt_text = positive[0] if positive and len(set(positive)) == 1 else None
+                negative_text = negative[0] if negative and len(set(negative)) == 1 else None
+                seed_rows = row["seeds"]
+                seed_values = [item["value"] for item in seed_rows if item["input_key"] == "seed"]
+                seed = seed_values[0] if len(seed_values) == 1 else None
+
+                for ordinal, (candidate, promoted, descriptor, path) in enumerate(
+                        zip(matching, promotion.images, remote.images, paths), 1):
+                    image = promoted.promoted_image
+                    provenance = candidate["generation_provenance"]
+                    expected = {
+                        "job_id": self._envelope.job_id,
+                        "manifest_identity": self._envelope.manifest.manifest_identity,
+                        "request_id": request.request_id,
+                        "request_index": index,
+                        "illustration_id": request.illustration_id,
+                        "run_index": request.run_index,
+                        "workflow_identity": request.workflow_identity,
+                        "prompt_id": remote.prompt_id,
+                        "remote_receipt_identity": remote.identity,
+                        "protected_promotion_identity": promotion.identity,
+                        "protected_candidate_admission_identity": observation.identity,
+                        "descriptor_identity": descriptor.identity,
+                        "protected_storage_identity": image.storage_identity,
+                        "protected_purpose": "promoted_assets",
+                        "content_sha256": image.content_sha256,
+                        "output_index": ordinal,
+                        "image_format": image.image_format,
+                        "image_byte_count": image.byte_count,
+                        "prompts": prompt_rows,
+                        "seeds": seed_rows,
+                        "parameters": row["parameters"],
+                        "prompt_available": prompt_text is not None,
+                        "seed_available": len(seed_values) == 1,
+                    }
+                    if (any(provenance.get(key) != value for key, value in expected.items())
+                            or candidate.get("path") != path
+                            or candidate.get("candidate_prompt_source") != "frozen_execution"
+                            or candidate.get("prompt_text") != prompt_text
+                            or candidate.get("negative_prompt") != negative_text
+                            or candidate.get("seed") != seed
+                            or candidate.get("seed_mode") != "frozen_execution"
+                            or candidate.get("run_index") != request.run_index):
+                        return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _protected_save_event_current(index, job, inbox, observation):
+        """Require the exact accepted remote and promotion events to remain held."""
+        remote = observation._remote_receipt
+        promotion = observation._promotion_receipt
+        if any(type(event) is not ExecutorEvent or type(event.progress) is not WorkerEvent
+               for event in inbox._events.values()):
+            return False
+        index_events = tuple((sequence, event) for sequence, event in inbox._events.items()
+            if event.progress.request_index == index
+            and event.progress.kind in {"remote_outputs_ready", "outputs_ready"})
+        late_events = tuple(event for event in inbox._late
+            if getattr(getattr(event, "progress", None), "request_index", None) == index
+            and getattr(getattr(event, "progress", None), "kind", None)
+                in {"remote_outputs_ready", "outputs_ready"})
+        remote_events = tuple((sequence, event) for sequence, event in index_events
+            if event.progress.kind == "remote_outputs_ready")
+        output_events = tuple((sequence, event) for sequence, event in index_events
+            if event.progress.kind == "outputs_ready")
+        if late_events or len(remote_events) != 1 or len(output_events) != 1:
+            return False
+        remote_sequence, remote_event = remote_events[0]
+        output_sequence, output_event = output_events[0]
+        count = len(remote.images)
+        return bool(
+            remote_event is observation._remote_event
+            and output_event is observation._outputs_ready_event
+            and type(remote_event.outputs) is OutputReceipt
+            and type(output_event.outputs) is OutputReceipt
+            and remote_sequence == remote_event.progress.sequence
+            and output_sequence == output_event.progress.sequence
+            and remote_sequence < output_sequence
+            and output_sequence <= job.event_count
+            and remote_sequence in job.events and output_sequence in job.events
+            and job.events[remote_sequence] == remote_event.progress
+            and job.events[output_sequence] == output_event.progress
+            and (remote_event.job_id, remote_event.claim_id, remote_event.manifest_identity)
+                == (job.job_id, job.claim_id, job.binding.plan_identity)
+            and (remote_event.outputs.receipt_id, remote_event.outputs.output_count,
+                 remote_event.progress.output_count)
+                == (remote.identity[:32], count, count)
+            and (output_event.job_id, output_event.claim_id, output_event.manifest_identity)
+                == (job.job_id, job.claim_id, job.binding.plan_identity)
+            and (output_event.outputs.receipt_id, output_event.outputs.output_count,
+                 output_event.progress.output_count)
+                == (promotion.identity[:32], count, count))
+
+    @contextmanager
+    def _protected_save_authority(self, evidence, *, allowed_project_states=None):
+        """Check settled registrations and host evidence under original gates.
+
+        Only the runtime/route gates span the yielded section. Job, inbox and
+        admission locks are released before Candidate inspection or callers
+        publish the registry save result.
+        """
+        runtime, envelope = self._runtime, self._envelope
+        jobs, inbox = runtime.generation_jobs, runtime._generation_executor_inbox
+        allowed_project_states = ((self._expected,) if allowed_project_states is None
+                                  else tuple(allowed_project_states))
+        with runtime._publication_gate:
+            if runtime._closed or runtime._registration is None:
+                yield False
+                return
+            route = runtime._registry._record_for_registration(runtime._registration)
+            if route is None:
+                yield False
+                return
+            with route.operation_lock:
+                try:
+                    epoch = runtime._synchronize_target_locked(
+                        self._state.get("project"), self._state.get("current_project_path", ""))
+                    available, pairing = runtime._registration.inspect_pairing_generation()
+                except Exception:
+                    epoch, available, pairing = None, False, None
+                base_current = bool(
+                    available and not runtime._closed
+                    and runtime._generation_candidate_publication is self
+                    and runtime._generation_publication_origin is self._origin
+                    and self._origin.envelope is envelope
+                    and self._state.get("project") is self._origin.project
+                    and self._state.get("current_project_path", "") == self._origin.path
+                    and self._origin.source_snapshot is not None
+                    and (epoch, epoch) == (envelope.binding.target_epoch, envelope.binding.activation_id)
+                    and pairing == envelope.binding.pairing_generation)
+                if not base_current:
+                    yield False
+                    return
+
+                admission_owners = {pair[0] for pair in evidence.values()}
+                if len(admission_owners) != 1:
+                    yield False
+                    return
+                admission = next(iter(admission_owners))
+                with jobs._lock:
+                    jobs._cleanup_locked(jobs._clock())
+                    job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
+                    with inbox._lock:
+                        with admission._lock:
+                            current = bool(
+                                jobs._characterization and inbox._characterization
+                                and not jobs._closed and not inbox._closed
+                                and job is not None and job.binding == envelope.binding
+                                and job.binding.session_id == jobs._session_incarnation
+                                and job.binding.process_incarnation == _PROCESS_INCARNATION
+                                and job.binding.plan_identity == envelope.manifest.manifest_identity
+                                and (job.binding.target_epoch, job.binding.activation_id) == jobs._target
+                                and job.binding.pairing_generation == pairing
+                                and job.state in {"completed", "partially_failed"}
+                                and len(job.requests) == len(envelope.manifest.requests)
+                                and len(job.request_states) == len(job.requests)
+                                and inbox._state == "accepted" and inbox._envelope is envelope
+                                and inbox._manifest is envelope.manifest
+                                and runtime._generation_protected_candidate_admission is admission
+                                and not admission._closed
+                                and admission._runtime is runtime
+                                and admission._origin is self._origin
+                                and admission._envelope is envelope
+                                and admission._source_snapshot == self._origin.source_snapshot
+                                and admission._candidate_expected == self._expected
+                                and self._origin.project in allowed_project_states)
+                            if current:
+                                current = all(
+                                    type(event) is ExecutorEvent and type(event.progress) is WorkerEvent
+                                    for event in inbox._events.values())
+                            if current:
+                                current = all(state in {"completed", "failed"}
+                                              for state in job.request_states)
+                            if current:
+                                for index, request in enumerate(envelope.manifest.requests):
+                                    expected_request = JobRequest(
+                                        request.request_id, request.illustration_id,
+                                        request.run_index, request.workflow_identity)
+                                    state = job.request_states[index]
+                                    output_count = job.outputs[index]
+                                    remote_count = job.remote_outputs[index]
+                                    registered_count = job.registered[index]
+                                    if job.requests[index] != expected_request:
+                                        current = False
+                                        break
+                                    pair = evidence.get(index)
+                                    receipt = self._records.get(index)
+                                    if state == "completed":
+                                        if (pair is None or receipt is None
+                                                or receipt.registration_state != "registered"
+                                                or receipt.promotion_state != "protected_verified"
+                                                or output_count <= 0
+                                                or remote_count != output_count
+                                                or registered_count != output_count
+                                                or receipt.registered_count != output_count):
+                                            current = False
+                                            break
+                                        admission_owner, observation = pair
+                                        attempt = admission._attempts.get(index)
+                                        if (admission_owner is not admission or attempt is None
+                                                or attempt.status != "observed"
+                                                or attempt.result is None
+                                                or attempt.result.status != "evidence_observed"
+                                                or attempt.result.observation is not observation
+                                                or not self._protected_observation_is_owned(
+                                                    admission, observation)
+                                                or not self._protected_save_event_current(
+                                                    index, job, inbox, observation)):
+                                            current = False
+                                            break
+                                        remote = observation._remote_receipt
+                                        promotion = observation._promotion_receipt
+                                        if (remote.request_index != index
+                                                or promotion.request_index != index
+                                                or remote.request_id != request.request_id
+                                                or promotion.request_id != request.request_id
+                                                or remote.workflow_identity != request.workflow_identity
+                                                or promotion.workflow_identity != request.workflow_identity
+                                                or len(remote.images) != output_count
+                                                or len(promotion.images) != output_count
+                                                or tuple(row.descriptor_identity for row in promotion.images)
+                                                    != tuple(item.identity for item in remote.images)):
+                                            current = False
+                                            break
+                                    elif (output_count != 0 or remote_count != 0 or registered_count != 0
+                                            or pair is not None or receipt is not None):
+                                        # A failed zero-output request is settled;
+                                        # any output without a complete registered
+                                        # receipt is an incomplete publication.
+                                        current = False
+                                        break
+                                    elif any(event.progress.request_index == index
+                                             and event.progress.kind in {
+                                                 "remote_outputs_ready", "outputs_ready"}
+                                             for event in inbox._events.values()):
+                                        current = False
+                                        break
+                                    elif any(getattr(getattr(event, "progress", None), "request_index", None) == index
+                                             and getattr(getattr(event, "progress", None), "kind", None)
+                                                 in {"remote_outputs_ready", "outputs_ready"}
+                                             for event in inbox._late):
+                                        current = False
+                                        break
+                if current:
+                    try:
+                        current = (self._origin.project in allowed_project_states
+                                   and self._protected_candidate_records_current(evidence))
+                    except Exception:
+                        current = False
+                yield bool(current)
+
+    def _protected_save_freshness(self, envelope, remote, evidence, *, allowed_project_states=None):
+        if envelope is not self._envelope:
+            return False
+        index = getattr(remote, "request_index", -1)
+        pair = evidence.get(index)
+        if pair is None or pair[1]._remote_receipt is not remote:
+            return False
+        with self._protected_save_authority(
+                evidence, allowed_project_states=allowed_project_states) as current:
+            return current
+
+    def _protected_save_readiness(self):
+        snapshot = self._runtime.generation_jobs.snapshot(self._envelope.job_id)
+        rows = snapshot.get("requests") if type(snapshot) is dict else None
+        if (snapshot.get("state") not in {"completed", "partially_failed"}
+                or type(rows) is not list or len(rows) != len(self._envelope.manifest.requests)):
+            return "registration_incomplete"
+        if any(receipt.registration_state == "registration_uncertain"
+               for receipt in self._records.values()):
+            return "registration_uncertain"
+        for index, row in enumerate(rows):
+            receipt = self._records.get(index)
+            pair = self._protected_evidence.get(index)
+            if row.get("state") == "completed":
+                if pair is None or receipt is None:
+                    return "registration_evidence_missing"
+                if (receipt.registration_state != "registered"
+                        or receipt.promotion_state != "protected_verified"
+                        or receipt.registered_count != row.get("output_count")
+                        or row.get("registered_count") != row.get("output_count")
+                        or row.get("remote_output_count") != row.get("output_count")):
+                    return "registration_incomplete"
+            elif (row.get("state") == "failed" and row.get("output_count") == 0
+                    and row.get("remote_output_count") == 0
+                    and row.get("registered_count") == 0 and pair is None and receipt is None):
+                continue
+            elif receipt is not None and receipt.registration_state == "registration_uncertain":
+                return "registration_uncertain"
+            else:
+                return "registration_incomplete"
+        if any(index < 0 or index >= len(rows) for index in self._records):
+            return "registration_evidence_conflict"
+        if any(index < 0 or index >= len(rows) for index in self._protected_evidence):
+            return "registration_evidence_conflict"
+        return None
+
     def save_for_characterization(self):
         if self._mode == "protected":
-            return "protected_save_not_in_scope"
+            return self._save_protected_for_characterization()
         with self._lock:
             if self._save_state != "not_attempted":
                 return self._save_state
@@ -623,6 +961,112 @@ class GenerationCandidatePublication:
             outcome = "save_uncertain" if attempted else "save_not_authorized"
             return outcome
         finally:
+            with self._lock:
+                self._save_state, self._busy = outcome, False
+
+    def _save_protected_for_characterization(self):
+        with self._lock:
+            if self._save_state != "not_attempted":
+                return self._save_state
+            if self._busy:
+                return "publication_busy"
+            refusal = self._protected_save_readiness()
+            if refusal is not None:
+                return refusal
+            evidence = dict(self._protected_evidence)
+            self._busy = True
+            self._save_state = "saving"
+
+        outcome = "save_not_authorized"
+        attempted = False
+        lease_tokens = []
+        try:
+            # The exact protected owner rechecks accepted staging and promoted
+            # files through the save-time host guard. Admission's earlier
+            # guard is deliberately not reused because requests are registered.
+            for admission_owner, observation in evidence.values():
+                if not self._protected_observation_is_owned(admission_owner, observation):
+                    raise ValueError("protected_admission_unavailable")
+                promotion_owner = observation._promotion_owner
+                if (promotion_owner._inspect_for_project_save_for_characterization(
+                        observation._promotion_receipt,
+                        lambda envelope, remote: self._protected_save_freshness(
+                            envelope, remote, evidence))
+                        is not observation._promotion_receipt):
+                    raise ValueError("protected_promotion_unavailable")
+
+            # A separate one-shot revocation lease fences owner close while the
+            # callback runs. It holds no protected/native/job/inbox lock.
+            seen_owners = set()
+            for _admission, observation in evidence.values():
+                owner = observation._promotion_owner
+                if owner in seen_owners:
+                    continue
+                token = owner.begin_project_save_for_characterization(
+                    observation._promotion_receipt)
+                seen_owners.add(owner)
+                lease_tokens.append((owner, token))
+
+            # Recheck every native file after acquiring all close leases.
+            for _admission, observation in evidence.values():
+                owner = observation._promotion_owner
+                if (owner._inspect_for_project_save_for_characterization(
+                        observation._promotion_receipt,
+                        lambda envelope, remote: self._protected_save_freshness(
+                            envelope, remote, evidence))
+                        is not observation._promotion_receipt):
+                    raise ValueError("protected_promotion_unavailable")
+
+            # The established serializer normalizes Modules, attributes and
+            # Candidate records in place. Compute the exact permitted result
+            # on a detached clone before the callback.
+            saved_source = copy.deepcopy(self._expected)
+            _project_to_serializable_data(saved_source, self._origin.path)
+            with self._protected_save_authority(evidence) as current:
+                if not current:
+                    return outcome
+
+            try:
+                attempted = True
+                result = self._save(self._origin.project, self._origin.path,
+                                    "Agent generation Candidates registered")
+                outcome = "saved" if result is True else "save_failed" if result is False else "save_uncertain"
+            except Exception:
+                outcome = "save_uncertain"
+            self._save_callback_outcome = outcome
+
+            # Revalidate native bytes, ACLs, identities and every registration
+            # after a possible write. A lost owner or host makes the disk result
+            # uncertain; retained files and JSON are never rolled back.
+            try:
+                allowed_states = (self._expected, saved_source)
+                for _admission, observation in evidence.values():
+                    owner = observation._promotion_owner
+                    if (owner._inspect_for_project_save_for_characterization(
+                            observation._promotion_receipt,
+                            lambda envelope, remote: self._protected_save_freshness(
+                                envelope, remote, evidence, allowed_project_states=allowed_states))
+                            is not observation._promotion_receipt):
+                        raise ValueError("protected_promotion_unavailable")
+                with self._protected_save_authority(
+                        evidence, allowed_project_states=allowed_states) as current:
+                    if not current:
+                        outcome = "save_uncertain"
+                    else:
+                        status = self._runtime.generation_jobs.save_for_characterization(
+                            self._envelope.job_id, self._envelope.claim_id,
+                            binding=self._envelope.binding, outcome=outcome)
+                        if status != "accepted":
+                            outcome = "save_uncertain"
+            except Exception:
+                outcome = "save_uncertain"
+            return outcome
+        except Exception:
+            outcome = "save_uncertain" if attempted else "save_not_authorized"
+            return outcome
+        finally:
+            for owner, token in reversed(lease_tokens):
+                owner.finish_project_save_for_characterization(token)
             with self._lock:
                 self._save_state, self._busy = outcome, False
 

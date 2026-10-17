@@ -881,10 +881,11 @@ only mutation path. The writer records the actual persistent Candidate delta,
 uses the existing Undo ordering, and settles the exact request's registration
 count once. Protected provenance identifies the promotion/admission and
 verified image bytes without claiming a legacy local receipt. Candidate
-registration remains distinct from Project save; protected characterization
-save is explicitly out of scope and never invokes the save callback. If an
-appender raises after leaving a provable subset, the first request remains
-`registration_uncertain` and cannot be replayed. Admission advances its
+registration remains distinct from Project save; this C2B-8D-11 step performs
+no save. C2B-8D-12 adds a separate exact original-host save decision after
+successful registration. If an appender raises after leaving a provable
+subset, the first request remains `registration_uncertain` and cannot be
+replayed. Admission advances its
 comparison baseline only when the complete original Project matches the prior
 baseline plus exactly that observed Candidate subset; this can admit a later
 distinct request while preserving the job's `partially_failed` state and
@@ -899,6 +900,48 @@ authorship. `execution_available=false`,
 `authorship=unverified` remain in force. See the [Candidate publication
 contract](agent-generation-candidate-publication.md#protected-candidate-admission-is-not-candidate-publication)
 for the shared writer boundary and persistence separation.
+
+### C2B-8D-12: protected Candidate JSON persistence
+
+Protected JSON persistence is a characterization-only extension of the same
+`GenerationCandidatePublication` owner and its original app save callback. It
+does not register another Candidate writer or Project serializer. Save requires
+all requests to be settled, and every output-producing request to have exactly
+one successful Candidate registration receipt whose count matches the job,
+accepted event history, admission observation, promotion receipt and complete
+ordered descriptor set. A definitive failed request with no outputs may remain
+in a `partially_failed` job. Missing evidence, partial registration, or any
+`registration_uncertain` result blocks save even when later requests completed.
+
+At save time, the issuing promotion owner revalidates accepted staging and
+promoted files, native identities, DACLs, bytes, approved destination, pinned
+promoted root, exact Candidate paths and recorded provenance. A distinct
+read-only save-time host verifier checks settled job state and the exact retained
+`remote_outputs_ready` / `outputs_ready` event pair; it does not reuse admission's
+pre-registration `awaiting_host_registration` check. The original Project
+object/path/source snapshot, session/process, activation/epoch, pairing and
+publisher ownership remain bound. The established `save_agent_scene_module_swap_project`
+callback continues to call `core.io.save_project_to_json` on that exact object
+and path. Expected serializer normalization is computed on a detached Project
+before the callback.
+
+Each promotion owner issues a separate one-shot save lease. Asset, acceptance
+and promotion close/invalidation cannot complete across an active save callback;
+the callback itself runs without native, protected-owner, admission, job or
+inbox locks. Protected files and original-host evidence are rechecked after a
+possible write. If the callback's result, current host or protected evidence is
+uncertain, the save is retained as `save_uncertain`; a known callback outcome is
+kept privately. No retry, rollback, Candidate replay or cleanup occurs. A
+callback returning false is `save_failed` only when post-checks still establish
+the original host and protected custody.
+
+This contract does not establish crash/power-loss durability, cross-file
+atomicity, restart-time authority reconstruction, cryptographic authorship,
+hostile same-user process isolation, or detection of transient mutations
+restored between checks. Retained JSON and protected images after uncertainty do
+not authorize Recovery or publication. The gates remain
+`execution_available=false`, `protected_storage_available=false`,
+`promotion_available=false`, and `authorship=unverified`.
 
 ### Observed evidence and unresolved guarantees
 

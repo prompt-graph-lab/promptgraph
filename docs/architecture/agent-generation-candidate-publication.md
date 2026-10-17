@@ -155,6 +155,59 @@ observed on return cannot authorize a new target or confirm saving: the publishe
 retains `save_uncertain`, including any known callback result. No implicit
 rollback, save retry or changed-target convenience save occurs.
 
+## Protected Candidate JSON persistence (C2B-8D-12)
+
+Protected mode extends this same `GenerationCandidatePublication` owner; it
+does not add a second Project writer or bypass the app's existing
+`save_agent_scene_module_swap_project` callback. Save is available only after
+every request is settled and each request that produced outputs has one exact
+`registered` publication receipt whose count matches the job registry, accepted
+event history, private admission observation, promotion receipt and complete
+ordered descriptor set. A failed zero-output request may remain settled in a
+`partially_failed` job. Any missing, partial or uncertain registration blocks
+save, including an earlier uncertain append followed by a later successful
+request.
+
+Immediately before the callback, the same original protected owners revalidate
+accepted staging and promoted files, native identities, DACLs, verified bytes,
+the pinned promoted root and approved destination. The save-specific host check
+replaces the admission-time `awaiting_host_registration` predicate with the
+exact completed Candidate registration and retained `remote_outputs_ready` /
+`outputs_ready` events. Every persisted Candidate path and provenance tuple is
+matched back to its ordered descriptor, frozen prompt/seed data and exact
+promotion/admission identity. The original Project object/path/source snapshot,
+session/process, activation/epoch, pairing and single publisher owner remain
+required.
+
+Each issuing promotion owner supplies a separate one-shot save lease. Protected
+asset, acceptance and promotion close/invalidation wait for an already claimed
+save callback, while the callback itself runs without native, protected-owner,
+admission, job or inbox locks. The publisher rechecks all protected files and
+host evidence after the callback before recording the registry save outcome.
+If close, invalidation, file/ACL drift or original-host loss overlaps a possible
+write, the result is `save_uncertain`; known callback outcome is retained
+privately. `True`, `False` and exception/malformed results map to `saved`,
+`save_failed` and `save_uncertain` only when the post-write checks still permit
+that classification. The attempt is one-shot; there is no retry, rollback,
+Candidate replay, asset deletion or JSON deletion.
+
+The callback retains the established serializer's in-place Module, attribute
+and Candidate normalization. Before persistence, the writer applies that same
+serialization normalization to a detached expected Project, then accepts only
+the original expected state or that exact normalized state after the callback.
+The app callback remains responsible for calling `core.io.save_project_to_json`
+on the captured Project and path; no current-UI autosave or alternate serializer
+is used.
+
+This remains offline characterization only. It does not prove crash/power-loss
+durability, cross-file atomicity, restart-time authority reconstruction,
+cryptographic authorship, or protection from hostile same-user processes or
+transient changes restored between bounded checks. Retained protected files and
+JSON after uncertainty are not recovery authority. `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`, and
+`authorship=unverified` remain in force; Candidate publication, Recovery, Start,
+Journal, production transport, cleanup and MCP execution are not enabled.
+
 ## Remaining gates
 
 The [C2B-7 integration and recovery audit](agent-generation-integration-recovery.md)
