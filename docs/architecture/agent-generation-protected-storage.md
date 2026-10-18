@@ -1003,3 +1003,77 @@ and Human Start remain separate gates.
 `execution_available=false`, `protected_storage_available=false`,
 `authorship=unverified`, Recovery inspect-only, and Candidate/Project/Journal/MCP
 execution and cleanup remain unchanged.
+
+## C2B-8D-17A offline storage preflight and capacity admission
+
+`core/generation_storage_admission.py` adds
+`WindowsProtectedStorageAdmissionCharacterization`, an explicit host-side
+composition of five already captured native roots: `private_journal`,
+`temporary_containment`, `retained_uncertain`, `promoted_assets`, and the exact
+`selected_project_json` read-only reference. The caller supplies the approved
+scope and exact root-owner objects. Each root must still report its captured
+local NTFS, owner-only ACL and native identity; all five must belong to the
+same captured scope identity and have distinct, non-overlapping paths and
+identities. The admission owner neither provisions roots nor repairs ACLs.
+The native root owner has a separate explicitly opted-in disposable provision
+method for a new `retained_uncertain` child; exclusive directory creation
+fails if that name already exists. The existing four-purpose path-only policy
+owner and its contract are unchanged.
+
+Capture inventories only bounded direct children of the four writable roots.
+It rejects links/reparse points, subdirectories, unsupported files, excessive
+entry counts, unsafe file ACLs and unavailable identities. It records file
+identity, size and the owner-only ACL snapshot, but does not read file content.
+Any pre-existing file has no live operation custody and is charged to retained
+uncertain accounting; it is never adopted as successful output. The selected
+Project JSON is identity/ACL checked as a reference and is never read, written
+or used as a storage destination.
+
+The accounting kernel issues one exact operation token and at most one
+reservation per operation. Estimates use bounded byte and entry upper bounds.
+Concurrent reservations share policy ceilings; staging and promoted assets
+share the existing `ContainmentLimits.aggregate_bytes` ceiling, and only one
+write admission may be active at once. The default ceilings are at most the
+existing 1 MiB Journal file limit, the existing 256 MiB staging/promoted
+aggregate, and a 256 MiB `retained_uncertain` root. Uncertain writes remain
+charged against the original purpose's retained-uncertain counter; they are
+not moved into the separate retained root. Journal revisions, asset entry
+counts, per-operation estimates and root inventory are bounded independently.
+Arithmetic and exact integer types are validated before
+admission. The owner also samples local filesystem free bytes and refuses a
+reservation larger than the current sample after subtracting outstanding and
+uncertain reservations. The sample is observational and may change immediately;
+it is not a capacity guarantee.
+
+A known pre-write cancellation releases its exact reservation. A completed
+admitted write is counted as observed-used only when the native inventory shows
+new protected files within the reserved byte/entry bounds and no prior entry
+was removed or replaced. Unknown outcome, inventory drift, close or
+invalidation converts unsettled upper bounds into retained-uncertain capacity;
+there is no timeout release while the owner is live, retry or cleanup. A
+reservation or write-admission token is bound to its exact in-memory owner, operation and
+one-shot state; copied tokens, cross-operation use, duplicate operation IDs,
+double release and duplicate completion are rejected.
+
+This is a **process-local accounting contract**, not an OS quota or a claim
+that the corresponding disk space is free. It does not prevent another
+process from consuming disk or bypassing this ledger. Reservations are
+process-local and disappear from memory at process exit; a fresh capture
+classifies existing files as retained uncertain, but cannot reconstruct a
+lost reservation whose write left no file. Therefore this characterization
+does not satisfy production restart accounting. Native identity and ACL observations are separately rechecked, but
+the accounting result does not itself prove pinned handles, content integrity,
+Journal durability, author identity, current Project/session authority or
+permission to execute. No current Journal, protected-assets or promotion
+writer consumes these reservation tokens. Their real write accounting and
+cross-process quota remain explicit production blockers.
+
+The next bounded boundary is offline integration of the reservation token with
+one create-only protected asset writer: reserve before its first native file
+creation, complete from the issuing owner's verified inventory, and retain
+capacity on every ambiguous path. Journal replacement, cross-process quota,
+production root policy, retention/discard and restart recovery need separate
+contracts and review. All production gates remain false, including
+`execution_available=false`, `protected_storage_available=false`,
+`promotion_available=false`, and `candidate_publication_allowed=false`;
+`authorship=unverified`.

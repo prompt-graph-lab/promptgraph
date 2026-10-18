@@ -15,6 +15,9 @@ from core.generation_protected_storage import _path, _ordinary, _fail, PURPOSES
 _FACTORY = object()
 _FILE_ID_INFO = 18
 _PERSISTENT_ACLS = 0x8
+# Retained uncertain evidence is a separately selected native root. Keep it
+# out of the older path-only policy owner so that owner remains four-purpose.
+_NATIVE_PURPOSES = PURPOSES + ("retained_uncertain",)
 
 
 class _FileIdInfo(ctypes.Structure):
@@ -194,11 +197,19 @@ class WindowsProtectedRootCharacterization:
                             characterization, disposable_opt_in, provision=True)
 
     @classmethod
+    def provision_retained_for_characterization(cls, disposable_scope, *,
+                                                characterization=False, disposable_opt_in=False):
+        # A new disposable child only; never adopt or repair an existing user
+        # directory, and never move/delete retained evidence automatically.
+        return cls._capture(disposable_scope, None, "retained_uncertain",
+                            characterization, disposable_opt_in, provision=True)
+
+    @classmethod
     def _capture(cls, scope_value, selected_path, purpose, characterization, opt_in, provision):
         if characterization is not True or opt_in is not True:
             _fail("execution_unavailable")
         scope = _path(scope_value)
-        if scope.drive.startswith("\\\\") or purpose not in PURPOSES:
+        if scope.drive.startswith("\\\\") or purpose not in _NATIVE_PURPOSES:
             _fail("unsupported_path")
         prefix = "journal" if purpose == "private_journal" else purpose
         path = scope / ("promptgraph-protected-" + prefix + "-" + uuid.uuid4().hex) if provision else _path(selected_path)
