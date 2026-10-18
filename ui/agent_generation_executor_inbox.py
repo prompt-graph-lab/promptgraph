@@ -15,6 +15,7 @@ import uuid
 from core.generation_executable_manifest import (
     FinalizedManifest, FinalizedRequest, MAX_AGGREGATE_BYTES, MAX_WORKFLOW_BYTES,
 )
+from core.comfy_remote_output_receipts import valid_prompt_id
 from ui.agent_generation_job import (
     GenerationJobRegistry, JobBinding, WorkerEvent, MAX_REQUESTS, MAX_RUNS,
     _TERMINAL, _digest, _token, _valid_binding, MAX_EVENTS, MAX_OUTPUTS_PER_REQUEST, MAX_EVENT_HISTORY,
@@ -128,6 +129,10 @@ class GenerationExecutorInbox:
         # so eviction from `_late` cannot make it disappear.
         self._late_output_seen = False
         self._events = OrderedDict()
+        # Diagnostic history stays at 64. The original host separately keeps
+        # exact accepted event objects, bounded by the Job Registry's hard
+        # 1024-event sequence limit, for live settlement correlation.
+        self._authority_events = []
 
     def reserve_for_characterization(self, manifest):
         if not self._characterization:
@@ -164,6 +169,7 @@ class GenerationExecutorInbox:
             return False
         self._envelope = envelope
         self._state = "offered"
+        self._authority_events.clear()
         return True
 
     def accept_for_characterization(self, jobs, receipt):
@@ -242,6 +248,10 @@ class GenerationExecutorInbox:
                 or type(progress.request_index) is not int or not 0 <= progress.request_index < MAX_REQUESTS
                 or type(progress.kind) is not str or progress.kind not in {
                     "submission_started", "submitted", "execution_progress", "execution_timeout", "remote_outputs_ready", "outputs_ready", "failed", "submission_unknown"}
+                or (progress.cause is not None and (progress.kind != "failed"
+                    or progress.cause not in {"pre_send_rejected", "execution_failed"}))
+                or (progress.prompt_id is not None and (progress.kind != "submitted"
+                    or not valid_prompt_id(progress.prompt_id)))
                 or type(progress.output_count) is not int
                 or not 0 <= progress.output_count <= MAX_OUTPUTS_PER_REQUEST
                 or (progress.kind not in {"outputs_ready", "remote_outputs_ready"} and progress.output_count != 0)):
@@ -283,6 +293,7 @@ class GenerationExecutorInbox:
                     self._events[event.progress.sequence] = event
                     while len(self._events) > MAX_EVENT_HISTORY:
                         self._events.popitem(last=False)
+                    self._authority_events.append(event)
                 return result
 
     def retire_settled_for_characterization(self, jobs, receipt):
@@ -345,3 +356,4 @@ class GenerationExecutorInbox:
         self._state = "empty"
         self._late_output_seen = False
         self._events.clear()
+        self._authority_events.clear()

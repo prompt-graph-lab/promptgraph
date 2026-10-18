@@ -132,7 +132,8 @@ current offline-only call site that binds this existing writer to the real
 owner from its current runtime, exact Project/source/review evidence, explicitly
 approved Project root and Journal root. The worker receives no Journal writer
 or send capability. Binding is accepted only after the inbox has taken the
-exact envelope; a single-request manifest is required.
+exact envelope. A single-request manifest uses the existing v1 Journal; a
+multi-request manifest uses the separately identified C2B-8D-15A contract.
 
 For that request, the host first accepts `submission_started`, the Journal
 owner verifies the exact frozen request and live host/job/claim state, then
@@ -145,11 +146,10 @@ after a possible send, any missing/invalid response or failed result
 acknowledgment remains unknown and cannot be retried. An acknowledged intent
 remains evidence if writing the later result fails.
 
-This call site deliberately refuses multi-request manifests. The current eight
-ordered checkpoints are aggregate operation stages and do not define how
-repeated per-request submission intents fit into one Journal. Expanding beyond
-one request requires a separately reviewed checkpoint schema and lifecycle;
-the current contract is not silently generalized. Reopen and inventory remain
+The v1 call site remains single-request because its eight ordered checkpoints
+are aggregate operation stages. Reusing those revisions for repeated requests
+would change their meaning. Multi-request work uses the separately identified
+schema below; v1 is not silently generalized. Reopen and inventory remain
 inspection-only and cannot recreate a claim, original-host authorization or
 permission to send/replay. This is characterization, not proof of power-loss
 durability or author authenticity. `execution_available` remains false.
@@ -162,8 +162,8 @@ contract for sequential request recording. It uses schema
 `<operation_id>.json` slot. V1's eight aggregate checkpoints, decoder,
 revision meaning and writer remain unchanged. The two schemas cannot occupy the
 same operation file simultaneously; neither writer migrates, overwrites or
-reinterprets the other's evidence. This contract is persistence-only and is not
-connected to `ComfyExecutorAdapter`.
+reinterprets the other's evidence. C2B-8D-15B composes this separate contract
+with the existing `ComfyExecutorAdapter` sequence below.
 
 The selected model keeps one bounded full-snapshot digest chain with three
 ordered records per frozen request. Extending or reinterpreting the v1
@@ -193,10 +193,10 @@ record is bound through the immutable operation snapshot and digest chain to
 operation/job/claim/manifest and the frozen request ID/index, Illustration, run
 and workflow identities. The settlement validator runs outside the Journal
 writer lock and returns a typed host observation; the writer then rechecks the
-exact live tip and binds that observation to it. The private characterization
-issuer is a test seam, not a host authorization source. C2B-8D-15B must connect
-it only to an independently validated current original-host/job settlement,
-never to Journal bytes, a prompt ID or a matching opaque string.
+exact live tip and binds that observation to it. The typed issuer is not
+authority by itself. C2B-8D-15B calls it only after independently validating
+current original-host/job settlement, never from Journal bytes, a prompt ID or
+a matching opaque string.
 
 The enforceable per-operation ceilings are:
 
@@ -228,15 +228,47 @@ observation, send authority or restart continuation. A digest-valid settled
 prefix is still not original-host authorization. The v1 Human Recovery reader
 does not interpret this format.
 
-C2B-8D-15B must compose the actual Executor's one-shot intent/send/result flow
-with this writer; preserve the no-integration behavior when it is absent; use
-the accepted `submission_started` host event; persist accepted/rejected/unknown
-outcomes without retry; wait for separately validated terminal host settlement
-before the next intent; and stop later requests on missing, conflicting or
-uncertain evidence. It must keep Journal I/O and transport/host callbacks
-outside job/inbox mutation locks, maintain the existing lock order, and leave
-restart, production worker registration, Start, Recovery, Candidate publication
-and Project save disabled.
+### C2B-8D-15B executor integration
+
+`GenerationExecutorJournalIntent` now selects the v1 writer for one request and
+the 15A `MultiRequestJournalWriter` for 2..100 requests before the first
+transport callback. Existing executor behavior is unchanged when no Journal
+owner is supplied. The multi-request path uses the accepted
+`submission_started` event, the exact frozen request, and a final current-host
+send claim. Each transport result is separately journaled as accepted,
+definite `pre_send_rejected`, or unknown. A possible-send unknown, missing or
+uncertain append stops the sequence; there is no retry.
+
+Before request N+1, the live owner obtains a typed settlement from current
+original-host evidence. It validates exact Project/path/source, activation,
+epoch, pairing, session/process, job/claim/manifest, Registry request state and
+failure cause, the prior acknowledged Journal tip, and the complete original-
+host event sequence. That sequence is retained separately from 64-entry
+diagnostic history and bounded by the existing 1024-event Registry cap; absent
+or conflicting private evidence refuses settlement.
+
+`pre_send_rejected` requires an exact definite rejection and matching failed
+event. `execution_failed` requires the accepted prompt UUID in the submitted
+event plus the Registry's exact failure cause. `execution_completed` requires
+the request itself to be fully completed, an exact registered Candidate
+Publisher record/count, and the correlated remote-output and local-output
+events. A final aggregate job state of `partially_failed` is allowed only when
+this request is itself fully registered (for example, an earlier distinct
+request failed). A request with partial/uncertain Candidate registration does
+not settle as completed and cannot authorize a later send. Pending, timeout,
+unknown, prompt acceptance alone, output metadata alone, missing event history,
+Project edits, callback invalidation and lost settlement acknowledgment all
+stop progression. Job/Inbox diagnostic state is not promoted to execution
+authority.
+
+File I/O, the injected transport, and native checks occur outside job/inbox and
+host mutation locks. The existing host gate -> route operation -> job -> inbox
+ordering is preserved; settlement runs under live original-host verification,
+then appends and reopens the exact Journal revision before advancing. Reopened
+records remain inspect-only; process restart cannot continue the sequence or
+recover send authority. No production Worker, Start, Recovery Apply, Candidate
+writer or Project save is enabled. All capability flags remain false and
+`authorship=unverified`.
 
 ### C2B-8A v1 failure and reopen semantics
 

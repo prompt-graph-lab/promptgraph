@@ -86,6 +86,8 @@ class WorkerEvent:
     request_index: int
     kind: str
     output_count: int = 0
+    cause: str | None = None
+    prompt_id: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,8 @@ class _Job:
     claim_key: str | None = None
     claim_id: str | None = None
     request_states: list = field(default_factory=list)
+    request_failure_causes: list = field(default_factory=list)
+    authority_events: list = field(default_factory=list)
     outputs: list = field(default_factory=list)
     remote_outputs: list = field(default_factory=list)
     registered: list = field(default_factory=list)
@@ -201,6 +205,7 @@ class GenerationJobRegistry:
             job_id = uuid.uuid4().hex
             job = _Job(job_id, frozen_binding, tuple(detached), now, now + PREPARED_TTL,
                        request_states=["unsent"] * len(detached),
+                       request_failure_causes=[None] * len(detached),
                        outputs=[0] * len(detached), registered=[0] * len(detached))
             job.remote_outputs = [0] * len(detached)
             self._jobs[job_id] = job
@@ -281,10 +286,17 @@ class GenerationJobRegistry:
                 or type(event.kind) is not str
                 or event.kind not in {"submission_started", "submitted", "execution_progress", "execution_timeout", "remote_outputs_ready", "outputs_ready",
                                       "failed", "submission_unknown"}
+                or (event.cause is not None and (event.kind != "failed"
+                    or event.cause not in {"pre_send_rejected", "execution_failed"}))
+                or (event.prompt_id is not None and (event.kind != "submitted"
+                    or type(event.prompt_id) is not str
+                    or not 1 <= len(event.prompt_id) <= 160
+                    or re.fullmatch(r"[A-Za-z0-9_-]+", event.prompt_id) is None))
                 or (event.kind not in {"outputs_ready", "remote_outputs_ready"} and event.output_count != 0)
                 or (event.kind in {"outputs_ready", "remote_outputs_ready"} and event.output_count == 0)):
             return "invalid_event"
-        detached = WorkerEvent(event.sequence, event.request_index, event.kind, event.output_count)
+        detached = WorkerEvent(event.sequence, event.request_index, event.kind, event.output_count,
+                               event.cause, event.prompt_id)
         now = self._clock()
         with self._lock:
             self._cleanup_locked(now)
@@ -323,11 +335,16 @@ class GenerationJobRegistry:
                     for state in job.request_states[:index])):
                 return "invalid_transition"
             job.request_states[index] = after
+            if event.kind == "failed":
+                job.request_failure_causes[index] = event.cause
             if event.kind == "remote_outputs_ready":
                 job.remote_outputs[index] = event.output_count
             elif event.kind not in {"execution_progress", "execution_timeout"}:
                 job.outputs[index] = event.output_count
             job.event_count += 1
+            # Keep exact live host evidence separately from the 64-event
+            # diagnostic projection; the registry enforces the 1024-event cap.
+            job.authority_events.append(detached)
             job.events[event.sequence] = detached
             while len(job.events) > MAX_EVENT_HISTORY:
                 job.events.popitem(last=False)
