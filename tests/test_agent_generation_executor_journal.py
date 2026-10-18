@@ -3,6 +3,7 @@ import copy
 import json
 from dataclasses import replace
 from pathlib import Path
+import queue
 import sys
 import threading
 import uuid
@@ -1503,3 +1504,706 @@ def test_windows_protected_journal_native_acknowledges_before_send(tmp_path, nat
             handle.Close()
     values[0].close()
     root_owner.close()
+
+
+def _worker_http_composition(values, context, submission_wire, history_wire, *, wait=2, join=0.1):
+    from ui.agent_generation_http_executor import compose_http_executor_with_worker_for_characterization
+    runtime, _, state, *_ = values
+    return compose_http_executor_with_worker_for_characterization(
+        state, runtime, context, submission_wire_factory=submission_wire,
+        history_wire_factory=history_wire, policy=PromptHTTPPolicy(2, 10),
+        worker_wait_timeout_seconds=wait, worker_join_timeout_seconds=join,
+        characterization=True)
+
+
+def test_host_owned_worker_requires_explicit_start_and_returns_results_to_host_owner(
+        tmp_path, monkeypatch):
+    from test_comfy_output_containment import successful_metadata
+    from ui import agent_generation_http_executor as composition_module
+
+    values = ready_one_request(tmp_path)
+    runtime, _, state, *_ = values
+    host_thread_id = threading.get_ident()
+    context, journal_root = context_for(values, tmp_path, operation_id="worker-host-owned")
+    prompt_id = str(uuid.uuid4())
+    order, wire_threads, delivered_threads, hook_errors, duplicate_task = [], [], [], [], []
+    composition_holder = {}
+    observed_submission_intent = False
+
+    def verify_host_ack_before_worker(kind, prepared, current_prompt, correlation, **kwargs):
+        nonlocal observed_submission_intent
+        assert threading.get_ident() == host_thread_id
+        if kind == "submission" and not observed_submission_intent:
+            reopened = journal.reopen_journal(journal_root, "worker-host-owned.json")
+            assert reopened.revision == 1
+            assert reopened.observations[-1].checkpoint == "submission_intent"
+            assert reopened.observations[-1].outcome == "intent"
+            assert reopened.observations[-1].requests[0].request_id == correlation.request_id
+            assert correlation.request_id == prepared.request_id
+            assert correlation.job_id == composed._adapter._envelope.job_id
+            observed_submission_intent = True
+            order.append("intent_acknowledged")
+        elif kind == "history":
+            reopened = journal.reopen_journal(journal_root, "worker-host-owned.json")
+            assert reopened.revision == 2 and reopened.observations[-1].outcome == "accepted"
+            assert current_prompt == prompt_id
+        return original_perform(kind, prepared, current_prompt, correlation, **kwargs)
+
+    def post_hook(index, body):
+        try:
+            assert index == 0 and threading.get_ident() != host_thread_id
+            wire_threads.append(threading.get_ident())
+            worker = composition_holder["value"]._io_worker
+            active = worker._active_task
+            assert active is not None and active.kind == "submission"
+            assert active.prepared is not None
+            assert not any(value is item for value in composition_holder["host_refs"]
+                           for item in vars(active).values())
+            duplicate_task[:] = [active.prepared, active.correlation]
+            order.append("post")
+            composition_holder["value"].advance_for_characterization()
+            assert composition_holder["value"].accept_offer_for_characterization(None).status == "executor_busy"
+            assert len(submission_wire.posts) == 1
+        except Exception as exc:
+            hook_errors.append(repr(exc))
+            raise
+
+    def history_hook(current_prompt):
+        assert threading.get_ident() != host_thread_id
+        wire_threads.append(threading.get_ident())
+        order.append("history")
+
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()],
+        post_hook=post_hook)
+    history_wire = _OfflineHistoryFactory({prompt_id: [b"{}", successful_metadata(prompt_id)]},
+                                          get_hook=history_hook)
+    original_deliver = composition_module.deliver_executor_event_for_characterization
+
+    def host_deliver(current_state, current_runtime, event):
+        delivered_threads.append(threading.get_ident())
+        return original_deliver(current_state, current_runtime, event)
+
+    monkeypatch.setattr(composition_module, "deliver_executor_event_for_characterization", host_deliver)
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    composition_holder["value"] = composed
+    original_perform = composed._io_worker.perform_for_characterization
+    monkeypatch.setattr(composed._io_worker, "perform_for_characterization",
+                        verify_host_ack_before_worker)
+    composition_holder["host_refs"] = [state, runtime, context, composed._adapter,
+                                        runtime.generation_jobs, runtime._generation_executor_inbox]
+
+    assert composed.io_worker_observation_for_characterization().state == "created"
+    refused = composed.accept_offer_for_characterization(None)
+    assert refused.status == "execution_unavailable"
+    assert context.inspection_for_characterization()["state"] == "unbound"
+    assert submission_wire.posts == [] and history_wire.gets == []
+
+    started = composed.start_io_worker_for_characterization()
+    assert started.state == "running" and started.thread_alive
+    accepted_receipt = _run_http_handoff(values, composed)
+    assert accepted_receipt.status == "characterized_acceptance", (
+        accepted_receipt, composed.observation_for_characterization(),
+        context.inspection_for_characterization(), composed.io_worker_observation_for_characterization(),
+        hook_errors, submission_wire.connections, submission_wire.posts)
+    assert composed.observation_for_characterization().status == "awaiting_remote_result"
+    assert len(submission_wire.posts) == 1 and history_wire.gets == [(prompt_id, 10)]
+    assert wire_threads and len(set(wire_threads)) == 1
+    assert all(thread_id != host_thread_id for thread_id in wire_threads)
+    assert delivered_threads and set(delivered_threads) == {host_thread_id}
+    assert order == ["intent_acknowledged", "post", "history"]
+
+    duplicate = composed._io_worker.perform_for_characterization(
+        "submission", duplicate_task[0], None, duplicate_task[1])
+    assert duplicate.task_id == 0 and duplicate.outcome.status == "unknown"
+    assert len(submission_wire.posts) == 1
+
+    assert composed.read_current_history_for_characterization().status == "awaiting_download"
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 2
+    assert set(delivered_threads) == {host_thread_id}
+    snapshot = runtime.generation_jobs.snapshot(runtime._generation_publication_origin.envelope.job_id)
+    assert snapshot["save_state"] == "not_attempted"
+    assert not any(event.progress.kind == "outputs_ready"
+                   for event in runtime._generation_executor_inbox._authority_events)
+    observation = composed.close_io_worker_for_characterization()
+    assert (observation.state == "closed" and observation.safe_terminated
+            and observation.terminal and not observation.thread_alive)
+    duplicate_after_close = composed._io_worker.perform_for_characterization(
+        "submission", duplicate_task[0], None, duplicate_task[1])
+    assert duplicate_after_close.task_id == 0 and duplicate_after_close.outcome.status == "unknown"
+    assert len(submission_wire.posts) == 1
+    runtime.close()
+
+
+def test_host_owned_worker_preserves_multi_request_intent_order_without_post_retry(
+        tmp_path, monkeypatch):
+    values = ready_generation(tmp_path, 2)
+    runtime = values[0]
+    context, journal_root = context_for(values, tmp_path, operation_id="worker-multi-request")
+    prompt_id = str(uuid.uuid4())
+    observed = []
+    host_thread_id = threading.get_ident()
+    original_perform = None
+
+    def verify_multi_intent_on_host(kind, prepared, current_prompt, correlation, **kwargs):
+        assert threading.get_ident() == host_thread_id
+        if kind == "submission" and correlation.request_index == 1:
+            reopened = multi_journal.reopen_multi_request_journal(
+                journal_root, "worker-multi-request.json")
+            assert reopened.revision == 4
+            assert type(reopened.events[0]) is multi_journal.SubmissionIntent
+            assert reopened.events[2].disposition == "pre_send_rejected"
+            assert reopened.events[3].request_index == 1
+            assert reopened.events[3].request_id == correlation.request_id
+            assert prepared.request_id == correlation.request_id
+            observed.append(correlation.request_id)
+        return original_perform(kind, prepared, current_prompt, correlation, **kwargs)
+
+    def post_hook(index, body):
+        assert index == 1 and threading.current_thread() is not threading.main_thread()
+
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()],
+        connect_failures={0}, post_hook=post_hook)
+    history_wire = _OfflineHistoryFactory({prompt_id: [b"{}"]})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    original_perform = composed._io_worker.perform_for_characterization
+    monkeypatch.setattr(composed._io_worker, "perform_for_characterization",
+                        verify_multi_intent_on_host)
+    assert composed.start_io_worker_for_characterization().state == "running"
+    accepted_receipt = _run_http_handoff(values, composed)
+    assert accepted_receipt.status == "characterized_acceptance", (
+        accepted_receipt, composed.observation_for_characterization(),
+        context.inspection_for_characterization(), composed.io_worker_observation_for_characterization())
+    assert len(submission_wire.posts) == 1 and submission_wire.connections == 2
+    assert history_wire.gets == [(prompt_id, 10)] and observed
+    reopened = multi_journal.reopen_multi_request_journal(journal_root, "worker-multi-request.json")
+    assert [event.request_index for event in reopened.events
+            if type(event) is multi_journal.SubmissionIntent] == [0, 1]
+    before = len(submission_wire.posts)
+    composed.advance_for_characterization()
+    assert len(submission_wire.posts) == before == 1
+    assert composed.close_io_worker_for_characterization().safe_terminated
+    values[0].close()
+
+
+def test_host_owned_worker_timeout_pins_possible_send_and_reports_live_thread_truthfully(tmp_path):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, journal_root = context_for(values, tmp_path, operation_id="worker-timeout")
+    entered, release = threading.Event(), threading.Event()
+    prompt_id = str(uuid.uuid4())
+
+    def post_hook(index, body):
+        entered.set()
+        assert release.wait(5)
+
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()], post_hook=post_hook)
+    history_wire = _OfflineHistoryFactory({prompt_id: [b"{}"]})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire,
+                                        wait=0.05, join=0.01)
+    assert composed.start_io_worker_for_characterization().state == "running"
+    accepted_receipt = _run_http_handoff(values, composed)
+    assert accepted_receipt.status in {"characterized_acceptance", "handoff_invalidated"}, (
+        accepted_receipt, composed.observation_for_characterization(),
+        context.inspection_for_characterization(), composed.io_worker_observation_for_characterization())
+    assert entered.is_set()
+    assert composed.observation_for_characterization().status == "submission_outcome_unknown"
+    assert len(submission_wire.posts) == 1 and history_wire.gets == []
+    assert composed.advance_for_characterization().status == "submission_outcome_unknown"
+    assert len(submission_wire.posts) == 1
+    journal_state = journal.reopen_journal(journal_root, "worker-timeout.json")
+    assert journal_state.observations[-1].outcome == "unknown"
+
+    live = composed.close_io_worker_for_characterization()
+    assert live.thread_alive and live.state == "close_pending" and not live.safe_terminated
+    assert live.uncertain_submissions == 1
+    assert len(submission_wire.posts) == 1
+    release.set()
+    closed = composed.close_io_worker_for_characterization()
+    assert closed.state == "closed" and closed.safe_terminated and not closed.thread_alive
+    assert closed.uncertain_submissions == 1
+    assert len(submission_wire.posts) == 1
+    runtime.close()
+
+
+def test_host_owned_worker_close_before_admission_makes_no_http_calls(tmp_path):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, _ = context_for(values, tmp_path, operation_id="worker-close-before-admission")
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+
+    closed = composed.close_io_worker_for_characterization()
+    assert closed.state == "closed" and closed.terminal and closed.safe_terminated
+    refused = composed.accept_offer_for_characterization(None)
+    assert refused.status == "execution_unavailable"
+    assert submission_wire.connections == 0 and submission_wire.posts == []
+    assert history_wire.gets == []
+    assert composed.io_worker_observation_for_characterization().terminal
+    runtime.close()
+
+
+def test_host_owned_worker_queue_full_is_definitive_pre_send_without_retry(
+        tmp_path, monkeypatch):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, journal_root = context_for(
+        values, tmp_path, operation_id="worker-queue-full")
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    worker = composed._io_worker
+
+    def full_queue(_task):
+        raise queue.Full
+
+    monkeypatch.setattr(worker._queue, "put_nowait", full_queue)
+    assert composed.start_io_worker_for_characterization().state == "running"
+    accepted_receipt = _run_http_handoff(values, composed)
+    assert accepted_receipt.status == "characterized_acceptance"
+    assert composed.observation_for_characterization().status == "requests_settled"
+    assert submission_wire.connections == 0 and submission_wire.posts == []
+    assert history_wire.gets == []
+    reopened = journal.reopen_journal(journal_root, "worker-queue-full.json")
+    assert reopened.revision == 2
+    assert reopened.observations[0].checkpoint == "submission_intent"
+    assert reopened.observations[1].checkpoint == "submission_observed"
+    assert reopened.observations[1].outcome == "failed"
+    assert composed._io_worker.observation_for_characterization().accepted_operations == 0
+    assert composed.close_io_worker_for_characterization().safe_terminated
+    runtime.close()
+
+
+@pytest.mark.parametrize("lost_completion", [False, True])
+def test_host_owned_worker_post_exception_or_missing_completion_is_unknown_and_never_retried(
+        tmp_path, monkeypatch, lost_completion):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, journal_root = context_for(
+        values, tmp_path,
+        operation_id="worker-lost-completion" if lost_completion else "worker-post-exception")
+    prompt_id = str(uuid.uuid4())
+    submission_wire = _OfflineSubmissionFactory(
+        [json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()],
+        post_error=OSError("offline response lost"))
+    history_wire = _OfflineHistoryFactory({prompt_id: [b"{}"]})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    assert composed.start_io_worker_for_characterization().state == "running"
+    if lost_completion:
+        monkeypatch.setattr(composed._io_worker, "perform_for_characterization",
+                            lambda *args, **kwargs: None)
+    accepted_receipt = _run_http_handoff(values, composed)
+    assert accepted_receipt.status in {"characterized_acceptance", "handoff_invalidated"}
+    assert composed.observation_for_characterization().status == "submission_outcome_unknown"
+    if lost_completion:
+        assert submission_wire.connections == 0 and submission_wire.posts == []
+    else:
+        assert submission_wire.connections == 1 and len(submission_wire.posts) == 1
+    assert history_wire.gets == []
+    reopened = journal.reopen_journal(
+        journal_root,
+        "worker-lost-completion.json" if lost_completion else "worker-post-exception.json")
+    assert reopened.revision == 2 and reopened.observations[-1].outcome == "unknown"
+    before = len(submission_wire.posts)
+    assert composed.advance_for_characterization().status == "submission_outcome_unknown"
+    assert len(submission_wire.posts) == before
+    closed = composed.close_io_worker_for_characterization()
+    assert closed.terminal and closed.safe_terminated and not closed.thread_alive
+    assert runtime.generation_jobs.snapshot(accepted_receipt.job_id)["save_state"] == "not_attempted"
+    runtime.close()
+
+
+def test_host_owned_worker_close_after_admission_before_transport_refuses_without_post(
+        tmp_path, monkeypatch):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, journal_root = context_for(values, tmp_path,
+                                        operation_id="worker-close-before-post")
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire,
+                                        wait=2, join=0.01)
+    worker = composed._io_worker
+    original_get = worker._queue.get
+    dequeued, release = threading.Event(), threading.Event()
+
+    def gated_get(*args, **kwargs):
+        task = original_get(*args, **kwargs)
+        dequeued.set()
+        assert release.wait(5)
+        return task
+
+    monkeypatch.setattr(worker._queue, "get", gated_get)
+    assert composed.start_io_worker_for_characterization().state == "running"
+    handoff_results = []
+    handoff_thread = threading.Thread(
+        target=lambda: handoff_results.append(_run_http_handoff(values, composed)))
+    handoff_thread.start()
+    try:
+        assert dequeued.wait(5)
+        live = composed.close_io_worker_for_characterization()
+        assert live.state == "close_pending" and live.thread_alive and not live.safe_terminated
+        handoff_thread.join(2)
+        assert not handoff_thread.is_alive()
+        assert handoff_results
+        assert submission_wire.connections == 0 and submission_wire.posts == []
+        assert history_wire.gets == []
+        observation = composed.observation_for_characterization()
+        assert observation.status == "requests_settled"
+        reopened = journal.reopen_journal(journal_root, "worker-close-before-post.json")
+        assert reopened.revision == 2
+        assert reopened.observations[-1].outcome == "failed"
+    finally:
+        release.set()
+    closed = composed.close_io_worker_for_characterization()
+    assert closed.state == "closed" and closed.terminal
+    assert closed.safe_terminated and not closed.thread_alive
+    runtime.close()
+
+
+def test_host_owned_worker_close_during_history_get_discards_late_result(tmp_path):
+    from test_comfy_output_containment import successful_metadata
+
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, _ = context_for(values, tmp_path, operation_id="worker-close-history")
+    prompt_id = str(uuid.uuid4())
+    entered, release = threading.Event(), threading.Event()
+
+    def get_hook(current_prompt):
+        entered.set()
+        assert release.wait(5)
+
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()])
+    history_wire = _OfflineHistoryFactory({prompt_id: [successful_metadata(prompt_id)]},
+                                          get_hook=get_hook)
+    composed = _worker_http_composition(values, context, submission_wire, history_wire,
+                                        wait=5, join=0.01)
+    composed.start_io_worker_for_characterization()
+    host_results = []
+    handoff_thread = threading.Thread(target=lambda: host_results.append(_run_http_handoff(values, composed)))
+    handoff_thread.start()
+    assert entered.wait(5)
+    live = composed.close_io_worker_for_characterization()
+    assert live.state == "close_pending" and live.thread_alive and not live.safe_terminated
+    handoff_thread.join(2)
+    assert not handoff_thread.is_alive()
+    assert host_results and host_results[0].status == "characterized_acceptance"
+    assert composed.observation_for_characterization().status == "execution_outcome_unknown"
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 1
+    assert not any(event.progress.kind == "remote_outputs_ready"
+                   for event in runtime._generation_executor_inbox._authority_events)
+    release.set()
+    closed = composed.close_io_worker_for_characterization()
+    assert closed.safe_terminated and closed.state == "closed" and not closed.thread_alive
+    assert len(submission_wire.posts) == 1
+    runtime.close()
+
+
+@pytest.mark.parametrize("invalidation", ["runtime_close", "source_path", "pairing"])
+def test_host_owned_worker_discards_post_result_after_original_host_invalidation(tmp_path, invalidation):
+    values = ready_one_request(tmp_path)
+    runtime, _, state, *_ = values
+    context, journal_root = context_for(values, tmp_path,
+                                        operation_id="worker-host-drift-" + invalidation)
+    entered, release = threading.Event(), threading.Event()
+    prompt_id = str(uuid.uuid4())
+
+    def post_hook(index, body):
+        entered.set()
+        assert release.wait(5)
+
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()], post_hook=post_hook)
+    history_wire = _OfflineHistoryFactory({prompt_id: [b"{}"]})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    composed.start_io_worker_for_characterization()
+    host_results = []
+    handoff_thread = threading.Thread(target=lambda: host_results.append(_run_http_handoff(values, composed)))
+    handoff_thread.start()
+    assert entered.wait(5)
+    if invalidation == "runtime_close":
+        runtime.close()
+    elif invalidation == "source_path":
+        state["current_project_path"] += ".changed"
+    else:
+        runtime.generation_jobs.invalidate_execution_custody()
+        runtime._generation_executor_inbox.invalidate()
+    release.set()
+    handoff_thread.join(5)
+    assert not handoff_thread.is_alive()
+    assert host_results and len(submission_wire.posts) == 1
+    assert history_wire.gets == []
+    assert composed.observation_for_characterization().status in {
+        "submission_outcome_unknown", "host_invalidated"}
+    assert composed.advance_for_characterization().status in {
+        "submission_outcome_unknown", "host_invalidated"}
+    assert len(submission_wire.posts) == 1
+    reopened = journal.reopen_journal(journal_root, "worker-host-drift-" + invalidation + ".json")
+    assert reopened.observations[0].checkpoint == "submission_intent"
+    composed.close_io_worker_for_characterization()
+    if invalidation != "runtime_close":
+        runtime.close()
+
+
+def test_host_owned_worker_close_after_candidate_registration_settles_current_request_only(
+        tmp_path, monkeypatch):
+    from core.comfy_output_containment import ContainedOutputStore
+    from test_comfy_output_containment import image_bytes, stream_provider, contain, successful_metadata
+    from ui.agent_generation_candidate_publication import GenerationCandidatePublication
+    from ui.agent_generation_executor_handoff import local_output_custody_current_for_characterization
+    from test_agent_generation_candidate_publication import app_owners
+
+    output = tmp_path / "worker-multi-durable-output"
+    output.mkdir()
+    staging = tmp_path / "worker-multi-staging"
+    staging.mkdir()
+    import core.comfy_output_containment as containment
+    monkeypatch.setattr(containment.tempfile, "tempdir", str(staging))
+    base_provider = host_for()
+
+    def host_provider(project, runs):
+        host = base_provider(project, runs)
+        host["generation_options"]["output_directory"] = str(output)
+        return host
+
+    values = ready_generation(tmp_path, 2, host_provider=host_provider)
+    runtime, _, state, *_ = values
+    state["history"] = []
+    context, journal_root = context_for(values, tmp_path, operation_id="worker-close-after-first")
+    prompt_id = str(uuid.uuid4())
+    descriptors = [{"filename": "remote.png", "subfolder": "private", "type": "output"}]
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()])
+    history_wire = _OfflineHistoryFactory({
+        prompt_id: [successful_metadata(prompt_id, descriptors)]})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    assert composed.start_io_worker_for_characterization().state == "running"
+    handoff_receipt = _run_http_handoff(values, composed)
+    assert handoff_receipt.status == "characterized_acceptance"
+    adapter = composed._adapter
+    assert adapter.observation().status == "awaiting_download"
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 1
+
+    adapter._local_gate = lambda envelope, remote, local: local_output_custody_current_for_characterization(
+        state, runtime, envelope, remote, local)
+    store = ContainedOutputStore.create_for_characterization(characterization=True)
+    contained = contain(adapter, store, stream_provider(image_bytes()))
+    assert contained.status == "local_outputs_ready"
+    owners = app_owners(state)
+    publisher = GenerationCandidatePublication.create_for_characterization(
+        state, runtime, adapter._envelope, approved_directory=str(output),
+        candidate_factory=owners["_make_generated_candidate_record"],
+        candidate_appender=owners["_append_line_generated_candidates"],
+        save_project=owners["save_agent_scene_module_swap_project"], characterization=True)
+    remote = next(item for item in adapter.remote_receipts() if item.request_index == 0)
+    local = next(item for item in adapter.local_receipts() if item.request_index == 0)
+    publication = publisher.publish_for_characterization(store, remote, local)
+    assert publication.registration_state == "registered" and publication.registered_count == 1
+    assert runtime.generation_jobs.snapshot(handoff_receipt.job_id)["requests"][0]["state"] == "completed"
+
+    closed = composed.close_io_worker_for_characterization()
+    assert closed.state == "closed" and closed.safe_terminated
+    before_events = tuple(runtime._generation_executor_inbox._authority_events)
+    advanced = composed.advance_for_characterization()
+    assert advanced.status == "submission_worker_unavailable"
+    after_events = tuple(runtime._generation_executor_inbox._authority_events)
+    assert after_events[:len(before_events)] == before_events
+    assert not any(event.progress.request_index == 1
+                   and event.progress.kind == "submission_started" for event in after_events)
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 1
+    snapshot = runtime.generation_jobs.snapshot(handoff_receipt.job_id)
+    assert [row["state"] for row in snapshot["requests"]] == ["completed", "unsent"]
+    assert snapshot["requests"][0]["registered_count"] == 1
+    reopened = multi_journal.reopen_multi_request_journal(
+        journal_root, "worker-close-after-first.json")
+    assert reopened.revision == 3 and reopened.next_request_index == 1
+    assert [(type(event), event.request_index) for event in reopened.events] == [
+        (multi_journal.SubmissionIntent, 0),
+        (multi_journal.SubmissionOutcome, 0),
+        (multi_journal.RequestSettlement, 0),
+    ]
+    assert reopened.events[-1].disposition == "execution_completed"
+    assert composed.advance_for_characterization().status == "submission_worker_unavailable"
+    assert multi_journal.reopen_multi_request_journal(
+        journal_root, "worker-close-after-first.json").revision == 3
+    runtime.close()
+
+
+def test_host_owned_worker_close_linearizes_before_concurrent_handoff_admission(
+        tmp_path, monkeypatch):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, _ = context_for(values, tmp_path, operation_id="worker-close-handoff-race")
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    worker = composed._io_worker
+    assert composed.start_io_worker_for_characterization().state == "running"
+    original_close = worker.close_for_characterization
+    worker_closed, release_close = threading.Event(), threading.Event()
+
+    def close_then_hold_admission_gate():
+        result = original_close()
+        worker_closed.set()
+        assert release_close.wait(5)
+        return result
+
+    monkeypatch.setattr(worker, "close_for_characterization", close_then_hold_admission_gate)
+    close_results = []
+    closer = threading.Thread(
+        target=lambda: close_results.append(composed.close_io_worker_for_characterization()))
+    closer.start()
+    assert worker_closed.wait(5)
+    handoff_receipt = composed.accept_offer_for_characterization(None)
+    assert handoff_receipt.status == "execution_unavailable"
+    try:
+        release_close.set()
+        closer.join(5)
+        assert not closer.is_alive()
+    finally:
+        release_close.set()
+    assert close_results and close_results[0].state == "closed"
+    assert context.inspection_for_characterization()["state"] == "unbound"
+    assert not any(event.progress.kind == "submission_started"
+                   for event in runtime._generation_executor_inbox._authority_events)
+    assert submission_wire.connections == 0 and submission_wire.posts == []
+    assert history_wire.gets == []
+    runtime.close()
+
+
+def test_host_owned_worker_reentrant_close_from_journal_fault_is_bounded_and_pre_send(
+        tmp_path):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    composition_holder = {}
+    close_results = []
+    fault_points = []
+
+    def journal_fault(boundary):
+        fault_points.append(boundary)
+        if boundary == "before_replace" and not close_results:
+            close_results.append(
+                composition_holder["value"].close_io_worker_for_characterization())
+
+    context, journal_root = context_for(
+        values, tmp_path, operation_id="worker-reentrant-close", fault=journal_fault)
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    composition_holder["value"] = composed
+    assert composed.start_io_worker_for_characterization().state == "running"
+
+    handoff_done = threading.Event()
+    handoff_results = []
+    handoff_errors = []
+
+    def handoff_on_bounded_thread():
+        try:
+            handoff_results.append(_run_http_handoff(values, composed))
+        except BaseException as exc:
+            handoff_errors.append(repr(exc))
+        finally:
+            handoff_done.set()
+
+    handoff_thread = threading.Thread(target=handoff_on_bounded_thread, daemon=True)
+    handoff_thread.start()
+    assert handoff_done.wait(5), "reentrant close blocked the host handoff thread"
+    handoff_thread.join(1)
+    assert not handoff_thread.is_alive()
+    assert not handoff_errors
+    assert handoff_results and handoff_results[0].status == "characterized_acceptance"
+    assert close_results and close_results[0].state in {"closed", "close_pending"}
+
+    worker_observation = composed.io_worker_observation_for_characterization()
+    assert worker_observation.state in {"closed", "close_pending"}
+    if worker_observation.state == "close_pending":
+        assert worker_observation.thread_alive and not worker_observation.safe_terminated
+    else:
+        assert worker_observation.safe_terminated and not worker_observation.thread_alive
+    assert composed.observation_for_characterization().status == "requests_settled"
+    assert submission_wire.connections == 0 and submission_wire.posts == []
+    assert history_wire.gets == []
+
+    reopened = journal.reopen_journal(journal_root, "worker-reentrant-close.json")
+    assert reopened.revision == 2
+    assert [item.checkpoint for item in reopened.observations] == [
+        "submission_intent", "submission_observed"]
+    assert reopened.observations[-1].outcome == "failed"
+    assert "before_replace" in fault_points
+    runtime.close()
+
+
+def test_host_owned_worker_concurrent_close_does_not_wait_for_journal_callback(
+        tmp_path):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    journal_entered, release_journal = threading.Event(), threading.Event()
+    journal_calls = []
+
+    def journal_fault(boundary):
+        journal_calls.append(boundary)
+        if boundary == "before_replace" and len(journal_calls) == 1:
+            journal_entered.set()
+            if not release_journal.wait(5):
+                raise RuntimeError("test_journal_release_timeout")
+
+    context, journal_root = context_for(
+        values, tmp_path, operation_id="worker-concurrent-close", fault=journal_fault)
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    assert composed.start_io_worker_for_characterization().state == "running"
+
+    handoff_done = threading.Event()
+    handoff_results, handoff_errors = [], []
+
+    def handoff_on_bounded_thread():
+        try:
+            handoff_results.append(_run_http_handoff(values, composed))
+        except BaseException as exc:
+            handoff_errors.append(repr(exc))
+        finally:
+            handoff_done.set()
+
+    handoff_thread = threading.Thread(target=handoff_on_bounded_thread, daemon=True)
+    handoff_thread.start()
+    assert journal_entered.wait(5)
+
+    close_done = threading.Event()
+    close_results = []
+
+    def close_on_bounded_thread():
+        try:
+            close_results.append(composed.close_io_worker_for_characterization())
+        finally:
+            close_done.set()
+
+    close_thread = threading.Thread(target=close_on_bounded_thread, daemon=True)
+    close_thread.start()
+    try:
+        assert close_done.wait(2), "close waited for the stalled Journal callback"
+        assert close_results and close_results[0].state in {"closed", "close_pending"}
+    finally:
+        release_journal.set()
+    assert handoff_done.wait(5)
+    handoff_thread.join(1)
+    close_thread.join(1)
+    assert not handoff_thread.is_alive() and not close_thread.is_alive()
+    assert not handoff_errors
+    assert handoff_results and handoff_results[0].status == "characterized_acceptance"
+    assert submission_wire.connections == 0 and submission_wire.posts == []
+    assert history_wire.gets == []
+
+    reopened = journal.reopen_journal(journal_root, "worker-concurrent-close.json")
+    assert reopened.revision == 2
+    assert reopened.observations[0].checkpoint == "submission_intent"
+    assert reopened.observations[1].checkpoint == "submission_observed"
+    assert reopened.observations[1].outcome == "failed"
+    assert composed.io_worker_observation_for_characterization().state in {
+        "closed", "close_pending"}
+    runtime.close()

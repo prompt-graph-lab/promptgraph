@@ -331,6 +331,77 @@ pairing replacement, disarm, close, lost ownership and unknown submission retain
 their invalidation fences. Late metadata may enter a private bounded quarantine,
 but never becomes authoritative remote/local/publication progress.
 
+### C2B-8D-16B disabled host-owned HTTP I/O Worker lifecycle
+
+`compose_http_executor_with_worker_for_characterization` is a separate explicit
+composition over the same injected submission/history transports, Journal
+owner, `ComfyExecutorAdapter`, and original-host event delivery. The original
+16A composition remains synchronous when this opt-in is absent. Worker
+construction starts no thread; the original host must explicitly call
+`start_io_worker_for_characterization`, and can inspect or close it through the
+matching characterization methods. No production caller or UI starts it.
+
+The Worker owns one lazily started daemon thread, a one-item task queue, and one
+operation gate. Each task contains only an owner-prepared `FrozenPromptRequest`,
+bounded exact operation/request/attempt correlation, and (for History) the
+accepted prompt UUID. It receives no Streamlit state, Project, host/job/inbox
+locks, Journal writer, event sink, or reusable authorization token. The
+original host acknowledges the exact Journal intent and accepted
+`submission_started` event before admitting POST work. The Worker only invokes
+the existing bounded HTTP transport. Typed outcomes return to the waiting host
+thread, which records Journal outcomes, rechecks original-host freshness, and
+delivers all events through the existing adapter/event-sink owners. The Worker
+cannot update the Job Registry, Inbox, Journal, Project, Candidate or save.
+
+The result boundary requires a positive Worker task identity, exact operation
+and request correlation, the original frozen request instance, and a bounded
+typed HTTP result. A request is reserved once per operation/job/claim/request;
+the Worker has no automatic retry. One hundred POST attempts is the maximum
+accepted manifest bound. History is read once automatically after accepted
+submission; later reads require an explicit host call and never resubmit POST.
+An accepted prompt remains distinct from remote completion and from any local
+output, Candidate or save state.
+
+Lifecycle observations distinguish `created`, `running`, `uncertain`,
+`closing`, `close_pending`, `closed`, `uncertain_stopped` and `start_failed`,
+with explicit `terminal`, `thread_alive` and `safe_terminated` fields. Worker
+wait and thread-join bounds are finite and capped, but they are not a hard
+whole-operation deadline: a blocked injected/native call can outlive the host
+wait. A live thread is reported as `close_pending` and never as safely
+terminated. A queued task cancelled before entering the transport is a
+definitive pre-send rejection. Once POST transport entry is possible, timeout,
+close, lost completion, transport exception or host drift is unknown; late
+results are discarded, and neither close nor thread termination proves remote
+cancellation. The one-shot claim remains consumed. Close during History GET
+also discards its late result; there is no background polling.
+
+Worker start/close serialize through the Worker's short lifecycle lock. The
+host admission lease covers `submission_started`, acknowledged Journal intent
+and Worker queue admission, then releases before the bounded HTTP wait. Close
+does not wait for that lease, so a caller-injected Journal callback can request
+close reentrantly and concurrent close is not held behind Journal I/O. If
+close linearizes during an already-started intent write, that intent may still
+be acknowledged; the Worker's queue gate then refuses admission as a definite
+pre-send rejection when no task is active, with zero HTTP call. The existing
+Journal outcome records that refusal. Once close/terminal state linearizes, a
+later `advance` may settle an already completed and registered request, then
+stops before emitting the next `submission_started` or Journal intent.
+Remaining requests stay unsent rather than becoming false pre-send failures.
+A request whose queue admission preceded close remains subject to the existing
+pre-send/possible-send uncertainty rules.
+
+Deterministic tests compose these states with in-memory wires and disposable
+host/Journal fixtures, including exact intent-before-POST ordering, sequential
+multi-request Journal transitions, reentrant/duplicate calls, close before
+admission and before transport entry, close during POST/History, late results,
+path/pairing/runtime invalidation, missing completion, timeout, post-registration
+close fencing, and bounded shutdown reporting. They prove only this offline
+characterization. Real
+ComfyUI interoperability, worker scheduling under production Streamlit reruns,
+DNS/header deadlines, process-restart authority, production transport
+registration and Human Start remain unimplemented. All production gates remain
+false and `authorship=unverified`.
+
 ## Remote metadata trust boundary and limits
 
 `core.comfy_remote_output_receipts.validate_remote_outputs` checks the frozen
