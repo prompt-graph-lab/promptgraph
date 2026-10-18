@@ -73,9 +73,11 @@ class ComfyExecutorAdapter:
 
     def __init__(self, jobs, inbox, *, fake_transport, fake_result_provider, host_event_sink,
                  characterization=False, host_local_output_gate=None,
-                 journal_intent_owner=None):
+                 journal_intent_owner=None, submission_admission_gate=None):
         if (type(jobs) is not GenerationJobRegistry or type(inbox) is not GenerationExecutorInbox
-                or type(characterization) is not bool):
+                or type(characterization) is not bool
+                or (submission_admission_gate is not None
+                    and not callable(submission_admission_gate))):
             raise ValueError("invalid_executor_owner")
         self._enabled = characterization and jobs._characterization and inbox._characterization
         self._jobs, self._inbox = jobs, inbox
@@ -86,6 +88,8 @@ class ComfyExecutorAdapter:
             if type(journal_intent_owner) is not GenerationExecutorJournalIntent:
                 raise ValueError("invalid_journal_intent_owner")
         self._journal_intent_owner = journal_intent_owner
+        self._submission_admission_gate = submission_admission_gate
+        self._active_submission_admission = None
         self._journal_advance_lock = threading.RLock()
         self._last_event = None
         self._local_store = None
@@ -201,26 +205,9 @@ class ComfyExecutorAdapter:
                     return self._observe("journal_request_preparation_unavailable")
                 self._index += 1
                 continue
-            self._phase = "submitting"
-            if self._emit("submission_started") != "accepted":
-                self._phase = "stopped"
-                return self._observe("host_invalidated")
-            if self._journal_intent_owner is not None:
-                intent_status = self._journal_intent_owner.acknowledge_intent_before_send_for_characterization(
-                    self._envelope, prepared, self._last_event, self._jobs, self._inbox, self._acceptance)
-                if intent_status != "acknowledged":
-                    # No transport is invoked unless the Journal owner verifies
-                    # its exact revision/digest/file identity and claims the
-                    # final current-host send boundary.
-                    self._emit("failed")
-                    self._phase = "stopped"
-                    return self._observe(
-                        "journal_host_invalidated_before_send" if intent_status == "host_invalidated_before_send"
-                        else "journal_intent_unacknowledged")
-            try:
-                submission = self._transport(prepared)
-            except Exception:
-                submission = None
+            failure, submission = self._submit_prepared_for_characterization(prepared)
+            if failure is not None:
+                return self._observe(failure)
             if self._journal_intent_owner is not None:
                 journal_outcome, journal_prompt = "unknown", None
                 if (type(submission) is SubmissionResult
@@ -290,6 +277,48 @@ class ComfyExecutorAdapter:
                 return outcome
         self._phase = "done"
         return self._observe("requests_settled")
+
+    def _submit_prepared_for_characterization(self, prepared):
+        admission = None
+        if self._submission_admission_gate is not None:
+            try:
+                admission = self._submission_admission_gate()
+            except Exception:
+                admission = None
+            if admission is None:
+                self._phase = "ready"
+                return "submission_worker_unavailable", None
+        try:
+            self._phase = "submitting"
+            if self._emit("submission_started") != "accepted":
+                self._phase = "stopped"
+                return "host_invalidated", None
+            if self._journal_intent_owner is not None:
+                intent_status = self._journal_intent_owner.acknowledge_intent_before_send_for_characterization(
+                    self._envelope, prepared, self._last_event, self._jobs, self._inbox, self._acceptance)
+                if intent_status != "acknowledged":
+                    # No transport is invoked unless the Journal owner verifies
+                    # its exact revision/digest/file identity and claims the
+                    # final current-host send boundary.
+                    self._emit("failed")
+                    self._phase = "stopped"
+                    return (
+                        "journal_host_invalidated_before_send"
+                        if intent_status == "host_invalidated_before_send"
+                        else "journal_intent_unacknowledged",
+                        None,
+                    )
+            self._active_submission_admission = admission
+            try:
+                try:
+                    return None, self._transport(prepared)
+                except Exception:
+                    return None, None
+            finally:
+                self._active_submission_admission = None
+        finally:
+            if admission is not None:
+                admission.release()
 
     def receive_result_for_characterization(self, result):
         if self._journal_intent_owner is not None and self._journal_intent_owner._multi_request:

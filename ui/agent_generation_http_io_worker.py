@@ -180,10 +180,12 @@ class HostOwnedHTTPIOWorker:
             self._state = "running"
             return self._observation_locked()
 
-    def perform_for_characterization(self, kind, prepared, prompt_id, correlation):
+    def perform_for_characterization(self, kind, prepared, prompt_id, correlation, *,
+                                     after_admission=None):
         if (kind not in {"submission", "history"}
                 or not is_owner_prepared_frozen_request(prepared)
-                or not _valid_correlation(kind, correlation, prepared, prompt_id)):
+                or not _valid_correlation(kind, correlation, prepared, prompt_id)
+                or (after_admission is not None and not callable(after_admission))):
             return None
         if not self._operation_gate.acquire(blocking=False):
             return self._refusal(kind, correlation, SubmissionResult("unknown")
@@ -227,6 +229,13 @@ class HostOwnedHTTPIOWorker:
                         SubmissionResult("rejected_before_submission") if kind == "submission"
                         else HistoryResult("unknown"))
                 self._accepted_operations += 1
+
+            # This callback stays on the original host caller thread and is
+            # never copied into the task visible to the Worker thread. It
+            # releases the host's request-admission lease once queue admission
+            # has linearized, so close may interrupt the bounded wait.
+            if after_admission is not None:
+                after_admission()
 
             if not task.completed.wait(self._wait_timeout):
                 with self._lock:

@@ -129,11 +129,22 @@ does not bound DNS, response headers or the entire HTTP operation. There is no
 background History polling; only an explicit host call may request a later GET,
 and it cannot resubmit POST.
 
+Worker start/close and each next-request admission share a host-side lock. The
+admission lease spans the `submission_started` event, Journal intent
+acknowledgment and one-item queue admission, then releases before the bounded
+HTTP wait. Once close or another terminal Worker state linearizes, an
+`advance` can preserve settlement for an already completed/registered request
+but stops before creating a later request's event or intent. Thus shutdown
+does not turn remaining unsent requests into false failures. A request already
+admitted before close still follows the existing one-shot pre-send versus
+possible-send uncertainty rules.
+
 Offline integration tests use disposable Projects, Journal owners and injected
 wire fakes to characterize exact intent-before-send, accepted POST/History
 result return, host-only event delivery, sequential requests, pre-send versus
 possible-send outcomes, callback reentry, duplicate attempts, close races,
-late results, host drift, missing completion and live-thread reporting. This
+late results, host drift, missing completion, post-registration close fencing
+and live-thread reporting. This
 composition does not establish production scheduling under Streamlit reruns,
 production registration, process-restart authority, live ComfyUI
 interoperability, Candidate publication or Project save. Production capability

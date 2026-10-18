@@ -1530,7 +1530,7 @@ def test_host_owned_worker_requires_explicit_start_and_returns_results_to_host_o
     composition_holder = {}
     observed_submission_intent = False
 
-    def verify_host_ack_before_worker(kind, prepared, current_prompt, correlation):
+    def verify_host_ack_before_worker(kind, prepared, current_prompt, correlation, **kwargs):
         nonlocal observed_submission_intent
         assert threading.get_ident() == host_thread_id
         if kind == "submission" and not observed_submission_intent:
@@ -1547,7 +1547,7 @@ def test_host_owned_worker_requires_explicit_start_and_returns_results_to_host_o
             reopened = journal.reopen_journal(journal_root, "worker-host-owned.json")
             assert reopened.revision == 2 and reopened.observations[-1].outcome == "accepted"
             assert current_prompt == prompt_id
-        return original_perform(kind, prepared, current_prompt, correlation)
+        return original_perform(kind, prepared, current_prompt, correlation, **kwargs)
 
     def post_hook(index, body):
         try:
@@ -1645,7 +1645,7 @@ def test_host_owned_worker_preserves_multi_request_intent_order_without_post_ret
     host_thread_id = threading.get_ident()
     original_perform = None
 
-    def verify_multi_intent_on_host(kind, prepared, current_prompt, correlation):
+    def verify_multi_intent_on_host(kind, prepared, current_prompt, correlation, **kwargs):
         assert threading.get_ident() == host_thread_id
         if kind == "submission" and correlation.request_index == 1:
             reopened = multi_journal.reopen_multi_request_journal(
@@ -1657,7 +1657,7 @@ def test_host_owned_worker_preserves_multi_request_intent_order_without_post_ret
             assert reopened.events[3].request_id == correlation.request_id
             assert prepared.request_id == correlation.request_id
             observed.append(correlation.request_id)
-        return original_perform(kind, prepared, current_prompt, correlation)
+        return original_perform(kind, prepared, current_prompt, correlation, **kwargs)
 
     def post_hook(index, body):
         assert index == 1 and threading.current_thread() is not threading.main_thread()
@@ -1793,7 +1793,8 @@ def test_host_owned_worker_post_exception_or_missing_completion_is_unknown_and_n
     composed = _worker_http_composition(values, context, submission_wire, history_wire)
     assert composed.start_io_worker_for_characterization().state == "running"
     if lost_completion:
-        monkeypatch.setattr(composed._io_worker, "perform_for_characterization", lambda *args: None)
+        monkeypatch.setattr(composed._io_worker, "perform_for_characterization",
+                            lambda *args, **kwargs: None)
     accepted_receipt = _run_http_handoff(values, composed)
     assert accepted_receipt.status in {"characterized_acceptance", "handoff_invalidated"}
     assert composed.observation_for_characterization().status == "submission_outcome_unknown"
@@ -1947,3 +1948,129 @@ def test_host_owned_worker_discards_post_result_after_original_host_invalidation
     composed.close_io_worker_for_characterization()
     if invalidation != "runtime_close":
         runtime.close()
+
+
+def test_host_owned_worker_close_after_candidate_registration_settles_current_request_only(
+        tmp_path, monkeypatch):
+    from core.comfy_output_containment import ContainedOutputStore
+    from test_comfy_output_containment import image_bytes, stream_provider, contain, successful_metadata
+    from ui.agent_generation_candidate_publication import GenerationCandidatePublication
+    from ui.agent_generation_executor_handoff import local_output_custody_current_for_characterization
+    from test_agent_generation_candidate_publication import app_owners
+
+    output = tmp_path / "worker-multi-durable-output"
+    output.mkdir()
+    staging = tmp_path / "worker-multi-staging"
+    staging.mkdir()
+    import core.comfy_output_containment as containment
+    monkeypatch.setattr(containment.tempfile, "tempdir", str(staging))
+    base_provider = host_for()
+
+    def host_provider(project, runs):
+        host = base_provider(project, runs)
+        host["generation_options"]["output_directory"] = str(output)
+        return host
+
+    values = ready_generation(tmp_path, 2, host_provider=host_provider)
+    runtime, _, state, *_ = values
+    state["history"] = []
+    context, journal_root = context_for(values, tmp_path, operation_id="worker-close-after-first")
+    prompt_id = str(uuid.uuid4())
+    descriptors = [{"filename": "remote.png", "subfolder": "private", "type": "output"}]
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()])
+    history_wire = _OfflineHistoryFactory({
+        prompt_id: [successful_metadata(prompt_id, descriptors)]})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    assert composed.start_io_worker_for_characterization().state == "running"
+    handoff_receipt = _run_http_handoff(values, composed)
+    assert handoff_receipt.status == "characterized_acceptance"
+    adapter = composed._adapter
+    assert adapter.observation().status == "awaiting_download"
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 1
+
+    adapter._local_gate = lambda envelope, remote, local: local_output_custody_current_for_characterization(
+        state, runtime, envelope, remote, local)
+    store = ContainedOutputStore.create_for_characterization(characterization=True)
+    contained = contain(adapter, store, stream_provider(image_bytes()))
+    assert contained.status == "local_outputs_ready"
+    owners = app_owners(state)
+    publisher = GenerationCandidatePublication.create_for_characterization(
+        state, runtime, adapter._envelope, approved_directory=str(output),
+        candidate_factory=owners["_make_generated_candidate_record"],
+        candidate_appender=owners["_append_line_generated_candidates"],
+        save_project=owners["save_agent_scene_module_swap_project"], characterization=True)
+    remote = next(item for item in adapter.remote_receipts() if item.request_index == 0)
+    local = next(item for item in adapter.local_receipts() if item.request_index == 0)
+    publication = publisher.publish_for_characterization(store, remote, local)
+    assert publication.registration_state == "registered" and publication.registered_count == 1
+    assert runtime.generation_jobs.snapshot(handoff_receipt.job_id)["requests"][0]["state"] == "completed"
+
+    closed = composed.close_io_worker_for_characterization()
+    assert closed.state == "closed" and closed.safe_terminated
+    before_events = tuple(runtime._generation_executor_inbox._authority_events)
+    advanced = composed.advance_for_characterization()
+    assert advanced.status == "submission_worker_unavailable"
+    after_events = tuple(runtime._generation_executor_inbox._authority_events)
+    assert after_events[:len(before_events)] == before_events
+    assert not any(event.progress.request_index == 1
+                   and event.progress.kind == "submission_started" for event in after_events)
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 1
+    snapshot = runtime.generation_jobs.snapshot(handoff_receipt.job_id)
+    assert [row["state"] for row in snapshot["requests"]] == ["completed", "unsent"]
+    assert snapshot["requests"][0]["registered_count"] == 1
+    reopened = multi_journal.reopen_multi_request_journal(
+        journal_root, "worker-close-after-first.json")
+    assert reopened.revision == 3 and reopened.next_request_index == 1
+    assert [(type(event), event.request_index) for event in reopened.events] == [
+        (multi_journal.SubmissionIntent, 0),
+        (multi_journal.SubmissionOutcome, 0),
+        (multi_journal.RequestSettlement, 0),
+    ]
+    assert reopened.events[-1].disposition == "execution_completed"
+    assert composed.advance_for_characterization().status == "submission_worker_unavailable"
+    assert multi_journal.reopen_multi_request_journal(
+        journal_root, "worker-close-after-first.json").revision == 3
+    runtime.close()
+
+
+def test_host_owned_worker_close_linearizes_before_concurrent_handoff_admission(
+        tmp_path, monkeypatch):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, _ = context_for(values, tmp_path, operation_id="worker-close-handoff-race")
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    worker = composed._io_worker
+    assert composed.start_io_worker_for_characterization().state == "running"
+    original_close = worker.close_for_characterization
+    worker_closed, release_close = threading.Event(), threading.Event()
+
+    def close_then_hold_admission_gate():
+        result = original_close()
+        worker_closed.set()
+        assert release_close.wait(5)
+        return result
+
+    monkeypatch.setattr(worker, "close_for_characterization", close_then_hold_admission_gate)
+    close_results = []
+    closer = threading.Thread(
+        target=lambda: close_results.append(composed.close_io_worker_for_characterization()))
+    closer.start()
+    assert worker_closed.wait(5)
+    handoff_receipt = composed.accept_offer_for_characterization(None)
+    assert handoff_receipt.status == "execution_unavailable"
+    try:
+        release_close.set()
+        closer.join(5)
+        assert not closer.is_alive()
+    finally:
+        release_close.set()
+    assert close_results and close_results[0].state == "closed"
+    assert context.inspection_for_characterization()["state"] == "unbound"
+    assert not any(event.progress.kind == "submission_started"
+                   for event in runtime._generation_executor_inbox._authority_events)
+    assert submission_wire.connections == 0 and submission_wire.posts == []
+    assert history_wire.gets == []
+    runtime.close()

@@ -375,12 +375,23 @@ results are discarded, and neither close nor thread termination proves remote
 cancellation. The one-shot claim remains consumed. Close during History GET
 also discards its late result; there is no background polling.
 
+Worker start/close and the per-request submission-admission gate share a host
+lock. The gate covers `submission_started`, acknowledged Journal intent and
+Worker queue admission; it is released as soon as the one task is admitted, so
+close can still interrupt an in-flight HTTP wait. Once close/terminal state
+linearizes, a later `advance` may settle an already completed and registered
+request, then stops before emitting the next `submission_started` or Journal
+intent. Remaining requests stay unsent rather than becoming false pre-send
+failures. A request whose intent and queue admission preceded close remains
+subject to the existing pre-send/possible-send uncertainty rules.
+
 Deterministic tests compose these states with in-memory wires and disposable
 host/Journal fixtures, including exact intent-before-POST ordering, sequential
 multi-request Journal transitions, reentrant/duplicate calls, close before
 admission and before transport entry, close during POST/History, late results,
-path/pairing/runtime invalidation, missing completion, timeout, and bounded
-shutdown reporting. They prove only this offline characterization. Real
+path/pairing/runtime invalidation, missing completion, timeout, post-registration
+close fencing, and bounded shutdown reporting. They prove only this offline
+characterization. Real
 ComfyUI interoperability, worker scheduling under production Streamlit reruns,
 DNS/header deadlines, process-restart authority, production transport
 registration and Human Start remain unimplemented. All production gates remain

@@ -35,6 +35,19 @@ from core.comfy_http_submission import SubmissionResult
 from core.generation_multi_request_journal import SubmissionIntent
 
 
+class _WorkerSubmissionAdmission:
+    """Host-side lease fencing request intent against Worker close."""
+
+    def __init__(self, lock):
+        self._lock = lock
+        self._released = False
+
+    def release(self):
+        if not self._released:
+            self._released = True
+            self._lock.release()
+
+
 class OfflineHTTPExecutorComposition:
     """Small host-only handle over the existing offline characterization owners."""
 
@@ -45,7 +58,8 @@ class OfflineHTTPExecutorComposition:
     authorship = "unverified"
 
     def __init__(self, adapter, submission_transport, history_transport, history_reader,
-                 history_lock, state, runtime, journal_intent_owner, *, io_worker=None):
+                 history_lock, state, runtime, journal_intent_owner, *, io_worker=None,
+                 worker_admission_lock=None):
         self._adapter = adapter
         self._submission_transport = submission_transport
         self._history_transport = history_transport
@@ -54,17 +68,35 @@ class OfflineHTTPExecutorComposition:
         self._state, self._runtime = state, runtime
         self._journal_intent_owner = journal_intent_owner
         self._io_worker = io_worker
+        self._worker_admission_lock = (worker_admission_lock if worker_admission_lock is not None
+                                       else Lock())
         self._worker_entry_lock = Lock()
+        self._worker_admission_reservation = None
 
     def accept_offer_for_characterization(self, offer):
         if self._io_worker is None:
             return self._adapter.accept_and_run_for_characterization(offer)
-        if self._io_worker.observation_for_characterization().state != "running":
-            return HandoffReceipt("execution_unavailable")
         if not self._worker_entry_lock.acquire(blocking=False):
             return HandoffReceipt("executor_busy")
         try:
-            return self._adapter.accept_and_run_for_characterization(offer)
+            if not self._worker_admission_lock.acquire(blocking=False):
+                return HandoffReceipt("execution_unavailable")
+            try:
+                worker_running = (
+                    self._io_worker.observation_for_characterization().state == "running")
+            except Exception:
+                worker_running = False
+            if not worker_running:
+                self._worker_admission_lock.release()
+                return HandoffReceipt("execution_unavailable")
+            reservation = _WorkerSubmissionAdmission(self._worker_admission_lock)
+            self._worker_admission_reservation = reservation
+            try:
+                return self._adapter.accept_and_run_for_characterization(offer)
+            finally:
+                if self._worker_admission_reservation is reservation:
+                    self._worker_admission_reservation = None
+                    reservation.release()
         finally:
             self._worker_entry_lock.release()
 
@@ -81,7 +113,8 @@ class OfflineHTTPExecutorComposition:
     def start_io_worker_for_characterization(self):
         if self._io_worker is None:
             return None
-        return self._io_worker.start_for_characterization()
+        with self._worker_admission_lock:
+            return self._io_worker.start_for_characterization()
 
     def io_worker_observation_for_characterization(self):
         if self._io_worker is None:
@@ -91,7 +124,8 @@ class OfflineHTTPExecutorComposition:
     def close_io_worker_for_characterization(self):
         if self._io_worker is None:
             return None
-        return self._io_worker.close_for_characterization()
+        with self._worker_admission_lock:
+            return self._io_worker.close_for_characterization()
 
     def observation_for_characterization(self):
         return self._adapter.observation()
@@ -228,6 +262,7 @@ def _compose_http_executor_for_characterization(
     read_history = (history_result_provider_for_characterization(history)
                     if io_worker is None else None)
     history_lock = Lock()
+    worker_admission_lock = Lock()
     composition_holder = {}
     adapter_holder = {}
     attempt_lock = Lock()
@@ -296,8 +331,10 @@ def _compose_http_executor_for_characterization(
         correlation = worker_correlation("submission", prepared)
         if correlation is None:
             return SubmissionResult("rejected_before_submission")
+        admission = adapter_holder["adapter"]._active_submission_admission
         completion = io_worker.perform_for_characterization(
-            "submission", prepared, None, correlation)
+            "submission", prepared, None, correlation,
+            after_admission=(admission.release if admission is not None else None))
         if not _completion_matches(completion, "submission", correlation):
             return SubmissionResult("unknown")
         # Journal intent is already acknowledged. Recheck exact original-host
@@ -343,6 +380,23 @@ def _compose_http_executor_for_characterization(
         finally:
             history_lock.release()
 
+    def worker_submission_admission():
+        composition = composition_holder.get("composition")
+        if composition is not None and composition._worker_admission_reservation is not None:
+            reservation = composition._worker_admission_reservation
+            composition._worker_admission_reservation = None
+            return reservation
+        if io_worker is None or not worker_admission_lock.acquire(blocking=False):
+            return None
+        try:
+            if io_worker.observation_for_characterization().state != "running":
+                worker_admission_lock.release()
+                return None
+            return _WorkerSubmissionAdmission(worker_admission_lock)
+        except Exception:
+            worker_admission_lock.release()
+            return None
+
     adapter = ComfyExecutorAdapter(
         runtime.generation_jobs,
         runtime._generation_executor_inbox,
@@ -352,10 +406,12 @@ def _compose_http_executor_for_characterization(
             state, runtime, event),
         characterization=True,
         journal_intent_owner=journal_intent_owner,
+        submission_admission_gate=(worker_submission_admission if io_worker is not None else None),
     )
     composed = OfflineHTTPExecutorComposition(
         adapter, submission, history, read_history, history_lock,
-        state, runtime, journal_intent_owner, io_worker=io_worker)
+        state, runtime, journal_intent_owner, io_worker=io_worker,
+        worker_admission_lock=worker_admission_lock)
     composition_holder["composition"] = composed
     adapter_holder["adapter"] = adapter
     if io_worker is not None:
