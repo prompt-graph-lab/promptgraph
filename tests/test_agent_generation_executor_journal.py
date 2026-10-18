@@ -13,6 +13,7 @@ from core import generation_ownership_journal as journal
 from core import generation_multi_request_journal as multi_journal
 from core import generation_protected_journal as protected_journal
 from core import generation_windows_protected_storage as protected_storage
+from core.comfy_http_submission import PromptHTTPPolicy
 from core.comfy_http_submission import SubmissionResult
 from ui.agent_generation_comfy_executor import ComfyExecutorAdapter, ExecutionResult
 from ui import agent_generation_executor_journal as executor_journal
@@ -25,6 +26,7 @@ from ui.agent_generation_executor_inbox import GenerationExecutorInbox
 from ui.agent_generation_executor_journal import (
     create_executor_journal_intent_for_characterization,
 )
+from ui.agent_generation_http_executor import compose_http_executor_for_characterization
 from ui.agent_generation_executable_confirmation import (
     confirm_session_execution_details as confirm,
     prepare_session_executable_review as prepare,
@@ -872,6 +874,413 @@ def test_multi_request_concurrent_and_reentrant_advance_do_not_duplicate_sends(t
     assert reopened.revision == 6 and reopened.next_request_index == 2
     assert sum(type(event) is multi_journal.SubmissionIntent for event in reopened.events) == 2
     values[0].close()
+
+
+class _OfflineHTTPResponse:
+    def __init__(self, body, status=200):
+        self.body, self.status = body, status
+        self.closed = False
+        self.finished = False
+
+    def read(self, size, timeout):
+        assert 0 < size <= 8192 and 0 < timeout <= 10
+        chunk, self.body = self.body[:size], self.body[size:]
+        return chunk
+
+    def finish(self):
+        assert self.body == b""
+        self.finished = True
+
+    def close(self):
+        self.closed = True
+
+
+class _OfflineSubmissionFactory:
+    def __init__(self, responses, *, connect_failures=(), post_error=None, post_hook=None):
+        self.responses = list(responses)
+        self.connect_failures = set(connect_failures)
+        self.post_error, self.post_hook = post_error, post_hook
+        self.connections = 0
+        self.posts = []
+        self.origins = []
+        self.closed = 0
+
+    def __call__(self, origin, connect_timeout):
+        index = self.connections
+        self.connections += 1
+        self.origins.append((origin, connect_timeout))
+        factory = self
+
+        class Connection:
+            def connect(self):
+                if index in factory.connect_failures:
+                    raise OSError("offline connect refusal")
+
+            def post_prompt(self, body, timeout):
+                factory.posts.append((index, body, timeout))
+                if factory.post_hook is not None:
+                    factory.post_hook(index, body)
+                if factory.post_error is not None:
+                    raise factory.post_error
+                return _OfflineHTTPResponse(factory.responses.pop(0))
+
+            def close(self):
+                factory.closed += 1
+
+        return Connection()
+
+
+class _OfflineHistoryFactory:
+    def __init__(self, responses_by_prompt, *, get_hook=None):
+        self.responses_by_prompt = {key: list(value) for key, value in responses_by_prompt.items()}
+        self.get_hook = get_hook
+        self.gets = []
+        self.origins = []
+        self.closed = 0
+
+    def __call__(self, origin, connect_timeout):
+        self.origins.append((origin, connect_timeout))
+        factory = self
+
+        class Connection:
+            def connect(self):
+                pass
+
+            def get_history(self, prompt_id, timeout):
+                factory.gets.append((prompt_id, timeout))
+                if factory.get_hook is not None:
+                    factory.get_hook(prompt_id)
+                responses = factory.responses_by_prompt.get(prompt_id, [])
+                body = responses.pop(0) if responses else b"{}"
+                return _OfflineHTTPResponse(body)
+
+            def post_prompt(self, *args):
+                raise AssertionError("history wire cannot POST")
+
+            def close(self):
+                factory.closed += 1
+
+        return Connection()
+
+
+def _http_composition(values, context, submission_wire, history_wire):
+    runtime, _, state, *_ = values
+    return compose_http_executor_for_characterization(
+        state, runtime, context,
+        submission_wire_factory=submission_wire,
+        history_wire_factory=history_wire,
+        policy=PromptHTTPPolicy(2, 10), characterization=True)
+
+
+def _run_http_handoff(values, composition):
+    runtime, _, state, provider, _, action, *_ = values
+    return handoff(state, runtime, provider, action,
+                   fake_worker=composition.accept_offer_for_characterization)
+
+
+def test_offline_http_composition_requires_exact_host_and_explicit_injected_wires(tmp_path):
+    from core.comfy_http_history import stdlib_history_wire_for_characterization
+    from core.comfy_http_submission import stdlib_prompt_wire_for_characterization
+
+    values = ready_one_request(tmp_path)
+    runtime, _, state, *_ = values
+    context, _ = context_for(values, tmp_path)
+    kwargs = {"submission_wire_factory": _OfflineSubmissionFactory([]),
+              "history_wire_factory": _OfflineHistoryFactory({}),
+              "policy": PromptHTTPPolicy(2, 10)}
+    with pytest.raises(ValueError, match="offline_http_executor_unavailable"):
+        compose_http_executor_for_characterization(
+            dict(state), runtime, context, characterization=True, **kwargs)
+    with pytest.raises(ValueError, match="offline_http_executor_unavailable"):
+        compose_http_executor_for_characterization(
+            state, runtime, context, submission_wire_factory=stdlib_prompt_wire_for_characterization,
+            history_wire_factory=stdlib_history_wire_for_characterization,
+            policy=PromptHTTPPolicy(2, 10), characterization=True)
+    with pytest.raises(ValueError, match="offline_http_executor_unavailable"):
+        compose_http_executor_for_characterization(
+            state, runtime, context, **kwargs)
+    assert context.inspection_for_characterization()["state"] == "unbound"
+    values[0].close()
+
+
+def test_offline_http_composition_orders_journaled_post_and_exact_history_before_output_event(
+        tmp_path, monkeypatch):
+    from test_comfy_output_containment import successful_metadata
+    from ui import agent_generation_http_executor as composition_module
+
+    values = ready_generation(tmp_path, 3)
+    runtime, _, state, *_ = values
+    project_before = copy.deepcopy(state["project"])
+    prompt_id = str(uuid.uuid4())
+    order, delivered_events = [], []
+
+    def host_locks_held():
+        session_record = runtime._registry._record_for_registration(runtime._registration)
+        locks = (runtime._publication_gate, session_record.operation_lock,
+                 runtime.generation_jobs._lock, runtime._generation_executor_inbox._lock)
+        held = []
+        for lock in locks:
+            is_owned = getattr(lock, "_is_owned", None)
+            if callable(is_owned):
+                held.append(is_owned())
+            else:
+                acquired = lock.acquire(blocking=False)
+                if acquired:
+                    lock.release()
+                held.append(not acquired)
+        return any(held)
+
+    def journal_fault(boundary):
+        assert not host_locks_held()
+        order.append(("journal", boundary))
+
+    context, journal_root = context_for(
+        values, tmp_path, operation_id="http-success-after-rejection", fault=journal_fault)
+    history_body = successful_metadata(prompt_id)
+
+    def post_hook(index, body):
+        assert index == 1
+        assert not host_locks_held()
+        reopened = multi_journal.reopen_multi_request_journal(
+            journal_root, "http-success-after-rejection.json")
+        assert reopened.revision == 4
+        assert type(reopened.events[0]) is multi_journal.SubmissionIntent
+        assert reopened.events[0].request_index == 0
+        assert reopened.events[2].disposition == "pre_send_rejected"
+        assert type(reopened.events[3]) is multi_journal.SubmissionIntent
+        assert reopened.events[3].request_index == 1
+        order.append(("post", len(body)))
+
+    def history_hook(current_prompt):
+        assert current_prompt == prompt_id
+        assert not host_locks_held()
+        reopened = multi_journal.reopen_multi_request_journal(
+            journal_root, "http-success-after-rejection.json")
+        assert reopened.revision == 5 and reopened.events[-1].outcome == "accepted"
+        order.append(("history", current_prompt))
+
+    def submit_response(body):
+        return json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()
+
+    class SubmissionFactory(_OfflineSubmissionFactory):
+        def __init__(self):
+            super().__init__([submit_response(None)], connect_failures={0}, post_hook=post_hook)
+
+    submission_wire = SubmissionFactory()
+    history_wire = _OfflineHistoryFactory({prompt_id: [history_body]}, get_hook=history_hook)
+    original_deliver = composition_module.deliver_executor_event_for_characterization
+
+    def observed_deliver(current_state, current_runtime, event):
+        delivered_events.append(event)
+        order.append(("host_event", event.progress.kind))
+        return original_deliver(current_state, current_runtime, event)
+
+    monkeypatch.setattr(composition_module, "deliver_executor_event_for_characterization", observed_deliver)
+    composed = _http_composition(values, context, submission_wire, history_wire)
+    assert composed.execution_available is False
+    assert composed.protected_storage_available is False
+    assert composed.promotion_available is False
+    assert composed.candidate_publication_allowed is False
+    assert composed.authorship == "unverified"
+
+    accepted_receipt = _run_http_handoff(values, composed)
+    assert accepted_receipt.status == "characterized_acceptance"
+    assert composed.observation_for_characterization().status == "awaiting_download"
+    assert len(submission_wire.posts) == 1
+    assert len(history_wire.gets) == 1 and history_wire.gets[0][0] == prompt_id
+    envelope = runtime._generation_publication_origin.envelope
+    request = envelope.manifest.requests[1]
+    client_id = str(uuid.uuid5(uuid.NAMESPACE_OID, "|".join((
+        envelope.job_id, envelope.claim_id, envelope.manifest.manifest_identity, request.request_id))))
+    from core.comfy_prompt_request import prepare_frozen_prompt_request
+    expected = prepare_frozen_prompt_request(envelope.manifest, request, client_id=client_id)
+    assert submission_wire.posts[0][1] == expected.body_json
+    assert submission_wire.connections == 2 and submission_wire.origins[1] == history_wire.origins[0]
+    assert submission_wire.closed == 2 and history_wire.closed == 1
+    assert submission_wire.closed and history_wire.closed
+
+    event_kinds = [event.progress.kind for event in delivered_events]
+    start_indices = [index for index, kind in enumerate(event_kinds) if kind == "submission_started"]
+    assert len(start_indices) == 2 and start_indices[-1] < event_kinds.index("submitted")
+    assert "outputs_ready" not in event_kinds
+    assert "remote_outputs_ready" in event_kinds
+    remote_event = next(event for event in delivered_events if event.progress.kind == "remote_outputs_ready")
+    assert remote_event.outputs.output_count == 1
+    assert str(values[-1]) not in repr(remote_event)
+    before_replace_indices = [index for index, item in enumerate(order)
+                              if item == ("journal", "before_replace")]
+    assert len(before_replace_indices) == 5
+    start_event_indices = [index for index, item in enumerate(order)
+                           if item == ("host_event", "submission_started")]
+    assert len(start_event_indices) == 2
+    assert (start_event_indices[-1] < before_replace_indices[3]
+            < next(index for index, item in enumerate(order) if item[0] == "post")
+            < before_replace_indices[4] < order.index(("host_event", "submitted"))
+            < next(index for index, item in enumerate(order) if item[0] == "history"))
+
+    reopened = multi_journal.reopen_multi_request_journal(
+        journal_root, "http-success-after-rejection.json")
+    assert reopened.revision == 5 and reopened.next_request_index == 1
+    assert [type(event) for event in reopened.events] == [
+        multi_journal.SubmissionIntent, multi_journal.SubmissionOutcome,
+        multi_journal.RequestSettlement, multi_journal.SubmissionIntent,
+        multi_journal.SubmissionOutcome]
+    assert reopened.events[-1].outcome == "accepted"
+    assert reopened.trust == "inspect_only" and reopened.authorship == "unverified"
+    before_posts = len(submission_wire.posts)
+    assert composed.advance_for_characterization().status == "awaiting_download"
+    assert len(submission_wire.posts) == before_posts == 1
+    assert state["project"] == project_before
+    assert runtime.generation_jobs.snapshot(accepted_receipt.job_id)["save_state"] == "not_attempted"
+    rows = runtime.generation_jobs.snapshot(accepted_receipt.job_id)["requests"]
+    assert [row["state"] for row in rows] == ["failed", "awaiting_download", "unsent"]
+    runtime.close()
+
+
+def test_offline_http_pending_history_can_be_explicitly_reread_without_post_retry(tmp_path):
+    from test_comfy_output_containment import successful_metadata
+
+    values = ready_one_request(tmp_path)
+    context, journal_root = context_for(values, tmp_path)
+    prompt_id = str(uuid.uuid4())
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()])
+    composition_holder = {}
+    reentrant_observations = []
+
+    def reenter_during_initial_history(current_prompt):
+        assert current_prompt == prompt_id
+        reentrant_observations.append(
+            composition_holder["value"].read_current_history_for_characterization())
+
+    history_wire = _OfflineHistoryFactory(
+        {prompt_id: [b"{}", successful_metadata(prompt_id)]},
+        get_hook=reenter_during_initial_history)
+    composed = _http_composition(values, context, submission_wire, history_wire)
+    composition_holder["value"] = composed
+    assert _run_http_handoff(values, composed).status == "characterized_acceptance"
+    assert composed.observation_for_characterization().status == "awaiting_remote_result"
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 1
+    assert len(reentrant_observations) == 1
+
+    reread = composed.read_current_history_for_characterization()
+    assert reread.status == "awaiting_download"
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 2
+    # Once completed metadata is retained, a late explicit poll is fenced.
+    fenced = composed.read_current_history_for_characterization()
+    assert fenced.status == "awaiting_download"
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 2
+    reopened = journal.reopen_journal(journal_root, "operation.json")
+    assert reopened.revision == 2 and reopened.observations[-1].outcome == "accepted"
+    values[0].close()
+
+
+def test_offline_http_pre_send_failures_settle_before_next_request_and_response_loss_never_retries(
+        tmp_path):
+    values = ready_generation(tmp_path, 2)
+    context, approved_journal_root = context_for(values, tmp_path, operation_id="http-pre-send")
+    submission_wire = _OfflineSubmissionFactory([], connect_failures={0, 1})
+    history_wire = _OfflineHistoryFactory({})
+    composed = _http_composition(values, context, submission_wire, history_wire)
+    assert _run_http_handoff(values, composed).status == "characterized_acceptance"
+    assert composed.observation_for_characterization().status == "requests_settled"
+    assert submission_wire.connections == 2 and submission_wire.posts == []
+    assert history_wire.gets == []
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "http-pre-send.json")
+    assert reopened.revision == 6 and reopened.next_request_index == 2
+    assert [event.outcome for event in reopened.events if type(event) is multi_journal.SubmissionOutcome] == [
+        "pre_send_rejected", "pre_send_rejected"]
+    assert [event.disposition for event in reopened.events if type(event) is multi_journal.RequestSettlement] == [
+        "pre_send_rejected", "pre_send_rejected"]
+    values[0].close()
+
+    uncertain_values = ready_generation(tmp_path / "uncertain", 2)
+    uncertain_context, uncertain_root = context_for(
+        uncertain_values, tmp_path / "uncertain", operation_id="http-response-loss")
+    lost_wire = _OfflineSubmissionFactory([], post_error=OSError("response lost"))
+    no_history = _OfflineHistoryFactory({})
+    uncertain = _http_composition(uncertain_values, uncertain_context, lost_wire, no_history)
+    _run_http_handoff(uncertain_values, uncertain)
+    assert uncertain.observation_for_characterization().status == "submission_outcome_unknown"
+    assert len(lost_wire.posts) == 1 and no_history.gets == []
+    assert uncertain.advance_for_characterization().status == "submission_outcome_unknown"
+    assert len(lost_wire.posts) == 1
+    unresolved = multi_journal.reopen_multi_request_journal(
+        uncertain_root, "http-response-loss.json")
+    assert unresolved.revision == 2 and unresolved.next_request_index == 0
+    assert unresolved.events[-1].outcome == "unknown"
+    uncertain_values[0].close()
+
+
+def test_offline_http_reentrant_and_concurrent_advance_during_post_never_duplicate_send(tmp_path):
+    values = ready_generation(tmp_path, 2)
+    context, _ = context_for(values, tmp_path, operation_id="http-concurrent")
+    prompt_id = str(uuid.uuid4())
+    entered, release, competing_started = threading.Event(), threading.Event(), threading.Event()
+    holder, results = {}, []
+
+    def post_hook(index, body):
+        if index == 0:
+            holder["composition"].advance_for_characterization()
+            assert len(submission_wire.posts) == 1
+            entered.set()
+            assert release.wait(5)
+
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()], post_hook=post_hook)
+    history_wire = _OfflineHistoryFactory({prompt_id: [b"{}"]})
+    composed = _http_composition(values, context, submission_wire, history_wire)
+    holder["composition"] = composed
+    worker = threading.Thread(target=lambda: results.append(_run_http_handoff(values, composed)))
+    worker.start()
+    assert entered.wait(5)
+
+    def advance_concurrently():
+        competing_started.set()
+        composed.advance_for_characterization()
+
+    competitor = threading.Thread(target=advance_concurrently)
+    competitor.start()
+    assert competing_started.wait(5)
+    release.set()
+    worker.join(5)
+    competitor.join(5)
+    assert not worker.is_alive() and not competitor.is_alive()
+    assert results and results[0].status == "characterized_acceptance"
+    assert len(submission_wire.posts) == 1 and history_wire.gets == [(prompt_id, 10)]
+    assert composed.observation_for_characterization().status == "awaiting_remote_result"
+    assert composed.advance_for_characterization().status == "awaiting_remote_result"
+    assert len(submission_wire.posts) == 1
+    values[0].close()
+
+
+def test_offline_http_close_during_possible_send_never_replays_or_reads_history(tmp_path):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, journal_root = context_for(values, tmp_path, operation_id="http-close")
+    prompt_id = str(uuid.uuid4())
+
+    def close_after_post_invocation(index, body):
+        runtime.close()
+
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()],
+        post_hook=close_after_post_invocation)
+    history_wire = _OfflineHistoryFactory({prompt_id: [b"{}"]})
+    composed = _http_composition(values, context, submission_wire, history_wire)
+    _run_http_handoff(values, composed)
+    assert len(submission_wire.posts) == 1
+    assert history_wire.gets == []
+    status = composed.observation_for_characterization().status
+    assert status in {"host_invalidated", "submission_outcome_unknown"}
+    assert composed.advance_for_characterization().status == status
+    assert len(submission_wire.posts) == 1
+    reopened = journal.reopen_journal(journal_root, "http-close.json")
+    assert reopened.revision in {1, 2}
+    assert reopened.observations[0].checkpoint == "submission_intent"
+    if reopened.revision == 2:
+        assert reopened.observations[1].outcome == "accepted"
 
 
 def test_definite_pre_send_rejection_is_recorded_failed_without_retry(tmp_path):

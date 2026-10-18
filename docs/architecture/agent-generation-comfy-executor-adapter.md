@@ -283,6 +283,48 @@ settle the request; a remote metadata receipt pauses for future containment.
 Duplicate or conflicting terminal results cannot overwrite a receipt or fail
 the next request. Callback reentry cannot create a second submission.
 
+### C2B-8D-16A injected HTTP + Journal composition
+
+`ui.agent_generation_http_executor.compose_http_executor_for_characterization`
+assembles the existing POST and History transports, the existing
+`history_result_provider_for_characterization`, `ComfyExecutorAdapter`, the
+exact host-created `GenerationExecutorJournalIntent`, and
+`deliver_executor_event_for_characterization`. The state and runtime passed to
+the composition must be the same objects bound to the unbound Journal owner.
+Both wire factories are required caller injections and share the same bounded
+`PromptHTTPPolicy`; the composition rejects the optional stdlib network wires.
+No transport default, worker registration or production call site is added.
+
+For each request, the existing owners enforce the order: host accepts
+`submission_started`; Journal acknowledges exact intent; the submission
+transport invokes POST once; Journal acknowledges accepted, pre-send-rejected
+or unknown outcome; the host accepts the exact submitted prompt; then the
+History transport reads only `/history/{that prompt UUID}`. History is read
+once automatically after acceptance. While the Executor remains in
+`awaiting_remote_result`, the host may explicitly call
+`read_current_history_for_characterization()` to make a later GET; this never
+resubmits POST. No background polling is created.
+
+Exact correlated History metadata goes through the existing
+`validate_remote_outputs` function. It may produce only the count-bearing
+`remote_outputs_ready` event. It is not local output containment or the later
+`outputs_ready` event, and it does not authorize Candidate registration, save
+or Journal settlement. An accepted prompt, pending/timeout History, a
+status-less record or a successful History record cannot authorize a later
+request on its own. C2B-8D-15B's live original-host registration or validated
+failure gate remains authoritative for next-request settlement.
+
+The offline composition tests use in-memory wires with disposable original
+host and Journal owners. They verify acknowledged intent before POST, outcome
+acknowledgment before History GET, exact prompt correlation, no transport or
+Journal I/O under host/job/inbox mutation locks, explicit pending re-read,
+pre-send failure progression, possible-send response loss, and reentrant or
+concurrent advancement and close without replay. These tests do not establish
+real ComfyUI interoperability, DNS/header deadline behavior, background worker
+shutdown, restart continuation, output downloads, production host event
+delivery or production authorization. Capability flags remain false and
+`authorship=unverified`.
+
 Normal completed/partially-failed/failed progress before handoff returns retains
 the original observed acceptance, as in PR #150 FIX-1. Target switch, Save As,
 pairing replacement, disarm, close, lost ownership and unknown submission retain
