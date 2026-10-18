@@ -162,7 +162,20 @@ class ComfyExecutorAdapter:
         if self._phase == "awaiting_download":
             snapshot = self._jobs.snapshot(self._envelope.job_id)
             rows = snapshot.get("requests", [])
-            if len(rows) <= self._index or rows[self._index]["state"] not in {"completed", "partially_failed", "failed"}:
+            if len(rows) <= self._index:
+                return self._observation
+            if self._journal_intent_owner is not None and self._journal_intent_owner._multi_request:
+                if rows[self._index]["state"] != "completed":
+                    # Partial registration, failed publication, or uncertain
+                    # terminal evidence never authorizes the next request.
+                    return self._observation
+                settled = self._journal_intent_owner.settle_request_for_characterization(
+                    self._envelope, self._index, "execution_completed",
+                    self._jobs, self._inbox, self._acceptance)
+                if settled != "settled":
+                    self._phase = "stopped"
+                    return self._observe("journal_settlement_unavailable")
+            elif rows[self._index]["state"] not in {"completed", "partially_failed", "failed"}:
                 return self._observation
             self._index += 1
             self._phase = "ready"
@@ -183,6 +196,9 @@ class ComfyExecutorAdapter:
                 if self._emit("failed") != "accepted":
                     self._phase = "stopped"
                     return self._observe("host_invalidated")
+                if self._journal_intent_owner is not None and self._journal_intent_owner._multi_request:
+                    self._phase = "stopped"
+                    return self._observe("journal_request_preparation_unavailable")
                 self._index += 1
                 continue
             self._phase = "submitting"
@@ -209,7 +225,8 @@ class ComfyExecutorAdapter:
                 journal_outcome, journal_prompt = "unknown", None
                 if (type(submission) is SubmissionResult
                         and submission.status == "rejected_before_submission"):
-                    journal_outcome = "failed"
+                    journal_outcome = ("pre_send_rejected" if self._journal_intent_owner._multi_request
+                                       else "failed")
                 elif (type(submission) is SubmissionResult and submission.status == "accepted"
                         and type(submission.response_json) is bytes):
                     try:
@@ -221,16 +238,28 @@ class ComfyExecutorAdapter:
                     except Exception:
                         pass
                 observed = self._journal_intent_owner.record_submission_result_for_characterization(
-                    journal_outcome, journal_prompt)
-                if journal_outcome == "unknown" or (journal_outcome == "accepted" and observed != "acknowledged"):
+                    journal_outcome, journal_prompt, request_index=self._index)
+                if (journal_outcome == "unknown"
+                        or (journal_outcome in {"accepted", "pre_send_rejected"}
+                            and observed != "acknowledged")):
                     self._emit("submission_unknown")
                     self._phase = "stopped"
                     return self._observe("submission_outcome_unknown")
             if type(submission) is SubmissionResult and submission.status == "rejected_before_submission":
-                if self._emit("failed") != "accepted":
+                multi_journal = (self._journal_intent_owner is not None
+                                 and self._journal_intent_owner._multi_request)
+                if self._emit("failed", cause="pre_send_rejected" if multi_journal else None) != "accepted":
                     self._phase = "stopped"
                     return self._observe("host_invalidated")
+                if multi_journal:
+                    settled = self._journal_intent_owner.settle_request_for_characterization(
+                        self._envelope, self._index, "pre_send_rejected",
+                        self._jobs, self._inbox, self._acceptance)
+                    if settled != "settled":
+                        self._phase = "stopped"
+                        return self._observe("journal_settlement_unavailable")
                 self._index += 1
+                self._phase = "ready"
                 continue
             try:
                 if (type(submission) is not SubmissionResult or submission.status != "accepted"
@@ -246,7 +275,9 @@ class ComfyExecutorAdapter:
                 return self._observe("submission_outcome_unknown")
             self._prompts.add(prompt)
             self._active_prepared, self._active_prompt = prepared, prompt
-            if self._emit("submitted") != "accepted":
+            multi_journal = (self._journal_intent_owner is not None
+                             and self._journal_intent_owner._multi_request)
+            if self._emit("submitted", prompt_id=prompt if multi_journal else None) != "accepted":
                 self._phase = "stopped"
                 return self._observe("host_invalidated")
             try:
@@ -261,6 +292,12 @@ class ComfyExecutorAdapter:
         return self._observe("requests_settled")
 
     def receive_result_for_characterization(self, result):
+        if self._journal_intent_owner is not None and self._journal_intent_owner._multi_request:
+            with self._journal_advance_lock:
+                return self._receive_result_for_characterization(result)
+        return self._receive_result_for_characterization(result)
+
+    def _receive_result_for_characterization(self, result):
         """One correlated result stream, including private late output evidence.
 
         An explicit later result may resolve accepted-but-pending execution; it
@@ -313,7 +350,16 @@ class ComfyExecutorAdapter:
             return self._observe({"pending": "awaiting_remote_result", "timeout": "execution_timeout",
                                   "unknown": "execution_outcome_unknown"}[result.status])
         if result.status == "execution_failed":
-            if self._emit("failed") == "accepted":
+            multi_journal = (self._journal_intent_owner is not None
+                             and self._journal_intent_owner._multi_request)
+            if self._emit("failed", cause="execution_failed" if multi_journal else None) == "accepted":
+                if multi_journal:
+                    settled = self._journal_intent_owner.settle_request_for_characterization(
+                        self._envelope, self._index, "execution_failed",
+                        self._jobs, self._inbox, self._acceptance)
+                    if settled != "settled":
+                        self._phase = "stopped"
+                        return self._observe("journal_settlement_unavailable")
                 self._active_prepared = self._active_prompt = None
                 self._index += 1
                 self._phase = "ready"
@@ -524,12 +570,13 @@ class ComfyExecutorAdapter:
     def observation(self):
         return self._observation
 
-    def _emit(self, kind, *, count=0, receipt_id=None):
+    def _emit(self, kind, *, count=0, receipt_id=None, cause=None, prompt_id=None):
         snapshot = self._jobs.snapshot(self._envelope.job_id)
         sequence = snapshot.get("event_count", 0) + 1
         outputs = OutputReceipt(receipt_id, count) if count else None
         event = ExecutorEvent(self._envelope.job_id, self._envelope.claim_id,
-            self._envelope.manifest.manifest_identity, WorkerEvent(sequence, self._index, kind, count), outputs)
+            self._envelope.manifest.manifest_identity,
+            WorkerEvent(sequence, self._index, kind, count, cause, prompt_id), outputs)
         try:
             result = self._event_sink(event)
             self._last_event = event if result == "accepted" else None

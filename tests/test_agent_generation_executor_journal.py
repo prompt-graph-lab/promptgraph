@@ -10,6 +10,7 @@ import uuid
 import pytest
 
 from core import generation_ownership_journal as journal
+from core import generation_multi_request_journal as multi_journal
 from core import generation_protected_journal as protected_journal
 from core import generation_windows_protected_storage as protected_storage
 from core.comfy_http_submission import SubmissionResult
@@ -46,7 +47,7 @@ def native_scope(tmp_path):
     return scope, api
 
 
-def ready_generation(tmp_path, illustration_count):
+def ready_generation(tmp_path, illustration_count, *, host_provider=None):
     runtime, route, epoch, state, args = setup()
     runtime.generation_jobs = GenerationJobRegistry(characterization=True)
     runtime._generation_executor_inbox = GenerationExecutorInbox(characterization=True)
@@ -60,7 +61,7 @@ def ready_generation(tmp_path, illustration_count):
     project_file.write_text('{"prompt_lines":[]}', encoding="utf-8")
     state["current_project_path"] = str(project_file)
     epoch = runtime.synchronize_target(state["project"], state["current_project_path"])
-    provider = host_for()
+    provider = host_provider or host_for()
     from core import agent_facade
     binding = [agent_facade.candidate_observation_handles.project_identity(state["project"]),
                runtime._registration.route_id, state["current_project_path"], route._pairing_generation, epoch]
@@ -373,6 +374,506 @@ def test_transport_response_loss_is_unknown_and_reentrant_or_duplicate_advance_c
     values[0].close()
 
 
+def test_multi_request_journal_settles_pre_send_rejection_and_execution_failure_before_next_send(tmp_path):
+    values = ready_generation(tmp_path, 2)
+    runtime, *_ = values
+    session_record = runtime._registry._record_for_registration(runtime._registration)
+
+    lock_observations = []
+
+    def lock_held(lock):
+        is_owned = getattr(lock, "_is_owned", None)
+        if callable(is_owned):
+            return is_owned()
+        acquired = lock.acquire(blocking=False)
+        if acquired:
+            lock.release()
+            return False
+        return True
+
+    def host_locks_held():
+        return (lock_held(runtime._publication_gate), lock_held(session_record.operation_lock),
+                lock_held(runtime.generation_jobs._lock),
+                lock_held(runtime._generation_executor_inbox._lock))
+
+    def journal_fault(boundary):
+        lock_observations.append(("journal", boundary, host_locks_held()))
+
+    context, approved_journal_root = context_for(
+        values, tmp_path, operation_id="multi-failed", fault=journal_fault)
+    attempts = []
+
+    def transport(prepared):
+        lock_observations.append(("transport", prepared.request_index, host_locks_held()))
+        attempts.append(prepared.request_index)
+        if prepared.request_index == 0:
+            return SubmissionResult("rejected_before_submission")
+        return SubmissionResult("accepted", json.dumps({"prompt_id": str(uuid.uuid4())}).encode())
+
+    adapter, sent = executor(values, context, transport=transport,
+        provider=lambda prepared, prompt: ExecutionResult(
+            prepared.request_id, prompt, "execution_failed"))
+    assert accepted(values, adapter).status == "characterized_acceptance"
+    assert attempts == [0, 1] and [item.request_index for item in sent] == [0, 1], (
+        adapter.observation(), context.inspection_for_characterization())
+    assert any(item[0] == "journal" for item in lock_observations)
+    assert any(item[0] == "transport" for item in lock_observations)
+    assert all(not any(item[2]) for item in lock_observations), lock_observations
+    assert adapter.observation().status == "requests_settled"
+    diagnostic = context.inspection_for_characterization()
+    assert diagnostic["execution_available"] is False
+    assert diagnostic["protected_storage_available"] is False
+    assert diagnostic["promotion_available"] is False
+    assert diagnostic["candidate_publication_allowed"] is False
+    assert diagnostic["authorship"] == "unverified"
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-failed.json")
+    assert reopened.revision == 6 and reopened.next_request_index == 2
+    assert [(type(event), event.request_index) for event in reopened.events] == [
+        (multi_journal.SubmissionIntent, 0),
+        (multi_journal.SubmissionOutcome, 0),
+        (multi_journal.RequestSettlement, 0),
+        (multi_journal.SubmissionIntent, 1),
+        (multi_journal.SubmissionOutcome, 1),
+        (multi_journal.RequestSettlement, 1),
+    ]
+    assert reopened.events[1].outcome == "pre_send_rejected"
+    assert reopened.events[2].disposition == "pre_send_rejected"
+    assert reopened.events[4].outcome == "accepted"
+    assert reopened.events[5].disposition == "execution_failed"
+    assert reopened.events[4].prompt_id == reopened.events[5].prompt_id
+    snapshot = values[0].generation_jobs.snapshot(adapter._envelope.job_id)
+    assert [item["state"] for item in snapshot["requests"]] == ["failed", "failed"]
+    assert len(adapter._prompts) == 1
+    assert adapter.advance_for_characterization().status == "requests_settled"
+    assert attempts == [0, 1]
+    values[0].close()
+
+
+def test_multi_request_journal_requires_candidate_registration_before_completed_settlement(tmp_path, monkeypatch):
+    output = tmp_path / "durable-output"
+    output.mkdir()
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    import core.comfy_output_containment as containment
+    monkeypatch.setattr(containment.tempfile, "tempdir", str(staging))
+    base_provider = host_for()
+
+    def host_provider(project, runs):
+        host = base_provider(project, runs)
+        host["generation_options"]["output_directory"] = str(output)
+        return host
+
+    values = ready_generation(tmp_path, 2, host_provider=host_provider)
+    runtime, _, state, *_ = values
+    state["history"] = []
+    context, approved_journal_root = context_for(values, tmp_path, operation_id="multi-candidate")
+    descriptors = [{"filename": "remote.png", "subfolder": "private", "type": "output"}]
+
+    def result_provider(prepared, prompt):
+        if prepared.request_index == 0:
+            from test_comfy_output_containment import successful_metadata
+            return ExecutionResult(prepared.request_id, prompt, "ready",
+                                   successful_metadata(prompt, descriptors))
+        return ExecutionResult(prepared.request_id, prompt, "execution_failed")
+
+    adapter, sent = executor(values, context, provider=result_provider)
+    assert accepted(values, adapter).status == "characterized_acceptance"
+    from core.comfy_output_containment import ContainedOutputStore
+    from test_comfy_output_containment import image_bytes, stream_provider, contain
+    from ui.agent_generation_candidate_publication import GenerationCandidatePublication
+    from ui.agent_generation_executor_handoff import local_output_custody_current_for_characterization
+    from test_agent_generation_candidate_publication import app_owners
+
+    adapter._local_gate = lambda envelope, remote, local: local_output_custody_current_for_characterization(
+        state, runtime, envelope, remote, local)
+    store = ContainedOutputStore.create_for_characterization(characterization=True)
+    contained = contain(adapter, store, stream_provider(image_bytes()))
+    assert contained.status == "local_outputs_ready", (contained, adapter.observation(), sent, adapter.remote_receipts())
+    owners = app_owners(state)
+    publisher = GenerationCandidatePublication.create_for_characterization(
+        state, runtime, adapter._envelope, approved_directory=str(output),
+        candidate_factory=owners["_make_generated_candidate_record"],
+        candidate_appender=owners["_append_line_generated_candidates"],
+        save_project=owners["save_agent_scene_module_swap_project"], characterization=True)
+    remote = next(item for item in adapter.remote_receipts() if item.request_index == 0)
+    local = next(item for item in adapter.local_receipts() if item.request_index == 0)
+    receipt = publisher.publish_for_characterization(store, remote, local)
+    assert receipt.registration_state == "registered" and receipt.registered_count == 1
+    assert adapter.advance_for_characterization().status == "requests_settled"
+    assert len(sent) == 2 and [item.request_index for item in sent] == [0, 1]
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-candidate.json")
+    settlements = [event for event in reopened.events if type(event) is multi_journal.RequestSettlement]
+    assert [event.disposition for event in settlements] == ["execution_completed", "execution_failed"]
+    snapshot = runtime.generation_jobs.snapshot(adapter._envelope.job_id)
+    assert snapshot["requests"][0]["registered_count"] == 1
+    assert snapshot["requests"][1]["registered_count"] == 0
+    assert len(state["project"].prompt_lines[1].generated_candidates) == 1
+    assert runtime.generation_jobs.snapshot(adapter._envelope.job_id)["save_state"] == "not_attempted"
+    runtime.close()
+
+
+def test_multi_request_partial_candidate_registration_does_not_settle_or_advance(tmp_path, monkeypatch):
+    output = tmp_path / "partial-output"
+    output.mkdir()
+    staging = tmp_path / "partial-staging"
+    staging.mkdir()
+    import core.comfy_output_containment as containment
+    monkeypatch.setattr(containment.tempfile, "tempdir", str(staging))
+    base_provider = host_for()
+
+    def host_provider(project, runs):
+        host = base_provider(project, runs)
+        host["generation_options"]["output_directory"] = str(output)
+        return host
+
+    values = ready_generation(tmp_path, 2, host_provider=host_provider)
+    runtime, _, state, *_ = values
+    state["history"] = []
+    context, approved_journal_root = context_for(values, tmp_path, operation_id="multi-partial")
+    descriptors = [
+        {"filename": "remote-one.png", "subfolder": "private", "type": "output"},
+        {"filename": "remote-two.png", "subfolder": "private", "type": "output"},
+    ]
+
+    def result_provider(prepared, prompt):
+        if prepared.request_index == 0:
+            from test_comfy_output_containment import successful_metadata
+            return ExecutionResult(prepared.request_id, prompt, "ready",
+                                   successful_metadata(prompt, descriptors))
+        return ExecutionResult(prepared.request_id, prompt, "execution_failed")
+
+    adapter, sent = executor(values, context, provider=result_provider)
+    assert accepted(values, adapter).status == "characterized_acceptance"
+    from core.comfy_output_containment import ContainedOutputStore
+    from test_comfy_output_containment import image_bytes, stream_provider, contain
+    from ui.agent_generation_candidate_publication import GenerationCandidatePublication
+    from ui.agent_generation_executor_handoff import local_output_custody_current_for_characterization
+    from test_agent_generation_candidate_publication import app_owners
+
+    adapter._local_gate = lambda envelope, remote, local: local_output_custody_current_for_characterization(
+        state, runtime, envelope, remote, local)
+    store = ContainedOutputStore.create_for_characterization(characterization=True)
+    contained = contain(adapter, store, stream_provider(lambda lookup: image_bytes()))
+    assert contained.status == "local_outputs_ready"
+    owners = app_owners(state)
+    publisher = GenerationCandidatePublication.create_for_characterization(
+        state, runtime, adapter._envelope, approved_directory=str(output),
+        candidate_factory=owners["_make_generated_candidate_record"],
+        candidate_appender=owners["_append_line_generated_candidates"],
+        save_project=owners["save_agent_scene_module_swap_project"], characterization=True)
+    original_appender = publisher._appender
+
+    def append_one_then_fail(line, records):
+        original_appender(line, records[:1])
+        raise RuntimeError("partial publication remains uncertain")
+
+    publisher._appender = append_one_then_fail
+    remote = next(item for item in adapter.remote_receipts() if item.request_index == 0)
+    local = next(item for item in adapter.local_receipts() if item.request_index == 0)
+    publication = publisher.publish_for_characterization(store, remote, local)
+    assert publication.registration_state == "registration_uncertain"
+    assert publication.registered_count == 1
+    assert runtime.generation_jobs.snapshot(adapter._envelope.job_id)["requests"][0]["state"] == "partially_failed"
+    adapter.advance_for_characterization()
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-partial.json")
+    assert reopened.revision == 2 and reopened.next_request_index == 0
+    assert not any(type(event) is multi_journal.RequestSettlement for event in reopened.events)
+    assert [item.request_index for item in sent] == [0]
+    assert len(state["project"].prompt_lines[1].generated_candidates) == 1
+    assert runtime.generation_jobs.snapshot(adapter._envelope.job_id)["save_state"] == "not_attempted"
+    runtime.close()
+
+
+def test_multi_request_authority_events_survive_diagnostic_eviction(tmp_path):
+    values = ready_generation(tmp_path, 22)
+    context, approved_journal_root = context_for(values, tmp_path, operation_id="multi-long")
+    adapter, sent = executor(values, context,
+        provider=lambda prepared, prompt: ExecutionResult(prepared.request_id, prompt, "execution_failed"))
+    assert accepted(values, adapter).status == "characterized_acceptance"
+    assert len(sent) == 22
+    job = values[0].generation_jobs._jobs[adapter._envelope.job_id]
+    inbox = values[0]._generation_executor_inbox
+    assert job.event_count == 66 and len(job.events) == 64
+    assert len(job.authority_events) == 66 and len(inbox._events) == 64
+    assert len(inbox._authority_events) == 66
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-long.json")
+    assert reopened.revision == 66 and reopened.next_request_index == 22
+    assert sum(type(event) is multi_journal.RequestSettlement for event in reopened.events) == 22
+    assert adapter.observation().status == "requests_settled"
+    values[0].close()
+
+
+def test_multi_request_intent_ack_failure_blocks_the_next_transport_call(tmp_path):
+    values = ready_generation(tmp_path, 2)
+    after_replace = 0
+
+    def fault(boundary):
+        nonlocal after_replace
+        if boundary == "after_replace_before_ack":
+            after_replace += 1
+            if after_replace == 4:
+                raise RuntimeError("second request intent acknowledgement lost")
+
+    context, approved_journal_root = context_for(
+        values, tmp_path, operation_id="multi-intent-ack", fault=fault)
+    attempts = []
+
+    def transport(prepared):
+        attempts.append(prepared.request_index)
+        return SubmissionResult("rejected_before_submission")
+
+    adapter, sent = executor(values, context, transport=transport)
+    assert accepted(values, adapter).status == "characterized_acceptance"
+    assert attempts == [0] and [item.request_index for item in sent] == [0]
+    assert adapter.observation().status == "journal_intent_unacknowledged"
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-intent-ack.json")
+    assert reopened.revision == 4 and reopened.events[-1].request_index == 1
+    assert type(reopened.events[-1]) is multi_journal.SubmissionIntent
+    assert reopened.state == "intent_outcome_unknown"
+    assert context.inspection_for_characterization()["state"] == "uncertain"
+    assert adapter.advance_for_characterization().status == "journal_intent_unacknowledged"
+    assert attempts == [0]
+    values[0].close()
+
+
+def test_multi_request_accepted_but_pending_does_not_authorize_the_next_send(tmp_path):
+    values = ready_generation(tmp_path, 2)
+    context, approved_journal_root = context_for(values, tmp_path, operation_id="multi-pending")
+    adapter, sent = executor(values, context, provider=lambda prepared, prompt: ExecutionResult(
+        prepared.request_id, prompt, "pending"))
+    assert accepted(values, adapter).status == "characterized_acceptance"
+    assert [item.request_index for item in sent] == [0]
+    assert adapter.observation().status == "awaiting_remote_result"
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-pending.json")
+    assert reopened.revision == 2 and reopened.next_request_index == 0
+    assert type(reopened.events[0]) is multi_journal.SubmissionIntent
+    assert reopened.events[1].outcome == "accepted"
+    assert adapter.advance_for_characterization().status == "awaiting_remote_result"
+    assert [item.request_index for item in sent] == [0]
+    values[0].close()
+
+
+def test_multi_request_duplicate_accepted_prompt_stops_before_a_later_request(tmp_path):
+    values = ready_generation(tmp_path, 3)
+    context, approved_journal_root = context_for(values, tmp_path, operation_id="multi-duplicate-prompt")
+    duplicate_prompt = str(uuid.uuid4())
+    attempts = []
+
+    def transport(prepared):
+        attempts.append(prepared.request_index)
+        return SubmissionResult("accepted", json.dumps({"prompt_id": duplicate_prompt}).encode())
+
+    adapter, sent = executor(values, context, transport=transport,
+        provider=lambda prepared, prompt: ExecutionResult(
+            prepared.request_id, prompt, "execution_failed"))
+    assert accepted(values, adapter).status in {"characterized_acceptance", "handoff_invalidated"}
+    assert attempts == [0, 1] and [item.request_index for item in sent] == [0, 1]
+    assert adapter.observation().status == "submission_outcome_unknown"
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-duplicate-prompt.json")
+    assert reopened.revision == 5 and reopened.next_request_index == 1
+    assert reopened.events[-1].request_index == 1
+    assert type(reopened.events[-1]) is multi_journal.SubmissionOutcome
+    assert reopened.events[-1].outcome == "unknown"
+    assert reopened.state == "submission_outcome_unknown"
+    assert adapter.advance_for_characterization().status == "submission_outcome_unknown"
+    assert attempts == [0, 1]
+    values[0].close()
+
+
+def test_multi_request_settlement_ack_failure_pins_divergence_and_stops_sequence(tmp_path):
+    values = ready_generation(tmp_path, 2)
+    after_replace = 0
+
+    def fault(boundary):
+        nonlocal after_replace
+        if boundary == "after_replace_before_ack":
+            after_replace += 1
+            if after_replace == 3:
+                raise RuntimeError("first settlement acknowledgement lost")
+
+    context, approved_journal_root = context_for(
+        values, tmp_path, operation_id="multi-settlement-ack", fault=fault)
+    attempts = []
+
+    def transport(prepared):
+        attempts.append(prepared.request_index)
+        return SubmissionResult("rejected_before_submission")
+
+    adapter, sent = executor(values, context, transport=transport)
+    assert accepted(values, adapter).status == "characterized_acceptance"
+    assert attempts == [0] and [item.request_index for item in sent] == [0]
+    assert adapter.observation().status == "journal_settlement_unavailable"
+    assert context.inspection_for_characterization()["state"] == "uncertain"
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-settlement-ack.json")
+    assert reopened.revision == 3 and reopened.next_request_index == 1
+    assert type(reopened.events[-1]) is multi_journal.RequestSettlement
+    assert reopened.events[-1].disposition == "pre_send_rejected"
+    assert adapter.advance_for_characterization().status == "journal_settlement_unavailable"
+    assert attempts == [0]
+    values[0].close()
+
+
+def test_multi_request_outcome_ack_failure_after_possible_send_never_advances(tmp_path):
+    values = ready_generation(tmp_path, 2)
+    after_replace = 0
+
+    def fault(boundary):
+        nonlocal after_replace
+        if boundary == "after_replace_before_ack":
+            after_replace += 1
+            if after_replace == 2:
+                raise RuntimeError("first submission outcome acknowledgement lost")
+
+    context, approved_journal_root = context_for(
+        values, tmp_path, operation_id="multi-outcome-ack", fault=fault)
+    attempts = []
+
+    def transport(prepared):
+        attempts.append(prepared.request_index)
+        return SubmissionResult("accepted", json.dumps({"prompt_id": str(uuid.uuid4())}).encode())
+
+    adapter, sent = executor(values, context, transport=transport)
+    assert accepted(values, adapter).status in {"characterized_acceptance", "handoff_invalidated"}
+    assert attempts == [0] and [item.request_index for item in sent] == [0]
+    assert adapter.observation().status == "submission_outcome_unknown"
+    assert context.inspection_for_characterization()["state"] == "uncertain"
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-outcome-ack.json")
+    assert reopened.revision == 2 and reopened.next_request_index == 0
+    assert type(reopened.events[-1]) is multi_journal.SubmissionOutcome
+    assert reopened.events[-1].outcome == "accepted"
+    assert reopened.trust == "inspect_only" and reopened.execution_available is False
+    assert adapter.advance_for_characterization().status == "submission_outcome_unknown"
+    assert attempts == [0]
+    values[0].close()
+
+
+@pytest.mark.parametrize("drift", ["project", "path", "activation", "pairing", "session", "session_close"])
+def test_multi_request_host_drift_after_intent_ack_prevents_next_send(tmp_path, drift):
+    case = tmp_path / drift
+    case.mkdir()
+    values = ready_generation(case, 2)
+    runtime, route, state, *_ = values
+    after_replace = 0
+
+    def fault(boundary):
+        nonlocal after_replace
+        if boundary != "after_replace_before_ack":
+            return
+        after_replace += 1
+        # Request 0 consumes three revisions. Drift is introduced after request
+        # 1's intent replaces the file but before it may claim the send.
+        if after_replace != 4:
+            return
+        if drift == "project":
+            state["project"].prompt_lines[1].current_text = "changed at final send gate"
+        elif drift == "path":
+            state["current_project_path"] += ".changed"
+        elif drift == "activation":
+            runtime.synchronize_target(state["project"], state["current_project_path"] + ".changed")
+        elif drift == "pairing":
+            runtime._registry.release_pairing(route)
+        elif drift == "session":
+            runtime.generation_jobs._session_incarnation = uuid.uuid4().hex
+        else:
+            runtime.close()
+
+    context, approved_journal_root = context_for(
+        values, case, operation_id=f"multi-drift-{drift}", fault=fault)
+    attempts = []
+
+    def transport(prepared):
+        attempts.append(prepared.request_index)
+        return SubmissionResult("rejected_before_submission")
+
+    adapter, sent = executor(values, context, transport=transport)
+    accepted(values, adapter)
+    assert attempts == [0] and [item.request_index for item in sent] == [0]
+    assert context.inspection_for_characterization()["state"] in {"no_send", "uncertain"}
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, f"multi-drift-{drift}.json")
+    assert reopened.revision == 4 and type(reopened.events[-1]) is multi_journal.SubmissionIntent
+    assert adapter.advance_for_characterization().status in {
+        "journal_host_invalidated_before_send", "journal_intent_unacknowledged",
+        "host_invalidated", "handoff_invalidated"}
+    assert attempts == [0]
+    if drift != "session_close":
+        runtime.close()
+
+
+def test_multi_request_unknown_transport_result_does_not_advance_or_retry(tmp_path):
+    values = ready_generation(tmp_path, 2)
+    context, approved_journal_root = context_for(values, tmp_path, operation_id="multi-unknown")
+    attempts = []
+
+    def transport(prepared):
+        attempts.append(prepared.request_index)
+        raise OSError("possible send, response lost")
+
+    adapter, sent = executor(values, context, transport=transport)
+    assert accepted(values, adapter).status in {"characterized_acceptance", "handoff_invalidated"}
+    assert attempts == [0] and [item.request_index for item in sent] == [0]
+    assert adapter.observation().status == "submission_outcome_unknown"
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-unknown.json")
+    assert reopened.revision == 2 and reopened.next_request_index == 0
+    assert reopened.events[-1].outcome == "unknown"
+    assert adapter.advance_for_characterization().status == "submission_outcome_unknown"
+    assert attempts == [0]
+    values[0].close()
+
+
+def test_multi_request_concurrent_and_reentrant_advance_do_not_duplicate_sends(tmp_path):
+    values = ready_generation(tmp_path, 2)
+    context, approved_journal_root = context_for(values, tmp_path, operation_id="multi-reentrant")
+    entered, release, competing_started = threading.Event(), threading.Event(), threading.Event()
+    attempts, holder, handoff_results = [], {}, []
+
+    def transport(prepared):
+        attempts.append(prepared.request_index)
+        if prepared.request_index == 0:
+            # Reentrant advance observes the submitting phase and cannot claim
+            # a second request. Another thread then waits behind the same
+            # serialization lock until the exact result and settlement finish.
+            holder["adapter"].advance_for_characterization()
+            entered.set()
+            assert release.wait(5)
+        return SubmissionResult("rejected_before_submission")
+
+    adapter, sent = executor(values, context, transport=transport)
+    holder["adapter"] = adapter
+    worker = threading.Thread(target=lambda: handoff_results.append(accepted(values, adapter)))
+    worker.start()
+    assert entered.wait(5)
+
+    def competing_advance():
+        competing_started.set()
+        adapter.advance_for_characterization()
+
+    competitor = threading.Thread(target=competing_advance)
+    competitor.start()
+    assert competing_started.wait(5)
+    release.set()
+    worker.join(5)
+    competitor.join(5)
+    assert not worker.is_alive() and not competitor.is_alive()
+    assert handoff_results[0].status == "characterized_acceptance"
+    assert attempts == [0, 1] and [item.request_index for item in sent] == [0, 1]
+    reopened = multi_journal.reopen_multi_request_journal(
+        approved_journal_root, "multi-reentrant.json")
+    assert reopened.revision == 6 and reopened.next_request_index == 2
+    assert sum(type(event) is multi_journal.SubmissionIntent for event in reopened.events) == 2
+    values[0].close()
+
+
 def test_definite_pre_send_rejection_is_recorded_failed_without_retry(tmp_path):
     values = ready_one_request(tmp_path)
     context, journal_root = context_for(values, tmp_path)
@@ -483,15 +984,17 @@ def test_result_ack_failure_after_possible_send_never_retries_or_advances_anothe
     values[0].close()
 
 
-def test_multi_request_manifest_is_refused_by_this_one_request_journal_scope(tmp_path):
+def test_multi_request_manifest_uses_the_separate_multi_request_journal_contract(tmp_path):
     values = ready_generation(tmp_path, 2)
-    context, journal_root = context_for(values, tmp_path)
+    context, journal_root = context_for(values, tmp_path, operation_id="multi-default")
     adapter, sent = executor(values, context)
     assert accepted(values, adapter).status == "characterized_acceptance"
-    assert sent == []
-    assert not (Path(journal_root.path) / "operation.json").exists()
-    assert adapter.observation().status == "journal_binding_unavailable"
-    assert values[0].generation_jobs.snapshot(adapter._envelope.job_id)["requests"][1]["state"] == "unsent"
+    assert [item.request_index for item in sent] == [0, 1]
+    assert adapter.observation().status == "requests_settled"
+    reopened = multi_journal.reopen_multi_request_journal(journal_root, "multi-default.json")
+    assert reopened.revision == 6 and reopened.next_request_index == 2
+    assert [event.disposition for event in reopened.events
+            if type(event) is multi_journal.RequestSettlement] == ["execution_failed", "execution_failed"]
     values[0].close()
 
 

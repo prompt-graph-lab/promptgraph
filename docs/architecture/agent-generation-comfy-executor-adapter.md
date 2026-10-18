@@ -213,9 +213,11 @@ does not grant another take or attempt.
 
 The optional `ui.agent_generation_executor_journal.GenerationExecutorJournalIntent`
 seam connects this same `ComfyExecutorAdapter` decision to the existing
-`OfflineJournalWriter`. It is opt-in only, requires a host-created owner with
+`OfflineJournalWriter` for one-request manifests and the separately identified
+`MultiRequestJournalWriter` for multi-request manifests. It is opt-in only,
+requires a host-created owner with
 the exact original `GenerationPublicationOrigin`, approved Project and Journal
-roots, frozen review/source evidence, and a single-request manifest. It is not
+roots, and frozen review/source evidence. It is not
 registered as a production transport or Start path; all capability flags remain
 false and authorship remains unverified.
 
@@ -240,13 +242,33 @@ Once the callback may have run, a lost, invalid or unrecordable response is
 unknown and never retried. A failed result append cannot erase the earlier
 acknowledged intent. Reopened Journal bytes remain inspect-only; they never
 reconstruct a live claim, send capability, host authorization or recovery
-action. This Executor integration remains limited to one request because the
-v1 Journal schema has eight ordered aggregate checkpoints. C2B-8D-15A now
-defines a separately identified multi-request persistence contract in
+action. For a multi-request manifest, C2B-8D-15B instead records each request
+as an acknowledged `submission_intent`, `submission_outcome`, and separately
+validated `request_settlement` in the C2B-8D-15A schema. Before each next
+request, the owner checks the exact current original Project and host binding,
+the complete accepted event sequence, the per-request Registry state and
+failure cause, and the previous live Journal acknowledgment. A definite
+pre-send rejection and an explicit execution failure can settle that request.
+An accepted prompt remains unsettled while pending, timed out, unknown, or
+awaiting outputs. `execution_completed` requires the existing Candidate
+Publisher's exact fully registered request evidence and correlated
+`remote_outputs_ready`/`outputs_ready` events. An aggregate `partially_failed`
+job may still contain such an individually completed request; per-request
+partial/uncertain registration is not treated as completed. Missing or
+conflicting evidence or a lost settlement acknowledgment stops later requests
+and retains divergence as uncertain.
+
+The host retains an exact accepted event ledger separately from the 64-entry
+diagnostic view, bounded by the existing 1024-event Registry maximum. If the
+complete sequence is absent or inconsistent, settlement refuses. The original
+single-request v1 eight-checkpoint Journal contract remains unchanged, and the
+multi-request format remains inspect-only after reopen. Neither path restores
+live authority after process restart. This Executor integration remains
+characterization-only. C2B-8D-15A defines the separate multi-request persistence
+contract in
 [`agent-generation-ownership-journal.md`](agent-generation-ownership-journal.md#c2b-8d-15a-bounded-multi-request-journal-contract),
-but it is not connected here. C2B-8D-15B must bind actual per-request intent,
-outcome and separately validated host settlement to this executor lifecycle.
-Reopen remains inspect-only and cannot authorize a later request.
+with the live settlement and executor composition described in
+[`agent-generation-ownership-journal.md`](agent-generation-ownership-journal.md#c2b-8d-15b-executor-integration).
 
 The Journal's successful file acknowledgment is not a claim of power-loss
 durability, cross-file atomicity or cryptographic author authentication. The
