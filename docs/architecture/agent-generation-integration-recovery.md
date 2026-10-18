@@ -60,11 +60,21 @@ For each accepted request, the composed path preserves this sequence:
 → exact-prompt injected `GET /history/{prompt_id}`
 → existing remote-output validation and host count event.
 
-An initial History read happens once after accepted submission. A caller may
-explicitly request another exact-prompt History read while the Executor is
-waiting for remote metadata; that operation never invokes POST again. Pending,
-timeout, malformed, mismatched or uncertain results cannot advance another
-request. A correlated successful History result reaches only the existing
+An initial History read happens once after accepted submission. Before every
+History GET, including an explicit re-read, the composition requires the exact
+accepted envelope, active frozen request and prompt, current original Project
+and path, process/session, activation/epoch/pairing, live Job Registry and
+Inbox event custody, and the Journal owner's exact acknowledged tip. These
+checks use the existing host lock order and release all host/job/inbox/Journal
+owner locks before HTTP I/O. After the GET, the same custody is revalidated
+before its result can reach the Executor. A caller may explicitly request
+another exact-prompt History read while the Executor is waiting for remote
+metadata; that operation never invokes POST again. If custody is lost before
+the GET, no request is issued. If close or invalidation races an already-started
+GET, its result is discarded as unknown/invalidated; the implementation does
+not claim that the remote GET was cancelled. Pending, timeout, malformed,
+mismatched or uncertain results cannot advance another request. A correlated
+successful History result reaches only the existing
 `validate_remote_outputs` owner and `remote_outputs_ready` event. It does not
 emit local `outputs_ready`, register a Candidate, settle the Journal request,
 or save the Project. The existing C2B-8D-15B live original-host registration

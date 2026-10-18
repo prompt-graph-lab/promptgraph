@@ -17,6 +17,7 @@ from core.comfy_http_submission import (
 )
 from ui.agent_generation_comfy_executor import (
     ComfyExecutorAdapter,
+    ExecutionResult,
     history_result_provider_for_characterization,
 )
 from ui.agent_generation_executor_handoff import deliver_executor_event_for_characterization
@@ -35,12 +36,15 @@ class OfflineHTTPExecutorComposition:
     candidate_publication_allowed = False
     authorship = "unverified"
 
-    def __init__(self, adapter, submission_transport, history_transport, history_reader, history_lock):
+    def __init__(self, adapter, submission_transport, history_transport, history_reader,
+                 history_lock, state, runtime, journal_intent_owner):
         self._adapter = adapter
         self._submission_transport = submission_transport
         self._history_transport = history_transport
         self._history_reader = history_reader
         self._history_read_lock = history_lock
+        self._state, self._runtime = state, runtime
+        self._journal_intent_owner = journal_intent_owner
 
     def accept_offer_for_characterization(self, offer):
         return self._adapter.accept_and_run_for_characterization(offer)
@@ -50,6 +54,32 @@ class OfflineHTTPExecutorComposition:
 
     def observation_for_characterization(self):
         return self._adapter.observation()
+
+    def _read_history_with_custody(self, prepared, prompt_id):
+        adapter = self._adapter
+        if (adapter._phase != "awaiting_remote_result"
+                or adapter._active_prepared is not prepared
+                or adapter._active_prompt != prompt_id):
+            return None
+        envelope = adapter._envelope
+        lease = self._journal_intent_owner.begin_history_read_for_characterization(
+            envelope, prepared, prompt_id, adapter._jobs, adapter._inbox, adapter._acceptance)
+        if lease is None:
+            adapter._phase = "stopped"
+            adapter._observe("host_invalidated")
+            return ExecutionResult(prepared.request_id, prompt_id, "unknown")
+        try:
+            result = self._history_reader(prepared, prompt_id)
+        except Exception:
+            result = ExecutionResult(prepared.request_id, prompt_id, "unknown")
+        current = self._journal_intent_owner.finish_history_read_for_characterization(
+            envelope, prepared, prompt_id, adapter._jobs, adapter._inbox,
+            adapter._acceptance, lease)
+        if not current:
+            adapter._phase = "stopped"
+            adapter._observe("host_invalidated")
+            return ExecutionResult(prepared.request_id, prompt_id, "unknown")
+        return result
 
     def read_current_history_for_characterization(self):
         """Explicitly GET the current accepted prompt; never resubmit POST /prompt."""
@@ -69,9 +99,11 @@ class OfflineHTTPExecutorComposition:
                 if (adapter._phase != "awaiting_remote_result" or prepared is None
                         or prompt_id is None):
                     return adapter.observation()
-                result = self._history_reader(prepared, prompt_id)
+                result = self._read_history_with_custody(prepared, prompt_id)
             finally:
                 self._history_read_lock.release()
+            if result is None or adapter._phase == "stopped":
+                return adapter.observation()
             return adapter.receive_result_for_characterization(result)
         finally:
             adapter._journal_advance_lock.release()
@@ -116,10 +148,18 @@ def compose_http_executor_for_characterization(
         wire_factory=history_wire_factory, policy=policy, characterization=True)
     read_history = history_result_provider_for_characterization(history)
     history_lock = Lock()
+    composition_holder = {}
 
     def serialized_history_provider(prepared, prompt_id):
-        with history_lock:
-            return read_history(prepared, prompt_id)
+        if not history_lock.acquire(blocking=False):
+            return ExecutionResult(prepared.request_id, prompt_id, "unknown")
+        try:
+            composition = composition_holder.get("composition")
+            if composition is None:
+                return ExecutionResult(prepared.request_id, prompt_id, "unknown")
+            return composition._read_history_with_custody(prepared, prompt_id)
+        finally:
+            history_lock.release()
 
     adapter = ComfyExecutorAdapter(
         runtime.generation_jobs,
@@ -132,5 +172,7 @@ def compose_http_executor_for_characterization(
         journal_intent_owner=journal_intent_owner,
     )
     composed = OfflineHTTPExecutorComposition(
-        adapter, submission, history, read_history, history_lock)
+        adapter, submission, history, read_history, history_lock,
+        state, runtime, journal_intent_owner)
+    composition_holder["composition"] = composed
     return composed

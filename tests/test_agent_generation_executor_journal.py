@@ -1175,6 +1175,79 @@ def test_offline_http_pending_history_can_be_explicitly_reread_without_post_retr
     values[0].close()
 
 
+@pytest.mark.parametrize("invalidation", ["runtime_close", "source_path", "pairing", "journal_close"])
+def test_offline_http_explicit_history_read_is_fenced_after_custody_invalidation(
+        tmp_path, invalidation):
+    values = ready_one_request(tmp_path)
+    runtime, _, state, *_ = values
+    context, _ = context_for(values, tmp_path, operation_id="http-read-invalidated-" + invalidation)
+    prompt_id = str(uuid.uuid4())
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()])
+    history_wire = _OfflineHistoryFactory({prompt_id: [b"{}"]})
+    composed = _http_composition(values, context, submission_wire, history_wire)
+    assert _run_http_handoff(values, composed).status == "characterized_acceptance"
+    assert composed.observation_for_characterization().status == "awaiting_remote_result"
+    assert len(submission_wire.posts) == 1 and len(history_wire.gets) == 1
+
+    if invalidation == "runtime_close":
+        runtime.close()
+    elif invalidation == "source_path":
+        state["current_project_path"] += ".replaced"
+    elif invalidation == "pairing":
+        runtime.generation_jobs.invalidate_execution_custody()
+        runtime._generation_executor_inbox.invalidate()
+    else:
+        context.close()
+
+    before_gets, before_posts = len(history_wire.gets), len(submission_wire.posts)
+    result = composed.read_current_history_for_characterization()
+    assert result.status == "host_invalidated"
+    assert len(history_wire.gets) == before_gets == 1
+    assert len(submission_wire.posts) == before_posts == 1
+    expected_journal_state = "closed" if invalidation == "journal_close" else "uncertain"
+    assert context.inspection_for_characterization()["state"] == expected_journal_state
+    if invalidation != "runtime_close":
+        runtime.close()
+
+
+@pytest.mark.parametrize("close_owner", ["runtime", "journal"])
+def test_offline_http_history_get_racing_close_is_reported_invalidated(
+        tmp_path, close_owner):
+    from test_comfy_output_containment import successful_metadata
+
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    context, _ = context_for(values, tmp_path, operation_id="http-read-close-race-" + close_owner)
+    prompt_id = str(uuid.uuid4())
+    submission_wire = _OfflineSubmissionFactory([
+        json.dumps({"prompt_id": prompt_id}, separators=(",", ":")).encode()])
+
+    history_wire = _OfflineHistoryFactory(
+        {prompt_id: [b"{}", successful_metadata(prompt_id)]})
+    composed = _http_composition(values, context, submission_wire, history_wire)
+    assert _run_http_handoff(values, composed).status == "characterized_acceptance"
+    assert composed.observation_for_characterization().status == "awaiting_remote_result"
+    assert len(history_wire.gets) == 1 and len(submission_wire.posts) == 1
+
+    def close_during_get(current_prompt):
+        assert current_prompt == prompt_id
+        if close_owner == "runtime":
+            runtime.close()
+        else:
+            context.close()
+
+    history_wire.get_hook = close_during_get
+    result = composed.read_current_history_for_characterization()
+    assert result.status == "host_invalidated"
+    assert len(history_wire.gets) == 2 and len(submission_wire.posts) == 1
+    assert not any(event.progress.kind == "remote_outputs_ready"
+                   for event in runtime._generation_executor_inbox._authority_events)
+    assert context.inspection_for_characterization()["state"] == "uncertain"
+    if close_owner == "journal":
+        runtime.close()
+
+
 def test_offline_http_pre_send_failures_settle_before_next_request_and_response_loss_never_retries(
         tmp_path):
     values = ready_generation(tmp_path, 2)

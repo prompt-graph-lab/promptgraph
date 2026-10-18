@@ -45,6 +45,37 @@ def _same_path(left, right):
         return False
 
 
+def _history_read_events_current(host_events, job_events, envelope, operation,
+                                 request_index, prompt_id):
+    """Prove one accepted submitted prompt is still awaiting History metadata."""
+    if (type(host_events) is not tuple or type(job_events) is not tuple
+            or len(host_events) != len(job_events) or len(host_events) > MAX_EVENTS):
+        return False
+    request_events = []
+    for sequence, (host_event, job_event) in enumerate(zip(host_events, job_events), 1):
+        if (type(host_event) is not ExecutorEvent or type(host_event.progress) is not WorkerEvent
+                or host_event.job_id != envelope.job_id
+                or host_event.claim_id != envelope.claim_id
+                or host_event.manifest_identity != operation.manifest_identity
+                or host_event.progress != job_event or job_event.sequence != sequence):
+            return False
+        if job_event.request_index == request_index:
+            request_events.append(host_event)
+    allowed = {"submission_started", "submitted", "execution_progress", "execution_timeout"}
+    if any(item.progress.kind not in allowed for item in request_events):
+        return False
+    started = [item for item in request_events if item.progress.kind == "submission_started"]
+    submitted = [item for item in request_events if item.progress.kind == "submitted"]
+    if (len(started) != 1 or len(submitted) != 1
+            or submitted[0].progress.prompt_id not in (None, prompt_id)
+            or not started[0].progress.sequence < submitted[0].progress.sequence
+            or any(item.progress.sequence <= submitted[0].progress.sequence
+                   for item in request_events
+                   if item.progress.kind in {"execution_progress", "execution_timeout"})):
+        return False
+    return True
+
+
 class GenerationExecutorJournalIntent:
     """Host-created, one-request writer binding for `ComfyExecutorAdapter`.
 
@@ -168,7 +199,8 @@ class GenerationExecutorJournalIntent:
             return False
 
     def _host_current(self, envelope, jobs, inbox, acceptance, *, request_state, event=None,
-                      claim_send=False):
+                      claim_send=False, history_prompt_id=None,
+                      claim_history_read=False, expected_tip=None):
         operation, origin = self._operation, self._origin
         if (operation is None or origin is None or not self._disk_current(operation)
                 or type(envelope) is not ExecutionEnvelope or envelope is not self._envelope
@@ -238,6 +270,21 @@ class GenerationExecutorJournalIntent:
                                     or job.events.get(event.progress.sequence) != expected
                                     or job.event_count != event.progress.sequence):
                                 return False
+                        if history_prompt_id is not None:
+                            if (request_state != "awaiting_result"
+                                    or not _history_read_events_current(
+                                        tuple(inbox._authority_events), tuple(job.authority_events),
+                                        envelope, operation, 0, history_prompt_id)):
+                                return False
+                            if claim_history_read:
+                                with self._lock:
+                                    if (self._closed or self._state_name != "result_observed"
+                                            or self._tip is not expected_tip):
+                                        return False
+                                    # Linearize the read authorization under the
+                                    # original-host gate. Network I/O starts only
+                                    # after all host and owner locks are released.
+                                    self._state_name = "history_reading"
                         if claim_send:
                             with self._lock:
                                 if self._closed or self._state_name != "intent_acknowledged":
@@ -250,7 +297,9 @@ class GenerationExecutorJournalIntent:
 
     def _multi_host_observation(self, envelope, jobs, inbox, acceptance, *,
                                 request_index, request_state, event=None,
-                                disposition=None, claim_send=False):
+                                disposition=None, claim_send=False,
+                                history_prompt_id=None, claim_history_read=False,
+                                expected_tip=None):
         """Validate current host custody for one exact multi-request transition.
 
         For a successful settlement this requires the existing Candidate
@@ -375,6 +424,23 @@ class GenerationExecutorJournalIntent:
                                         if item.progress.kind == "remote_outputs_ready"]
                         outputs_ready = [item for item in request_events
                                          if item.progress.kind == "outputs_ready"]
+
+                        if history_prompt_id is not None:
+                            outcome_record = self._multi_outcomes.get(request_index)
+                            if (request_state != "awaiting_result"
+                                    or outcome_record != ("accepted", history_prompt_id)
+                                    or not _history_read_events_current(
+                                        host_events, job_events, envelope, operation,
+                                        request_index, history_prompt_id)):
+                                return None
+                            if claim_history_read:
+                                with self._lock:
+                                    if (self._closed or self._state_name != "result_observed"
+                                            or self._tip is not expected_tip
+                                            or self._multi_expected_index != request_index):
+                                        return None
+                                    self._state_name = "history_reading"
+                            return True
 
                         if disposition is None:
                             if event is None:
@@ -881,6 +947,140 @@ class GenerationExecutorJournalIntent:
                 self._state_name = "uncertain"
             return "settlement_unavailable"
 
+    def _history_journal_tip_current(self, tip, writer, operation, expected_records):
+        """Reopen the live acknowledged tip without deriving authority from disk."""
+        try:
+            owner = self._journal_owner
+            root = self._journal_root(owner)
+            if (self._closed or writer is None or operation is not self._operation
+                    or root.identity != self._journal_root_identity
+                    or writer.operation != operation or getattr(writer, "_closed", False)
+                    or getattr(writer, "_uncertain", False)
+                    or writer._revision != tip.revision or writer._digest != tip.digest
+                    or writer._file_identity != tip.file_identity):
+                return False
+            if type(owner) is protected_journal.WindowsProtectedJournalCharacterization:
+                if owner._closed or owner._uncertain:
+                    return False
+                readiness = owner.readiness()
+                if readiness.get("journal_lifecycle") != "protected_observation":
+                    return False
+                if self._multi_request:
+                    if owner._multi_request_writer is not writer or writer._tip is not tip:
+                        return False
+                    reopened = owner.reopen_multi_request_journal_for_characterization(
+                        writer.filename, expected_revision=tip.revision, expected_digest=tip.digest)
+                else:
+                    if owner._writer is not writer:
+                        return False
+                    reopened = owner.reopen_journal_for_characterization(
+                        writer.filename, expected_revision=tip.revision, expected_digest=tip.digest)
+            else:
+                root.check()
+                if self._multi_request:
+                    if writer._tip is not tip:
+                        return False
+                    reopened = multi_journal.reopen_multi_request_journal(
+                        root, writer.filename, expected_revision=tip.revision, expected_digest=tip.digest)
+                else:
+                    reopened = journal.reopen_journal(
+                        root, writer.filename, expected_revision=tip.revision, expected_digest=tip.digest)
+            if (reopened.operation != operation or reopened.revision != tip.revision
+                    or reopened.digest != tip.digest or reopened.file_identity != tip.file_identity
+                    or reopened.trust != "inspect_only" or reopened.execution_available is not False):
+                return False
+            if self._multi_request:
+                return (type(reopened) is multi_journal.ReopenedMultiRequestJournal
+                        and reopened.events == tuple(expected_records)
+                        and reopened.authorship == "unverified")
+            return (type(reopened) is journal.ReopenedJournal
+                    and reopened.observations == tuple(expected_records)
+                    and reopened.authenticity == "unverified")
+        except Exception:
+            return False
+
+    def begin_history_read_for_characterization(self, envelope, prepared, prompt_id,
+                                                jobs, inbox, acceptance):
+        """Claim one unlocked History GET only while Journal and host custody are live."""
+        with self._lock:
+            if (self._closed or self._state_name != "result_observed" or self._tip is None
+                    or self._writer is None or envelope is not self._envelope
+                    or not valid_prompt_id(prompt_id)):
+                return None
+            tip, writer, operation = self._tip, self._writer, self._operation
+            if self._multi_request:
+                request_index = self._multi_expected_index
+                if not 0 <= request_index < len(self._expected_requests):
+                    return None
+                request = self._expected_requests[request_index]
+                if self._multi_outcomes.get(request_index) != ("accepted", prompt_id):
+                    return None
+                records = tuple(writer._events)
+            else:
+                request_index, request = 0, self._expected_request
+                if (not self._expected_observations
+                        or self._expected_observations[-1].checkpoint != "submission_observed"
+                        or self._expected_observations[-1].outcome != "accepted"
+                        or len(self._expected_observations[-1].requests) != 1
+                        or self._expected_observations[-1].requests[0].prompt_id != prompt_id):
+                    return None
+                records = tuple(self._expected_observations)
+        if (not is_owner_prepared_frozen_request(prepared)
+                or (prepared.request_id, prepared.request_index, prepared.workflow_identity)
+                != (request.request_id, request.request_index, request.workflow_identity)
+                or request_index != prepared.request_index):
+            return None
+        if not self._history_journal_tip_current(tip, writer, operation, records):
+            self._mark_history_read_uncertain(tip)
+            return None
+
+        if self._multi_request:
+            current = self._multi_host_observation(
+                envelope, jobs, inbox, acceptance, request_index=request_index,
+                request_state="awaiting_result", history_prompt_id=prompt_id,
+                claim_history_read=True, expected_tip=tip)
+        else:
+            current = self._host_current(
+                envelope, jobs, inbox, acceptance, request_state="awaiting_result",
+                history_prompt_id=prompt_id, claim_history_read=True, expected_tip=tip)
+        if current is True:
+            return tip
+        self._mark_history_read_uncertain(tip)
+        return None
+
+    def _mark_history_read_uncertain(self, tip):
+        with self._lock:
+            if not self._closed and self._state_name == "result_observed" and self._tip is tip:
+                self._state_name = "uncertain"
+
+    def finish_history_read_for_characterization(self, envelope, prepared, prompt_id,
+                                                 jobs, inbox, acceptance, tip):
+        """Release a read lease only after live host and Journal revalidation."""
+        with self._lock:
+            if (self._closed or self._state_name != "history_reading"
+                    or self._tip is not tip or envelope is not self._envelope
+                    or self._writer is None or self._operation is None):
+                return False
+            writer, operation = self._writer, self._operation
+            records = tuple(writer._events) if self._multi_request else tuple(self._expected_observations)
+            request_index = self._multi_expected_index if self._multi_request else 0
+        journal_current = self._history_journal_tip_current(tip, writer, operation, records)
+        if journal_current and self._multi_request:
+            host_current = self._multi_host_observation(
+                envelope, jobs, inbox, acceptance, request_index=request_index,
+                request_state="awaiting_result", history_prompt_id=prompt_id)
+        elif journal_current:
+            host_current = self._host_current(
+                envelope, jobs, inbox, acceptance, request_state="awaiting_result",
+                history_prompt_id=prompt_id)
+        else:
+            host_current = False
+        with self._lock:
+            if self._closed or self._state_name != "history_reading" or self._tip is not tip:
+                return False
+            self._state_name = "result_observed" if host_current is True else "uncertain"
+            return host_current is True
+
     def inspection_for_characterization(self):
         """Bounded private diagnostic; never exposes a writer or send capability."""
         with self._lock:
@@ -897,9 +1097,11 @@ class GenerationExecutorJournalIntent:
     def close(self):
         with self._lock:
             self._closed = True
-            if self._state_name in {"send_permitted", "result_writing"}:
+            if self._state_name in {"send_permitted", "result_writing", "history_reading"}:
                 self._state_name = "uncertain"
-            elif self._state_name in {"unbound", "binding", "bound", "intent_writing", "intent_acknowledged"}:
+            elif self._state_name in {
+                    "unbound", "binding", "bound", "intent_writing", "intent_acknowledged",
+                    "result_observed"}:
                 self._state_name = "closed"
             writer = self._writer if self._multi_request else None
         if writer is not None:
