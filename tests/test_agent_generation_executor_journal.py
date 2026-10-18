@@ -2074,3 +2074,136 @@ def test_host_owned_worker_close_linearizes_before_concurrent_handoff_admission(
     assert submission_wire.connections == 0 and submission_wire.posts == []
     assert history_wire.gets == []
     runtime.close()
+
+
+def test_host_owned_worker_reentrant_close_from_journal_fault_is_bounded_and_pre_send(
+        tmp_path):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    composition_holder = {}
+    close_results = []
+    fault_points = []
+
+    def journal_fault(boundary):
+        fault_points.append(boundary)
+        if boundary == "before_replace" and not close_results:
+            close_results.append(
+                composition_holder["value"].close_io_worker_for_characterization())
+
+    context, journal_root = context_for(
+        values, tmp_path, operation_id="worker-reentrant-close", fault=journal_fault)
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    composition_holder["value"] = composed
+    assert composed.start_io_worker_for_characterization().state == "running"
+
+    handoff_done = threading.Event()
+    handoff_results = []
+    handoff_errors = []
+
+    def handoff_on_bounded_thread():
+        try:
+            handoff_results.append(_run_http_handoff(values, composed))
+        except BaseException as exc:
+            handoff_errors.append(repr(exc))
+        finally:
+            handoff_done.set()
+
+    handoff_thread = threading.Thread(target=handoff_on_bounded_thread, daemon=True)
+    handoff_thread.start()
+    assert handoff_done.wait(5), "reentrant close blocked the host handoff thread"
+    handoff_thread.join(1)
+    assert not handoff_thread.is_alive()
+    assert not handoff_errors
+    assert handoff_results and handoff_results[0].status == "characterized_acceptance"
+    assert close_results and close_results[0].state in {"closed", "close_pending"}
+
+    worker_observation = composed.io_worker_observation_for_characterization()
+    assert worker_observation.state in {"closed", "close_pending"}
+    if worker_observation.state == "close_pending":
+        assert worker_observation.thread_alive and not worker_observation.safe_terminated
+    else:
+        assert worker_observation.safe_terminated and not worker_observation.thread_alive
+    assert composed.observation_for_characterization().status == "requests_settled"
+    assert submission_wire.connections == 0 and submission_wire.posts == []
+    assert history_wire.gets == []
+
+    reopened = journal.reopen_journal(journal_root, "worker-reentrant-close.json")
+    assert reopened.revision == 2
+    assert [item.checkpoint for item in reopened.observations] == [
+        "submission_intent", "submission_observed"]
+    assert reopened.observations[-1].outcome == "failed"
+    assert "before_replace" in fault_points
+    runtime.close()
+
+
+def test_host_owned_worker_concurrent_close_does_not_wait_for_journal_callback(
+        tmp_path):
+    values = ready_one_request(tmp_path)
+    runtime = values[0]
+    journal_entered, release_journal = threading.Event(), threading.Event()
+    journal_calls = []
+
+    def journal_fault(boundary):
+        journal_calls.append(boundary)
+        if boundary == "before_replace" and len(journal_calls) == 1:
+            journal_entered.set()
+            if not release_journal.wait(5):
+                raise RuntimeError("test_journal_release_timeout")
+
+    context, journal_root = context_for(
+        values, tmp_path, operation_id="worker-concurrent-close", fault=journal_fault)
+    submission_wire = _OfflineSubmissionFactory([])
+    history_wire = _OfflineHistoryFactory({})
+    composed = _worker_http_composition(values, context, submission_wire, history_wire)
+    assert composed.start_io_worker_for_characterization().state == "running"
+
+    handoff_done = threading.Event()
+    handoff_results, handoff_errors = [], []
+
+    def handoff_on_bounded_thread():
+        try:
+            handoff_results.append(_run_http_handoff(values, composed))
+        except BaseException as exc:
+            handoff_errors.append(repr(exc))
+        finally:
+            handoff_done.set()
+
+    handoff_thread = threading.Thread(target=handoff_on_bounded_thread, daemon=True)
+    handoff_thread.start()
+    assert journal_entered.wait(5)
+
+    close_done = threading.Event()
+    close_results = []
+
+    def close_on_bounded_thread():
+        try:
+            close_results.append(composed.close_io_worker_for_characterization())
+        finally:
+            close_done.set()
+
+    close_thread = threading.Thread(target=close_on_bounded_thread, daemon=True)
+    close_thread.start()
+    try:
+        assert close_done.wait(2), "close waited for the stalled Journal callback"
+        assert close_results and close_results[0].state in {"closed", "close_pending"}
+    finally:
+        release_journal.set()
+    assert handoff_done.wait(5)
+    handoff_thread.join(1)
+    close_thread.join(1)
+    assert not handoff_thread.is_alive() and not close_thread.is_alive()
+    assert not handoff_errors
+    assert handoff_results and handoff_results[0].status == "characterized_acceptance"
+    assert submission_wire.connections == 0 and submission_wire.posts == []
+    assert history_wire.gets == []
+
+    reopened = journal.reopen_journal(journal_root, "worker-concurrent-close.json")
+    assert reopened.revision == 2
+    assert reopened.observations[0].checkpoint == "submission_intent"
+    assert reopened.observations[1].checkpoint == "submission_observed"
+    assert reopened.observations[1].outcome == "failed"
+    assert composed.io_worker_observation_for_characterization().state in {
+        "closed", "close_pending"}
+    runtime.close()

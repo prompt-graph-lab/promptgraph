@@ -202,7 +202,8 @@ class HostOwnedHTTPIOWorker:
                 if self._state != "running" or self._thread is None:
                     outcome = (SubmissionResult("rejected_before_submission")
                                if kind == "submission" and self._active_task is None
-                               and self._state in {"created", "start_failed", "closed"}
+                               and self._state in {
+                                   "created", "start_failed", "closing", "close_pending", "closed"}
                                else SubmissionResult("unknown") if kind == "submission"
                                else HistoryResult("unknown"))
                     return self._refusal(kind, correlation, outcome)

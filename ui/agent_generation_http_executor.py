@@ -113,8 +113,10 @@ class OfflineHTTPExecutorComposition:
     def start_io_worker_for_characterization(self):
         if self._io_worker is None:
             return None
-        with self._worker_admission_lock:
-            return self._io_worker.start_for_characterization()
+        # Worker start/close are serialized by the Worker's short lifecycle
+        # lock. Do not take the submission-admission lease here: it can span
+        # caller-provided Journal callbacks and file I/O.
+        return self._io_worker.start_for_characterization()
 
     def io_worker_observation_for_characterization(self):
         if self._io_worker is None:
@@ -124,8 +126,11 @@ class OfflineHTTPExecutorComposition:
     def close_io_worker_for_characterization(self):
         if self._io_worker is None:
             return None
-        with self._worker_admission_lock:
-            return self._io_worker.close_for_characterization()
+        # Close must remain reentrant and bounded even when a host Journal
+        # callback requests it during an in-progress submission intent. The
+        # Worker's own lifecycle lock serializes close against queue admission;
+        # close never waits for the host-side admission lease.
+        return self._io_worker.close_for_characterization()
 
     def observation_for_characterization(self):
         return self._adapter.observation()

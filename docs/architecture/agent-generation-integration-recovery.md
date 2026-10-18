@@ -129,15 +129,19 @@ does not bound DNS, response headers or the entire HTTP operation. There is no
 background History polling; only an explicit host call may request a later GET,
 and it cannot resubmit POST.
 
-Worker start/close and each next-request admission share a host-side lock. The
-admission lease spans the `submission_started` event, Journal intent
-acknowledgment and one-item queue admission, then releases before the bounded
-HTTP wait. Once close or another terminal Worker state linearizes, an
+Worker start/close serialize through the Worker's short lifecycle lock, not the
+host admission lease. The lease spans the `submission_started` event, Journal
+intent acknowledgment and one-item queue admission, then releases before the
+bounded HTTP wait. Close does not wait for Journal callbacks or disk I/O. If it
+linearizes during an already-started intent write, that intent may still be
+acknowledged, but the Worker's queue gate refuses it as a definite pre-send
+rejection when no task is active; no HTTP call occurs, and the Journal records
+the outcome. Once close or another terminal Worker state linearizes, an
 `advance` can preserve settlement for an already completed/registered request
 but stops before creating a later request's event or intent. Thus shutdown
-does not turn remaining unsent requests into false failures. A request already
-admitted before close still follows the existing one-shot pre-send versus
-possible-send uncertainty rules.
+does not turn remaining unsent requests into false failures. A request whose
+queue admission preceded close still follows the existing one-shot pre-send
+versus possible-send uncertainty rules.
 
 Offline integration tests use disposable Projects, Journal owners and injected
 wire fakes to characterize exact intent-before-send, accepted POST/History

@@ -375,15 +375,20 @@ results are discarded, and neither close nor thread termination proves remote
 cancellation. The one-shot claim remains consumed. Close during History GET
 also discards its late result; there is no background polling.
 
-Worker start/close and the per-request submission-admission gate share a host
-lock. The gate covers `submission_started`, acknowledged Journal intent and
-Worker queue admission; it is released as soon as the one task is admitted, so
-close can still interrupt an in-flight HTTP wait. Once close/terminal state
-linearizes, a later `advance` may settle an already completed and registered
-request, then stops before emitting the next `submission_started` or Journal
-intent. Remaining requests stay unsent rather than becoming false pre-send
-failures. A request whose intent and queue admission preceded close remains
-subject to the existing pre-send/possible-send uncertainty rules.
+Worker start/close serialize through the Worker's short lifecycle lock. The
+host admission lease covers `submission_started`, acknowledged Journal intent
+and Worker queue admission, then releases before the bounded HTTP wait. Close
+does not wait for that lease, so a caller-injected Journal callback can request
+close reentrantly and concurrent close is not held behind Journal I/O. If
+close linearizes during an already-started intent write, that intent may still
+be acknowledged; the Worker's queue gate then refuses admission as a definite
+pre-send rejection when no task is active, with zero HTTP call. The existing
+Journal outcome records that refusal. Once close/terminal state linearizes, a
+later `advance` may settle an already completed and registered request, then
+stops before emitting the next `submission_started` or Journal intent.
+Remaining requests stay unsent rather than becoming false pre-send failures.
+A request whose queue admission preceded close remains subject to the existing
+pre-send/possible-send uncertainty rules.
 
 Deterministic tests compose these states with in-memory wires and disposable
 host/Journal fixtures, including exact intent-before-POST ordering, sequential
