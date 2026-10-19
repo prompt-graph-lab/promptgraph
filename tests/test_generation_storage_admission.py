@@ -189,6 +189,30 @@ def test_journal_replacement_accounts_old_snapshot_once_and_lock_as_zero_bytes()
     assert after["retained_uncertain_bytes"] == 0
 
 
+def test_completed_journal_replacement_ack_failure_restores_prior_accounting_and_retains_bound():
+    ledger, owner, journal_owner, operation, writer = _journal_replacement_rig()
+    _commit_portable_journal_replacement(
+        ledger, owner, journal_owner, operation, writer,
+        data_size=100, native_identity=(1, 10), file_identity=(2, 20))
+    prior_bytes = ledger._observed["private_journal"][0]
+    second_write, _binding, _ack, _summary = _commit_portable_journal_replacement(
+        ledger, owner, journal_owner, operation, writer,
+        data_size=200, native_identity=(1, 11), file_identity=(2, 21))
+
+    assert ledger._observed["private_journal"] == [200, 1]
+    ledger.retain_completed_journal_replacement_as_uncertain(operation, second_write)
+
+    row = next(item for item in ledger.readiness()["roots"]
+               if item["purpose"] == "private_journal")
+    assert row["observed_used_bytes"] == prior_bytes
+    assert row["observed_used_entries"] == 1
+    assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
+    assert row["retained_uncertain_entries"] == 2
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert ledger._operations[operation]["state"] == "retained_uncertain"
+    assert ledger.readiness()["status"] == "unavailable"
+
+
 def test_generic_cancel_cannot_release_journal_replacement_without_precreate_proof():
     ledger, owner, journal_owner, operation, writer = _journal_replacement_rig()
     binding = _journal_binding(ledger, owner, journal_owner, operation, writer)
@@ -1292,6 +1316,58 @@ def test_native_integrated_journal_close_after_ledger_commit_returns_committed_a
     assert row["reserved_bytes"] == row["reserved_entries"] == 0
     assert row["observed_used_entries"] == 1
     assert row["retained_uncertain_bytes"] == 0
+
+
+def test_native_integrated_journal_post_commit_ack_failure_retains_prior_and_full_bound(
+        native_storage_roots, monkeypatch):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope)
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    try:
+        first_ack = journal_owner.append_with_capacity_for_characterization(
+            capacity, capacity_operation,
+            journal.Observation("submission_intent", "intent"))
+        assert type(first_ack) is journal.ReopenedJournal
+        target = roots["private_journal"]._path / (operation.operation_id + ".json")
+        prior_bytes = target.read_bytes()
+        assert _capacity_root_row(capacity)["observed_used_bytes"] == len(prior_bytes)
+
+        original_mark = journal_owner._mark_lifecycle_lease_committed_locked
+
+        def mark_then_fail(lease, acknowledgement):
+            original_mark(lease, acknowledgement)
+            raise RuntimeError("injected post-ledger-commit ACK publication failure")
+
+        monkeypatch.setattr(journal_owner, "_mark_lifecycle_lease_committed_locked", mark_then_fail)
+        with pytest.raises(ValueError, match="journal_replacement_observation_unavailable"):
+            journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_observed", "unknown"))
+
+        assert journal_owner._uncertain is True
+        assert journal_owner._writer._uncertain is True
+        assert journal_owner._active_lease_committed_ack is None
+        assert capacity._ledger._active_write is None
+        assert capacity._ledger._operations[capacity_operation]["state"] == "retained_uncertain"
+        row = _capacity_root_row(capacity)
+        assert row["reserved_bytes"] == row["reserved_entries"] == 0
+        # Keep the prior JSON's accounted bytes plus the complete replacement
+        # upper bound, matching the pre-commit conservative capacity envelope.
+        assert row["observed_used_bytes"] == len(prior_bytes)
+        assert row["observed_used_entries"] == 1
+        assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
+        assert row["retained_uncertain_entries"] == 2
+        assert target.read_bytes() != prior_bytes
+        assert list(roots["private_journal"]._path.iterdir()) == [target]
+        with pytest.raises(ValueError, match="writer_unavailable"):
+            journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_observed", "unknown"))
+    finally:
+        journal_owner.close()
+        capacity.close()
 
 
 def test_native_journal_replacement_requires_exact_shared_root_owner(native_storage_roots):

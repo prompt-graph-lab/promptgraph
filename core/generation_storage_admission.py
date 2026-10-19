@@ -570,6 +570,84 @@ class _CapacityLedger:
             self._operations[record["operation"]]["state"] = "uncertain"
             self._invalid = True
 
+    def retain_completed_journal_replacement_as_uncertain(self, operation, write):
+        """Reopen capacity accounting if the Journal ACK publish fails after commit.
+
+        The previous Journal JSON was already counted before this replacement.
+        Restore that prior observed accounting, then retain the entire admitted
+        replacement upper bound. The native file remains untouched and the
+        ledger stays invalid, so this is accounting compensation only; it does
+        not claim that the previous bytes were restored on disk.
+        """
+        with self._lock:
+            record = next((item for item in self._reservations.values()
+                           if item.get("write") is write and item["state"] == "completed"), None)
+            binding = record.get("journal_binding") if record is not None else None
+            operation_state = self._operations.get(operation)
+            if (record is None or record["operation"] is not operation
+                    or record.get("kind") != "journal_replacement"
+                    or self._active_write is not None
+                    or type(binding) is not _JournalReplacementBinding
+                    or binding._issuer is not _JOURNAL_REPLACEMENT_ISSUER
+                    or operation_state is None
+                    or binding.operation_id != operation_state.get("operation_id")
+                    or binding.admission_owner is not self._owner_identity
+                    or operation_state["state"] != "journal_completed"):
+                _fail("journal_replacement_uncertain_unavailable")
+
+            prior_inventory = binding.prior_inventory
+            current_inventory = _freeze_inventory(self._inventory)
+            if prior_inventory is None or current_inventory is None:
+                _fail("journal_replacement_uncertain_unavailable")
+            prior = {purpose: dict(entries) for purpose, entries in prior_inventory}
+            current = {purpose: dict(entries) for purpose, entries in current_inventory}
+            filename = binding.filename
+            prior_row = prior["private_journal"].get(filename)
+            current_row = current["private_journal"].get(filename)
+            committed = self._journal_files.get(filename)
+            writer_record = self._journal_operation_writers.get(binding.operation_id)
+            if (prior_row != binding.previous_native_row
+                    or (binding.previous_revision == 0) != (prior_row is None)
+                    or any(prior[purpose] != current[purpose]
+                           for purpose in _WRITABLE if purpose != "private_journal")
+                    or {name: row for name, row in prior["private_journal"].items()
+                        if name != filename}
+                       != {name: row for name, row in current["private_journal"].items()
+                           if name != filename}
+                    or type(current_row) is not tuple or len(current_row) != 3
+                    or committed is None
+                    or committed["operation"] is not operation
+                    or committed["writer"] is not binding.writer
+                    or committed["schema"] != binding.schema
+                    or committed["revision"] != binding.previous_revision + 1
+                    or committed["native_row"] != current_row
+                    or writer_record is None
+                    or writer_record["operation"] is not operation
+                    or writer_record["writer"] is not binding.writer
+                    or writer_record["schema"] != binding.schema
+                    or type(current_row[1]) is not int or current_row[1] <= 0
+                    or (prior_row is not None
+                        and (type(prior_row) is not tuple or len(prior_row) != 3
+                             or type(prior_row[1]) is not int or prior_row[1] <= 0))
+                    or record.get("estimates", {}).get("private_journal")
+                        != (_JOURNAL_BYTES, 2)):
+                _fail("journal_replacement_uncertain_unavailable")
+
+            observed_bytes, observed_entries = self._observed["private_journal"]
+            current_size = current_row[1]
+            prior_size = prior_row[1] if prior_row is not None else 0
+            prior_entries = 1 if prior_row is not None else 0
+            if observed_bytes < current_size or observed_entries < 1:
+                _fail("journal_replacement_uncertain_unavailable")
+            estimate = record["estimates"]["private_journal"]
+            self._observed["private_journal"][0] = observed_bytes - current_size + prior_size
+            self._observed["private_journal"][1] = observed_entries - 1 + prior_entries
+            self._uncertain["private_journal"][0] += estimate[0]
+            self._uncertain["private_journal"][1] += estimate[1]
+            record["state"] = "retained_uncertain"
+            operation_state["state"] = "retained_uncertain"
+            self._invalid = True
+
     def observe_inventory(self, inventory, available_free_bytes=None):
         observed_free = (self._validate_free_bytes(available_free_bytes)
                          if available_free_bytes is not None else None)
@@ -1151,6 +1229,11 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         or record.get("kind") != "journal_replacement"):
                     _fail("journal_replacement_binding_invalid")
                 if record["state"] == "retained_uncertain":
+                    self._invalid = True
+                    return self._ledger._summary_locked()
+                if record["state"] == "completed":
+                    self._ledger.retain_completed_journal_replacement_as_uncertain(
+                        operation, write_admission)
                     self._invalid = True
                     return self._ledger._summary_locked()
                 if record["state"] != "writing":
