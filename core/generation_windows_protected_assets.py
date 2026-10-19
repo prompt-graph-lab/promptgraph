@@ -148,6 +148,7 @@ class WindowsProtectedAssetsCharacterization:
         self._lock = threading.RLock()
         self._stream_envelope = None
         self._stream_bindings, self._stream_attempts, self._stream_images = {}, set(), {}
+        self._stream_pending_images = {}
         self._stream_batch_attempts, self._stream_batches = set(), {}
         self._stream_batch_freshness = {}
         self._stream_batch_acceptance_attempts, self._stream_batch_acceptances = set(), {}
@@ -516,6 +517,36 @@ class WindowsProtectedAssetsCharacterization:
         surrounded by native checks; remote operations also by freshness checks.
         No other file creation is permitted during this owner's stream attempt.
         """
+        return self._stage_remote_image_for_characterization(
+            envelope, prepared, remote, descriptor, stream_provider=stream_provider,
+            host_freshness=host_freshness)
+
+    def stage_remote_image_with_admission_for_characterization(
+            self, envelope, prepared, remote, descriptor, *, admission_owner,
+            operation_id, stream_provider, host_freshness,
+            characterization=False, disposable_opt_in=False):
+        """Reserve bounded storage before the existing protected stream writer.
+
+        This remains a disposable characterization seam. The original stream
+        writer, exact host binding and native file custody stay authoritative.
+        """
+        from core import generation_storage_admission as admission
+
+        if characterization is not True or disposable_opt_in is not True:
+            w._fail("execution_unavailable")
+        if type(admission_owner) is not admission.WindowsProtectedStorageAdmissionCharacterization:
+            w._fail("storage_admission_owner_required")
+        if any(admission_owner._roots.get(purpose) is not self._roots.get(purpose)
+               for purpose in _PURPOSES):
+            w._fail("storage_root_owner_mismatch")
+        return self._stage_remote_image_for_characterization(
+            envelope, prepared, remote, descriptor, stream_provider=stream_provider,
+            host_freshness=host_freshness, admission_owner=admission_owner,
+            operation_id=operation_id)
+
+    def _stage_remote_image_for_characterization(
+            self, envelope, prepared, remote, descriptor, *, stream_provider,
+            host_freshness, admission_owner=None, operation_id=None):
         try:
             if not is_owner_prepared_frozen_request(prepared):
                 raise ValueError()
@@ -529,10 +560,21 @@ class WindowsProtectedAssetsCharacterization:
             w._fail("remote_correlation_mismatch")
         fresh = lambda: host_freshness(envelope, remote)
         attempt = (prepared.request_id, descriptor.identity)
+        admitted = admission_owner is not None
+        capacity_lease = object() if admitted else None
+        operation = reservation = write_admission = None
+        published_image_key = None
+        observed = None
+        stream_freshness = None
         with self._lock:
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
-            self._check()
+            if self._closed:
+                w._fail("closed_observation")
+            if self._revoking:
+                w._fail("closing_observation")
+            if self._invalid:
+                w._fail("invalidated_observation")
             if self._stream_envelope is not None and self._stream_envelope is not envelope:
                 w._fail("storage_owner_mismatch")
             previous = self._stream_bindings.get(prepared.request_id)
@@ -550,11 +592,52 @@ class WindowsProtectedAssetsCharacterization:
             self._stream_bindings[prepared.request_id] = (prepared, remote)
             self._stream_attempts.add(attempt)  # before freshness/provider/fault/reentry
             self._stream_busy = True
+            if admitted:
+                if self._capacity_busy:
+                    self._stream_busy = False
+                    w._fail("storage_busy")
+                self._capacity_busy = True
+                self._capacity_lease = capacity_lease
+                self._capacity_thread = threading.get_ident()
+                self._capacity_idle.clear()
+
+        def check_capacity_admission():
+            if write_admission is not None:
+                admission_owner.assert_write_admission_for_characterization(
+                    operation, write_admission)
+
         stream = None
         try:
             self._stream_fresh(fresh)
+            self._check()
             if {(purpose, path.name) for purpose, _, path in self._inventory()} != set(self._files):
+                with self._lock:
+                    self._uncertain = True
                 w._fail("unexpected_existing_file")
+            if admitted:
+                from core import generation_storage_admission as admission
+
+                upper_bound = min(self._limits.image_bytes, self._limits.request_bytes,
+                                  self._limits.aggregate_bytes)
+                request_bytes = self._stream_request_bytes.get(prepared.request_id, 0)
+                # Reserve the whole policy maximum, never a remote Content-Length.
+                # Refuse before admission when this descriptor cannot fit that
+                # conservative upper bound within current per-request/store limits.
+                if (request_bytes + upper_bound > self._limits.request_bytes
+                        or self._used_bytes + upper_bound > self._limits.aggregate_bytes
+                        or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                    w._fail("storage_capacity")
+                operation = admission_owner.begin_operation_for_characterization(operation_id)
+                reservation = admission_owner.reserve_for_characterization(operation, {
+                    "temporary_containment": admission.CapacityEstimate(upper_bound, 1)})
+                write_admission = admission_owner.admit_write_for_characterization(
+                    operation, reservation)
+                check_capacity_admission()
+                with self._lock:
+                    if (self._capacity_lease is not capacity_lease or self._revoking
+                            or self._closed or self._invalid or self._uncertain):
+                        w._fail("storage_owner_unavailable")
+
             root = self._roots["temporary_containment"]
             name = uuid.uuid4().hex + "." + descriptor.image_format
             key, path = ("temporary_containment", name), root._path / name
@@ -562,8 +645,13 @@ class WindowsProtectedAssetsCharacterization:
             # Allocation and earliest handle retention share the lifecycle lock
             # with close(). Once CreateFile succeeds, shutdown must see this
             # handle even if it wins before metadata capture or stream callbacks.
+            self._stream_fresh(fresh)
+            check_capacity_admission()
+            self._check()
             with self._lock:
-                self._check()
+                if (self._closed or self._revoking or self._invalid or self._uncertain
+                        or admitted and self._capacity_lease is not capacity_lease):
+                    w._fail("storage_owner_unavailable")
                 handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
                     c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
                     c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
@@ -578,16 +666,19 @@ class WindowsProtectedAssetsCharacterization:
                     raise
             try:
                 record = path, handle, w._identity(handle), _file_acl(handle, root)
+                self._check()
                 with self._lock:
-                    self._check()
+                    if (self._closed or self._revoking or self._invalid or self._uncertain
+                            or admitted and self._capacity_lease is not capacity_lease):
+                        w._fail("storage_owner_unavailable")
                     self._files[key] = record
                     self._unobserved_files.remove((path, handle))
-                    self._check()
             except BaseException:
                 with self._lock:
                     self._invalid = self._uncertain = True
                 raise
             self._stream_callback(self._fault, "after_file_create")
+            check_capacity_admission()
             lookup = ImageDownloadLookup(prepared.prompt_url.removesuffix("/prompt"),
                 descriptor.filename, descriptor.subfolder, descriptor.bucket, descriptor.identity)
             # Assign before the post-provider checks so stale/drift still closes it.
@@ -599,6 +690,7 @@ class WindowsProtectedAssetsCharacterization:
                     raise ValueError("download_interrupted") from None
             finally:
                 self._stream_fresh(fresh)
+                check_capacity_admission()
             if (type(stream) is not DownloadStream or type(stream.content_length) is not int
                     or not callable(stream.read) or not callable(stream.close)):
                 w._fail("download_contract_invalid")
@@ -615,7 +707,9 @@ class WindowsProtectedAssetsCharacterization:
             count, digest = 0, hashlib.sha256()
             while True:
                 limit = min(CHUNK_BYTES, length - count + 1)
-                chunk = self._stream_remote(fresh, stream.read, limit)
+                chunk = self._stream_remote(
+                    fresh, stream.read, limit,
+                    admission_check=check_capacity_admission if admitted else None)
                 if type(chunk) is not bytes or len(chunk) > limit:
                     w._fail("download_contract_invalid")
                 if not chunk:
@@ -625,40 +719,90 @@ class WindowsProtectedAssetsCharacterization:
                 if count + len(chunk) > length:
                     w._fail("extra_download")
                 self._check()
+                check_capacity_admission()
                 try:
                     _, written = f.WriteFile(handle, chunk)
                 finally:
                     self._check()
+                    check_capacity_admission()
                 if written != len(chunk):
                     w._fail("incomplete_write")
                 count += len(chunk)
                 digest.update(chunk)
                 self._stream_callback(self._fault, "after_file_write")
             closing, stream = stream, None
-            self._stream_close(closing, fresh)
+            self._stream_close(closing, fresh,
+                               admission_check=check_capacity_admission if admitted else None)
             self._check()
+            check_capacity_admission()
             try:
                 f.FlushFileBuffers(handle)
             finally:
                 self._check()
+                check_capacity_admission()
             self._stream_callback(self._fault, "after_file_sync")
+            check_capacity_admission()
             image = self._observe(name, "temporary_containment", descriptor.image_format)
             if image.byte_count != count or image.content_sha256 != digest.hexdigest():
                 w._fail("content_changed")
             self._stream_fresh(fresh)
+            check_capacity_admission()
             observed = VerifiedProtectedImageObservation(remote.job_id, remote.claim_id,
                 remote.manifest_identity, remote.request_id, remote.request_index,
                 remote.workflow_identity, remote.prompt_id, remote.identity, descriptor.identity, image)
-            # Publish success while serialized with close(): either this
-            # observation commits first, or a completed close fences it.
+            if admitted:
+                stream_freshness = lambda: self._stream_fresh(fresh) is None
+            # The image record is available to the admission owner's exact
+            # native-byte verifier. The stream observation itself is published
+            # only at the same two-owner ledger commit boundary.
+            self._check()
             with self._lock:
-                self._check()
+                if (self._closed or self._revoking or self._invalid or self._uncertain
+                        or admitted and self._capacity_lease is not capacity_lease):
+                    w._fail("storage_owner_unavailable")
                 self._images[key] = image
-                self._stream_images[attempt] = observed
-                return observed
+                if admitted:
+                    self._stream_pending_images[attempt] = (observed, stream_freshness)
+                published_image_key = key
+            if admitted:
+                admission_owner.complete_asset_write_for_characterization(
+                    operation, write_admission, self, image,
+                    stream_attempt=attempt, stream_observation=observed,
+                    stream_freshness=stream_freshness)
+            else:
+                with self._lock:
+                    if self._closed or self._revoking or self._invalid or self._uncertain:
+                        w._fail("storage_owner_unavailable")
+                    self._stream_images[attempt] = observed
+            return observed
         except BaseException:
-            with self._lock:
-                self._uncertain = True
+            if admitted:
+                if write_admission is not None:
+                    try:
+                        admission_owner.retain_uncertain_for_characterization(
+                            operation, write_admission)
+                    except ValueError:
+                        # The admission owner's close may already have retained
+                        # this exact active upper bound.
+                        pass
+                    with self._lock:
+                        self._uncertain = True
+                elif reservation is not None:
+                    try:
+                        admission_owner.cancel_before_write_for_characterization(
+                            operation, reservation)
+                    except ValueError:
+                        # A close/invalidation may have retained the unused
+                        # reservation before this exact cancellation.
+                        pass
+                if published_image_key is not None:
+                    with self._lock:
+                        self._stream_pending_images.pop(attempt, None)
+                        if attempt not in self._stream_images:
+                            self._images.pop(published_image_key, None)
+            else:
+                with self._lock:
+                    self._uncertain = True
             raise  # No deletion, overwrite, retry or receipt/publication event.
         finally:
             try:
@@ -669,6 +813,10 @@ class WindowsProtectedAssetsCharacterization:
             finally:
                 with self._lock:
                     self._stream_busy = False
+                    if admitted and self._capacity_lease is capacity_lease:
+                        self._capacity_busy = False
+                        self._capacity_lease = self._capacity_thread = None
+                        self._capacity_idle.set()
 
     def _stream_callback(self, callback, *args):
         self._check()
@@ -689,8 +837,10 @@ class WindowsProtectedAssetsCharacterization:
         if current is not True:
             w._fail("host_freshness_lost")
 
-    def _stream_remote(self, fresh, callback, *args):
+    def _stream_remote(self, fresh, callback, *args, admission_check=None):
         self._stream_fresh(fresh)
+        if admission_check is not None:
+            admission_check()
         try:
             try:
                 return callback(*args)
@@ -698,8 +848,10 @@ class WindowsProtectedAssetsCharacterization:
                 raise ValueError("download_interrupted") from None
         finally:
             self._stream_fresh(fresh)
+            if admission_check is not None:
+                admission_check()
 
-    def _stream_close(self, stream, fresh):
+    def _stream_close(self, stream, fresh, *, admission_check=None):
         try:
             try:
                 self._stream_fresh(fresh)
@@ -710,6 +862,8 @@ class WindowsProtectedAssetsCharacterization:
                     raise ValueError("download_close_failed") from None
         finally:
             self._stream_fresh(fresh)
+            if admission_check is not None:
+                admission_check()
 
     def commit_verified_remote_image_batch_for_characterization(
             self, envelope, prepared, remote, observations, *, host_freshness):

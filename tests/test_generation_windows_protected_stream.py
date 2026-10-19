@@ -20,7 +20,7 @@ from core.comfy_output_containment import (
 from core.generation_output_promotion import PromotedImage
 from test_comfy_http_view import binding, Wire, Response
 from test_comfy_output_containment import image_bytes
-from test_generation_windows_protected_assets import owner, assert_closed_gates
+from test_generation_windows_protected_assets import admitted_owner, owner, assert_closed_gates
 from test_generation_windows_protected_storage import native_scope, mutate_disposable_acl
 
 
@@ -33,6 +33,15 @@ def stage(store, values, provider, fresh=lambda envelope, remote: True, index=0)
     envelope, prepared, remote = values
     return store.stage_remote_image_for_characterization(envelope, prepared, remote, remote.images[index],
                                                         stream_provider=provider, host_freshness=fresh)
+
+
+def stage_admitted(store, storage, values, provider, *, operation_id, fresh=lambda envelope, remote: True,
+                   index=0, characterization=True, disposable_opt_in=True):
+    envelope, prepared, remote = values
+    return store.stage_remote_image_with_admission_for_characterization(
+        envelope, prepared, remote, remote.images[index], admission_owner=storage,
+        operation_id=operation_id, stream_provider=provider, host_freshness=fresh,
+        characterization=characterization, disposable_opt_in=disposable_opt_in)
 
 
 def acceptance(store, values, batch, fresh):
@@ -144,6 +153,394 @@ def test_real_native_success_exact_correlation_and_dacl_at_first_callback(owner,
     with pytest.raises(ValueError, match="image_owner_mismatch"):
         store.inspect_verified_remote_image_for_characterization(replace(observed))
     assert len(provider.lookups) == 1
+
+
+def test_real_native_admitted_stream_reserves_policy_max_before_create_and_commits_actual_bytes(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    data, values = image_bytes(), bound()
+    maximum = min(store._limits.image_bytes, store._limits.request_bytes,
+                  store._limits.aggregate_bytes)
+    snapshots = []
+
+    def fault(boundary):
+        if boundary == "after_file_create":
+            assert not store._lock._is_owned() and not storage._lock._is_owned()
+            row = next(item for item in storage._ledger.readiness()["roots"]
+                       if item["purpose"] == "temporary_containment")
+            snapshots.append((row["reserved_bytes"], row["reserved_entries"],
+                              row["observed_used_bytes"], row["observed_used_entries"]))
+
+    provider_source = io.BytesIO(data)
+    def read(limit):
+        assert not store._lock._is_owned() and not storage._lock._is_owned()
+        return provider_source.read(limit)
+    def close():
+        assert not store._lock._is_owned() and not storage._lock._is_owned()
+    provider = Stream(data, read=read, close=close)
+    original_provider = provider.__call__
+
+    def provide(lookup):
+        assert not store._lock._is_owned() and not storage._lock._is_owned()
+        row = next(item for item in storage._ledger.readiness()["roots"]
+                   if item["purpose"] == "temporary_containment")
+        assert (row["reserved_bytes"], row["reserved_entries"]) == (maximum, 1)
+        return original_provider(lookup)
+
+    store._fault = fault
+    native_api = store._roots["temporary_containment"]._api[2]
+    create_file = native_api.CreateFile
+    before_create = []
+    staging_root = store._roots["temporary_containment"]._path
+
+    def create_after_reservation(*args, **kwargs):
+        target = Path(str(args[0]))
+        if target.parent == staging_root and not target.exists():
+            row = next(item for item in storage._ledger.readiness()["roots"]
+                       if item["purpose"] == "temporary_containment")
+            before_create.append((row["reserved_bytes"], row["reserved_entries"],
+                                  row["observed_used_bytes"], row["observed_used_entries"]))
+        return create_file(*args, **kwargs)
+
+    with patch.object(native_api, "CreateFile", side_effect=create_after_reservation):
+        observed = stage_admitted(
+            store, storage, values, provide, operation_id="stream-admitted-1",
+            fresh=lambda envelope, remote: (
+                not store._lock._is_owned() and not storage._lock._is_owned()))
+    assert before_create == [(maximum, 1, 0, 0)]
+    assert snapshots == [(maximum, 1, 0, 0)]
+    assert type(observed) is a.VerifiedProtectedImageObservation
+    assert store._stream_images[(observed.request_id, observed.descriptor_identity)] is observed
+    path, handle, identity, acl = store._files[(observed.image.purpose, observed.image.storage_identity)]
+    assert path.read_bytes() == data
+    assert w._identity(handle) == identity == w._ordinary(path, directory=False)
+    assert w._acl(handle, store._roots[observed.image.purpose]._api,
+                  store._roots[observed.image.purpose]._user) == acl[0]
+    row = next(item for item in storage.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["observed_used_bytes"] == len(data)
+    assert row["observed_used_entries"] == 1
+    assert row["retained_uncertain_bytes"] == row["retained_uncertain_entries"] == 0
+    storage_view = storage.readiness()
+    assert storage_view["writer_integrated"] is True
+    assert provider.closes == 1
+    for key in ("execution_available", "protected_storage_available", "promotion_available",
+                "candidate_publication_allowed", "disk_space_guaranteed", "cleanup_allowed"):
+        assert storage_view[key] is False
+    assert storage_view["authorship"] == "unverified"
+
+
+def test_real_native_admitted_stream_supports_sequential_descriptors_and_refreshes_inventory(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    values, first_data, second_data = bound(images=2), image_bytes(), image_bytes("PNG", (3, 4))
+    first = stage_admitted(store, storage, values, Stream(first_data),
+                           operation_id="stream-admitted-descriptor-0", index=0)
+    second = stage_admitted(store, storage, values, Stream(second_data),
+                            operation_id="stream-admitted-descriptor-1", index=1)
+    assert (first.descriptor_identity, second.descriptor_identity) == tuple(
+        descriptor.identity for descriptor in values[2].images)
+    row = next(item for item in storage.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["observed_used_bytes"] == len(first_data) + len(second_data)
+    assert row["observed_used_entries"] == 2
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert store._stream_request_bytes[values[1].request_id] == len(first_data) + len(second_data)
+    assert len(store._stream_images) == 2 and not store._uncertain
+
+
+def test_real_native_admitted_stream_capacity_refusal_precedes_create_and_provider(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    limited = replace(storage._limits, shared_temporary_and_promoted_bytes=1)
+    storage._limits = limited
+    storage._ledger._limits = limited
+    provider = Mock()
+    with patch.object(store._roots["temporary_containment"]._api[2], "CreateFile",
+                      side_effect=AssertionError("CREATE_NEW must not be reached")):
+        with pytest.raises(ValueError, match="storage_capacity_exceeded"):
+            stage_admitted(store, storage, bound(), provider, operation_id="stream-over-capacity")
+    provider.assert_not_called()
+    assert not store._files and not store._unobserved_files and not store._uncertain
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["retained_uncertain_bytes"] == row["retained_uncertain_entries"] == 0
+
+
+def test_real_native_admitted_stream_rejects_copied_descriptor_before_reservation(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    values, provider = bound(), Mock()
+    descriptor = replace(values[2].images[0])
+    with pytest.raises(ValueError, match="remote_correlation_mismatch"):
+        store.stage_remote_image_with_admission_for_characterization(
+            *values, descriptor, admission_owner=storage, operation_id="stream-copied-descriptor",
+            stream_provider=provider, host_freshness=lambda envelope, remote: True,
+            characterization=True, disposable_opt_in=True)
+    provider.assert_not_called()
+    assert not store._files and not store._stream_attempts
+    assert not storage._ledger._reservations and not store._uncertain
+
+
+def test_real_native_admitted_stream_rejects_reused_capacity_operation_id(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    values = bound(images=2)
+    first = stage_admitted(store, storage, values, Stream(image_bytes()),
+                           operation_id="stream-same-capacity-operation", index=0)
+    provider = Mock()
+    with pytest.raises(ValueError, match="operation_identity_reused"):
+        stage_admitted(store, storage, values, provider,
+                       operation_id="stream-same-capacity-operation", index=1)
+    provider.assert_not_called()
+    assert len(store._files) == 1
+    assert store._stream_images[(first.request_id, first.descriptor_identity)] is first
+    assert not store._uncertain
+
+
+def test_real_native_admitted_stream_cancels_pre_admission_freshness_loss(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    provider = Mock()
+    with pytest.raises(ValueError, match="host_freshness_lost"):
+        stage_admitted(store, storage, bound(), provider, operation_id="stream-pre-admission-stale",
+                       fresh=lambda envelope, remote: False)
+    provider.assert_not_called()
+    assert not store._files and not store._unobserved_files and not store._uncertain
+    assert not storage._ledger._reservations
+    assert not store._capacity_busy and store._capacity_idle.is_set()
+
+
+@pytest.mark.parametrize("fault", ["provider", "read"])
+def test_real_native_admitted_stream_retains_full_upper_bound_after_admission(admitted_owner, fault):
+    store, storage, _, _, _ = admitted_owner
+    provider = Stream(image_bytes())
+    if fault == "provider":
+        def fail_provider(lookup):
+            provider(lookup)
+            raise OSError("injected stream provider failure")
+        callback = fail_provider
+    else:
+        provider.read_hook = lambda limit: (_ for _ in ()).throw(OSError("injected stream read failure"))
+        callback = provider
+    maximum = min(store._limits.image_bytes, store._limits.request_bytes,
+                  store._limits.aggregate_bytes)
+    with pytest.raises(ValueError, match="download_interrupted"):
+        stage_admitted(store, storage, bound(), callback,
+                       operation_id="stream-admitted-failure-" + fault)
+    assert store._uncertain and not store._stream_images and not store._images
+    assert len(store._files) == 1
+    assert next(iter(store._files.values()))[0].exists()
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["retained_uncertain_bytes"] == maximum
+    assert row["retained_uncertain_entries"] == 1
+    assert not store._capacity_busy and store._capacity_idle.is_set()
+
+
+def test_real_native_admitted_stream_close_waits_for_blocked_provider_and_retains_uncertainty(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    stream = Stream(image_bytes())
+    errors, close_errors = [], []
+
+    def provider(lookup):
+        entered.set()
+        assert release.wait(5)
+        return stream(lookup)
+
+    def run_stream():
+        try:
+            stage_admitted(store, storage, bound(), provider,
+                           operation_id="stream-close-race")
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_close():
+        try:
+            store.close()
+        except BaseException as exc:
+            close_errors.append(exc)
+        finally:
+            closed.set()
+
+    worker = threading.Thread(target=run_stream)
+    closer = threading.Thread(target=run_close)
+    try:
+        worker.start()
+        assert entered.wait(5)
+        closer.start()
+        assert store._revoking_event.wait(5)
+        assert not closed.is_set()
+        release.set()
+        worker.join(10)
+        closer.join(10)
+    finally:
+        release.set()
+        if worker.ident is not None:
+            worker.join(5)
+        if closer.ident is not None:
+            closer.join(5)
+    assert not worker.is_alive() and not closer.is_alive()
+    assert not close_errors and closed.is_set()
+    assert len(errors) == 1 and isinstance(errors[0], ValueError)
+    assert stream.closes == 1
+    assert store._closed and store._uncertain and not store._stream_images
+    assert len(store._files) == 1 and next(iter(store._files.values()))[0].exists()
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["retained_uncertain_bytes"] == min(
+        store._limits.image_bytes, store._limits.request_bytes, store._limits.aggregate_bytes)
+    assert row["retained_uncertain_entries"] == 1
+
+
+def test_real_native_admitted_stream_reentrant_close_fails_fast(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    values, stream = bound(), Stream(image_bytes())
+
+    def provider(lookup):
+        with pytest.raises(ValueError, match="storage_busy"):
+            store.close()
+        return stream(lookup)
+
+    observed = stage_admitted(store, storage, values, provider,
+                              operation_id="stream-reentrant-close")
+    assert observed.image.byte_count == len(image_bytes())
+    assert not store._revoking and not store._uncertain
+    row = next(item for item in storage.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_bytes"] == 0
+
+
+def test_real_native_admitted_stream_duplicate_attempt_does_not_reserve_or_retry(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    values, data = bound(), image_bytes()
+    first = stage_admitted(store, storage, values, Stream(data), operation_id="stream-duplicate-first")
+    provider = Mock()
+    with pytest.raises(ValueError, match="already_attempted"):
+        stage_admitted(store, storage, values, provider, operation_id="stream-duplicate-second")
+    provider.assert_not_called()
+    assert len(store._files) == 1 and store._stream_images[(first.request_id, first.descriptor_identity)] is first
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["observed_used_bytes"] == len(data) and row["observed_used_entries"] == 1
+
+
+def test_real_native_admitted_stream_requires_disposable_scope_and_exact_root_owners(admitted_owner, owner):
+    store, storage, _, _, _ = admitted_owner
+    foreign_store = owner[0]
+    provider = Mock()
+    values = bound()
+    with pytest.raises(ValueError, match="storage_root_owner_mismatch"):
+        stage_admitted(foreign_store, storage, values, provider,
+                       operation_id="stream-cross-owner")
+    with pytest.raises(ValueError, match="execution_unavailable"):
+        stage_admitted(store, storage, values, provider, operation_id="stream-no-opt-in",
+                       characterization=False)
+    provider.assert_not_called()
+    assert not store._files and not foreign_store._files
+    assert not storage._ledger._reservations
+
+
+@pytest.mark.parametrize("drift", ["content", "acl"])
+def test_real_native_admitted_stream_drift_retains_maximum_reservation(admitted_owner, drift):
+    store, storage, _, api, _ = admitted_owner
+    data, values = image_bytes(), bound()
+
+    def fault(boundary):
+        if boundary != "after_file_write":
+            return
+        path = next(iter(store._files.values()))[0]
+        if drift == "content":
+            path.write_bytes(b"changed while disposable stream was active")
+        else:
+            mutate_disposable_acl(path, api, "changed_owner_only")
+
+    store._fault = fault
+    maximum = min(store._limits.image_bytes, store._limits.request_bytes,
+                  store._limits.aggregate_bytes)
+    with pytest.raises(Exception):
+        stage_admitted(store, storage, values, Stream(data),
+                       operation_id="stream-drift-" + drift)
+    assert store._uncertain and not store._stream_images and not store._images
+    assert len(store._files) == 1 and next(iter(store._files.values()))[0].exists()
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_bytes"] == 0
+    assert row["retained_uncertain_bytes"] == maximum
+    assert row["retained_uncertain_entries"] == 1
+    if drift == "acl":
+        path = next(iter(store._files.values()))[0]
+        mutate_disposable_acl(path, api, "original")
+
+
+def test_real_native_admitted_stream_host_freshness_loss_after_provider_retains_maximum(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    values, stream, current = bound(), Stream(image_bytes()), [True]
+
+    def provider(lookup):
+        result = stream(lookup)
+        current[0] = False
+        return result
+
+    with pytest.raises(ValueError, match="host_freshness_lost"):
+        stage_admitted(store, storage, values, provider,
+                       operation_id="stream-stale-after-provider",
+                       fresh=lambda envelope, remote: current[0])
+    assert stream.closes == 1 and not store._stream_images and not store._images
+    assert store._uncertain and len(store._files) == 1
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["retained_uncertain_bytes"] == min(
+        store._limits.image_bytes, store._limits.request_bytes, store._limits.aggregate_bytes)
+    assert row["retained_uncertain_entries"] == 1
+
+
+def test_real_native_admitted_stream_rechecks_freshness_at_final_native_commit(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    values, current, calls = bound(), [True], [0]
+    observe = store._observe
+
+    def drift_after_final_native_observation(name, purpose, extension):
+        result = observe(name, purpose, extension)
+        calls[0] += 1
+        if calls[0] == 3:
+            current[0] = False
+        return result
+
+    store._observe = drift_after_final_native_observation
+    with pytest.raises(ValueError, match="host_freshness_lost"):
+        stage_admitted(store, storage, values, Stream(image_bytes()),
+                       operation_id="stream-stale-before-final-commit",
+                       fresh=lambda envelope, remote: current[0])
+    assert calls[0] == 3 and store._uncertain
+    assert not store._images and not store._stream_images and not store._stream_pending_images
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["retained_uncertain_bytes"] == min(
+        store._limits.image_bytes, store._limits.request_bytes, store._limits.aggregate_bytes)
+    assert row["retained_uncertain_entries"] == 1
+
+
+def test_real_native_admission_close_during_provider_retains_admitted_stream(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    stream, provider_called = Stream(image_bytes()), []
+
+    def provider(lookup):
+        result = stream(lookup)
+        provider_called.append(True)
+        storage.close()
+        return result
+
+    with pytest.raises(ValueError, match="storage_owner_unavailable"):
+        stage_admitted(store, storage, bound(), provider,
+                       operation_id="stream-admission-close-race")
+    assert provider_called == [True] and stream.closes == 1
+    assert not store._stream_images and not store._images and store._uncertain
+    assert len(store._files) == 1 and next(iter(store._files.values()))[0].exists()
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["retained_uncertain_bytes"] == min(
+        store._limits.image_bytes, store._limits.request_bytes, store._limits.aggregate_bytes)
+    assert row["retained_uncertain_entries"] == 1
 
 
 def test_real_native_incremental_write_before_next_read_and_no_prebuffer(owner):
