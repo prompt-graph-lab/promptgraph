@@ -1,8 +1,10 @@
 # Agent Generation integration, recovery and retention (Phase 4-C2B-8D)
 
 This audit was established against the protected Generation path through PR #174,
-merge commit `064212a9e78da8456cb5eac4c7b82e224c77bb08`. Its later C2B-8D-14,
-C2B-8D-15A, C2B-8D-15B, C2B-8D-16A, C2B-8D-16B and C2B-8D-17A/17B/17C updates are recorded below. C2B-8D-1 through C2B-8D-12 collectively define and test, in separate and
+merge commit `064212a9e78da8456cb5eac4c7b82e224c77bb08`, and is refreshed through
+PR #186, merge commit `b761b28fab52e7d0abb2bf34a6293f77a93ca832`. Its later
+C2B-8D-14, C2B-8D-15A/15B, C2B-8D-16A/16B and C2B-8D-17A through 17E-B updates
+are recorded below. C2B-8D-1 through C2B-8D-12 collectively define and test, in separate and
 partially composed characterization slices, a protected route from a frozen
 request through the existing Candidate writer and Project JSON save. C2B-8D-14
 connects the single-request v1 and multi-request offline Journal intents to the
@@ -178,15 +180,17 @@ upper bound. This is process-local policy accounting, not an OS quota or a
 guarantee that disk space is free. A fresh free-space sample is used only as a
 preflight observation and cannot prevent another process from consuming space.
 
-At the 17A baseline, no Journal, asset or promotion writer consumed the
-reservation contract. C2B-8D-17B and 17C below add offline byte and streamed
-asset writers. There is still no cross-process quota or restart-time
-reservation recovery. A fresh capture charges existing files as uncertain,
-but cannot restore a lost reservation whose write left no file. No existing
-user directory or ACL is repaired, and no cleanup occurs. Journal atomic
-replacement, promotion integration and production root/cross-process policy
-remain separate gates. All production flags remain false and authorship
-remains unverified.
+At the 17A baseline, no writer consumed the reservation contract. The later
+17B/17C, 17D and 17E-B slices now add explicit opt-in integrations for byte
+images, streamed staging images, protected promotion batches, and protected
+Journal V1/multi-request replacements. Their exact boundaries are recorded in
+[the protected-storage architecture](agent-generation-protected-storage.md).
+These integrations do not provide a cross-process quota or restart-time
+reservation recovery. A fresh capture charges existing files as uncertain, but
+cannot restore a lost reservation whose write left no file. No existing user
+directory or ACL is repaired, and no cleanup occurs. Production root policy and
+capacity ownership remain separate gates. All production flags remain false
+and authorship remains unverified.
 
 ## C2B-8D-17B/17C protected asset writers consume reservations
 
@@ -199,8 +203,7 @@ file creation or provider invocation, then commits actual bytes only after
 stream close, image verification, native identity/ACL/content checks, inventory
 comparison and final host freshness validation. The reservation's unused
 portion is released only at that successful commit. Uncertain admitted writes
-retain the full upper bound and evidence; existing Journal and promotion
-writers do not consume reservations.
+retain the full upper bound and evidence.
 
 These are disposable offline contracts only. They do not provide a cross-
 process quota, restart reservation recovery, production root policy, actual
@@ -208,6 +211,41 @@ disk guarantee, or production execution authorization. Native I/O and host
 callbacks remain outside lifecycle locks except for the bounded
 `CREATE_NEW`/handle-retention and final in-memory commit boundaries. All
 production flags remain false and authorship remains unverified.
+
+## C2B-8D-17D protected promotion batch admission
+
+`ProtectedDurablePromotionCharacterization.promote_with_capacity_admission_for_characterization()`
+uses the exact staging/promoted root owners held by the capacity ledger. It
+reserves the complete ordered batch before the first destination `CREATE_NEW`,
+then reuses the protected asset writer and promotion owner for exclusive
+copying, image verification, and native identity/ACL/byte checks. The exact
+expected inventory delta and all destination files must reconcile before the
+immutable promotion receipt and observed-used ledger commit become visible.
+Close, invalidation, host drift or any uncertain partial copy retains the full
+reservation and evidence; no partial destination is deleted, overwritten,
+adopted, retried or rolled back. Existing unadmitted promotion behavior remains
+available, and the admitted method is explicit characterization-only opt-in.
+
+## C2B-8D-17E-A/B protected Journal replacement capacity
+
+17E-A added the bounded replacement preflight/reconciliation contract. 17E-B
+adds explicit `WindowsProtectedJournalCharacterization` methods that wrap the
+existing protected V1 and multi-request Journal append owners with one exact
+capacity admission per replacement. They preserve both Journal schemas, their
+revision limits and acknowledgements; the existing Journal writer remains the
+only file writer. Native identity/ACL, complete inventory delta and exact
+revision/digest acknowledgement must reconcile before success. After an
+admission token is issued, uncertain write/flush/replace/reopen/acknowledgement
+or close outcomes retain the full replacement bound and evidence.
+
+The Journal capacity integration exists, but it is **not connected by default
+to `GenerationExecutorJournalIntent`**. That owner still uses the ordinary
+characterization append methods; a caller must explicitly select the
+capacity-integrated append API. These are opt-in disposable/offline contracts,
+not an OS quota, cross-process coordination, restart authority, power-loss
+guarantee, author authentication or permission to execute. Existing roots are
+not repaired and uncertain evidence is not cleaned up. All production flags
+remain false and `authorship=unverified`.
 
 ## Evidence scope and current owners
 
@@ -243,7 +281,7 @@ production Start, or background worker was exercised.
 | Transition | Owner and evidence | What is characterized | Production boundary still absent |
 | --- | --- | --- | --- |
 | Frozen request -> reviewed offer | `core/generation_executable_manifest.py`, executable review and confirmation owners; exact Project/source/config/workflow bindings, complete target/run coverage, supported sampler-to-output/conditioning path, finalized seeds | Direct offline manifest and review tests; explicit human review/confirmation custody | No production Start call site; confirmation is not execution authorization. `capture_executor_human_start_for_characterization` is not wired into `app.py`. |
-| Accepted handoff -> `POST /prompt` and prompt identity | Handoff/inbox/job owners, `ui/agent_generation_comfy_executor.py`, `core/comfy_prompt_request.py`, `core/comfy_http_submission.py`; exact frozen request and returned prompt UUID | Handoff/executor fake-provider tests plus isolated injected/monkeypatched HTTP wire tests; one attempt, sequential order, possible-send uncertainty, no automatic retry | HTTP submission is not the executor's production default and no live ComfyUI request is made. No worker registration, durable intent-before-send, production deadline policy, or original-host event loop. |
+| Accepted handoff -> `POST /prompt` and prompt identity | Handoff/inbox/job owners, `ui/agent_generation_comfy_executor.py`, `core/comfy_prompt_request.py`, `core/comfy_http_submission.py`; exact frozen request and returned prompt UUID | Handoff/executor fake-provider tests plus isolated injected/monkeypatched HTTP wire tests; one attempt, sequential order, possible-send uncertainty, no automatic retry | HTTP submission is not the executor's production default and no live ComfyUI request is made. No production Worker registration or production durable-intent call site; C2B-8D-14/15B/16A characterize the Journal-gated pre-send contract offline. Production deadline policy and original-host event-loop delivery remain absent. |
 | Accepted prompt -> history observation | `core/comfy_http_history.py`, `core/comfy_remote_output_receipts.py`, executor result gate; exact accepted UUID and frozen origin | Bounded pending/ready/unknown transport contract, strict metadata parsing and correlation tests; explicit later read does not resubmit | No polling scheduler, live history interoperability evidence, or durable restart association. Missing/timeout history is unknown, never proof of execution failure. |
 | Successful history -> `/view` stream -> protected staging | `core/comfy_http_view.py`, `core/comfy_output_containment.py`, `core/generation_windows_protected_assets.py`; exact remote descriptor, prompt/request binding, original-host freshness | Injected HTTP stream composed with real Windows disposable roots/files, incremental stream, native identity/DACL, decode/size/hash and retention checks | No production transport registration. No remote cancellation or cleanup, and no claim of constant-memory decode or hard end-to-end deadline. |
 | Complete protected staging batch -> acceptance -> promotion | `WindowsProtectedAssetsCharacterization`, protected acceptance owner, `ProtectedDurablePromotionCharacterization`; exact issued receipts/owners, envelope/request/remote identity, descriptor order, host freshness | Windows-native disposable tests verify batch completeness, source/destination identity/ACL/bytes, one-shot promotion, capacity and close/invalidation commit races | Only characterization opt-in on approved disposable scopes. No production root provisioning or long-lived production handle lifecycle. |
@@ -521,77 +559,115 @@ file is narrowly part of a failed stream attempt; it is not this future general
 retention policy. C2B-6 has no destructive cleanup. Restart must never auto-adopt,
 auto-publish, auto-save, replay execution or revive expired authorization.
 
-## Readiness assessment (PR #174 audit, updated through C2B-8D-17C)
+## Readiness assessment (PR #186; C2B-8D-17E-B)
 
-At the PR #174 audit baseline, the owners and focused tests showed no concrete
-characterization defect requiring a runtime change. C2B-8D-14 connects the v1
-Journal intent to the executor's one-request pre-send decision. C2B-8D-15A
-defines the separate bounded multi-request contract, and C2B-8D-15B composes
-that writer with the actual sequential executor lifecycle and live original-host
-settlement checks. C2B-8D-16A composes the injected HTTP submission/history
-transports through this Journal-gated lifecycle, and 16B adds its explicit
-disabled host-owned Worker lifecycle on those same seams. These remain offline
-characterization, not production
-clearance. The
-following states distinguish implemented contracts, test composition and
-missing authority.
+The PR #174/17C matrix is retained as historical context; this section is the
+current assessment through PR #186. PR #186 adds explicit protected Journal replacement admission and
+reconciliation APIs on top of 17E-A; PR #184/185/186 have also added promotion
+and Journal capacity integration. The following classifications distinguish
+offline implementation, direct tests, test composition, production connection,
+and environmental evidence.
 
-| Area | Evidence-backed state | Remaining blocker or dependency | Risk if activated now |
+| Transition | Evidence classification and current characterization | Concrete source and test evidence | Missing production implementation or dependency |
 | --- | --- | --- | --- |
-| Exact original-host binding | Exact Project object/path, source snapshot, session/process, activation/epoch, pairing, job/claim/manifest, request and descriptor order are carried through protected admission, Candidate registration and save checks. | No production caller owns the complete route; only characterized callbacks and the serialized host-run assumption are present. | A stale/switching host or an unowned callback path could not be safely published. |
-| One-shot submission/publication/save | C2B-8D-14 keeps v1 intent-before-send for one request. C2B-8D-15B connects the separate ≤100-request/300-revision writer to actual sequential submissions and requires a typed live original-host settlement after each outcome. C2B-8D-16A composes injected HTTP submission/history transports through that same Journal-gated executor and exact original-host event sink; 16B adds the explicit disabled Worker lifecycle through those existing seams. A completed request still needs exact registered Candidate evidence; aggregate `partially_failed` is accepted only when that request itself is fully registered. Publication and JSON save remain separate existing one-shot owners. | Still no production HTTP/worker call sites, Human Start, restart continuation or durable original-host latest-head custody. Partial/uncertain per-request publication blocks progression. Reopen is inspect-only. | Retrying after lost state could duplicate remote work. An accepted prompt alone cannot authorize a later send; any unacknowledged or unknown state must stop the sequence. |
-| Native identity, DACL, bytes, promoted roots and Candidate paths | Disposable Windows-native tests pin protected roots/files, inspect owner-only ACLs and identities, reject path/reparse drift, verify streamed/copied bytes, and constrain protected Candidate paths to the frozen approved output root. C2B-8D-17A adds five-root identity/ACL preflight and bounded process-local reserved/observed/uncertain accounting; 17B integrates byte writes and 17C integrates streamed staging writes with actual native inventory completion. | No production root provisioning, cross-process/OS quota, durable reservation recovery, production path policy or restart reconciliation. Journal and promotion writers remain outside this ledger. Profile A excludes hostile same-user processes; bounded checks are not continuous isolation. | Production storage could outlive custody or exceed disk capacity; this ledger cannot prevent other processes from consuming space. |
-| Owner locks, close/invalidation and callbacks | Commit/terminal races are characterized; expensive native checks and external host callbacks run outside job/inbox locks, and leases fence final commits against close/invalidation. C2B-8D-16B characterizes Worker close before admission/transport and during POST/History, with bounded join and truthful live-thread observation. | Production event-loop scheduling, whole-operation deadlines, process shutdown integration and native transport behavior remain unproven. | A blocked or lost production worker callback may leave an honestly unknown, pinned operation. |
-| Partial registration, uncertainty and Undo | The existing Gallery writer records observed Candidate deltas and existing Undo history. A partial appender result remains `registration_uncertain`, is not replayed, and blocks final JSON save; later distinct requests may continue only after exact observed-state comparison. | No production path reaches this writer from protected receipts; no automatic rollback is authorized. | Partial Project mutation requires human inspection; it cannot be treated as all-or-nothing success. |
-| Bounded events and retained evidence | Job/inbox logs are bounded diagnostic history. The publisher privately retains the exact settled event pair after successful registration; a sticky late-output marker survives detail eviction. PR #174 tests save after the first pair is evicted and refusal after late-output detail eviction. | Evidence is process-local. Its loss on restart does not reconstruct authority. | Treating log presence/absence alone as authority would permit false save or forget late output; current owner refuses when private proof is absent/conflicting. |
-| Restart, Journal and Human Recovery | C2B-8A has native disposable Journal lifecycle and inspect-only reopen/inventory; C2B-8B has redacted, read-only recovery cases and non-executable intentions. Profile A accepts acknowledged live-writer latest-head observations only within the live host/process lifetime. | No production journal call site or restart checkpoint custody. After restart, without an independently retained host-observed tip, latest-head custody is unavailable; missing/conflicting evidence remains uncertain. No replay, Recovery association or Apply. | Old bytes or a digest-valid Journal prefix could be mistaken for current authority. |
-| Retention and cleanup | Evidence is retained on uncertain/failed promotion, registration and save paths; bounded in-memory event logs are not disk-retention policy. C2B-8D-17A adds bounded process-local reservations and classifies unattributed existing root files as retained uncertain; 17B/17C consume exact reservations for byte and streamed asset writes. | Journal/promotion writers remain outside the reservation contract; no cross-process quota, durable reservation recovery or explicit human discard/cleanup lifecycle exists. | Disk exhaustion or unsafe deletion/adoption; elapsed time and expiry cannot authorize cleanup. |
-| Transport, worker and real ComfyUI interoperability | `POST /prompt`, `GET /history/{prompt_id}` and streamed `GET /view` each have bounded offline contracts. C2B-8D-16A composes injected submission/history wires with the Journal-gated Executor and exact original-host count-only event delivery; 16B characterizes a separately opted-in Worker lifecycle over those same fake wires. | No real ComfyUI request, registered production HTTP/Worker, production host-event delivery or measured whole-operation deadline behavior. | Remote acceptance, history status, cancellation and output availability remain server/runtime assumptions. |
-| UI activation and Human Start | Review/confirmation UI and a separate characterized Start boundary exist. Source search found no non-test call site for `capture_executor_human_start_for_characterization`, `handoff_generation_for_characterization`, or the executor's characterization entry point. | No production UI activation, exact new Human Start dispatch, production Worker registration or production shutdown/replacement lifecycle. | Review confirmation could be confused with Start; an activation path could bypass the required fresh human action. |
-| Candidate publication and Project JSON save | PR #174 composes the protected evidence path through the existing Candidate factory/appender, Undo snapshot and exact save callback; its disposable JSON is reopened and provenance checked. | Protected Candidate and save entry points are characterization-only. No production publication or save authority is enabled. | A successful offline fixture does not establish production Project integrity, user confirmation or durability. |
-| Threat scope and authorship | Profile A is adopted for local single-user Pro. LLM/MCP inputs remain untrusted. | `authorship=unverified`; SHA-256 and ACL observations detect bounded corruption/drift but do not authenticate an author. Profile B is optional and unsupported, not a prerequisite for local Pro. | Same-user malicious processes, Administrator/SYSTEM and compromised host code are outside Profile A's guarantee; no digest should be misreported as a signature. |
+| Frozen manifest → review → confirmation → Human Start | Manifest and review/confirmation are implemented and directly tested. A separate Start/handoff boundary is characterized, but is not connected to a production UI or caller. Review confirmation does not authorize execution. | `core/generation_executable_manifest.py`; `ui/agent_generation_start_lifecycle.py`; `ui/agent_generation_executor_handoff.py`; `tests/test_agent_generation_executable_manifest.py`, `tests/test_agent_generation_executable_review_ui.py`, `tests/test_agent_generation_review_custody.py`, `tests/test_agent_generation_start_lifecycle.py`. | Add a visible, explicit, fresh Human Start action and production original-host lifecycle only after storage, transport and shutdown gates. Keep Start distinct from review confirmation. |
+| Executor handoff → multi-request Journal intent → HTTP submission | The sequential one-shot executor and V1/multi-request Journal contracts are implemented and composed with injected offline HTTP wires and an explicitly started characterization Worker. No production transport/worker registration exists. Protected Journal capacity methods are an explicit opt-in and are not called by default from `GenerationExecutorJournalIntent`. | `ui/agent_generation_executor_journal.py`; `ui/agent_generation_http_executor.py`; `ui/agent_generation_http_io_worker.py`; `core/generation_protected_journal.py`; `tests/test_agent_generation_executor_journal.py`, `tests/test_generation_protected_journal.py`, `tests/test_generation_protected_multi_request_journal.py`. | Decide and implement production original-host ownership, Worker registration/shutdown and whether production Journal writes must use the capacity-integrated append methods. Preserve intent-before-send, one-shot claims and unknown outcomes. |
+| History/result → protected stream → staging → acceptance | History, `/view` streaming, staging and protected batch acceptance each have bounded direct offline tests. HTTP submission/history compose through the Executor, while protected streaming/acceptance use separate injected stream providers; there is no single test composition from HTTP history through HTTP view into an accepted protected batch, and no production composition. | `core/comfy_http_history.py`; `core/comfy_http_view.py`; `core/generation_windows_protected_assets.py`; `tests/test_comfy_http_history.py`, `tests/test_comfy_http_view.py`, `tests/test_generation_windows_protected_stream.py`. | Connect exact correlated history descriptors to the bounded HTTP stream owner under original-host freshness and protected-root lifecycle. Validate actual ComfyUI `/history` and `/view` behavior before production use. |
+| Protected staging → acceptance → promotion → `outputs_ready` → Candidate admission → Gallery registration | The owners are individually tested and the protected Candidate publication composition connects promotion, count-only event, admission and the existing Gallery Candidate writer in disposable Windows fixtures. This is composed offline evidence, not production publication. | `core/generation_windows_protected_assets.py`; `core/generation_windows_protected_promotion.py`; `ui/agent_generation_protected_candidate_admission.py`; `ui/agent_generation_candidate_publication.py`; `tests/test_generation_windows_protected_promotion.py`, `tests/test_agent_generation_protected_candidate_admission.py`, `tests/test_agent_generation_protected_candidate_publication.py`. | No production entry point or publication authority. Add production custody only through the existing single Candidate writer, preserving exact provenance, idempotence, Undo and no-replay uncertainty. |
+| Candidate registration → Project JSON save and uncertainty | Exact-object/path save is separately one-shot and directly exercised in the protected composition. Disposable JSON is reopened and its Candidate provenance checked; failed/unknown saves remain uncertain. | `ui/agent_generation_candidate_publication.py`; `core/io.py`; `tests/test_agent_generation_protected_candidate_publication.py`, including saved JSON reopen, event-eviction, callback outcome and host-loss cases. | Production publication/save is not connected. Establish host UI feedback, persistence error handling and durability expectations without adding a parallel Project writer or automatic save retry. |
+| Protected capacity: byte image, stream, promotion batch and Journal replacement | 17A provides five-root native preflight/inventory and process-local reserved/used/uncertain accounting. 17B/17C integrate byte and streamed staging writes; 17D integrates exact promotion-batch writes; 17E-A/B integrate protected Journal replacement accounting through explicit methods. These are directly characterized with disposable Windows roots. | `core/generation_storage_admission.py`; `core/generation_windows_protected_assets.py`; `core/generation_windows_protected_promotion.py`; `core/generation_protected_journal.py`; `tests/test_generation_storage_admission.py`, `tests/test_generation_windows_protected_assets.py`, `tests/test_generation_windows_protected_promotion.py`. | The protected Journal capacity integration is **not connected by default to `GenerationExecutorJournalIntent`**. All integrations are explicit characterization opt-ins. No production root provisioning, cross-process/OS quota or restart-time reservation recovery exists; free-space observations are advisory. |
+| Worker lifecycle, close/invalidation, restart inspection and Human Recovery | A bounded host-owned I/O Worker has direct offline tests for start, queueing, close, late result and host invalidation. Journal reopen and Human Recovery are read-only/inspect-only and directly tested. | `ui/agent_generation_http_io_worker.py`; `core/generation_protected_journal.py`; `ui/agent_generation_human_recovery.py`; `tests/test_agent_generation_executor_journal.py`, `tests/test_generation_protected_journal.py`, `tests/test_agent_generation_human_recovery.py`, `tests/test_generation_ownership_journal.py`. | No production scheduling/shutdown/replacement, restart continuation, Recovery UI/Apply, or discard/cleanup lifecycle. A restarted process cannot reconstruct claim or latest-head authority from Journal bytes; missing/conflicting independently observed evidence stays uncertain. |
+| Profile A threat scope and authorship | Profile A is adopted for local single-user Pro. Untrusted LLM/MCP instructions remain outside the trust boundary. | `docs/architecture/agent-generation-protected-storage.md`; Profile A policy references in the Journal, Recovery and publication architecture. | `authorship=unverified`: SHA-256, ACL and native identity evidence are not cryptographic author authentication. Profile B service/key infrastructure is optional unsupported architecture, not a prerequisite for Pro. Same-user malicious processes, Administrator/SYSTEM and compromised host code remain outside scope. |
 
-Critical tests reviewed for this audit include the complete disposable protected
-publication/save composition and its event-eviction cases in
-`tests/test_agent_generation_protected_candidate_publication.py`, the repaired
-native acceptance commit race
-`tests/test_generation_windows_protected_stream.py::test_real_native_acceptance_commit_is_atomic_against_close_or_invalidation`,
-the executor/admission/promotion/asset suites, the HTTP contract suites, and the
-read-only Journal/Recovery suites. The C2B-8D-14/15B/16A/16B follow-ups add
-`tests/test_agent_generation_executor_journal.py` because the earlier audit
-identified that the Journal was not connected to the executor's actual send
-decisions, offline HTTP contracts were not yet composed through that gate, and
-the host-owned Worker/event-return lifecycle was not characterized. These tests
-compose only disposable original-host state, the existing executor and writers,
-and in-memory HTTP wires; they do not establish live HTTP, crash durability or
-production authorization.
+The protected path is **composed across owners in tests**, but there is no one
+live HTTP-to-Project-save exercise. `tests/test_agent_generation_protected_candidate_publication.py`
+uses disposable original-host state, protected native roots, the existing
+Candidate factory/appender, Undo snapshot and save callback. HTTP submission,
+history and view contracts use injected/offline wires; protected staging uses
+injected stream providers. This does not demonstrate live ComfyUI behavior,
+process-crash durability, production authorization or actual user storage
+policy.
+
+### Focused validation and environment evidence
+
+Validation was run on Windows 11 Pro x64 build 26200, CPython 3.14.4, Streamlit
+1.60.0 and pywin32 312. The project-local `.venv` was created by the documented
+`setup.bat`; supported-environment and exact 69-package runtime-lock checks
+passed. Pytest 9.1.1 was added as an audit-only tool because pytest is
+intentionally not part of the committed runtime lock. The system Python had
+Streamlit 1.56.0, below the supported/pinned 1.60.0; it was not used for the
+green validation runs.
+
+| Focused suites | Result |
+| --- | --- |
+| Protected storage admission, protected Journal V1/multi-request, protected roots/assets, stream and promotion (8 selected suites) | 446 passed, 0 skipped, 0 errors. Windows-native ACL/identity cases ran with pywin32 available. |
+| Executor-Journal, handoff, Comfy executor, HTTP submission/history/view, protected Candidate admission/publication and existing Candidate publication (9 selected suites) | 631 passed, 1 skipped, 0 errors. The skip was `test_symlink_approved_directory_is_refused`: this Windows host did not permit disposable symlink creation. |
+| Executable manifest/review/confirmation, Human Start, preview, ownership Journal, multi-request Journal, Human Recovery and prior integration audit (10 selected suites) | 381 passed, 0 skipped, 0 errors. |
+| PR #186 native Journal ACK/ledger compensation with competing admission (`test_native_integrated_journal_post_commit_ack_failure_retains_prior_and_full_bound`) | 3 consecutive passes; the complete storage-admission suite above also passed it. |
+| Executor-Journal collection under the supported environment | 66 tests collected successfully; no Streamlit collection error. |
+
+The bare system interpreter reproduced the Executor-Journal collection failure:
+Streamlit 1.56.0 raised `TypeError: fragment() got an unexpected keyword
+argument 'parallel'` while importing `ui/project_agent_session_pump.py`. That
+version is below the supported/pinned Streamlit 1.60.0. In the supported
+project-local environment the same suite collected all 66 tests successfully,
+so this checkpoint identifies an environment mismatch rather than a collection
+failure in the supported runtime. The full repository suite was not run. No real
+ComfyUI/network requests, production Worker, restart continuation, Recovery
+Apply, cleanup or production Start were attempted.
+
+### Implementation gaps versus environment gaps
+
+The remaining no-go items below are implementation/authorization gaps: there
+is no production Start caller, production Worker/HTTP registration, approved
+root provisioning lifecycle, production Candidate/save call path or restart
+authority. They are not resolved by passing offline tests. The test-environment
+gap was Streamlit 1.56.0 in the unpinned system interpreter; the supported
+Streamlit 1.60.0 project environment collected and ran the focused suites. One
+Windows symlink characterization remained skipped because this host denied the
+operation. No runtime lock change or unsupported environment workaround was
+used to claim success.
 
 ## Production go/no-go and next bounded milestones
 
 **Decision: no-go for production Generation or executable Recovery.** The
-characterization path is substantially composed, but every production capability
-flag remains false. Profile B key/service infrastructure is not a prerequisite
-for supported local Profile A use. It does not change the separate requirements
-for explicit human Start, Recovery and Discard authorization; source/review
-provenance; Project integrity; Candidate idempotence; or truthful save
-uncertainty.
+offline route is materially broader than the PR #174 baseline, but production
+capability flags remain false. Profile B keys or service infrastructure are
+not prerequisites for supported local Profile A use. That policy decision does
+not weaken explicit human Start, Recovery and Discard authorization;
+source/review provenance; Project integrity; Candidate idempotence; or truthful
+save uncertainty. LLM/MCP instructions remain untrusted even though hostile
+processes under the same Windows user are outside the adopted Profile A threat
+model.
 
-| Milestone | Dependency and risk addressed | Recommended bounded boundary |
-| --- | --- | --- |
-| 1. Offline HTTP + multi-request Journal executor composition — characterized as C2B-8D-16A/16B | C2B-8D-14/15B connect exact acknowledged per-request intent, outcome and settlement to the existing executor; 16A composes injected HTTP submission/history with exact original-host event delivery; 16B adds an explicit disabled Worker lifecycle on the same seams. V1 remains unchanged and restart evidence stays inspect-only. | Both compositions use explicit in-memory wires and no default network transport. The Worker is not registered for production and no authority is recovered after restart. |
-| 2. Production transport/worker activation and original-host lifecycle — future boundary | Depends on protected-root lifecycle, endpoint/auth/deadline policy, production shutdown/replacement ownership, real transport interoperability and a concrete human Start/UI boundary. | Separately review production registration and event-loop delivery without weakening Journal gates or one-shot external-call semantics. |
-| 3. Real ComfyUI interoperability | Depends on reviewed transport/worker composition, supported version/endpoint behavior and disposable account/Project policy. | Separately human-authorized compatibility exercise; capture actual request/history/output behavior and server-side uncertainty. Offline/fake success is not evidence for this milestone. |
-| 4. Protected filesystem production policy | Depends on root provisioning/handle lifecycle, exact approved output destination policy, cross-process/durable capacity policy and production host lifecycle. | C2B-8D-17B/17C characterize byte and stream writer consumption offline. Next specify production roots, owner-only ACL/reparse/identity checks and any required cross-process quota without mutating existing Project/user ACLs; keep Journal and promotion integration separately reviewed. |
-| 5. Human Start and UI activation | Depends on worker/transport, protected storage and original-host fencing with visible unknown/unsaved states. | Add a distinct user-confirmed Start action; wire no execution until the whole authorization chain is current. Confirmation alone must remain non-executable. |
-| 6. Restart/recovery and retention/discard | Depends on adopted live/restart latest-head policy, protected Journal production lifecycle, source/review provenance, Project reconciliation and explicit human action. | Implement inspect-first restart inventory and human-authorized association/discard, with quotas and no automatic replay/cleanup. Missing/conflicting evidence remains uncertain. |
+| Order | Milestone | Remaining implementation gap and risk | Evidence required to close the gate |
+| --- | --- | --- | --- |
+| 1 | Original-host integration and production lifecycle | No production owner registers the Worker/transports, survives Streamlit reruns, fences close/replacement or delivers results to the same Project/session. | A separately reviewed production lifecycle with exact Project/path/session/process/activation/pairing and claim binding, bounded shutdown, one-shot intent-before-send and original-host event delivery; failure/close races remain unknown and non-retriable. |
+| 2 | Protected root provisioning and capacity policy | Current roots are host-supplied native observations for disposable fixtures. Reservations are process-local, not an OS quota; 17B/C/D and 17E-B methods require explicit opt-in, and Journal capacity is not the default Executor append path. | Define a local Profile A root lifecycle that never repairs/adopts existing user directories; integrate the exact selected capacity methods at production writers; document concurrent app/process and restart accounting policy, evidence retention and capacity ceilings. No disk-space guarantee should be claimed. |
+| 3 | Real ComfyUI/HTTP interoperability | All transport tests use injected/offline wires; endpoint, version, history status, `/view` descriptors, response framing and remote uncertainty have not been observed against a real server. | After explicit human authorization and disposable endpoint selection, verify exact POST/history/view behavior, supported workflow compatibility, bounded outcomes and no-resubmit semantics. Record the server/runtime version and uncertain cases. |
+| 4 | Explicit Human Start and UI activation | Review/confirmation and a Start characterization seam exist, but no production UI action dispatches it. | Add a distinct explicit human Start control and visible pending/unknown/unsaved state. Revalidate review, Project and host identity immediately before a one-shot production claim; confirmation alone must not execute. |
+| 5 | Candidate publication and Project JSON save | Existing Candidate/Undo/save owners have protected offline composition but no production call path for these receipts. | Connect only through the existing Gallery writer and exact-object/path save owner; prove idempotent provenance, Undo ordering, partial-append uncertainty, one-shot save and reload integrity in the supported host lifecycle. |
+| 6 | Restart, Recovery, retention and discard | Reopened Journal/Recovery data are inspect-only. After restart there is no independently retained original-host latest-head observation, so authority cannot be inferred from a valid prefix, digest, file or prompt ID. There is no production retention/discard lifecycle. | Define restart latest-head custody separately from live-host observations; require independent original-host evidence or retain `uncertain`. Add inspect-first Recovery and explicit human association/Discard, with bounded retention and no replay, automatic rollback or cleanup. |
 
-Before any production Start, durable unknown-submission evidence, protected
-roots/capacity, truthful real transport, production-registered bounded worker
-and original-host event delivery, exact fresh Human Start, Candidate publication/save, restart/recovery,
-and retention/discard gates need separate implementation and review. Operational
-ComfyUI testing needs explicit human authorization after those gates. Until then,
+**Recommended next milestone:** define and test the production original-host
+lifecycle owner without enabling Start or transport. It should bind one exact
+Project/path, process/session, activation/pairing and claim; fence replacement
+and close; and establish how that owner selects the protected purpose roots
+and explicit capacity-integrated writers. Acceptance should be lifecycle and
+race evidence only, with all external execution and publication disabled. Root
+provisioning/capacity policy can then proceed as the next gate before any live
+ComfyUI integration.
+
+Before activation, each gate needs its own implementation review and production-
+appropriate validation. In particular, protected Journal capacity integration
+must remain explicit until a reviewed production owner connects it; the
+`GenerationExecutorJournalIntent` characterization path currently does not
+select those capacity-integrated append methods. No PR in this audit enables
+that connection.
+
+Until those gates are closed, keep
 `execution_available=false`, `protected_storage_available=false`,
 `promotion_available=false`, `candidate_publication_allowed=false`, and
-`authorship=unverified`; Candidate publication remains unavailable and Recovery
-remains inspect-only. No automatic retry, replay, cleanup, or MCP execution
-substitutes for these gates.
+`authorship=unverified`. Candidate publication remains unavailable and Human
+Recovery remains inspect-only. No automatic retry, replay, cleanup, or MCP
+execution substitutes for the required human and original-host authority.
