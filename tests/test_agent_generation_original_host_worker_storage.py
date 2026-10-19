@@ -11,7 +11,7 @@ from core.comfy_http_submission import PromptHTTPSubmissionTransport
 from core.comfy_prompt_request import prepare_frozen_prompt_request
 from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
 from core.generation_windows_protected_storage import WindowsProtectedRootCharacterization
-from ui.agent_generation_http_io_worker import HostOwnedHTTPIOWorker
+from ui.agent_generation_http_io_worker import HTTPIOCorrelation, HostOwnedHTTPIOWorker
 from ui.agent_generation_original_host_worker_storage import (
     OriginalHostWorkerStorageIntegration,
 )
@@ -103,7 +103,7 @@ def _storage_refs():
     return roots, capacity
 
 
-def _bound_claim(*, prompt_id=None, entered=None, release=None):
+def _host_lifecycle():
     values = ready()
     runtime, route, state, *_ = values
     assert start(values).status == "characterized_acceptance"
@@ -111,6 +111,11 @@ def _bound_claim(*, prompt_id=None, entered=None, release=None):
         state["project"], state["current_project_path"],
     ) == "bound_non_executing"
     lifecycle = runtime._generation_original_host_lifecycle
+    return values, runtime, route, state, lifecycle
+
+
+def _bound_claim(*, prompt_id=None, entered=None, release=None):
+    values, runtime, route, state, lifecycle = _host_lifecycle()
     roots, capacity = _storage_refs()
     worker = _worker(prompt_id=prompt_id, entered=entered, release=release)
     assert runtime.bind_generation_worker_storage_for_characterization(
@@ -150,11 +155,18 @@ def test_exact_owner_binding_same_target_rerun_submission_history_and_no_job_pro
         0, kind="submission",
     )
     assert correlation is not None and correlation.prompt_id is None
+    # Once bound, an unregistered caller cannot start transport work, even
+    # though the Worker itself may be started by the explicit host harness.
+    assert worker.start_for_characterization().state == "running"
+    refused = worker.perform_for_characterization(
+        "submission", prepared, None, correlation,
+    )
+    assert refused.outcome.status == "unknown"
+    assert worker.observation_for_characterization().accepted_operations == 0
     lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
         "submission", prepared, None, correlation,
     )
     assert status == "admitted_non_executing"
-    assert worker.start_for_characterization().state == "running"
     completion = worker.perform_for_characterization("submission", prepared, None, correlation)
     assert completion.outcome.status == "accepted"
     foreign = replace(completion, correlation=replace(correlation, attempt_id=2))
@@ -240,6 +252,196 @@ def test_binding_rejects_wrong_or_already_used_owner_without_starting_another_wo
     assert worker.observation_for_characterization().state in {"created", "running"}
     runtime.close()
     worker.close_for_characterization()
+
+
+def test_one_worker_claim_is_exclusive_across_original_host_lifecycles_and_generations():
+    values_a, runtime_a, _route_a, _state_a, lifecycle_a = _host_lifecycle()
+    roots_a, capacity_a = _storage_refs()
+    prompt_id = str(uuid.uuid4())
+    worker = _worker(prompt_id=prompt_id)
+    assert runtime_a.bind_generation_worker_storage_for_characterization(
+        worker, roots_a, capacity_a,
+    ) == "bound_non_executing"
+    integration_a = lifecycle_a._worker_storage_integration
+    assert worker._characterization_owner_claim is integration_a._worker_owner_claim
+
+    _values_b, runtime_b, _route_b, _state_b, lifecycle_b = _host_lifecycle()
+    roots_b, capacity_b = _storage_refs()
+    assert runtime_b.bind_generation_worker_storage_for_characterization(
+        worker, roots_b, capacity_b,
+    ) == "worker_unavailable"
+    assert lifecycle_b._worker_storage_integration is None
+    assert lifecycle_a._worker_storage_integration is integration_a
+    runtime_b.close()
+    assert worker.observation_for_characterization().state == "created"
+    assert integration_a.readiness().lifecycle_state == "bound_non_executing"
+
+    prepared = _prepared(lifecycle_a)
+    correlation = runtime_a.generation_worker_http_correlation_for_characterization(
+        0, kind="submission",
+    )
+    assert correlation is not None
+    lease, status = runtime_a.begin_generation_worker_http_operation_for_characterization(
+        "submission", prepared, None, correlation,
+    )
+    assert status == "admitted_non_executing"
+    assert worker.start_for_characterization().state == "running"
+    completion = worker.perform_for_characterization(
+        "submission", prepared, None, correlation,
+    )
+    assert completion.outcome.status == "accepted"
+    assert runtime_a.observe_generation_worker_http_result_for_characterization(
+        lease, completion,
+    ) == "observed_non_authoritative"
+
+    runtime_a.close()
+    closed = runtime_a.finish_generation_worker_storage_close_for_characterization()
+    assert closed.lifecycle_state == "closed"
+    assert worker.observation_for_characterization().state == "closed"
+    _values_c, runtime_c, _route_c, _state_c, lifecycle_c = _host_lifecycle()
+    roots_c, capacity_c = _storage_refs()
+    assert runtime_c.bind_generation_worker_storage_for_characterization(
+        worker, roots_c, capacity_c,
+    ) == "worker_unavailable"
+    assert lifecycle_c._worker_storage_integration is None
+    runtime_c.close()
+
+
+def test_two_concurrent_lifecycle_binds_have_exactly_one_worker_owner():
+    _values_a, runtime_a, _route_a, _state_a, lifecycle_a = _host_lifecycle()
+    _values_b, runtime_b, _route_b, _state_b, lifecycle_b = _host_lifecycle()
+    roots_a, capacity_a = _storage_refs()
+    roots_b, capacity_b = _storage_refs()
+    worker = _worker(prompt_id=str(uuid.uuid4()))
+    gate = threading.Barrier(3)
+    outcomes = {}
+
+    def bind(label, runtime, roots, capacity):
+        gate.wait(timeout=3)
+        outcomes[label] = runtime.bind_generation_worker_storage_for_characterization(
+            worker, roots, capacity,
+        )
+
+    threads = [
+        threading.Thread(target=bind, args=("a", runtime_a, roots_a, capacity_a)),
+        threading.Thread(target=bind, args=("b", runtime_b, roots_b, capacity_b)),
+    ]
+    for thread in threads:
+        thread.start()
+    gate.wait(timeout=3)
+    for thread in threads:
+        thread.join(3)
+        assert not thread.is_alive()
+
+    assert sorted(outcomes.values()) == ["bound_non_executing", "worker_unavailable"]
+    assert sum(lifecycle._worker_storage_integration is not None
+               for lifecycle in (lifecycle_a, lifecycle_b)) == 1
+    assert worker._characterization_owner_claim is not None
+    runtime_a.close()
+    runtime_b.close()
+    assert worker.observation_for_characterization().state == "closed"
+
+
+def test_worker_start_race_with_atomic_owner_claim_still_fences_unregistered_io():
+    _values, runtime, _route, _state, lifecycle = _host_lifecycle()
+    roots, capacity = _storage_refs()
+    worker = _worker(prompt_id=str(uuid.uuid4()))
+    gate = threading.Barrier(3)
+    results = {}
+
+    def start_worker():
+        gate.wait(timeout=3)
+        results["start"] = worker.start_for_characterization()
+
+    def bind_worker():
+        gate.wait(timeout=3)
+        results["bind"] = runtime.bind_generation_worker_storage_for_characterization(
+            worker, roots, capacity,
+        )
+
+    threads = [threading.Thread(target=start_worker), threading.Thread(target=bind_worker)]
+    for thread in threads:
+        thread.start()
+    gate.wait(timeout=3)
+    for thread in threads:
+        thread.join(3)
+        assert not thread.is_alive()
+
+    assert results["start"].state == "running"
+    assert results["bind"] == "bound_non_executing"
+    assert lifecycle._worker_storage_integration is not None
+    prepared = _prepared(lifecycle)
+    correlation = runtime.generation_worker_http_correlation_for_characterization(
+        0, kind="submission",
+    )
+    refusal = worker.perform_for_characterization(
+        "submission", prepared, None, correlation,
+    )
+    assert refusal.outcome.status == "unknown"
+    assert worker.observation_for_characterization().accepted_operations == 0
+    runtime.close()
+
+
+def test_unowned_worker_admission_racing_bind_is_linearized_to_one_side():
+    _values, runtime, _route, _state, lifecycle = _host_lifecycle()
+    roots, capacity = _storage_refs()
+    prompt_id = str(uuid.uuid4())
+    worker = _worker(prompt_id=prompt_id)
+    assert worker.start_for_characterization().state == "running"
+    prepared = _prepared(lifecycle)
+    request = lifecycle._envelope.manifest.requests[0]
+    correlation = HTTPIOCorrelation(
+        operation_id="pre-bind-attempt",
+        job_id=lifecycle._envelope.job_id,
+        claim_id=lifecycle._envelope.claim_id,
+        manifest_identity=lifecycle._envelope.manifest.manifest_identity,
+        session_identity=lifecycle._session_incarnation,
+        process_identity=lifecycle._process_incarnation,
+        request_id=request.request_id,
+        request_index=request.request_index,
+        illustration_id=request.illustration_id,
+        run_index=request.run_index,
+        workflow_identity=request.workflow_identity,
+        attempt_id=1,
+    )
+
+    gate = threading.Barrier(3)
+    results = {}
+
+    def perform_unowned():
+        gate.wait(timeout=3)
+        results["perform"] = worker.perform_for_characterization(
+            "submission", prepared, None, correlation,
+        )
+
+    def bind_owner():
+        gate.wait(timeout=3)
+        results["bind"] = runtime.bind_generation_worker_storage_for_characterization(
+            worker, roots, capacity,
+        )
+
+    threads = [threading.Thread(target=perform_unowned), threading.Thread(target=bind_owner)]
+    for thread in threads:
+        thread.start()
+    gate.wait(timeout=3)
+    for thread in threads:
+        thread.join(3)
+        assert not thread.is_alive()
+
+    if results["bind"] == "bound_non_executing":
+        assert lifecycle._worker_storage_integration is not None
+        assert results["perform"].outcome.status == "unknown"
+        assert worker.observation_for_characterization().accepted_operations == 0
+        runtime.close()
+        closed = runtime.finish_generation_worker_storage_close_for_characterization()
+        assert closed.lifecycle_state == "closed"
+    else:
+        assert results["bind"] == "worker_unavailable"
+        assert lifecycle._worker_storage_integration is None
+        assert results["perform"].outcome.status == "accepted"
+        assert worker.observation_for_characterization().accepted_operations == 1
+        runtime.close()
+        assert worker.close_for_characterization().state == "closed"
 
 
 def test_project_replacement_revokes_without_resurrection():

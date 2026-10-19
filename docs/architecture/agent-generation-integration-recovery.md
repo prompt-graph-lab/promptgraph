@@ -753,7 +753,13 @@ The runtime accepts one exact, supplied `HostOwnedHTTPIOWorker`, the five
 purpose-root objects and their matching
 `WindowsProtectedStorageAdmissionCharacterization`. Binding verifies the exact
 owner types, purpose names, object identities and a fresh Worker with no prior
-accepted/completed operations. Same-target reruns preserve the association;
+accepted/completed operations. The Worker atomically records a one-shot owner
+claim under its existing state lock, shared with start and operation admission;
+another lifecycle cannot claim that Worker, and the claim is never transferred
+or released for a later generation. An associated operation must first register
+its exact correlation through the original-host owner, so an unregistered
+caller cannot start transport work on the claimed Worker. Same-target reruns
+preserve the association;
 Project/path/epoch, route/pairing, claim, disarm and runtime close changes
 permanently revoke it. Retired integration owners remain strongly retained in
 a 16-owner runtime bound; new integration binding is refused at the ceiling
@@ -771,7 +777,10 @@ normalized path, target epoch/activation, live nonterminal job and claim,
 manifest/envelope objects, session/process, route and current pairing under
 the runtime's ordered host locks. A prepared request is revalidated against
 the exact finalized envelope request, host endpoint, workflow bytes and output
-nodes. Submission correlation is one-shot; history correlation is limited to
+nodes. Beginning a host operation installs one exact Worker-local correlation
+admission before returning its lease; that registration is consumed when the
+Worker admits the operation and is cleared by revocation. Submission
+correlation is one-shot; history correlation is limited to
 the exact UUID from a current, exact Worker-issued accepted completion for
 that request. The HTTP result and prompt UUID remain diagnostic/correlation
 data; neither advances the Job Registry or Inbox or grants authority.

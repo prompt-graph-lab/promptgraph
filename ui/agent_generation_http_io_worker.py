@@ -168,6 +168,10 @@ class HostOwnedHTTPIOWorker:
         # synthetic completions remain distinguishable from worker results.
         self._completion_witness = object()
         self._last_completion = None
+        # One-shot original-host custody. The claim is never transferred or
+        # released, including after close or an uncertain outcome.
+        self._characterization_owner_claim = None
+        self._characterization_operation = None
 
     def start_for_characterization(self):
         with self._lock:
@@ -185,6 +189,41 @@ class HostOwnedHTTPIOWorker:
             self._state = "running"
             return self._observation_locked()
 
+    def _claim_original_host_for_characterization(self, owner_claim):
+        """Atomically bind this unused Worker to one original-host lifecycle."""
+        if owner_claim is None:
+            return False
+        with self._lock:
+            thread = self._thread
+            if (self._characterization_owner_claim is not None
+                    or self._state not in {"created", "running"}
+                    or (self._state == "running" and (thread is None or not thread.is_alive()))
+                    or self._active_task is not None
+                    or self._characterization_operation is not None
+                    or self._accepted_operations != 0
+                    or self._completed_operations != 0
+                    or self._uncertain_submissions != 0
+                    or self._post_attempted):
+                return False
+            self._characterization_owner_claim = owner_claim
+            return True
+
+    def _register_original_host_operation_for_characterization(
+        self, owner_claim, kind, correlation,
+    ):
+        """Register one exact owner-approved correlation before Worker admission."""
+        if kind not in {"submission", "history"} or type(correlation) is not HTTPIOCorrelation:
+            return False
+        with self._lock:
+            if (self._characterization_owner_claim is not owner_claim
+                    or owner_claim is None
+                    or self._state not in {"created", "running"}
+                    or self._active_task is not None
+                    or self._characterization_operation is not None):
+                return False
+            self._characterization_operation = (kind, correlation)
+            return True
+
     def perform_for_characterization(self, kind, prepared, prompt_id, correlation, *,
                                      after_admission=None):
         if (kind not in {"submission", "history"}
@@ -198,6 +237,15 @@ class HostOwnedHTTPIOWorker:
         task = None
         try:
             with self._lock:
+                if self._characterization_owner_claim is not None:
+                    registered = self._characterization_operation
+                    if (registered is None or registered[0] != kind
+                            or registered[1] is not correlation):
+                        return self._refusal(
+                            kind, correlation,
+                            SubmissionResult("unknown") if kind == "submission"
+                            else HistoryResult("unknown"),
+                        )
                 submission_key = None
                 if kind == "submission":
                     submission_key = (correlation.operation_id, correlation.job_id,
@@ -234,6 +282,8 @@ class HostOwnedHTTPIOWorker:
                         kind, correlation,
                         SubmissionResult("rejected_before_submission") if kind == "submission"
                         else HistoryResult("unknown"))
+                if self._characterization_owner_claim is not None:
+                    self._characterization_operation = None
                 self._accepted_operations += 1
 
             # This callback stays on the original host caller thread and is
@@ -312,12 +362,17 @@ class HostOwnedHTTPIOWorker:
         """
         with self._lock:
             if self._state == "closed":
+                self._characterization_operation = None
                 return self._observation_locked()
             if self._state == "created":
+                self._characterization_operation = None
                 self._state = "closed"
                 return self._observation_locked()
             if self._state not in {"closing", "close_pending"}:
                 self._state = "closing"
+            # A queued but not yet admitted host operation is invalidated by
+            # close. The permanent Worker owner claim itself is retained.
+            self._characterization_operation = None
             task = self._active_task
             if task is not None:
                 if task.state == "queued":

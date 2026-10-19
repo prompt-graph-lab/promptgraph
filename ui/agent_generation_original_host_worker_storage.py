@@ -92,17 +92,6 @@ class OriginalHostWorkerStorageIntegration:
                 or type(capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization
                 or type(purpose_roots) is not dict or set(purpose_roots) != set(_PURPOSES)):
             return None, "binding_invalid"
-        with lifecycle._lock:
-            if (lifecycle._state != "bound_non_executing"
-                    or lifecycle._worker_storage_integration is not None):
-                return None, "lifecycle_unavailable"
-
-        worker_view = worker.observation_for_characterization()
-        if (worker_view.state not in {"created", "running"}
-                or worker_view.in_flight or worker_view.accepted_operations
-                or worker_view.completed_operations or worker_view.uncertain_submissions):
-            return None, "worker_unavailable"
-
         # Reuse 19A's reference-only validator. It compares exact native owner
         # references and purposes, but intentionally performs no readiness/I/O.
         status = lifecycle.observe_protected_references_for_characterization(
@@ -117,6 +106,14 @@ class OriginalHostWorkerStorageIntegration:
             if (lifecycle._state != "bound_non_executing"
                     or lifecycle._worker_storage_integration is not None):
                 return None, "lifecycle_unavailable"
+            # This claim and the Worker's operation admission share its state
+            # lock. If an external fake operation wins first, the claim fails;
+            # if the claim wins first, only an exact host-registered operation
+            # can be admitted. Concurrent Lifecycles cannot share the Worker.
+            if not worker._claim_original_host_for_characterization(
+                owner._worker_owner_claim,
+            ):
+                return None, "worker_unavailable"
             lifecycle._worker_storage_integration = owner
         return owner, "bound_non_executing"
 
@@ -127,6 +124,7 @@ class OriginalHostWorkerStorageIntegration:
         self._runtime_ref = weakref.ref(runtime)
         self._lifecycle_generation = lifecycle._generation
         self._worker = worker
+        self._worker_owner_claim = object()
         self._purpose_roots = dict(purpose_roots)
         self._capacity_owner = capacity_owner
         self._operation_id = uuid.uuid4().hex
@@ -268,6 +266,10 @@ class OriginalHostWorkerStorageIntegration:
                         or (kind == "submission" and (prompt_id is not None or correlation.prompt_id is not None))
                         or (kind == "history" and (prompt_id is None or correlation.prompt_id != prompt_id))):
                     return None, "correlation_mismatch"
+                if not self._worker._register_original_host_operation_for_characterization(
+                    self._worker_owner_claim, kind, correlation,
+                ):
+                    return None, "worker_unavailable"
                 if kind == "submission":
                     self._submitted.add((kind, index, correlation.attempt_id))
                 lease = GenerationWorkerOperationLease(
