@@ -696,6 +696,14 @@ generation changes, issued job/claim replacement, explicit disarm, or runtime
 Close retires the old lifecycle permanently. Returning to a prior Project or
 path creates a new generation.
 
+Readiness, Worker correlation, and Worker-result observation each check the
+exact current registration and pairing generation while holding the route's
+short operation lock. A pairing release/replacement or route invalidation is
+therefore fenced at the next observation even if Streamlit has not performed a
+new full-app synchronization. A later synchronization can create a fresh
+generation only when current host and claim evidence is still mutually
+consistent; an old claim bound to a prior pairing remains unavailable.
+
 States are bound_non_executing, revocation_requested, closed, and
 uncertain. A revoker marks revocation_requested immediately. The private
 characterization callback runs outside the runtime, job, inbox and lifecycle

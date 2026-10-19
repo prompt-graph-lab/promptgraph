@@ -3,6 +3,8 @@
 from dataclasses import replace
 import threading
 
+import pytest
+
 from core.project import Project
 from ui.project_agent_session_pump import ProjectAgentSessionRuntime
 from ui.agent_generation_original_host_lifecycle import (
@@ -108,6 +110,130 @@ def test_pairing_generation_and_registration_replacement_rotate_lifecycle():
     owner_new_route = runtime._generation_original_host_lifecycle
     assert owner_new_route is not owner_released
     assert owner_released.readiness()["lifecycle_state"] == "closed"
+    runtime.close()
+
+
+def test_pairing_change_fails_closed_before_full_app_sync_and_fresh_sync_rotates_owner():
+    runtime, project = _bound_runtime()
+    owner_unpaired = runtime._generation_original_host_lifecycle
+
+    offer = runtime.arm_local_pairing()
+    assert offer.status == "armed"
+    pair = runtime._registry.claim_pairing(
+        offer.bootstrap.process_incarnation,
+        offer.bootstrap.route_id,
+        offer.bootstrap.capability,
+    )
+    assert pair.status == "paired"
+
+    # A live pairing change is visible to read APIs before any full-app sync.
+    readiness = runtime.inspect_generation_original_host_readiness()
+    assert readiness["lifecycle_state"] == "uncertain"
+    assert readiness["reason"] == "route_unavailable"
+    assert owner_unpaired.readiness()["lifecycle_state"] == "closed"
+    assert runtime.generation_worker_correlation_for_characterization().status == "lifecycle_unavailable"
+    stale = GenerationWorkerResultObservation(
+        lifecycle_generation=owner_unpaired._generation,
+        job_id="a" * 32,
+        claim_id="b" * 32,
+        manifest_identity="c" * 64,
+        request_index=0,
+        sequence=1,
+        kind="submitted",
+    )
+    assert runtime.observe_generation_worker_result_for_characterization(stale) == "stale_non_authoritative"
+
+    # Synchronization may bind a new generation to the new exact pairing.
+    assert runtime.synchronize_target(project, r"C:\PG\selected.json")
+    owner_paired = runtime._generation_original_host_lifecycle
+    assert owner_paired is not owner_unpaired
+    assert runtime.inspect_generation_original_host_readiness()["pairing"] == "paired"
+
+    # Release is also detected synchronously by the next observation, without
+    # waiting for another app synchronization.
+    assert runtime._registry.release_pairing(pair.paired_route).status == "released"
+    readiness = runtime.inspect_generation_original_host_readiness()
+    assert readiness["lifecycle_state"] == "uncertain"
+    assert readiness["reason"] == "route_unavailable"
+    assert owner_paired.readiness()["lifecycle_state"] == "closed"
+    assert runtime.generation_worker_correlation_for_characterization().status == "lifecycle_unavailable"
+
+    assert runtime.synchronize_target(project, r"C:\PG\selected.json")
+    owner_released = runtime._generation_original_host_lifecycle
+    assert owner_released is not owner_paired
+    assert owner_released is not owner_unpaired
+    runtime.close()
+
+
+@pytest.mark.parametrize("first_check", ["worker_result", "correlation"])
+def test_pair_release_stales_issued_worker_observation_without_full_app_sync(first_check):
+    values = ready()
+    runtime, route, state, *_ = values
+    try:
+        assert start(values).status == "characterized_acceptance"
+        assert runtime.opt_in_generation_original_host_lifecycle_for_characterization(
+            state["project"], state["current_project_path"],
+        ) == "bound_non_executing"
+        owner = runtime._generation_original_host_lifecycle
+        correlation = runtime.generation_worker_correlation_for_characterization()
+        assert correlation.status == "correlation_only"
+        observation = GenerationWorkerResultObservation(
+            lifecycle_generation=correlation.lifecycle_generation,
+            job_id=correlation.job_id,
+            claim_id=correlation.claim_id,
+            manifest_identity=correlation.manifest_identity,
+            request_index=0,
+            sequence=1,
+            kind="submitted",
+        )
+
+        assert route.release().status == "released"
+        # No synchronize_target() occurs between the route mutation and these
+        # queries; cached worker identities must not remain current.
+        if first_check == "worker_result":
+            assert runtime.observe_generation_worker_result_for_characterization(
+                observation,
+            ) == "stale_non_authoritative"
+        else:
+            assert runtime.generation_worker_correlation_for_characterization().status == "lifecycle_unavailable"
+        readiness = runtime.inspect_generation_original_host_readiness()
+        assert readiness["lifecycle_state"] == "uncertain"
+        assert readiness["reason"] == "route_unavailable"
+        assert owner.readiness()["lifecycle_state"] == "closed"
+        assert runtime.generation_worker_correlation_for_characterization().status == "lifecycle_unavailable"
+        assert runtime.observe_generation_worker_result_for_characterization(
+            observation,
+        ) == "stale_non_authoritative"
+
+        # The old claim remains tied to the released pairing and cannot be
+        # rebound by a later full-app synchronization.
+        runtime.synchronize_target(state["project"], state["current_project_path"])
+        assert runtime._generation_original_host_lifecycle is None
+        assert runtime.observe_generation_worker_result_for_characterization(
+            observation,
+        ) == "stale_non_authoritative"
+    finally:
+        runtime.close()
+
+
+def test_registration_invalidation_is_visible_without_full_app_sync():
+    runtime, project = _bound_runtime()
+    old_owner = runtime._generation_original_host_lifecycle
+    old_registration = runtime._registration
+    assert old_registration.unregister() is True
+
+    assert runtime.generation_worker_correlation_for_characterization().status == "lifecycle_unavailable"
+    readiness = runtime.inspect_generation_original_host_readiness()
+    assert readiness["lifecycle_state"] == "uncertain"
+    assert readiness["reason"] == "route_unavailable"
+    assert old_owner.readiness()["lifecycle_state"] == "closed"
+    assert runtime.generation_worker_correlation_for_characterization().status == "lifecycle_unavailable"
+
+    runtime._registration = runtime._registry.register_session(runtime.mailbox)
+    assert runtime.synchronize_target(project, r"C:\PG\selected.json")
+    new_owner = runtime._generation_original_host_lifecycle
+    assert new_owner is not old_owner
+    assert runtime.inspect_generation_original_host_readiness()["lifecycle_state"] == "bound_non_executing"
     runtime.close()
 
 

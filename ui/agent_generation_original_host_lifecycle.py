@@ -4,10 +4,14 @@ This private owner tracks one exact ProjectAgentSessionRuntime target. It does
 not start a worker, perform transport/protected I/O, or grant Start,
 publication, save, Recovery, or cleanup authority.
 
-Lock order for snapshots is runtime publication gate -> route registry ->
-GenerationJobRegistry -> GenerationExecutorInbox -> this owner's short lock.
-This owner never acquires any external owner lock. Observation callbacks are
-outside all locks; revocation only marks the binding and never closes resources.
+Lock order for host snapshots is runtime publication gate -> route registry
+snapshot -> GenerationJobRegistry -> GenerationExecutorInbox -> this owner's
+short lock. Readiness/correlation observations additionally retain the exact
+route operation lock while comparing the live registration/pairing snapshot
+and taking this owner's short lock. The registry-wide lock is held only across
+that bounded local observation. This owner never acquires any external owner
+lock. Observation callbacks are outside all locks; revocation only marks the
+binding and never closes resources.
 """
 
 from collections import deque
@@ -343,6 +347,23 @@ class OriginalHostGenerationLifecycle:
                     and same_claim_scalars and same_claim_objects):
                 return "terminal_same_binding"
             return "job_claim_replaced"
+
+    def _route_snapshot_mismatch(
+        self, *, registry, registration, process_incarnation, pairing_generation,
+    ):
+        """Compare the exact live route snapshot while its operation lock is held."""
+        with self._lock:
+            if self._state != "bound_non_executing":
+                return None
+            if (self._runtime_ref() is None
+                    or self._registry is not registry
+                    or self._registration is not registration
+                    or self._route_id != getattr(registration, "route_id", None)
+                    or self._process_incarnation != process_incarnation):
+                return "route_replaced"
+            if self._pairing_generation != pairing_generation:
+                return "pairing_replaced"
+            return None
 
     def _reconcile_evidence(self, evidence):
         """Refresh only first-issued job/claim facts for an unchanged host."""

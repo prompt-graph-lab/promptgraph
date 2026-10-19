@@ -5,6 +5,7 @@ Project or Streamlit state, and a paired route exposes only target lookup,
 request submission, reply consumption, and release.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import hmac
@@ -258,6 +259,25 @@ class ProjectAgentSessionRegistry:
                 if not self._registration_matches_locked(registration, record):
                     return False, None
                 return True, record.pairing_generation
+
+    @contextmanager
+    def _pairing_generation_guard(self, registration):
+        """Hold the exact route operation boundary while a caller observes it.
+
+        The runtime compares its cached lifecycle and performs one bounded
+        local observation under the same exact route snapshot. The operation
+        and registry locks exclude claim, release, unregister, and close until
+        that observation returns.
+        """
+        record = self._record_for_registration(registration)
+        if record is None:
+            yield False, None
+            return
+        with record.operation_lock:
+            with self._lock:
+                available = self._registration_matches_locked(registration, record)
+                generation = record.pairing_generation if available else None
+                yield available, generation
 
     def arm_pairing(self, registration):
         """Issue or replace one short-lived capability for the owner route."""

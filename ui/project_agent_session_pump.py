@@ -5,6 +5,7 @@ capture token and the existing request bridge are used by the synchronous
 service point; neither the mailbox nor the fragment can capture a Project.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import threading
 
@@ -114,6 +115,49 @@ class ProjectAgentSessionRuntime:
         self._generation_original_host_lifecycle = None
         if lifecycle is not None:
             lifecycle._retire_for_replacement(reason)
+
+    @contextmanager
+    def _current_generation_original_host_lifecycle_locked(self):
+        """Hold the exact live pairing boundary during one local observation.
+
+        The runtime publication gate is already held by callers. Lock order is
+        route operation lock, registry snapshot lock, then the lifecycle's
+        short lock. The route and registry locks remain held through the
+        bounded local observation. No Project, job, or inbox lock is acquired.
+        """
+        lifecycle = self._generation_original_host_lifecycle
+        if self._closed or lifecycle is None:
+            yield None
+            return
+
+        registration = self._registration
+        if registration is not lifecycle._registration:
+            self._retire_generation_original_host_lifecycle_locked("route_replaced")
+            self._generation_original_host_lifecycle_reason = "route_unavailable"
+            yield None
+            return
+
+        with self._registry._pairing_generation_guard(registration) as (
+            route_available, pairing_generation,
+        ):
+            mismatch = (
+                None
+                if route_available is True
+                else "route_replaced"
+            )
+            if mismatch is None:
+                mismatch = lifecycle._route_snapshot_mismatch(
+                    registry=self._registry,
+                    registration=registration,
+                    process_incarnation=self._registry.process_incarnation,
+                    pairing_generation=pairing_generation,
+                )
+            if mismatch is not None:
+                self._retire_generation_original_host_lifecycle_locked(mismatch)
+                self._generation_original_host_lifecycle_reason = "route_unavailable"
+                yield None
+                return
+            yield lifecycle
 
     def _synchronize_generation_original_host_lifecycle_locked(self, project, project_path, epoch):
         if not self._generation_original_host_lifecycle_opt_in:
@@ -243,32 +287,36 @@ class ProjectAgentSessionRuntime:
         with self._publication_gate:
             if self._closed:
                 return unavailable_readiness("runtime_closed")
-            lifecycle = self._generation_original_host_lifecycle
-            if lifecycle is None:
-                return unavailable_readiness(self._generation_original_host_lifecycle_reason)
-            if purpose_roots is not None or capacity_owner is not None:
-                lifecycle.observe_protected_references_for_characterization(
-                    purpose_roots, capacity_owner,
-                )
-            return lifecycle.readiness()
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return unavailable_readiness(self._generation_original_host_lifecycle_reason)
+                if purpose_roots is not None or capacity_owner is not None:
+                    lifecycle.observe_protected_references_for_characterization(
+                        purpose_roots, capacity_owner,
+                    )
+                return lifecycle.readiness()
 
     def generation_worker_correlation_for_characterization(self):
         """Return opaque correlation only; this does not start or authorize a Worker."""
         with self._publication_gate:
-            lifecycle = self._generation_original_host_lifecycle
-            if self._closed or lifecycle is None:
+            if self._closed:
                 return GenerationWorkerCorrelation("lifecycle_unavailable")
-            return lifecycle.worker_correlation_for_characterization()
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return GenerationWorkerCorrelation("lifecycle_unavailable")
+                return lifecycle.worker_correlation_for_characterization()
 
     def observe_generation_worker_result_for_characterization(self, observation):
         """Record only bounded correlation; never advances the Job Registry."""
         if type(observation) is not GenerationWorkerResultObservation:
             return "invalid_observation"
         with self._publication_gate:
-            lifecycle = self._generation_original_host_lifecycle
-            if self._closed or lifecycle is None:
+            if self._closed:
                 return "stale_non_authoritative"
-            return lifecycle.observe_worker_result_for_characterization(observation)
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return "stale_non_authoritative"
+                return lifecycle.observe_worker_result_for_characterization(observation)
 
     def _clear_executable_review_locked(self):
         self._executable_review = None
