@@ -1195,13 +1195,23 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         completion = _JournalReplacementCompletion(
                             binding, acknowledgement, file_identity, native_row,
                             _JOURNAL_REPLACEMENT_ISSUER)
-                        result = self._ledger.complete_journal_replacement(
-                            operation, write_admission, inventory, free_bytes, completion)
-                        self._journal_writer_integrated = True
-                        if binding.journal_lease is not None:
-                            journal_owner._mark_lifecycle_lease_committed_locked(
-                                binding.journal_lease, acknowledgement)
-                        return result
+                        try:
+                            result = self._ledger.complete_journal_replacement(
+                                operation, write_admission, inventory, free_bytes, completion)
+                            if binding.journal_lease is not None:
+                                journal_owner._mark_lifecycle_lease_committed_locked(
+                                    binding.journal_lease, acknowledgement)
+                            self._journal_writer_integrated = True
+                            return result
+                        except BaseException:
+                            # Keep competing admission fenced until any ledger
+                            # commit that lacks its exact ACK marker has been
+                            # compensated into retained uncertainty.
+                            self._invalid = True
+                            if record.get("state") == "completed":
+                                self._ledger.retain_completed_journal_replacement_as_uncertain(
+                                    operation, write_admission)
+                            raise
         except BaseException as error:
             if bound_attempt:
                 with self._lock:

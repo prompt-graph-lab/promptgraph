@@ -97,12 +97,12 @@ def _commit_portable_journal_replacement(ledger, owner, journal_owner, operation
     return write, binding, acknowledgement, summary
 
 
-def _native_journal_operation(scope, request_count=1):
+def _native_journal_operation(scope, request_count=1, operation_id="replacement-operation"):
     project_path = scope / "selected-project.json"
     approved = journal.ApprovedRoot.capture_for_characterization(
         "project", str(scope), characterization=True)
     operation = journal.OperationObservation(
-        "replacement-operation", "job", "manifest",
+        operation_id, "job", "manifest",
         hashlib.sha256(project_path.read_bytes()).hexdigest(), approved.key,
         approved.path, approved.identity, project_path.name,
         journal._file_identity(journal._ordinary(project_path, directory=False)),
@@ -1325,6 +1325,46 @@ def test_native_integrated_journal_post_commit_ack_failure_retains_prior_and_ful
     operation = _native_journal_operation(scope)
     journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA)
     capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    competing_operation = _native_journal_operation(scope, operation_id="competing-operation")
+    competing_owner = _native_journal_owner(roots, competing_operation, journal.SCHEMA)
+    competing_capacity_operation = capacity.begin_operation_for_characterization(
+        competing_operation.operation_id)
+    failure_injected = threading.Event()
+    competing_lock_attempt = threading.Event()
+    competing_done = threading.Event()
+    competing_result = []
+    append_result = []
+
+    real_capacity_lock = capacity._lock
+
+    class ObservedCapacityLock:
+        def __enter__(self):
+            if threading.current_thread().name == "competing-journal-admission":
+                competing_lock_attempt.set()
+            real_capacity_lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            real_capacity_lock.release()
+            if (threading.current_thread().name == "journal-append-failure"
+                    and failure_injected.is_set()
+                    and not competing_done.wait(timeout=10)):
+                raise RuntimeError("competing admission did not reach its terminal result")
+            return False
+
+    monkeypatch.setattr(capacity, "_lock", ObservedCapacityLock())
+
+    def attempt_competing_admission():
+        try:
+            competing_result.append(capacity.admit_journal_replacement_for_characterization(
+                competing_capacity_operation, competing_owner))
+        except BaseException as error:
+            competing_result.append(error)
+        finally:
+            competing_done.set()
+
+    competing_thread = threading.Thread(
+        target=attempt_competing_admission, name="competing-journal-admission")
     try:
         first_ack = journal_owner.append_with_capacity_for_characterization(
             capacity, capacity_operation,
@@ -1335,10 +1375,33 @@ def test_native_integrated_journal_post_commit_ack_failure_retains_prior_and_ful
         assert _capacity_root_row(capacity)["observed_used_bytes"] == len(prior_bytes)
 
         def fail_before_mark(_lease, _acknowledgement):
+            failure_injected.set()
+            competing_thread.start()
+            assert competing_lock_attempt.wait(timeout=10)
             raise RuntimeError("injected post-ledger-commit ACK publication failure")
 
         monkeypatch.setattr(journal_owner, "_mark_lifecycle_lease_committed_locked", fail_before_mark)
-        with pytest.raises(ValueError, match="journal_replacement_observation_unavailable"):
+        def append_after_commit():
+            try:
+                append_result.append(journal_owner.append_with_capacity_for_characterization(
+                    capacity, capacity_operation,
+                    journal.Observation("submission_observed", "unknown")))
+            except BaseException as error:
+                append_result.append(error)
+
+        append_thread = threading.Thread(target=append_after_commit, name="journal-append-failure")
+        append_thread.start()
+        append_thread.join(timeout=10)
+        competing_thread.join(timeout=10)
+        assert not append_thread.is_alive()
+        assert not competing_thread.is_alive()
+        assert len(append_result) == 1 and isinstance(append_result[0], ValueError)
+        assert str(append_result[0]) == "journal_replacement_observation_unavailable"
+        assert len(competing_result) == 1 and isinstance(competing_result[0], ValueError)
+        assert capacity._ledger._operations[competing_capacity_operation]["state"] == "open"
+        assert capacity._ledger._active_write is None
+
+        with pytest.raises(ValueError, match="writer_unavailable"):
             journal_owner.append_with_capacity_for_characterization(
                 capacity, capacity_operation,
                 journal.Observation("submission_observed", "unknown"))
@@ -1346,7 +1409,6 @@ def test_native_integrated_journal_post_commit_ack_failure_retains_prior_and_ful
         assert journal_owner._uncertain is True
         assert journal_owner._writer._uncertain is True
         assert journal_owner._active_lease_committed_ack is None
-        assert capacity._ledger._active_write is None
         assert capacity._ledger._operations[capacity_operation]["state"] == "retained_uncertain"
         row = _capacity_root_row(capacity)
         assert row["reserved_bytes"] == row["reserved_entries"] == 0
@@ -1356,13 +1418,15 @@ def test_native_integrated_journal_post_commit_ack_failure_retains_prior_and_ful
         assert row["observed_used_entries"] == 1
         assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
         assert row["retained_uncertain_entries"] == 2
+        target = roots["private_journal"]._path / (operation.operation_id + ".json")
         assert target.read_bytes() != prior_bytes
-        assert list(roots["private_journal"]._path.iterdir()) == [target]
-        with pytest.raises(ValueError, match="writer_unavailable"):
-            journal_owner.append_with_capacity_for_characterization(
-                capacity, capacity_operation,
-                journal.Observation("submission_observed", "unknown"))
+        competing_target = roots["private_journal"]._path / (competing_operation.operation_id + ".json")
+        assert not competing_target.exists()
+        assert list(path.name for path in roots["private_journal"]._path.iterdir()) == [target.name]
     finally:
+        if competing_thread.ident is not None:
+            competing_thread.join(timeout=10)
+        competing_owner.close()
         journal_owner.close()
         capacity.close()
 
