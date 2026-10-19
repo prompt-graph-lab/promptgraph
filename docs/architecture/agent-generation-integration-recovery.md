@@ -653,14 +653,11 @@ model.
 | 5 | Candidate publication and Project JSON save | Existing Candidate/Undo/save owners have protected offline composition but no production call path for these receipts. | Connect only through the existing Gallery writer and exact-object/path save owner; prove idempotent provenance, Undo ordering, partial-append uncertainty, one-shot save and reload integrity in the supported host lifecycle. |
 | 6 | Restart, Recovery, retention and discard | Reopened Journal/Recovery data are inspect-only. After restart there is no independently retained original-host latest-head observation, so authority cannot be inferred from a valid prefix, digest, file or prompt ID. There is no production retention/discard lifecycle. | Define restart latest-head custody separately from live-host observations; require independent original-host evidence or retain `uncertain`. Add inspect-first Recovery and explicit human association/Discard, with bounded retention and no replay, automatic rollback or cleanup. |
 
-C2B-8D-19A now provides a non-executing original-host lifecycle foundation.
-The next bounded milestone is 19B: define and review the exact host integration
-that may use this foundation, including explicit Worker ownership/shutdown,
-current pairing/claim revalidation, and selection of the original protected
-purpose roots and capacity-integrated writers. No transport, Start, protected
-write, publication or save should be enabled as a side effect. Root
-provisioning/capacity policy remains a separate gate before live ComfyUI
-integration.
+C2B-8D-19A provides a non-executing original-host lifecycle foundation, and
+19B adds a non-executing association to an explicitly supplied Worker and
+protected-purpose-root/capacity owners. Neither milestone enables a production
+transport, Start, protected write, publication or save. Root provisioning and
+capacity-writer integration remain separate gates before live ComfyUI use.
 
 Before activation, each gate needs its own implementation review and production-
 appropriate validation. In particular, protected Journal capacity integration
@@ -748,20 +745,84 @@ revocation during a blocked callback, runtime-gate serialization, reentrant
 Close and reference-only root/capacity matching. These tests use no real
 transport or protected filesystem operation.
 
-### Required C2B-8D-19B boundary and remaining production NO-GO
+## C2B-8D-19B non-executing Worker/storage association
 
-19B must be a separate design/review before it can connect any live Worker.
-It must specify how exact host-freshness checks are performed immediately before
-each external action, how accepted HTTP results return to the same live runtime,
-how close/replacement fences in-flight work without retry or replay, and how
-shutdown retains uncertain protected evidence. It must also select the exact
-original five root owners and capacity owner and route Journal, staging and
-promotion writes through the intended capacity-integrated methods. Root
-provisioning, reservation lifetime across app/process restart, and concurrent
-PromptGraph processes remain unresolved.
+`ui/agent_generation_original_host_worker_storage.py` adds one private
+`OriginalHostWorkerStorageIntegration` to an explicitly opted-in 19A lifecycle.
+The runtime accepts one exact, supplied `HostOwnedHTTPIOWorker`, the five
+purpose-root objects and their matching
+`WindowsProtectedStorageAdmissionCharacterization`. Binding verifies the exact
+owner types, purpose names, object identities and a fresh Worker with no prior
+accepted/completed operations. The Worker atomically records a one-shot owner
+claim under its existing state lock, shared with start and operation admission;
+another lifecycle cannot claim that Worker, and the claim is never transferred
+or released for a later generation. An associated operation must first register
+its exact correlation through the original-host owner, so an unregistered
+caller cannot start transport work on the claimed Worker. Same-target reruns
+preserve the association;
+Project/path/epoch, route/pairing, claim, disarm and runtime close changes
+permanently revoke it. Retired integration owners remain strongly retained in
+a 16-owner runtime bound; new integration binding is refused at the ceiling
+until a clean, non-uncertain close is explicitly observed. Uncertain evidence
+is retained and is never evicted to make room.
 
-This foundation is not production original-host integration: no production
-Worker registration/start, transport, explicit Human Start UI, protected root
-provisioning, Journal writer connection, Candidate publication, Project save,
-Recovery Apply, discard or cleanup exists. All production capability flags
-remain false. The production decision therefore remains NO-GO.
+The integration exposes characterization-only correlation and operation-lease
+methods through `ProjectAgentSessionRuntime`:
+`bind_generation_worker_storage_for_characterization`,
+`generation_worker_http_correlation_for_characterization`,
+`begin_generation_worker_http_operation_for_characterization`, and
+`observe_generation_worker_http_result_for_characterization`. Before issuing
+or accepting correlation it rechecks the exact tracked Project object and
+normalized path, target epoch/activation, live nonterminal job and claim,
+manifest/envelope objects, session/process, route and current pairing under
+the runtime's ordered host locks. A prepared request is revalidated against
+the exact finalized envelope request, host endpoint, workflow bytes and output
+nodes. Beginning a host operation installs one exact Worker-local correlation
+admission before returning its lease; that registration is consumed when the
+Worker admits the operation and is cleared by revocation. Submission
+correlation is one-shot; history correlation is limited to
+the exact UUID from a current, exact Worker-issued accepted completion for
+that request. The HTTP result and prompt UUID remain diagnostic/correlation
+data; neither advances the Job Registry or Inbox or grants authority.
+
+An active operation lease, its Worker and the exact five root/admission-owner
+references remain held if host revocation occurs during work. The new
+`HostOwnedHTTPIOWorker.request_close_for_characterization()` is a short,
+nonjoining fence used during revocation. It refuses further task admission,
+marks a possible POST as uncertain and reports `close_pending` while its thread
+is alive. `finish_generation_worker_storage_close_for_characterization()` is
+the separate bounded join path; it runs outside runtime, route, registry, Job,
+Inbox and lifecycle locks. Close is idempotent and reentrant. A result that
+arrives after revocation is stale, and uncertain operation leases keep their
+root references even if the Worker thread later terminates.
+
+This is reference ownership only. The integration never starts or calls
+`perform_for_characterization()`, performs no native root/ACL/file verification
+or storage write, and invokes none of the capacity-integrated methods. The
+selected later writer seams remain
+`WindowsProtectedAssetsCharacterization.create_image_with_admission_for_characterization`,
+`stage_remote_image_with_admission_for_characterization`,
+`ProtectedDurablePromotionCharacterization.promote_with_capacity_admission_for_characterization`,
+and `WindowsProtectedJournalCharacterization.append_with_capacity_for_characterization`
+plus its multi-request intent/outcome/settlement variants. Selecting their
+names here creates no writer callable or storage authority. Journal append is
+not connected to `GenerationExecutorJournalIntent` by this PR.
+
+Focused coverage is in
+`tests/test_agent_generation_original_host_worker_storage.py` and the 19A
+lifecycle suite. It uses injected local fake transports and disposable
+reference-only owner objects; no external HTTP request or protected filesystem
+write is performed. It covers exact binding, used/mismatched owners,
+same-target preservation, Project/pairing/claim revocation, one-shot submission,
+accepted-prompt history correlation, non-authoritative results, stale/foreign/
+duplicate results, blocked transport close, reentrant runtime close, retained
+uncertainty and root references.
+
+19B is not production original-host integration. There is still no production
+Worker registration or Start UI, no production transport or root provisioning,
+no native ACL/identity revalidation at this new boundary, and no call to the
+capacity-integrated image, promotion or Journal writers. Candidate publication,
+Project save, executable Recovery, Discard and cleanup remain separate gates.
+Process restart, concurrent PromptGraph processes and capacity reservation
+recovery are unresolved. All production capability flags remain false and the
+production decision remains NO-GO.

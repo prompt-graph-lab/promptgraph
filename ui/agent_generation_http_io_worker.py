@@ -43,6 +43,7 @@ class HTTPIOCompletion:
     kind: str
     correlation: HTTPIOCorrelation
     outcome: object = field(repr=False, compare=False)
+    _worker_witness: object = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,14 @@ class HostOwnedHTTPIOWorker:
         self._accepted_operations = 0
         self._completed_operations = 0
         self._uncertain_submissions = 0
+        # Local provenance for completed Worker tasks only. Refusal-shaped
+        # synthetic completions remain distinguishable from worker results.
+        self._completion_witness = object()
+        self._last_completion = None
+        # One-shot original-host custody. The claim is never transferred or
+        # released, including after close or an uncertain outcome.
+        self._characterization_owner_claim = None
+        self._characterization_operation = None
 
     def start_for_characterization(self):
         with self._lock:
@@ -180,6 +189,41 @@ class HostOwnedHTTPIOWorker:
             self._state = "running"
             return self._observation_locked()
 
+    def _claim_original_host_for_characterization(self, owner_claim):
+        """Atomically bind this unused Worker to one original-host lifecycle."""
+        if owner_claim is None:
+            return False
+        with self._lock:
+            thread = self._thread
+            if (self._characterization_owner_claim is not None
+                    or self._state not in {"created", "running"}
+                    or (self._state == "running" and (thread is None or not thread.is_alive()))
+                    or self._active_task is not None
+                    or self._characterization_operation is not None
+                    or self._accepted_operations != 0
+                    or self._completed_operations != 0
+                    or self._uncertain_submissions != 0
+                    or self._post_attempted):
+                return False
+            self._characterization_owner_claim = owner_claim
+            return True
+
+    def _register_original_host_operation_for_characterization(
+        self, owner_claim, kind, correlation,
+    ):
+        """Register one exact owner-approved correlation before Worker admission."""
+        if kind not in {"submission", "history"} or type(correlation) is not HTTPIOCorrelation:
+            return False
+        with self._lock:
+            if (self._characterization_owner_claim is not owner_claim
+                    or owner_claim is None
+                    or self._state not in {"created", "running"}
+                    or self._active_task is not None
+                    or self._characterization_operation is not None):
+                return False
+            self._characterization_operation = (kind, correlation)
+            return True
+
     def perform_for_characterization(self, kind, prepared, prompt_id, correlation, *,
                                      after_admission=None):
         if (kind not in {"submission", "history"}
@@ -193,6 +237,15 @@ class HostOwnedHTTPIOWorker:
         task = None
         try:
             with self._lock:
+                if self._characterization_owner_claim is not None:
+                    registered = self._characterization_operation
+                    if (registered is None or registered[0] != kind
+                            or registered[1] is not correlation):
+                        return self._refusal(
+                            kind, correlation,
+                            SubmissionResult("unknown") if kind == "submission"
+                            else HistoryResult("unknown"),
+                        )
                 submission_key = None
                 if kind == "submission":
                     submission_key = (correlation.operation_id, correlation.job_id,
@@ -229,6 +282,8 @@ class HostOwnedHTTPIOWorker:
                         kind, correlation,
                         SubmissionResult("rejected_before_submission") if kind == "submission"
                         else HistoryResult("unknown"))
+                if self._characterization_owner_claim is not None:
+                    self._characterization_operation = None
                 self._accepted_operations += 1
 
             # This callback stays on the original host caller thread and is
@@ -262,7 +317,11 @@ class HostOwnedHTTPIOWorker:
                     outcome = task.outcome
                     self._clear_task_locked(task)
                     self._completed_operations += 1
-                    return HTTPIOCompletion(task.task_id, kind, correlation, outcome)
+                    completion = HTTPIOCompletion(
+                        task.task_id, kind, correlation, outcome, self._completion_witness,
+                    )
+                    self._last_completion = completion
+                    return completion
                 if (task.abandoned or self._state in {"closing", "closed", "uncertain"}
                         or self._active_task is not task or task.state != "completed"):
                     if task.possible_send and kind == "submission" and task.state != "abandoned":
@@ -274,7 +333,10 @@ class HostOwnedHTTPIOWorker:
                         kind, correlation,
                         SubmissionResult("unknown") if kind == "submission"
                         else HistoryResult("unknown"))
-                completion = HTTPIOCompletion(task.task_id, kind, correlation, task.outcome)
+                completion = HTTPIOCompletion(
+                    task.task_id, kind, correlation, task.outcome, self._completion_witness,
+                )
+                self._last_completion = completion
                 self._clear_task_locked(task)
                 self._completed_operations += 1
                 if (kind == "submission" and type(task.outcome) is SubmissionResult
@@ -291,15 +353,26 @@ class HostOwnedHTTPIOWorker:
             return None
         return HTTPIOCompletion(0, kind, correlation, outcome)
 
-    def close_for_characterization(self):
+    def request_close_for_characterization(self):
+        """Fence new operations immediately without waiting for the Worker.
+
+        Host lifecycle revocation can call this while holding its short
+        publication boundary. It only changes bounded in-memory state and
+        never joins the thread or invokes a transport callback.
+        """
         with self._lock:
             if self._state == "closed":
+                self._characterization_operation = None
                 return self._observation_locked()
             if self._state == "created":
+                self._characterization_operation = None
                 self._state = "closed"
                 return self._observation_locked()
             if self._state not in {"closing", "close_pending"}:
                 self._state = "closing"
+            # A queued but not yet admitted host operation is invalidated by
+            # close. The permanent Worker owner claim itself is retained.
+            self._characterization_operation = None
             task = self._active_task
             if task is not None:
                 if task.state == "queued":
@@ -316,6 +389,16 @@ class HostOwnedHTTPIOWorker:
                         self._mark_submission_uncertain_locked(task)
                     task.completed.set()
             thread = self._thread
+            if thread is None or not thread.is_alive():
+                self._state = "closed"
+            else:
+                self._state = "close_pending"
+            return self._observation_locked()
+
+    def close_for_characterization(self):
+        self.request_close_for_characterization()
+        with self._lock:
+            thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(self._join_timeout)
         with self._lock:
@@ -328,6 +411,13 @@ class HostOwnedHTTPIOWorker:
     def observation_for_characterization(self):
         with self._lock:
             return self._observation_locked()
+
+    def _is_issued_completion_for_characterization(self, completion):
+        """Identify only the exact latest completion object returned by this owner."""
+        with self._lock:
+            return (type(completion) is HTTPIOCompletion
+                    and completion is self._last_completion
+                    and completion._worker_witness is self._completion_witness)
 
     def _observation_locked(self):
         thread = self._thread

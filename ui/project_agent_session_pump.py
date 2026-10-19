@@ -33,6 +33,7 @@ from ui.project_agent_session_mailbox import (
     FRAGMENT_POLL_INTERVAL_SECONDS,
     ProjectAgentSessionMailbox,
     ProjectTargetTracker,
+    _normalize_target_path,
 )
 from ui.project_agent_session_registry import (
     PairingOperation,
@@ -40,6 +41,9 @@ from ui.project_agent_session_registry import (
     ProjectAgentSessionRegistry,
     get_process_project_agent_session_registry,
 )
+
+
+_MAX_RETIRED_GENERATION_WORKER_STORAGE = 16
 
 
 @dataclass
@@ -62,6 +66,12 @@ class ProjectAgentSessionRuntime:
     _generation_original_host_lifecycle: object = field(default=None, init=False, repr=False)
     _generation_original_host_lifecycle_opt_in: bool = field(default=False, init=False, repr=False)
     _generation_original_host_lifecycle_reason: str = field(default="lifecycle_not_opted_in", init=False, repr=False)
+    # Revoked owners remain strongly held while a Worker may still be active
+    # or uncertain. Binding stops at this bounded retention ceiling until a
+    # terminal, non-uncertain close has been explicitly observed.
+    _retired_generation_worker_storage_integrations: list = field(
+        default_factory=list, init=False, repr=False,
+    )
     # Host-only, one bounded detached executable carrier and acknowledgment.
     # These are never session widget values, mailbox replies or Start authority.
     _executable_review: object = field(default=None, init=False, repr=False)
@@ -114,6 +124,12 @@ class ProjectAgentSessionRuntime:
         lifecycle = self._generation_original_host_lifecycle
         self._generation_original_host_lifecycle = None
         if lifecycle is not None:
+            integration = lifecycle._worker_storage_integration
+            if (integration is not None
+                    and integration not in self._retired_generation_worker_storage_integrations
+                    and len(self._retired_generation_worker_storage_integrations)
+                    < _MAX_RETIRED_GENERATION_WORKER_STORAGE):
+                self._retired_generation_worker_storage_integrations.append(integration)
             lifecycle._retire_for_replacement(reason)
 
     @contextmanager
@@ -270,6 +286,268 @@ class ProjectAgentSessionRuntime:
                     request_count=request_count,
                 )
         return evidence, None
+
+    def _generation_original_host_evidence_current_locked(self, lifecycle, pairing_generation):
+        """Check the exact target, claim, and pairing while the route guard is held.
+
+        Lock order is publication gate -> route/registry guard -> target
+        tracker -> Job Registry -> Inbox -> lifecycle -> worker-storage owner.
+        This is a bounded in-memory check; it performs no Worker, network,
+        Journal, filesystem, Project, or host callback work.
+        """
+        from ui.agent_generation_job import _TERMINAL
+
+        if (lifecycle is not self._generation_original_host_lifecycle
+                or self._closed or self._registration is not lifecycle._registration
+                or self._registry is not lifecycle._registry
+                or self._registry.process_incarnation != lifecycle._process_incarnation
+                or self.generation_jobs is not lifecycle._jobs
+                or self._generation_executor_inbox is not lifecycle._inbox):
+            return False
+        project = lifecycle._project_ref()
+        if project is None:
+            return False
+        tracker = self.target_tracker
+        with tracker._lock:
+            if (not tracker._initialized or not tracker._had_project
+                    or tracker._project_ref is None or tracker._project_ref() is not project
+                    or tracker._project_path != _normalize_target_path(lifecycle._project_path)
+                    or tracker._epoch != lifecycle._target_epoch):
+                return False
+
+        jobs, inbox = self.generation_jobs, self._generation_executor_inbox
+        with jobs._lock:
+            if (jobs._closed or jobs._target != (lifecycle._target_epoch, lifecycle._activation_id)
+                    or jobs._session_incarnation != lifecycle._session_incarnation):
+                return False
+            with inbox._lock:
+                if inbox._closed or inbox._state == "invalidated":
+                    return False
+                envelope = inbox._envelope
+                if envelope is not lifecycle._envelope:
+                    return False
+                job = job_id = claim_id = manifest_identity = None
+                request_count = 0
+                if envelope is not None:
+                    if inbox._state not in {"offered", "accepted", "unknown"}:
+                        return False
+                    job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
+                    binding = envelope.binding
+                    if (job is None or job.state in _TERMINAL
+                            or job is not lifecycle._job
+                            or binding.session_id != lifecycle._session_incarnation
+                            or binding.process_incarnation != lifecycle._job_process_incarnation
+                            or binding.target_epoch != lifecycle._target_epoch
+                            or binding.activation_id != lifecycle._activation_id
+                            or binding.pairing_generation != pairing_generation
+                            or job.binding != binding or job.claim_id != envelope.claim_id):
+                        return False
+                    job_id, claim_id = envelope.job_id, envelope.claim_id
+                    manifest_identity = envelope.manifest.manifest_identity
+                    request_count = len(envelope.manifest.requests)
+                evidence = _HostEvidence(
+                    runtime=self,
+                    project=project,
+                    project_path=lifecycle._project_path,
+                    target_epoch=lifecycle._target_epoch,
+                    activation_id=lifecycle._activation_id,
+                    registry=self._registry,
+                    registration=self._registration,
+                    route_id=self._registration.route_id,
+                    process_incarnation=self._registry.process_incarnation,
+                    session_incarnation=jobs._session_incarnation,
+                    job_process_incarnation=lifecycle._job_process_incarnation,
+                    jobs=jobs,
+                    inbox=inbox,
+                    pairing_generation=pairing_generation,
+                    job=job,
+                    envelope=envelope,
+                    job_id=job_id,
+                    claim_id=claim_id,
+                    manifest_identity=manifest_identity,
+                    request_count=request_count,
+                )
+                with lifecycle._lock:
+                    return (
+                        lifecycle._same_host_locked(evidence)
+                        and lifecycle._job is job
+                        and lifecycle._envelope is envelope
+                        and lifecycle._job_id == job_id
+                        and lifecycle._claim_id == claim_id
+                        and lifecycle._manifest_identity == manifest_identity
+                        and lifecycle._request_count == request_count
+                    )
+
+    def bind_generation_worker_storage_for_characterization(
+        self, worker, purpose_roots, capacity_owner,
+    ):
+        """Associate supplied owners only; never starts a worker or opens roots."""
+        from ui.agent_generation_original_host_worker_storage import (
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        with self._publication_gate:
+            if self._closed:
+                return "runtime_closed"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return self._generation_original_host_lifecycle_reason or "lifecycle_unavailable"
+                if not self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation,
+                ):
+                    self._retire_generation_original_host_lifecycle_locked("host_evidence_unavailable")
+                    return "host_evidence_unavailable"
+                if len(self._retired_generation_worker_storage_integrations) >= \
+                        _MAX_RETIRED_GENERATION_WORKER_STORAGE:
+                    return "retained_worker_storage_limit"
+                _, status = OriginalHostWorkerStorageIntegration._bind_for_runtime(
+                    lifecycle, self, worker, purpose_roots, capacity_owner,
+                )
+                return status
+
+    def generation_worker_http_correlation_for_characterization(
+        self, request_index, *, kind, prompt_id=None,
+    ):
+        """Issue bounded request correlation after live host/claim verification."""
+        with self._publication_gate:
+            if self._closed:
+                return None
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return None
+                if not self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation,
+                ):
+                    self._retire_generation_original_host_lifecycle_locked("host_evidence_unavailable")
+                    return None
+                integration = lifecycle._worker_storage_integration
+                if integration is None:
+                    return None
+                return integration.correlation_for_request_for_characterization(
+                    request_index, kind=kind, prompt_id=prompt_id,
+                )
+
+    def begin_generation_worker_http_operation_for_characterization(
+        self, kind, prepared, prompt_id, correlation,
+    ):
+        """Pin one operation lease after exact current-host revalidation."""
+        with self._publication_gate:
+            if self._closed:
+                return None, "runtime_closed"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return None, "lifecycle_unavailable"
+                if not self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation,
+                ):
+                    self._retire_generation_original_host_lifecycle_locked("host_evidence_unavailable")
+                    return None, "host_evidence_unavailable"
+                integration = lifecycle._worker_storage_integration
+                if integration is None:
+                    return None, "integration_unavailable"
+                return integration.begin_operation_for_characterization(
+                    kind, prepared, prompt_id, correlation,
+                )
+
+    def observe_generation_worker_http_result_for_characterization(
+        self, lease, completion,
+    ):
+        """Return a typed result to its exact live host as non-authority only."""
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+                                if lifecycle_snapshot is not None else None)
+        if integration_snapshot is None:
+            return "stale_non_authoritative"
+        # Snapshot the actual supplied Worker before taking host/route/job locks.
+        try:
+            worker_observation = integration_snapshot.worker_observation()
+        except Exception:
+            integration_snapshot.revoke("host_evidence_unavailable")
+            return "uncertain_non_authoritative"
+
+        with self._publication_gate:
+            if self._closed or self._generation_original_host_lifecycle is not lifecycle_snapshot:
+                current = False
+            else:
+                with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                    current = lifecycle is lifecycle_snapshot
+                    if current:
+                        current = self._generation_original_host_evidence_current_locked(
+                            lifecycle, lifecycle._pairing_generation,
+                        )
+                        if not current:
+                            self._retire_generation_original_host_lifecycle_locked(
+                                "host_evidence_unavailable",
+                            )
+                    if current:
+                        return integration_snapshot.observe_result_for_characterization(
+                            lease, completion, worker_observation, current=True,
+                        )
+        # A late result remains attached to the old owner and can only be
+        # retained as stale diagnostic evidence. It cannot advance any host
+        # state or release a lease made uncertain by revocation.
+        integration_snapshot.observe_result_for_characterization(
+            lease, completion, worker_observation, current=False,
+        )
+        return "stale_non_authoritative"
+
+    def inspect_generation_worker_storage_for_characterization(self):
+        """Return safe status without exposing owner, root, or correlation refs."""
+        from ui.agent_generation_original_host_worker_storage import unavailable_observation
+
+        with self._publication_gate:
+            if self._closed:
+                return unavailable_observation("runtime_closed")
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None or not self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation,
+                ):
+                    if lifecycle is not None:
+                        self._retire_generation_original_host_lifecycle_locked(
+                            "host_evidence_unavailable",
+                        )
+                    return unavailable_observation("host_evidence_unavailable")
+                integration = lifecycle._worker_storage_integration
+        return (integration.readiness() if integration is not None
+                else unavailable_observation("integration_unavailable"))
+
+    def finish_generation_worker_storage_close_for_characterization(self):
+        """Perform one bounded Worker join outside every host/registry lock."""
+        with self._publication_gate:
+            candidates = list(self._retired_generation_worker_storage_integrations)
+            lifecycle = self._generation_original_host_lifecycle
+            current = getattr(lifecycle, "_worker_storage_integration", None) if lifecycle else None
+            if current is not None and current not in candidates:
+                candidates.append(current)
+        integration = fallback = None
+        for owner in candidates:
+            with owner._lock:
+                owner_state = owner._state
+            if owner_state == "bound_non_executing":
+                continue
+            if fallback is None:
+                fallback = owner
+            try:
+                worker_view = owner.worker_observation()
+            except Exception:
+                integration = owner
+                break
+            if worker_view.thread_alive or worker_view.state not in {
+                    "closed", "uncertain_stopped", "start_failed"}:
+                integration = owner
+                break
+        if integration is None:
+            integration = fallback
+        if integration is None:
+            return None
+        observation = integration.finish_close_for_characterization()
+        if (observation.lifecycle_state == "closed"
+                and observation.active_operations == 0
+                and observation.retained_uncertain_operations == 0):
+            with self._publication_gate:
+                if integration in self._retired_generation_worker_storage_integrations:
+                    self._retired_generation_worker_storage_integrations.remove(integration)
+        return observation
 
     def opt_in_generation_original_host_lifecycle_for_characterization(self, project, project_path):
         """Explicitly bind this runtime for offline lifecycle characterization only."""
@@ -769,6 +1047,12 @@ class ProjectAgentSessionRuntime:
             self._generation_original_host_lifecycle = None
             self._generation_original_host_lifecycle_reason = "runtime_closed"
             if lifecycle is not None:
+                integration = lifecycle._worker_storage_integration
+                if (integration is not None
+                        and integration not in self._retired_generation_worker_storage_integrations
+                        and len(self._retired_generation_worker_storage_integrations)
+                        < _MAX_RETIRED_GENERATION_WORKER_STORAGE):
+                    self._retired_generation_worker_storage_integrations.append(integration)
                 lifecycle.close()
             admission = self._generation_protected_candidate_admission
             if admission is not None:

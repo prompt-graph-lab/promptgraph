@@ -248,6 +248,7 @@ class OriginalHostGenerationLifecycle:
         self._worker_observations = deque(maxlen=_MAX_OBSERVATIONS)
         self._dependencies = _empty_dependencies()
         self._protected_refs = None
+        self._worker_storage_integration = None
 
     @classmethod
     def _create_for_runtime(cls, runtime, evidence):
@@ -399,7 +400,9 @@ class OriginalHostGenerationLifecycle:
             return
         # Keep only weak Project/runtime identity and opaque host-owner
         # references needed to prevent terminal same-binding resurrection.
-        # Drop manifests and protected-root references; nothing is closed here.
+        # Drop the 19A manifest and readiness-only root references; a 19B
+        # integration independently retains roots pinned by an active or
+        # uncertain Worker operation. Nothing is closed here.
         self._job = self._envelope = None
         self._protected_refs = None
 
@@ -407,34 +410,40 @@ class OriginalHostGenerationLifecycle:
         """End this generation without waiting for an observation callback."""
         with self._lock:
             if self._state in {"closed", "uncertain"}:
-                return self._state
-            self._reason = reason if reason in {
-                "target_replaced", "route_replaced", "pairing_replaced",
-                "job_claim_replaced", "host_evidence_unavailable",
-            } else "host_evidence_unavailable"
-            self._close_requested = True
-            self._state = "revocation_requested"
-            if self._active_observations == 0:
-                self._state = "closed"
-                self._release_live_references_locked()
-            return self._state
+                state = self._state
+            else:
+                self._reason = reason if reason in {
+                    "target_replaced", "route_replaced", "pairing_replaced",
+                    "job_claim_replaced", "host_evidence_unavailable",
+                } else "host_evidence_unavailable"
+                self._close_requested = True
+                self._state = "revocation_requested"
+                if self._active_observations == 0:
+                    self._state = "closed"
+                    self._release_live_references_locked()
+                state = self._state
+            integration = self._worker_storage_integration
+            integration_reason = self._reason or reason
+        if integration is not None:
+            integration.revoke(integration_reason)
+        return state
 
     def close(self):
         """Publish revocation immediately; never wait under the owner lock."""
         with self._lock:
-            if self._state == "closed":
-                return "closed"
-            if self._state == "uncertain":
-                return "uncertain"
-            self._close_requested = True
-            self._reason = "session_closed"
-            if self._state == "bound_non_executing":
-                self._state = "revocation_requested"
-            if self._active_observations == 0:
-                self._state = "closed"
-                self._release_live_references_locked()
-                return "closed"
-            return "close_pending"
+            if self._state not in {"closed", "uncertain"}:
+                self._close_requested = True
+                self._reason = "session_closed"
+                if self._state == "bound_non_executing":
+                    self._state = "revocation_requested"
+                if self._active_observations == 0:
+                    self._state = "closed"
+                    self._release_live_references_locked()
+            state = "close_pending" if self._active_observations else self._state
+            integration = self._worker_storage_integration
+        if integration is not None:
+            integration.revoke("session_closed")
+        return state
 
     def _observe_non_io_callback_for_characterization(self, callback):
         """Private deterministic seam proving callback lock/revocation behavior.
@@ -469,6 +478,9 @@ class OriginalHostGenerationLifecycle:
                     if self._state == "bound_non_executing"
                     else "revoked_non_authoritative"
                 )
+                integration = self._worker_storage_integration if failed else None
+            if integration is not None:
+                integration.revoke("host_evidence_unavailable")
         return outcome
 
     def worker_correlation_for_characterization(self):
@@ -574,6 +586,7 @@ class OriginalHostGenerationLifecycle:
 
     def readiness(self):
         with self._lock:
+            became_uncertain = False
             state = self._state
             if (state == "bound_non_executing"
                     and (self._runtime_ref() is None or self._project_ref() is None)):
@@ -581,6 +594,8 @@ class OriginalHostGenerationLifecycle:
                 self._reason = "host_evidence_unavailable"
                 self._close_requested = True
                 self._release_live_references_locked()
+                became_uncertain = True
+            integration = self._worker_storage_integration if became_uncertain else None
             reason = self._reason
             dependencies = {
                 **self._dependencies,
@@ -589,6 +604,8 @@ class OriginalHostGenerationLifecycle:
             job_state = ("not_issued" if self._job_id is None else
                          "claim_not_issued" if self._claim_id is None else "bound")
             pairing_state = ("unpaired" if self._pairing_generation is None else "paired")
+        if integration is not None:
+            integration.revoke("host_evidence_unavailable")
         available = state == "bound_non_executing"
         return {
             "lifecycle_state": state,
