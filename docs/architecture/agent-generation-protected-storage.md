@@ -1188,7 +1188,68 @@ not published unless its final admission commit succeeds.
 
 This composes only disposable local characterization. It is not an OS quota or
 cross-process lock, does not prove disk availability or power-loss durability,
-and does not make the HTTP transport production-ready. Journal and promotion
-writers still do not consume the ledger. No production roots, Start action,
-Candidate publication, Project save, Recovery, cleanup or execution capability
-is enabled. All production flags remain false and `authorship=unverified`.
+and does not make the HTTP transport production-ready. Journal writers still
+do not consume the ledger; batch promotion admission is described below. No
+production roots, Start action, Candidate publication, Project save, Recovery,
+cleanup or execution capability is enabled. All production flags remain false
+and `authorship=unverified`.
+
+## C2B-8D-17D protected promotion batch admission
+
+`ProtectedDurablePromotionCharacterization.promote_with_capacity_admission_for_characterization()`
+is an explicit, disposable-only opt-in that composes one already accepted,
+complete protected image batch with the exact
+`WindowsProtectedStorageAdmissionCharacterization` holding the same staging
+and promoted asset root owners. The existing promotion owner remains the only
+copy implementation and receipt issuer. The ordinary
+`promote_for_characterization()` path and its behavior remain available without
+capacity admission.
+
+Before the first promoted-file `CREATE_NEW`, the integration claims the exact
+promotion once, retains a close-aware asset capacity lease, validates the
+complete ordered descriptor/source set, and creates one unique admission
+operation. It reserves the sum of source byte counts and one promoted entry per
+image against the existing shared staging/promoted byte and entry limits. The
+pre-existing staging inventory remains charged; promotion does not release or
+move staging capacity. The exact operation then receives one write admission.
+Over-capacity, identity, freshness, or root failures before creation produce no
+destination file. A known cancellation before the writer is entered may
+release that exact unused reservation; after a destination writer is entered,
+any uncertain result retains the full batch estimate and all file evidence.
+
+Each destination is still created by the asset owner's existing
+`CREATE_NEW`/owner-only-ACL writer, with its native handle and identity retained
+before byte writes. The short asset lifecycle lock protects only creation and
+immediate handle retention; file identity/ACL reads, byte copies, flushes,
+decoding, inventory scans, and host-freshness callbacks run without owner
+lifecycle locks. Admission and promotion tokens are checked between native
+write steps. The asset owner close waits for the batch lease; promotion close,
+acceptance invalidation, admission close, or host drift fences final success.
+
+Before commit, the original acceptance owner revalidates the host binding and
+all source staging images. The promotion owner re-observes every complete
+destination image, and the admission owner scans all writable roots. It requires
+that every previously inventoried file is unchanged and the exact inventory
+delta consists of precisely the expected N promoted filenames, byte counts,
+native identities, and owner-only ACL observations, with no changes in other
+roots. It also verifies that each destination's decoded format, dimensions,
+size, and SHA-256 match its corresponding accepted source image.
+
+The final in-memory boundary serializes the exact immutable promotion receipt
+with ledger completion under the lock order
+`protected-assets → acceptance → promotion → admission → ledger`. No successful
+receipt is observable before the exact N-file delta has been committed as
+observed-used capacity. A rejected commit rolls back the in-memory receipt
+publication and retains the full reservation as uncertain. The receipt remains
+distinct from legacy `PromotedImage`/`DurableGenerationAssets` custody and
+grants no executor, Candidate, Project-save, Journal, Recovery, or cleanup
+authority.
+
+This is still process-local characterization, not a quota, cross-process
+reservation, disk-space guarantee, power-loss durability guarantee, or
+same-user hostile-process isolation. Capacity-owner restart cannot reconstruct
+the reservation. No partial copy is deleted, adopted, retried, or rolled back.
+All production gates remain closed:
+`execution_available=false`, `protected_storage_available=false`,
+`promotion_available=false`, `candidate_publication_allowed=false`, and
+`authorship=unverified`.

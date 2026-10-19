@@ -1,5 +1,6 @@
 """Offline and real disposable Windows contracts for protected promotion."""
 from dataclasses import FrozenInstanceError, replace
+from contextlib import contextmanager
 import threading
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ import pytest
 from core import generation_windows_protected_assets as assets
 from core import generation_windows_protected_storage as storage
 from core import generation_windows_protected_promotion as promotion
+from core import generation_storage_admission as admission
 from core.comfy_output_containment import ContainmentLimits
 from core.generation_output_promotion import DurableGenerationAssets, PromotedImage
 from test_comfy_output_containment import image_bytes
@@ -32,6 +34,46 @@ def accepted_batch(store, *, count=1, freshness=None):
 def new_promotion(store, acceptance_owner, accepted):
     return promotion.ProtectedDurablePromotionCharacterization.create_for_characterization(
         store, acceptance_owner, accepted, characterization=True, disposable_opt_in=True)
+
+
+@contextmanager
+def capacity_owner_for_promotion(store, scope, api, *, limits=None):
+    """Capture admission only after the accepted staging evidence exists."""
+    _, c, f, _, _, _ = api
+    project = scope / "selected-project.json"
+    handle = f.CreateFile(str(project), c.GENERIC_WRITE, c.FILE_SHARE_READ,
+        storage._security_attributes(api, storage._current_user(api)), c.CREATE_NEW,
+        c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+    try:
+        f.WriteFile(handle, b'{"disposable":true}')
+    finally:
+        handle.Close()
+    roots = {}
+    owner = None
+    try:
+        roots["private_journal"] = storage.WindowsProtectedRootCharacterization.provision_journal_for_characterization(
+            str(scope), characterization=True, disposable_opt_in=True)
+        roots["retained_uncertain"] = storage.WindowsProtectedRootCharacterization.provision_retained_for_characterization(
+            str(scope), characterization=True, disposable_opt_in=True)
+        roots["selected_project_json"] = storage.WindowsProtectedRootCharacterization.capture_for_characterization(
+            str(scope), str(project), "selected_project_json", characterization=True,
+            disposable_opt_in=True)
+        purpose_roots = {
+            "private_journal": roots["private_journal"],
+            "temporary_containment": store._roots["temporary_containment"],
+            "retained_uncertain": roots["retained_uncertain"],
+            "promoted_assets": store._roots["promoted_assets"],
+            "selected_project_json": roots["selected_project_json"],
+        }
+        owner = admission.WindowsProtectedStorageAdmissionCharacterization.capture_for_characterization(
+            str(scope), purpose_roots, characterization=True, disposable_opt_in=True,
+            limits=limits or admission.ProtectedStorageCapacityLimits())
+        yield owner
+    finally:
+        if owner is not None:
+            owner.close()
+        for root in roots.values():
+            root.close()
 
 
 def test_portable_protected_promotion_refuses_missing_opt_in_and_fabricated_owners():
@@ -298,6 +340,469 @@ def test_real_native_partial_multi_image_promotion_has_no_batch_success(owner):
     assert sorted(path.read_bytes() for path in destinations) == sorted((b"", originals[0]))
     assert not store._stream_promotions
     assert all(path.exists() for path in destinations)
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_real_native_admitted_promotion_reserves_and_commits_exact_batch(owner, count):
+    store, scope, api = owner
+    values, _, originals, _, acceptor, accepted = accepted_batch(store, count=count)
+    source_paths = tuple(store._files[("temporary_containment", item.image.storage_identity)][0]
+                         for item in accepted._batch_receipt.observations)
+    source_before = tuple(path.read_bytes() for path in source_paths)
+    promoter = new_promotion(store, acceptor, accepted)
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        receipt = promoter.promote_with_capacity_admission_for_characterization(
+            capacity, "promotion-batch-" + str(count),
+            characterization=True, disposable_opt_in=True)
+
+        assert type(receipt) is promotion.VerifiedProtectedPromotionReceipt
+        assert store._stream_promotions[(values[1].request_id, values[2].identity)] is receipt
+        assert promoter._receipt is receipt and promoter._pending_receipt is None
+        assert tuple(path.read_bytes() for path in source_paths) == source_before == originals
+        view = capacity._ledger.readiness()
+        rows = {row["purpose"]: row for row in view["roots"]}
+        assert rows["promoted_assets"]["observed_used_bytes"] == sum(map(len, originals))
+        assert rows["promoted_assets"]["observed_used_entries"] == count
+        assert rows["promoted_assets"]["reserved_bytes"] == 0
+        assert rows["promoted_assets"]["retained_uncertain_bytes"] == 0
+        assert rows["temporary_containment"]["retained_uncertain_bytes"] == sum(map(len, originals))
+        assert capacity.readiness()["promotion_writer_integrated"] is True
+        assert capacity.readiness()["promotion_available"] is False
+        assert capacity.readiness()["authorship"] == "unverified"
+        for index, row in enumerate(receipt.images):
+            assert row.descriptor_identity == accepted._remote.images[index].identity
+            assert row.promoted_image.content_sha256 == accepted._batch_receipt.observations[
+                index].image.content_sha256
+            promoted_path = store._files[("promoted_assets", row.promoted_image.storage_identity)][0]
+            assert promoted_path.read_bytes() == originals[index]
+        assert promoter.inspect_for_characterization(receipt) is receipt
+        with pytest.raises(ValueError, match="promotion_already_attempted"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-batch-duplicate",
+                characterization=True, disposable_opt_in=True)
+
+
+def test_real_native_admitted_receipt_is_not_published_before_ledger_completion(owner):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store, count=2)
+    promoter = new_promotion(store, acceptor, accepted)
+    entered, release = threading.Event(), threading.Event()
+    observed = {}
+    key = (accepted._prepared.request_id, accepted._remote.identity)
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        complete = capacity._ledger.complete_write
+
+        def pause_before_accounting(operation, write, inventory, free_bytes):
+            observed["receipt"] = promoter._receipt
+            observed["promotion_map"] = store._stream_promotions.get(key)
+            observed["ledger"] = capacity._ledger.readiness()
+            entered.set()
+            assert release.wait(5)
+            return complete(operation, write, inventory, free_bytes)
+
+        capacity._ledger.complete_write = pause_before_accounting
+        result, errors = [], []
+
+        def run():
+            try:
+                result.append(promoter.promote_with_capacity_admission_for_characterization(
+                    capacity, "promotion-publication-order",
+                    characterization=True, disposable_opt_in=True))
+            except BaseException as error:
+                errors.append(error)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert entered.wait(5)
+        assert observed["receipt"] is None and observed["promotion_map"] is None
+        ledger_rows = {row["purpose"]: row for row in observed["ledger"]["roots"]}
+        assert ledger_rows["promoted_assets"]["reserved_bytes"] == sum(map(len, originals))
+        assert ledger_rows["promoted_assets"]["observed_used_entries"] == 0
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive() and not errors and len(result) == 1
+        assert promoter._receipt is result[0]
+        assert store._stream_promotions[key] is result[0]
+
+
+def test_real_native_admitted_publication_failure_retains_full_batch_uncertain(owner):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store, count=2)
+    promoter = new_promotion(store, acceptor, accepted)
+
+    class RejectPromotionPublication(dict):
+        def __setitem__(self, key, value):
+            raise RuntimeError("injected receipt publication failure")
+
+    store._stream_promotions = RejectPromotionPublication()
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        with pytest.raises(ValueError, match="protected_promotion_uncertain"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-publication-failure",
+                characterization=True, disposable_opt_in=True)
+        assert promoter._receipt is None and promoter._pending_receipt is None
+        assert not store._stream_promotions
+        assert all(path.exists() for path, *_rest in store._files.values())
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["observed_used_entries"] == 0
+        assert row["retained_uncertain_bytes"] == sum(map(len, originals))
+        assert row["retained_uncertain_entries"] == 2
+
+
+def test_real_native_admitted_promotion_refuses_capacity_before_any_destination(owner):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store, count=2)
+    promoter = new_promotion(store, acceptor, accepted)
+    limits = admission.ProtectedStorageCapacityLimits(
+        shared_temporary_and_promoted_bytes=sum(map(len, originals)))
+    with capacity_owner_for_promotion(store, scope, api, limits=limits) as capacity:
+        with pytest.raises(ValueError, match="shared_asset_capacity_exceeded"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-capacity-refusal",
+                characterization=True, disposable_opt_in=True)
+        assert not any(key[0] == "promoted_assets" for key in store._files)
+        assert not list(store._roots["promoted_assets"]._path.iterdir())
+        assert not store._stream_promotions
+        assert not any(row["purpose"] == "promoted_assets" and row["reserved_bytes"]
+                       for row in capacity._ledger.readiness()["roots"])
+        with pytest.raises(ValueError, match="promotion_already_attempted"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-capacity-retry",
+                characterization=True, disposable_opt_in=True)
+
+
+def test_real_native_admitted_known_precreate_cancel_releases_reservation(owner):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store)
+    promoter = new_promotion(store, acceptor, accepted)
+    promoter._read_source_bytes = lambda *args: (_ for _ in ()).throw(
+        ValueError("protected_promotion_source_changed"))
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        with pytest.raises(ValueError, match="protected_promotion_source_changed"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-known-precreate-cancel",
+                characterization=True, disposable_opt_in=True)
+        assert not any(key[0] == "promoted_assets" for key in store._files)
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["reserved_bytes"] == row["reserved_entries"] == 0
+        assert row["retained_uncertain_bytes"] == row["retained_uncertain_entries"] == 0
+
+
+def test_real_native_admitted_host_loss_after_reservation_cancels_before_create(owner):
+    store, scope, api = owner
+    current = {"fresh": True}
+    _, _, _, _, acceptor, accepted = accepted_batch(
+        store, freshness=lambda envelope, remote: current["fresh"])
+    promoter = new_promotion(store, acceptor, accepted)
+
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        admit = capacity.admit_write_for_characterization
+
+        def admit_then_lose_host(operation, reservation):
+            token = admit(operation, reservation)
+            current["fresh"] = False
+            return token
+
+        capacity.admit_write_for_characterization = admit_then_lose_host
+        with pytest.raises(ValueError, match="host_freshness_lost"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-host-loss-before-create",
+                characterization=True, disposable_opt_in=True)
+        assert not any(key[0] == "promoted_assets" for key in store._files)
+        assert not list(store._roots["promoted_assets"]._path.iterdir())
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["reserved_bytes"] == row["reserved_entries"] == 0
+        assert row["retained_uncertain_bytes"] == row["retained_uncertain_entries"] == 0
+
+
+def test_real_native_admitted_partial_batch_retains_full_reservation_and_files(owner):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store, count=2)
+    created = {"count": 0}
+
+    def fault(boundary):
+        if boundary == "after_file_create":
+            created["count"] += 1
+            if created["count"] == 2:
+                raise RuntimeError("second admitted destination interrupted")
+
+    store._fault = fault
+    promoter = new_promotion(store, acceptor, accepted)
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        with pytest.raises(ValueError, match="protected_promotion_uncertain"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-partial-batch",
+                characterization=True, disposable_opt_in=True)
+        destinations = [path for key, (path, *_rest) in store._files.items()
+                        if key[0] == "promoted_assets"]
+        assert len(destinations) == 2
+        assert all(path.exists() for path in destinations)
+        assert sorted(path.read_bytes() for path in destinations) == sorted((b"", originals[0]))
+        assert not store._stream_promotions
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["observed_used_entries"] == 0
+        assert row["reserved_bytes"] == row["reserved_entries"] == 0
+        assert row["retained_uncertain_bytes"] == sum(map(len, originals))
+        assert row["retained_uncertain_entries"] == 2
+
+
+@pytest.mark.parametrize("failure", [
+    "after_file_create", "after_file_write", "after_file_sync",
+    "short_write", "flush", "verify",
+])
+def test_real_native_admitted_promotion_writer_failures_retain_evidence(owner, failure):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store)
+    if failure.startswith("after_file_"):
+        store._fault = lambda boundary: (_ for _ in ()).throw(RuntimeError("injected writer fault")) \
+            if boundary == failure else None
+    elif failure in {"short_write", "flush"}:
+        root = store._roots["promoted_assets"]
+        file_api = root._api[2]
+        if failure == "short_write":
+            original_write = file_api.WriteFile
+
+            def short_write(handle, data):
+                partial = data[:max(1, len(data) // 2)]
+                return original_write(handle, partial)
+
+            patcher = patch.object(file_api, "WriteFile", side_effect=short_write)
+        else:
+            patcher = patch.object(file_api, "FlushFileBuffers",
+                                   side_effect=OSError("injected flush failure"))
+        patcher.start()
+    else:
+        original_observe = store._observe
+
+        def fail_promoted_verification(name, purpose, extension):
+            if purpose == "promoted_assets":
+                raise ValueError("injected image verification failure")
+            return original_observe(name, purpose, extension)
+
+        store._observe = fail_promoted_verification
+
+    promoter = new_promotion(store, acceptor, accepted)
+    try:
+        with capacity_owner_for_promotion(store, scope, api) as capacity:
+            with pytest.raises((ValueError, RuntimeError, OSError)):
+                promoter.promote_with_capacity_admission_for_characterization(
+                    capacity, "promotion-writer-failure-" + failure,
+                    characterization=True, disposable_opt_in=True)
+            destinations = [path for key, (path, *_rest) in store._files.items()
+                            if key[0] == "promoted_assets"]
+            assert len(destinations) == 1 and destinations[0].exists()
+            if failure == "after_file_create":
+                assert destinations[0].read_bytes() == b""
+            elif failure == "short_write":
+                assert 0 < len(destinations[0].read_bytes()) < len(originals[0])
+            else:
+                assert destinations[0].read_bytes() == originals[0]
+            assert not store._stream_promotions and promoter._receipt is None
+            row = next(item for item in capacity._ledger.readiness()["roots"]
+                       if item["purpose"] == "promoted_assets")
+            assert row["observed_used_entries"] == 0
+            assert row["retained_uncertain_bytes"] == len(originals[0])
+            assert row["retained_uncertain_entries"] == 1
+    finally:
+        if failure in {"short_write", "flush"}:
+            patcher.stop()
+
+
+def test_real_native_admitted_promotion_rejects_unattributed_destination_delta(owner):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store)
+    created = []
+
+    def fault(boundary):
+        if boundary != "after_file_sync" or created:
+            return
+        root = store._roots["promoted_assets"]
+        path = root._path / ("f" * 32 + ".png")
+        _, c, f, _, _, _ = root._api
+        handle = f.CreateFile(str(path), c.GENERIC_WRITE, c.FILE_SHARE_READ,
+            storage._security_attributes(root._api, root._user), c.CREATE_NEW,
+            c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+        try:
+            f.WriteFile(handle, originals[0])
+            f.FlushFileBuffers(handle)
+        finally:
+            handle.Close()
+        created.append(path)
+
+    store._fault = fault
+    promoter = new_promotion(store, acceptor, accepted)
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        with pytest.raises(ValueError, match="protected_promotion_inventory_mismatch"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-unattributed-delta",
+                characterization=True, disposable_opt_in=True)
+        assert created and created[0].exists() and created[0].read_bytes() == originals[0]
+        assert not store._stream_promotions
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["retained_uncertain_bytes"] == len(originals[0])
+        assert row["retained_uncertain_entries"] == 1
+        assert row["observed_used_entries"] == 0
+
+
+def test_real_native_admitted_promotion_source_drift_after_copy_retains_batch(owner):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store)
+    source = accepted._batch_receipt.observations[0].image
+    source_path = store._files[("temporary_containment", source.storage_identity)][0]
+    changed = image_bytes(size=(17, 19))
+    mutated = []
+
+    def fault(boundary):
+        if boundary == "after_file_sync" and not mutated:
+            source_path.write_bytes(changed)
+            mutated.append(True)
+
+    store._fault = fault
+    promoter = new_promotion(store, acceptor, accepted)
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        with pytest.raises(ValueError, match="native_observation_changed|content_changed|inspect_only_or_uncertain"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-source-drift",
+                characterization=True, disposable_opt_in=True)
+        assert source_path.exists() and source_path.read_bytes() == changed
+        assert not store._stream_promotions and promoter._receipt is None
+        assert any(key[0] == "promoted_assets" and path.exists()
+                   for key, (path, *_rest) in store._files.items())
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["retained_uncertain_bytes"] == len(originals[0])
+        assert row["retained_uncertain_entries"] == 1
+
+
+@pytest.mark.parametrize("drift", ["content", "acl"])
+def test_real_native_admitted_promotion_destination_drift_retains_batch(owner, drift):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store)
+    changed = image_bytes(size=(23, 29))
+    mutated = []
+
+    def fault(boundary):
+        if boundary != "after_file_sync" or mutated:
+            return
+        path = next(path for key, (path, *_rest) in store._files.items()
+                    if key[0] == "promoted_assets")
+        if drift == "content":
+            path.write_bytes(changed)
+        else:
+            mutate_disposable_acl(path, api, "writable_principal")
+        mutated.append(path)
+
+    store._fault = fault
+    promoter = new_promotion(store, acceptor, accepted)
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        with pytest.raises(ValueError):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-destination-drift-" + drift,
+                characterization=True, disposable_opt_in=True)
+        assert mutated and mutated[0].exists()
+        if drift == "content":
+            assert mutated[0].read_bytes() == changed
+        assert not store._stream_promotions and promoter._receipt is None
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["observed_used_entries"] == 0
+        assert row["retained_uncertain_bytes"] == len(originals[0])
+        assert row["retained_uncertain_entries"] == 1
+
+
+def test_real_native_admitted_promotion_reentrant_close_is_fenced(owner):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store)
+    promoter = new_promotion(store, acceptor, accepted)
+
+    def fault(boundary):
+        if boundary == "after_file_create":
+            store.close()
+
+    store._fault = fault
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        with pytest.raises(ValueError, match="storage_busy"):
+            promoter.promote_with_capacity_admission_for_characterization(
+                capacity, "promotion-reentrant-close",
+                characterization=True, disposable_opt_in=True)
+        assert not store._stream_promotions and promoter._receipt is None
+        assert all(path.exists() for path, *_rest in store._files.values())
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["retained_uncertain_bytes"] == sum(map(len, originals))
+        assert row["retained_uncertain_entries"] == 1
+
+
+@pytest.mark.parametrize("terminal_action", [
+    "asset_close", "admission_close", "promotion_close", "acceptance_invalidate",
+])
+def test_real_native_admitted_promotion_terminal_races_retain_batch_without_receipt(
+        owner, terminal_action):
+    store, scope, api = owner
+    _, _, originals, _, acceptor, accepted = accepted_batch(store, count=2)
+    promoter = new_promotion(store, acceptor, accepted)
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    result, errors = [], []
+
+    def fault(boundary):
+        if boundary == "after_file_create" and not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+
+    store._fault = fault
+    with capacity_owner_for_promotion(store, scope, api) as capacity:
+        def run():
+            try:
+                result.append(promoter.promote_with_capacity_admission_for_characterization(
+                    capacity, "promotion-terminal-race-" + terminal_action,
+                    characterization=True, disposable_opt_in=True))
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=run, name="admitted-promotion-worker")
+        worker.start()
+        assert entered.wait(5)
+        if terminal_action == "asset_close":
+            terminal_done = threading.Event()
+            terminal = threading.Thread(target=lambda: (store.close(), terminal_done.set()),
+                                        name="admitted-promotion-close")
+        elif terminal_action == "admission_close":
+            terminal_done = threading.Event()
+            terminal = threading.Thread(target=lambda: (capacity.close(), terminal_done.set()),
+                                        name="admission-close")
+        elif terminal_action == "promotion_close":
+            terminal_done = threading.Event()
+            terminal = threading.Thread(target=lambda: (promoter.close(), terminal_done.set()),
+                                        name="promotion-close")
+        else:
+            terminal_done = threading.Event()
+            terminal = threading.Thread(target=lambda: (acceptor.invalidate_for_characterization(),
+                                                        terminal_done.set()),
+                                        name="acceptance-invalidate")
+        terminal.start()
+        assert terminal_done.wait(5) if terminal_action != "asset_close" else store._revoking_event.wait(5)
+        release.set()
+        assert done.wait(10)
+        worker.join(10)
+        terminal.join(10)
+
+        assert not worker.is_alive() and not terminal.is_alive()
+        assert not result and len(errors) == 1 and isinstance(errors[0], ValueError)
+        assert not store._stream_promotions
+        assert promoter._receipt is None
+        assert all(path.exists() for path, *_rest in store._files.values())
+        row = next(item for item in capacity._ledger.readiness()["roots"]
+                   if item["purpose"] == "promoted_assets")
+        assert row["observed_used_entries"] == 0
+        assert row["retained_uncertain_bytes"] == sum(map(len, originals))
+        assert row["retained_uncertain_entries"] == 2
 
 
 def test_real_native_capacity_failure_is_one_shot_and_retains_source(native_scope):
