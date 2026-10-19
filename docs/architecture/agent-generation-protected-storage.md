@@ -1100,7 +1100,14 @@ over-capacity, duplicate, stale, closed or mismatched admission is rejected
 before `CREATE_NEW`. An owner-local lease serializes the admitted write against
 other asset writes and close. External close marks the asset owner revoking and
 waits outside its lock; callback reentry on the writer thread fails fast
-instead of waiting on itself.
+instead of waiting on itself. The asset lifecycle lock covers only the
+`CREATE_NEW` plus immediate retained-handle registration boundary. Native
+metadata reads, injected fault callbacks, writes, flush and byte verification
+run outside that lock, so close can publish revocation while one of those
+steps is stalled; the writer then retains its evidence and the full reservation
+as uncertain. A known pre-write cancellation releases only its exact
+ledger-held reservation without rescanning the filesystem, so a separate
+active write cannot strand an unused reservation.
 
 The existing native `CREATE_NEW`, owner-only file ACL, pinned handle and
 identity capture, byte write/flush, image decode, and retained-failure path

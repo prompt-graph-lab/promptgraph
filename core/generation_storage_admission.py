@@ -534,7 +534,11 @@ class WindowsProtectedStorageAdmissionCharacterization:
             return self._ledger.reserve(operation, estimates)
 
     def cancel_before_write_for_characterization(self, operation, reservation):
-        self._refresh()
+        # This token is still in the ledger's reserved state, so cancellation
+        # is an in-memory pre-write release and does not depend on a fresh
+        # filesystem inventory. In particular, another operation may already
+        # own the single active write slot; that must not strand this unused
+        # reservation merely because _refresh() refuses to scan during a write.
         with self._lock:
             self._require_live()
             return self._ledger.cancel_before_write(operation, reservation)

@@ -85,6 +85,34 @@ def test_only_one_write_is_admitted_at_a_time():
     assert sum(row["reserved_bytes"] for row in summary["roots"]) == 40
 
 
+def test_owner_cancels_unused_reservation_while_another_write_is_active():
+    ledger = _ready_ledger(_limits(assets=100))
+    owner = object.__new__(admission.WindowsProtectedStorageAdmissionCharacterization)
+    owner._ledger = ledger
+    owner._lock = threading.RLock()
+    owner._closed = False
+    owner._invalid = False
+    owner._refresh = lambda: (_ for _ in ()).throw(ValueError("storage_write_in_progress"))
+    active_operation = ledger.begin_operation("active-write")
+    cancelled_operation = ledger.begin_operation("cancelled-before-write")
+    active_reservation = ledger.reserve(
+        active_operation, {"temporary_containment": admission.CapacityEstimate(20, 1)})
+    cancelled_reservation = ledger.reserve(
+        cancelled_operation, {"promoted_assets": admission.CapacityEstimate(30, 1)})
+    write = ledger.admit_write(active_operation, active_reservation)
+
+    owner.cancel_before_write_for_characterization(cancelled_operation, cancelled_reservation)
+
+    rows = {row["purpose"]: row for row in ledger.readiness()["roots"]}
+    assert rows["temporary_containment"]["reserved_bytes"] == 20
+    assert rows["promoted_assets"]["reserved_bytes"] == 0
+    next_operation = ledger.begin_operation("after-prewrite-cancel")
+    next_reservation = ledger.reserve(
+        next_operation, {"promoted_assets": admission.CapacityEstimate(70, 1)})
+    ledger.cancel_before_write(next_operation, next_reservation)
+    ledger.retain_uncertain(active_operation, write)
+
+
 def test_close_racing_reservation_never_releases_an_admitted_upper_bound():
     ledger = _ready_ledger()
     operation = ledger.begin_operation("race")

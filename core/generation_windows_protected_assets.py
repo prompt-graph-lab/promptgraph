@@ -225,6 +225,14 @@ class WindowsProtectedAssetsCharacterization:
 
     def create_image_for_characterization(self, purpose, data, *, extension="png",
                                           _promotion_owner=None, _admission_lease=None):
+        # The admitted path owns a capacity lease which makes close wait for
+        # its terminal accounting. Keep the native handle lifecycle lock short:
+        # CREATE_NEW and immediate handle retention must be atomic with close,
+        # but metadata reads, fault hooks and file I/O must not prevent close
+        # from publishing revocation while this writer is suspended.
+        if _admission_lease is not None:
+            return self._create_admitted_image_for_characterization(
+                purpose, data, extension, _admission_lease)
         with self._lock:
             promotion_write = (self._promotion_busy and self._promotion_owner is _promotion_owner
                                and self._promotion_thread == threading.get_ident())
@@ -294,6 +302,106 @@ class WindowsProtectedAssetsCharacterization:
                 # An unobserved file is intentionally retained with its handle
                 # until owner close. No cleanup or retry is attempted.
                 raise  # Retain incomplete/uncertain evidence; never remove it.
+
+    def _create_admitted_image_for_characterization(self, purpose, data, extension, lease):
+        with self._lock:
+            admitted_write = (self._capacity_busy and self._capacity_lease is lease
+                              and self._capacity_thread == threading.get_ident())
+            if (not admitted_write or self._stream_busy or self._stream_batch_busy
+                    or self._promotion_busy):
+                w._fail("storage_busy")
+            if not self._writable or self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            if purpose not in _PURPOSES or extension not in SUPPORTED_EXTENSIONS:
+                w._fail("unsupported_asset_purpose_or_format")
+            if (type(data) is not bytes or not 0 < len(data) <= min(self._limits.image_bytes, self._limits.request_bytes)
+                    or self._used_bytes + len(data) > self._limits.aggregate_bytes
+                    or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                w._fail("storage_capacity")
+            root = self._roots[purpose]
+
+        # Root ACL/identity checks and directory inventory can touch the
+        # filesystem. The capacity lease excludes other writes; keep those
+        # observations outside the lifecycle lock so close can revoke promptly.
+        self._check()
+        inventory = {(stored_purpose, path.name)
+                     for stored_purpose, _, path in self._inventory()}
+        with self._lock:
+            if inventory != set(self._files):
+                self._uncertain = True
+                w._fail("unexpected_existing_file")
+            admitted_write = (self._capacity_busy and self._capacity_lease is lease
+                              and self._capacity_thread == threading.get_ident())
+            if (not admitted_write or self._revoking or self._closed
+                    or self._invalid or self._uncertain):
+                w._fail("storage_owner_unavailable")
+            if (self._used_bytes + len(data) > self._limits.aggregate_bytes
+                    or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                w._fail("storage_capacity")
+            name = uuid.uuid4().hex + "." + extension
+            key = (purpose, name)
+            path = root._path / name
+            _, c, f, _, _, _ = root._api
+            handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
+                c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
+                c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+            try:
+                # close() cannot pass this lock until the newly created native
+                # handle is visible in retained evidence.
+                self._unobserved_files.append((path, handle))
+                self._used_bytes += len(data)
+            except BaseException:
+                try:
+                    handle.Close()
+                except BaseException:
+                    self._invalid = self._uncertain = True
+                raise
+
+        try:
+            # These native reads can be slow. The retained unobserved handle
+            # keeps the file owned while close waits on _capacity_idle.
+            record = path, handle, w._identity(handle), _file_acl(handle, root)
+            with self._lock:
+                self._files[key] = record
+                self._unobserved_files.remove((path, handle))
+            self._check()
+            self._fault("after_file_create")
+            self._check()
+            for offset in range(0, len(data), CHUNK_BYTES):
+                chunk = data[offset:offset + CHUNK_BYTES]
+                self._check()
+                try:
+                    _, written = f.WriteFile(handle, chunk)
+                finally:
+                    self._check()
+                if written != len(chunk):
+                    w._fail("incomplete_write")
+                self._fault("after_file_write")
+                self._check()
+            f.FlushFileBuffers(handle)
+            self._check()
+            self._fault("after_file_sync")
+            self._check()
+            image = self._observe(name, purpose, extension)
+            if image.content_sha256 != hashlib.sha256(data).hexdigest():
+                w._fail("content_changed")
+            # Native identity/ACL/byte verification is complete before this
+            # short publication lock. close() can revoke during verification;
+            # the in-memory check below then refuses publication and retains
+            # the file as uncertain evidence.
+            self._check()
+            with self._lock:
+                if (self._closed or self._revoking or self._invalid or self._uncertain
+                        or self._files.get(key) is not record):
+                    w._fail("closing_observation" if self._revoking else "storage_owner_unavailable")
+                self._images[key] = image
+            return image
+        except BaseException:
+            with self._lock:
+                self._uncertain = True
+            # The native file and handle remain recorded for owner close; no
+            # cleanup, overwrite or retry is attempted.
+            raise
 
     def create_image_with_admission_for_characterization(
             self, admission_owner, operation_id, purpose, data, *, extension="png",
@@ -972,7 +1080,8 @@ class WindowsProtectedAssetsCharacterization:
                 self._check()
                 for image in self._images.values():
                     self.inspect_image_for_characterization(image)
-                state = "retained_uncertain" if self._uncertain else "observed"
+                state = ("retained_uncertain" if self._uncertain else
+                         "write_in_progress" if self._capacity_busy else "observed")
             except Exception:
                 state = "closed" if self._closed else "unsafe_or_unavailable"
             view.update(purpose="protected_assets", asset_observation=state,
