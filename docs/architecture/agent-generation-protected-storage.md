@@ -1030,13 +1030,15 @@ Project JSON is identity/ACL checked as a reference and is never read, written
 or used as a storage destination.
 
 Within one process, only one accounting owner may capture a given approved
-scope and writable-root path/native-identity set. A second capture is refused,
-including after the first owner closes or invalidates; closing cannot reset an
-unresolved ledger and permit a fresh empty one. The process-local claim table
-is bounded to 128 distinct scope keys, after which new captures fail closed.
-The selected Project JSON remains bound to the owner but is not part of the
-capacity key, so changing that read-only reference cannot create another
-ledger over the same storage roots.
+scope identity, regardless of which valid writable-root set is supplied. This
+also rejects alternate or partially overlapping root sets that could
+otherwise create independent ledgers for shared capacity. A second capture is
+refused, including after the first owner closes or invalidates; closing cannot
+reset an unresolved ledger and permit a fresh empty one. The process-local
+claim table is bounded to 128 distinct scope keys, after which new captures
+fail closed. The selected Project JSON remains bound to the owner but is not
+part of the capacity key, so changing that read-only reference cannot create
+another ledger for the same approved scope.
 
 The accounting kernel issues one exact operation token and at most one
 reservation per operation. Estimates use bounded byte and entry upper bounds.

@@ -482,15 +482,11 @@ class WindowsProtectedStorageAdmissionCharacterization:
             if any(path == other or path.is_relative_to(other) or other.is_relative_to(path)
                    for other in paths[index + 1:]):
                 _fail("purpose_overlap")
-        # The selected Project JSON is a binding input, not capacity storage.
-        # Key the accounting lease to the approved scope and writable roots so
-        # a different Project reference cannot create another ledger over the
-        # same physical capacity.
-        accounting_key = (
-            str(scope).casefold(), scope_identity,
-            tuple((purpose, str(roots[purpose]._path).casefold(), roots[purpose]._identity)
-                  for purpose in _WRITABLE),
-        )
+        # One process-local ledger owns the approved scope. Keying by the
+        # complete scope identity prevents alternate or partially overlapping
+        # root sets from creating independent capacity ledgers. The selected
+        # Project JSON remains a binding input, not capacity storage.
+        accounting_key = scope_identity
         with _PROCESS_ACCOUNTING_SCOPE_LOCK:
             if accounting_key in _PROCESS_ACCOUNTING_SCOPES:
                 _fail("storage_accounting_scope_already_captured")

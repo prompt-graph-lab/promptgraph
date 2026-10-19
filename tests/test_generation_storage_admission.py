@@ -330,6 +330,40 @@ def test_native_duplicate_capture_cannot_create_an_independent_capacity_ledger(n
     assert project.read_bytes() == b'{"disposable":true}'
 
 
+def test_native_partial_root_overlap_cannot_create_an_independent_capacity_ledger(
+        native_storage_roots):
+    scope, project, _, roots = native_storage_roots
+    owner = _capture_native(scope, roots)
+    alternate_promoted = None
+    try:
+        alternate_promoted = windows.WindowsProtectedRootCharacterization.provision_asset_for_characterization(
+            str(scope), "promoted_assets", characterization=True, disposable_opt_in=True)
+        alternate_roots = dict(roots)
+        alternate_roots["promoted_assets"] = alternate_promoted
+        assert alternate_roots["temporary_containment"] is roots["temporary_containment"]
+        assert alternate_roots["promoted_assets"] is not roots["promoted_assets"]
+        assert alternate_roots["promoted_assets"]._path != roots["promoted_assets"]._path
+
+        # The same scope with a partially different root set cannot split
+        # capacity accounting, either while the first owner is live or after
+        # it closes. The new disposable directory is retained by the fixture;
+        # no existing root or ACL is modified.
+        with pytest.raises(ValueError, match="storage_accounting_scope_already_captured"):
+            _capture_native(scope, alternate_roots)
+        owner.close()
+        with pytest.raises(ValueError, match="storage_accounting_scope_already_captured"):
+            _capture_native(scope, alternate_roots)
+
+        assert project.read_bytes() == b'{"disposable":true}'
+        assert roots["temporary_containment"]._path.exists()
+        assert roots["promoted_assets"]._path.exists()
+        assert alternate_promoted._path.exists()
+    finally:
+        owner.close()
+        if alternate_promoted is not None:
+            alternate_promoted.close()
+
+
 def test_native_admission_counts_existing_files_as_uncertain_without_adopting(native_storage_roots):
     scope, _, api, roots = native_storage_roots
     path = roots["temporary_containment"]._path / "unattributed.bin"
