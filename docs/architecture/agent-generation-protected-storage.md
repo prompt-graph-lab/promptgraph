@@ -1079,16 +1079,61 @@ guard is not restart-persistent and does not satisfy production restart
 accounting. Native identity and ACL observations are separately rechecked, but
 the accounting result does not itself prove pinned handles, content integrity,
 Journal durability, author identity, current Project/session authority or
-permission to execute. No current Journal, protected-assets or promotion
-writer consumes these reservation tokens. Their real write accounting and
-cross-process quota remain explicit production blockers.
+permission to execute. At this stage no Journal or promotion writer consumes
+these reservation tokens; the one protected image writer boundary is described
+below. Cross-process quota remains an explicit production blocker.
 
-The next bounded boundary is offline integration of the reservation token with
-one create-only protected asset writer: reserve before its first native file
-creation, complete from the issuing owner's verified inventory, and retain
-capacity on every ambiguous path. Journal replacement, cross-process quota,
-production root policy, retention/discard and restart recovery need separate
-contracts and review. All production gates remain false, including
+## C2B-8D-17B protected image writer admission
+
+`WindowsProtectedAssetsCharacterization.create_image_with_admission_for_characterization()`
+is an explicit disposable-only integration with the existing
+`create_image_for_characterization()` writer. The admission owner must hold the
+same exact `WindowsProtectedRootCharacterization` objects for both writable
+asset purposes as the image owner; equivalent paths or separately captured
+roots are refused. Both owners remain bound to the same approved scope through
+the admission owner's existing root checks.
+
+Before calling the existing writer, the integration consumes a unique
+operation identity, reserves `len(input_bytes)` and one entry for the selected
+purpose, then obtains that operation's one-shot write token. Thus an
+over-capacity, duplicate, stale, closed or mismatched admission is rejected
+before `CREATE_NEW`. An owner-local lease serializes the admitted write against
+other asset writes and close. External close marks the asset owner revoking and
+waits outside its lock; callback reentry on the writer thread fails fast
+instead of waiting on itself.
+
+The existing native `CREATE_NEW`, owner-only file ACL, pinned handle and
+identity capture, byte write/flush, image decode, and retained-failure path
+remain authoritative. After it returns, the admission owner rereads and
+validates the image bytes, scans the exact native roots, and requires exactly
+one new file under the requested purpose, with the expected filename, size,
+native identity and ACL. Under the bounded lock order
+`protected-assets owner -> admission owner`, it commits only that exact delta
+to observed-used accounting. The reservation is released only after that
+commit; a successful readiness view reports `writer_integrated=true` while
+production capability flags remain false.
+
+Any exception after write admission, returned-observation substitution,
+content/ACL/root drift, incomplete or unexpected inventory, close, or
+invalidation retains the full byte/entry upper bound as uncertain and fences
+the affected owner. Existing files are never removed, overwritten, retried or
+silently adopted. A failure before the existing writer actually creates a
+file may therefore retain capacity conservatively. No native I/O, byte
+verification, or injected writer-fault callback is performed while the new
+two-owner commit locks are held. Existing unintegrated callers continue using
+the original writer API and behavior.
+
+This boundary does not add a quota, cross-process coordination, restart
+authority, native-root provisioning on user directories, cleanup/discard,
+Journal replacement, staging download integration, promotion integration,
+Candidate publication, Project save or production Generation. It does not
+prove power-loss durability or defend against a hostile same-user process.
+The focused test run in the current environment reported `138 passed, 170
+skipped`; Windows-native ACL/identity characterization was skipped because
+`win32security` is unavailable in this Python environment, so that result is
+not evidence of Windows file-system behavior. The PR validation must rerun the
+native cases where those prerequisites are installed. All production gates
+remain false, including
 `execution_available=false`, `protected_storage_available=false`,
 `promotion_available=false`, and `candidate_publication_allowed=false`;
 `authorship=unverified`.

@@ -2,7 +2,10 @@
 import io
 import hashlib
 import json
+import random
 import subprocess
+import threading
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +14,7 @@ import pytest
 
 from core import generation_windows_protected_assets as a
 from core import generation_windows_protected_storage as w
+from core import generation_storage_admission as admission
 from core.comfy_output_containment import ContainmentLimits
 from test_generation_windows_protected_storage import (
     native_scope, mutate_disposable_acl, native_descriptors,
@@ -23,12 +27,56 @@ def png():
     return output.getvalue()
 
 
+def large_png():
+    pixels = random.Random(17).randbytes(512 * 512 * 3)
+    output = io.BytesIO()
+    Image.frombytes("RGB", (512, 512), pixels).save(output, format="PNG")
+    return output.getvalue()
+
+
 @pytest.fixture
 def owner(native_scope):
     scope, api = native_scope
     with a.WindowsProtectedAssetsCharacterization.provision_for_characterization(
             str(scope), characterization=True, disposable_opt_in=True) as owner:
         yield owner, scope, api
+
+
+@pytest.fixture
+def admitted_owner(native_scope):
+    scope, api = native_scope
+    _, c, f, _, _, _ = api
+    project = scope / "selected-project.json"
+    handle = f.CreateFile(str(project), c.GENERIC_WRITE, c.FILE_SHARE_READ,
+        w._security_attributes(api, w._current_user(api)), c.CREATE_NEW,
+        c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+    try:
+        f.WriteFile(handle, b'{"disposable":true}')
+    finally:
+        handle.Close()
+
+    assets = a.WindowsProtectedAssetsCharacterization.provision_for_characterization(
+        str(scope), characterization=True, disposable_opt_in=True)
+    other_roots = {}
+    storage = None
+    try:
+        other_roots["private_journal"] = w.WindowsProtectedRootCharacterization.provision_journal_for_characterization(
+            str(scope), characterization=True, disposable_opt_in=True)
+        other_roots["retained_uncertain"] = w.WindowsProtectedRootCharacterization.provision_retained_for_characterization(
+            str(scope), characterization=True, disposable_opt_in=True)
+        other_roots["selected_project_json"] = w.WindowsProtectedRootCharacterization.capture_for_characterization(
+            str(scope), str(project), "selected_project_json", characterization=True,
+            disposable_opt_in=True)
+        roots = {**other_roots, **assets._roots}
+        storage = admission.WindowsProtectedStorageAdmissionCharacterization.capture_for_characterization(
+            str(scope), roots, characterization=True, disposable_opt_in=True)
+        yield assets, storage, scope, api, other_roots
+    finally:
+        if storage is not None:
+            storage.close()
+        assets.close()
+        for root in other_roots.values():
+            root.close()
 
 
 def assert_closed_gates(view):
@@ -167,6 +215,337 @@ def test_normal_staging_and_promoted_creation_remain_available(owner):
     assert store.inspect_image_for_characterization(staging) is staging
     assert store.inspect_image_for_characterization(promoted) is promoted
     assert store.readiness()["image_count"] == 2
+
+
+def test_admitted_writer_reserves_before_create_and_accounts_exact_native_file(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    assert all(storage._roots[purpose] is store._roots[purpose]
+               for purpose in ("temporary_containment", "promoted_assets"))
+    data = png()
+    observed_during_create = []
+
+    def fault(boundary):
+        if boundary == "after_file_create":
+            summary = storage.readiness()
+            row = next(item for item in summary["roots"]
+                       if item["purpose"] == "temporary_containment")
+            observed_during_create.append((row["reserved_bytes"], row["reserved_entries"],
+                                           row["observed_used_bytes"], row["observed_used_entries"]))
+
+    store._fault = fault
+    image = store.create_image_with_admission_for_characterization(
+        storage, "admitted-image-1", "temporary_containment", data,
+        characterization=True, disposable_opt_in=True)
+
+    assert observed_during_create == [(len(data), 1, 0, 0)]
+    path, handle, identity, acl = store._files[(image.purpose, image.storage_identity)]
+    assert path.read_bytes() == data
+    assert w._identity(handle) == identity == w._ordinary(path, directory=False)
+    assert w._acl(handle, store._roots[image.purpose]._api,
+                  store._roots[image.purpose]._user) == acl[0]
+    assert store.inspect_image_for_characterization(image) is image
+    view = storage.readiness()
+    row = next(item for item in view["roots"] if item["purpose"] == image.purpose)
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["observed_used_bytes"] == len(data)
+    assert row["observed_used_entries"] == 1
+    assert row["retained_uncertain_bytes"] == row["retained_uncertain_entries"] == 0
+    assert view["writer_integrated"] is True
+    for key in ("execution_available", "protected_storage_available", "promotion_available",
+                "candidate_publication_allowed", "disk_space_guaranteed", "cleanup_allowed"):
+        assert view[key] is False
+    assert view["authorship"] == "unverified"
+
+
+def test_admitted_writer_over_capacity_refuses_before_native_create(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    limited = replace(storage._limits, shared_temporary_and_promoted_bytes=1)
+    storage._limits = limited
+    storage._ledger._limits = limited
+    root = store._roots["temporary_containment"]
+    with patch.object(store, "create_image_for_characterization",
+                      side_effect=AssertionError("writer must not be entered")):
+        with pytest.raises(ValueError, match="storage_capacity_exceeded"):
+            store.create_image_with_admission_for_characterization(
+                storage, "over-capacity", "temporary_containment", png(),
+                characterization=True, disposable_opt_in=True)
+    assert not list(root._path.iterdir())
+    assert not store._files and not store._uncertain
+
+
+def test_admitted_writer_duplicate_operation_does_not_create_or_retry(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    data = png()
+    first = store.create_image_with_admission_for_characterization(
+        storage, "same-operation", "promoted_assets", data,
+        characterization=True, disposable_opt_in=True)
+    with pytest.raises(ValueError, match="operation_identity_reused"):
+        store.create_image_with_admission_for_characterization(
+            storage, "same-operation", "promoted_assets", data,
+            characterization=True, disposable_opt_in=True)
+    assert len(store._files) == 1 and store._images[(first.purpose, first.storage_identity)] is first
+    assert len(list(store._roots["promoted_assets"]._path.iterdir())) == 1
+    assert not store._uncertain
+
+
+def test_admitted_writer_accounts_staging_and_promoted_roots_separately(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    data = png()
+    staging = store.create_image_with_admission_for_characterization(
+        storage, "staging-operation", "temporary_containment", data,
+        characterization=True, disposable_opt_in=True)
+    promoted = store.create_image_with_admission_for_characterization(
+        storage, "promotion-operation", "promoted_assets", data,
+        characterization=True, disposable_opt_in=True)
+    view = storage.readiness()
+    rows = {item["purpose"]: item for item in view["roots"]}
+    assert rows["temporary_containment"]["observed_used_bytes"] == len(data)
+    assert rows["temporary_containment"]["observed_used_entries"] == 1
+    assert rows["promoted_assets"]["observed_used_bytes"] == len(data)
+    assert rows["promoted_assets"]["observed_used_entries"] == 1
+    assert rows["temporary_containment"]["reserved_bytes"] == 0
+    assert rows["promoted_assets"]["reserved_bytes"] == 0
+    assert store.inspect_image_for_characterization(staging) is staging
+    assert store.inspect_image_for_characterization(promoted) is promoted
+
+
+@pytest.mark.parametrize("boundary", ["after_file_create", "after_file_write", "after_file_sync"])
+def test_admitted_writer_failure_retains_full_reservation_and_native_evidence(admitted_owner, boundary):
+    store, storage, _, api, _ = admitted_owner
+    data = large_png() if boundary == "after_file_write" else png()
+    store._fault = lambda point: (_ for _ in ()).throw(RuntimeError("injected interruption")) \
+        if point == boundary else None
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        store.create_image_with_admission_for_characterization(
+            storage, "fault-" + boundary, "temporary_containment", data,
+            characterization=True, disposable_opt_in=True)
+
+    assert store._uncertain is True and len(store._files) == 1 and not store._images
+    path, handle, _, acl = next(iter(store._files.values()))
+    assert path.exists() and w._acl(handle, api, w._current_user(api)) == acl[0]
+    expected = (b"" if boundary == "after_file_create" else
+                data[:a.CHUNK_BYTES] if boundary == "after_file_write" else data)
+    assert path.read_bytes() == expected
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["retained_uncertain_bytes"] == len(data)
+    assert row["retained_uncertain_entries"] == 1
+    with pytest.raises(ValueError, match="inspect_only_or_uncertain"):
+        store.create_image_with_admission_for_characterization(
+            storage, "fault-retry", "temporary_containment", data,
+            characterization=True, disposable_opt_in=True)
+    assert path.exists() and path.read_bytes() == expected
+
+
+def test_admitted_writer_precreate_failure_retains_uncertain_without_file(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    with patch.object(store, "create_image_for_characterization",
+                      side_effect=RuntimeError("before native create")):
+        with pytest.raises(RuntimeError, match="before native create"):
+            store.create_image_with_admission_for_characterization(
+                storage, "before-create", "promoted_assets", png(),
+                characterization=True, disposable_opt_in=True)
+    assert not store._files and not list(store._roots["promoted_assets"]._path.iterdir())
+    assert store._uncertain is True
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "promoted_assets")
+    assert row["retained_uncertain_entries"] == 1
+    assert row["retained_uncertain_bytes"] == len(png())
+
+
+def test_admitted_writer_rejects_substituted_image_observation_and_retains_file(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    original = store.create_image_for_characterization
+
+    def substituted(*args, **kwargs):
+        return replace(original(*args, **kwargs), purpose="promoted_assets")
+
+    with patch.object(store, "create_image_for_characterization", side_effect=substituted):
+        with pytest.raises(ValueError, match="protected_asset_observation_mismatch"):
+            store.create_image_with_admission_for_characterization(
+                storage, "substituted-observation", "temporary_containment", png(),
+                characterization=True, disposable_opt_in=True)
+    assert len(store._files) == 1 and store._uncertain
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["retained_uncertain_entries"] == 1
+    assert row["observed_used_entries"] == 0
+
+
+def test_admitted_writer_inventory_mismatch_retains_full_reservation(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    original_scan = storage._scan
+    store._fault = lambda point: setattr(storage, "_scan", lambda: {
+        purpose: {} for purpose in admission._WRITABLE}) if point == "after_file_sync" else None
+    with pytest.raises(ValueError, match="protected_asset_inventory_mismatch"):
+        store.create_image_with_admission_for_characterization(
+            storage, "inventory-mismatch", "temporary_containment", png(),
+            characterization=True, disposable_opt_in=True)
+    storage._scan = original_scan
+    assert store._uncertain and len(store._files) == 1
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["retained_uncertain_entries"] == 1 and row["observed_used_entries"] == 0
+
+
+def test_admitted_writer_close_race_retains_file_without_deadlock(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    entered, release, writer_done, close_done = (threading.Event() for _ in range(4))
+    result = []
+
+    def fault(point):
+        if point == "after_file_create":
+            entered.set()
+            assert release.wait(5)
+
+    store._fault = fault
+
+    def write():
+        try:
+            store.create_image_with_admission_for_characterization(
+                storage, "close-race", "temporary_containment", png(),
+                characterization=True, disposable_opt_in=True)
+            result.append("success")
+        except ValueError as error:
+            result.append(str(error))
+        finally:
+            writer_done.set()
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    entered_write = entered.wait(5)
+    closer = threading.Thread(target=lambda: (store.close(), close_done.set()))
+    if entered_write:
+        closer.start()
+        revoking_started = store._revoking_event.wait(5)
+    else:
+        revoking_started = False
+    release.set()
+    writer_waited = writer_done.wait(5)
+    close_waited = close_done.wait(5) if closer.ident is not None else False
+    writer.join(5)
+    if closer.ident is not None:
+        closer.join(5)
+    assert entered_write and revoking_started and writer_waited and close_waited
+    assert not writer.is_alive() and (closer.ident is None or not closer.is_alive())
+    assert result and result[0] != "success"
+    assert len(store._files) == 1 and next(iter(store._files.values()))[0].exists()
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["retained_uncertain_entries"] == 1
+
+
+def test_admission_close_during_write_retains_full_upper_bound(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    entered, release, writer_done = threading.Event(), threading.Event(), threading.Event()
+    outcomes = []
+
+    def fault(point):
+        if point == "after_file_create":
+            entered.set()
+            assert release.wait(5)
+
+    store._fault = fault
+
+    def write():
+        try:
+            store.create_image_with_admission_for_characterization(
+                storage, "admission-close-race", "promoted_assets", png(),
+                characterization=True, disposable_opt_in=True)
+            outcomes.append("success")
+        except ValueError as error:
+            outcomes.append(str(error))
+        finally:
+            writer_done.set()
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    entered_write = entered.wait(5)
+    if entered_write:
+        storage.close()
+    release.set()
+    writer_waited = writer_done.wait(5)
+    writer.join(5)
+    assert entered_write and writer_waited
+    assert not writer.is_alive() and outcomes and outcomes[0] != "success"
+    assert store._uncertain and len(store._files) == 1
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "promoted_assets")
+    assert row["reserved_entries"] == 0
+    assert row["retained_uncertain_bytes"] == len(png())
+    assert row["retained_uncertain_entries"] == 1
+
+
+def test_admission_invalidation_during_write_retains_full_upper_bound(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+
+    def fault(point):
+        if point == "after_file_create":
+            with storage._lock:
+                storage._invalidate()
+
+    store._fault = fault
+    with pytest.raises(ValueError, match="protected_asset_observation_unavailable"):
+        store.create_image_with_admission_for_characterization(
+            storage, "admission-invalidation", "temporary_containment", png(),
+            characterization=True, disposable_opt_in=True)
+    assert store._uncertain and len(store._files) == 1
+    assert next(iter(store._files.values()))[0].exists()
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_entries"] == 0
+    assert row["retained_uncertain_bytes"] == len(png())
+    assert row["retained_uncertain_entries"] == 1
+
+
+def test_admitted_writer_reentrant_close_fails_fast_without_deadlock(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    caught = []
+
+    def fault(point):
+        if point == "after_file_create":
+            try:
+                store.close()
+            except ValueError as error:
+                caught.append(str(error))
+
+    store._fault = fault
+    image = store.create_image_with_admission_for_characterization(
+        storage, "reentrant-close", "promoted_assets", png(),
+        characterization=True, disposable_opt_in=True)
+    assert caught == ["storage_busy"]
+    assert store.inspect_image_for_characterization(image) is image
+    assert not store._uncertain
+
+
+def test_admitted_writer_rejects_a_different_asset_owner(admitted_owner, tmp_path):
+    store, storage, scope, api, _ = admitted_owner
+    other_scope = tmp_path / "other-owner-scope"
+    api[2].CreateDirectory(str(other_scope), w._security_attributes(api, w._current_user(api)))
+    other = a.WindowsProtectedAssetsCharacterization.provision_for_characterization(
+        str(other_scope), characterization=True, disposable_opt_in=True)
+    try:
+        with pytest.raises(ValueError, match="storage_root_owner_mismatch"):
+            other.create_image_with_admission_for_characterization(
+                storage, "cross-owner", "temporary_containment", png(),
+                characterization=True, disposable_opt_in=True)
+        assert not other._files
+        assert not list(other._roots["temporary_containment"]._path.iterdir())
+        assert not store._files
+    finally:
+        other.close()
+
+
+def test_admitted_writer_rejects_missing_explicit_opt_in_before_owner_access():
+    uninitialized = object.__new__(a.WindowsProtectedAssetsCharacterization)
+    with pytest.raises(ValueError, match="execution_unavailable"):
+        uninitialized.create_image_with_admission_for_characterization(
+            object(), "op", "temporary_containment", png())
+    with pytest.raises(ValueError, match="storage_admission_owner_required"):
+        uninitialized.create_image_with_admission_for_characterization(
+            object(), "op", "temporary_containment", png(),
+            characterization=True, disposable_opt_in=True)
 
 
 def test_injected_host_name_collision_retains_verified_original(owner):

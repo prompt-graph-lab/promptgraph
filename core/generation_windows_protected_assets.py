@@ -142,6 +142,7 @@ class WindowsProtectedAssetsCharacterization:
         self._closed = self._uncertain = False
         self._invalid = False
         self._revoking = False
+        self._revoking_event = threading.Event()
         self._close_complete = threading.Event()
         self._close_complete.set()
         self._lock = threading.RLock()
@@ -156,6 +157,10 @@ class WindowsProtectedAssetsCharacterization:
         self._stream_batch_busy = False
         self._promotion_busy = False
         self._promotion_owner = self._promotion_thread = None
+        self._capacity_busy = False
+        self._capacity_lease = self._capacity_thread = None
+        self._capacity_idle = threading.Event()
+        self._capacity_idle.set()
         self._unobserved_files = []
         # Only the existing pure image verifier is shared; local-output receipt
         # custody remains with ContainedOutputStore.
@@ -219,13 +224,18 @@ class WindowsProtectedAssetsCharacterization:
                                          len(data), image_format, width, height)
 
     def create_image_for_characterization(self, purpose, data, *, extension="png",
-                                          _promotion_owner=None):
+                                          _promotion_owner=None, _admission_lease=None):
         with self._lock:
             promotion_write = (self._promotion_busy and self._promotion_owner is _promotion_owner
                                and self._promotion_thread == threading.get_ident())
+            admitted_write = (self._capacity_busy and self._capacity_lease is _admission_lease
+                              and self._capacity_thread == threading.get_ident()
+                              and _admission_lease is not None)
             if (self._stream_busy or self._stream_batch_busy
                     or self._promotion_busy and not promotion_write
-                    or _promotion_owner is not None and not promotion_write):
+                    or _promotion_owner is not None and not promotion_write
+                    or self._capacity_busy and not admitted_write
+                    or _admission_lease is not None and not admitted_write):
                 w._fail("storage_busy")
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
@@ -285,6 +295,97 @@ class WindowsProtectedAssetsCharacterization:
                 # until owner close. No cleanup or retry is attempted.
                 raise  # Retain incomplete/uncertain evidence; never remove it.
 
+    def create_image_with_admission_for_characterization(
+            self, admission_owner, operation_id, purpose, data, *, extension="png",
+            characterization=False, disposable_opt_in=False):
+        """Create one image only after its exact protected-root capacity is reserved.
+
+        This offline seam uses this owner's existing CREATE_NEW writer. Its
+        opaque capacity lease prevents a concurrent unaccounted writer from
+        changing the inventory while admission is being reconciled.
+        """
+        from core import generation_storage_admission as admission
+
+        if characterization is not True or disposable_opt_in is not True:
+            w._fail("execution_unavailable")
+        if type(admission_owner) is not admission.WindowsProtectedStorageAdmissionCharacterization:
+            w._fail("storage_admission_owner_required")
+        if (purpose not in _PURPOSES or extension not in SUPPORTED_EXTENSIONS
+                or type(data) is not bytes
+                or not 0 < len(data) <= min(self._limits.image_bytes, self._limits.request_bytes)):
+            w._fail("invalid_asset_write_request")
+        # The admission ledger must scan the actual root owners used by this
+        # image writer; matching paths or freshly captured equivalents do not
+        # establish shared accounting custody.
+        if any(admission_owner._roots.get(name) is not self._roots.get(name)
+               for name in _PURPOSES):
+            w._fail("storage_root_owner_mismatch")
+
+        lease = object()
+        with self._lock:
+            if (self._stream_busy or self._stream_batch_busy or self._promotion_busy
+                    or self._capacity_busy):
+                w._fail("storage_busy")
+            if not self._writable or self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            self._check()
+            self._capacity_busy = True
+            self._capacity_lease = lease
+            self._capacity_thread = threading.get_ident()
+            self._capacity_idle.clear()
+
+        operation = reservation = write_admission = None
+        writer_started = False
+        try:
+            operation = admission_owner.begin_operation_for_characterization(operation_id)
+            reservation = admission_owner.reserve_for_characterization(operation, {
+                purpose: admission.CapacityEstimate(len(data), 1)})
+            with self._lock:
+                if (self._capacity_lease is not lease or self._revoking or self._closed
+                        or self._invalid or self._uncertain):
+                    w._fail("storage_owner_unavailable")
+            write_admission = admission_owner.admit_write_for_characterization(
+                operation, reservation)
+            with self._lock:
+                if (self._capacity_lease is not lease or self._revoking or self._closed
+                        or self._invalid or self._uncertain):
+                    w._fail("storage_owner_unavailable")
+            writer_started = True
+            image = self.create_image_for_characterization(
+                purpose, data, extension=extension, _admission_lease=lease)
+            if (type(image) is not ProtectedImageObservation or image.purpose != purpose
+                    or image.byte_count != len(data)
+                    or image.content_sha256 != hashlib.sha256(data).hexdigest()):
+                w._fail("protected_asset_observation_mismatch")
+            admission_owner.complete_asset_write_for_characterization(
+                operation, write_admission, self, image)
+            return image
+        except BaseException:
+            if write_admission is not None:
+                try:
+                    admission_owner.retain_uncertain_for_characterization(
+                        operation, write_admission)
+                except ValueError:
+                    # A concurrent admission close may already have retained
+                    # this exact live upper bound.
+                    pass
+            elif reservation is not None:
+                try:
+                    admission_owner.cancel_before_write_for_characterization(operation, reservation)
+                except ValueError:
+                    # Closing/invalidation conservatively retains the reservation.
+                    pass
+            if writer_started:
+                with self._lock:
+                    self._uncertain = True
+            raise
+        finally:
+            with self._lock:
+                if self._capacity_lease is lease:
+                    self._capacity_busy = False
+                    self._capacity_lease = self._capacity_thread = None
+                    self._capacity_idle.set()
+
     def stage_remote_image_for_characterization(self, envelope, prepared, remote, descriptor, *,
                                                stream_provider, host_freshness):
         """One explicit offline stream into protected staging, with no receipts.
@@ -318,7 +419,8 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("remote_binding_conflict")
             if attempt in self._stream_attempts:
                 w._fail("already_attempted")
-            if self._stream_busy or self._stream_batch_busy or self._promotion_busy:
+            if (self._stream_busy or self._stream_batch_busy or self._promotion_busy
+                    or self._capacity_busy):
                 w._fail("storage_busy")
             if (len(self._stream_bindings) >= 100 and previous is None
                     or len(self._files) + len(self._unobserved_files) >= self._limits.images):
@@ -525,7 +627,8 @@ class WindowsProtectedAssetsCharacterization:
                 # A repeat after a successful commit must not poison the original
                 # receipt; a concurrent repeat likewise cannot disturb its owner.
                 w._fail("already_attempted")
-            if self._stream_busy or self._stream_batch_busy or self._promotion_busy:
+            if (self._stream_busy or self._stream_batch_busy or self._promotion_busy
+                    or self._capacity_busy):
                 w._fail("storage_busy")
             self._stream_batch_attempts.add(key)
             self._stream_batch_busy = True
@@ -797,7 +900,8 @@ class WindowsProtectedAssetsCharacterization:
                 self._stream_promotion_attempts.add(key)
                 # Consume this batch's one attempt before checking capacity or
                 # doing any copy. A transient failure cannot trigger a retry.
-                if self._promotion_busy or self._stream_busy or self._stream_batch_busy:
+                if (self._promotion_busy or self._stream_busy or self._stream_batch_busy
+                        or self._capacity_busy):
                     w._fail("storage_busy")
                 self._promotion_busy = True
                 self._promotion_owner = promotion_owner
@@ -885,6 +989,13 @@ class WindowsProtectedAssetsCharacterization:
 
     def close(self):
         with self._lock:
+            if self._closed:
+                return
+            if (self._capacity_busy
+                    and self._capacity_thread == threading.get_ident()):
+                # Refuse writer-thread reentry before consulting any other
+                # owner, so a callback cannot wait on a lifecycle it owns.
+                w._fail("storage_busy")
             promotion_owners = tuple({
                 receipt._promotion_owner
                 for receipt in self._stream_promotions.values()
@@ -896,18 +1007,21 @@ class WindowsProtectedAssetsCharacterization:
                 owner._ensure_executor_event_revocation_allowed()
                 owner._ensure_candidate_publication_revocation_allowed()
                 owner._ensure_project_save_revocation_allowed()
-            if self._closed:
-                return
             if self._revoking:
                 wait_for_close = True
+                wait_for_capacity = None
             else:
                 wait_for_close = False
                 self._revoking = True
+                self._revoking_event.set()
                 self._close_complete.clear()
+                wait_for_capacity = self._capacity_idle if self._capacity_busy else None
         if wait_for_close:
             self._close_complete.wait()
             return
         try:
+            if wait_for_capacity is not None:
+                wait_for_capacity.wait()
             # Revoke event leases without holding native-owner locks. An event
             # already committed at the separate boundary completes first;
             # otherwise close prevents a later outputs_ready dispatch.
@@ -935,6 +1049,7 @@ class WindowsProtectedAssetsCharacterization:
         finally:
             with self._lock:
                 self._revoking = False
+                self._revoking_event.clear()
             self._close_complete.set()
 
     def __enter__(self):
