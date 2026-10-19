@@ -516,8 +516,10 @@ class WindowsProtectedStorageAdmissionCharacterization:
         self._roots, self._limits = roots, limits
         self._ledger = _CapacityLedger(limits)
         self._lock = threading.RLock()
+        self._refresh_lock = threading.RLock()
         self._closed = False
         self._invalid = False
+        self._asset_writer_integrated = False
 
     def begin_operation_for_characterization(self, operation_id):
         self._refresh()
@@ -532,16 +534,24 @@ class WindowsProtectedStorageAdmissionCharacterization:
             return self._ledger.reserve(operation, estimates)
 
     def cancel_before_write_for_characterization(self, operation, reservation):
-        self._refresh()
+        # This token is still in the ledger's reserved state, so cancellation
+        # is an in-memory pre-write release and does not depend on a fresh
+        # filesystem inventory. In particular, another operation may already
+        # own the single active write slot; that must not strand this unused
+        # reservation merely because _refresh() refuses to scan during a write.
         with self._lock:
             self._require_live()
             return self._ledger.cancel_before_write(operation, reservation)
 
     def admit_write_for_characterization(self, operation, reservation):
-        self._refresh()
-        with self._lock:
-            self._require_live()
-            return self._ledger.admit_write(operation, reservation)
+        # Serialize the final pre-write inventory with admission publication.
+        # Once the ledger marks a write active, other refreshes refuse to scan
+        # its intentionally changing file inventory until exact completion.
+        with self._refresh_lock:
+            self._refresh()
+            with self._lock:
+                self._require_live()
+                return self._ledger.admit_write(operation, reservation)
 
     def complete_write_for_characterization(self, operation, write_admission):
         try:
@@ -562,6 +572,94 @@ class WindowsProtectedStorageAdmissionCharacterization:
             result = self._ledger.complete_write(operation, write_admission, inventory, free_bytes)
             return result
 
+    def complete_asset_write_for_characterization(
+            self, operation, write_admission, asset_owner, image):
+        """Complete only the exact one-file delta from the issuing asset owner.
+
+        Native inventory and image-byte verification run without owner locks.
+        Final accounting uses the lock order protected-assets owner ->
+        admission owner and performs only bounded in-memory checks.
+        """
+        from core import generation_windows_protected_assets as assets
+
+        if (type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(image) is not assets.ProtectedImageObservation
+                or image.purpose not in ("temporary_containment", "promoted_assets")
+                or self._roots.get(image.purpose) is not asset_owner._roots.get(image.purpose)
+                or any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
+                       for purpose in ("temporary_containment", "promoted_assets"))):
+            _fail("protected_asset_owner_mismatch")
+
+        try:
+            with asset_owner._lock:
+                key = (image.purpose, image.storage_identity)
+                if (asset_owner._images.get(key) is not image
+                        or asset_owner._closed or asset_owner._revoking
+                        or asset_owner._invalid or asset_owner._uncertain):
+                    _fail("protected_asset_observation_mismatch")
+                extension = asset_owner._files[key][0].suffix[1:]
+            # The writer's existing inspection method keeps its lock while it
+            # rereads bytes. Use the same native observer outside the lock so
+            # image verification cannot block close or callbacks.
+            if asset_owner._observe(image.storage_identity, image.purpose, extension) != image:
+                _fail("protected_asset_observation_mismatch")
+            inventory = self._scan()
+            free_bytes = self._free_bytes()
+            if asset_owner._observe(image.storage_identity, image.purpose, extension) != image:
+                _fail("protected_asset_observation_mismatch")
+        except BaseException:
+            self._retain_asset_write(operation, write_admission)
+            _fail("protected_asset_observation_unavailable")
+
+        try:
+            # No native I/O occurs while these locks are held. This pair is the
+            # commit boundary against close/invalidation on either owner.
+            with asset_owner._lock:
+                with self._lock:
+                    self._require_live()
+                    key = (image.purpose, image.storage_identity)
+                    file_record = asset_owner._files.get(key)
+                    if (asset_owner._closed or asset_owner._revoking
+                            or asset_owner._invalid or asset_owner._uncertain
+                            or asset_owner._images.get(key) is not image
+                            or file_record is None
+                            or file_record[0].name != image.storage_identity
+                            or file_record[0].parent != asset_owner._roots[image.purpose]._path):
+                        _fail("protected_asset_observation_mismatch")
+                    delta = self._ledger._inventory_delta(self._ledger._inventory, inventory)
+                    additions = ({purpose: set(inventory[purpose]) - set(self._ledger._inventory[purpose])
+                                  for purpose in _WRITABLE}
+                                 if type(inventory) is dict and type(self._ledger._inventory) is dict
+                                 else None)
+                    expected_additions = {purpose: set() for purpose in _WRITABLE}
+                    expected_additions[image.purpose] = {image.storage_identity}
+                    row = inventory.get(image.purpose, {}).get(image.storage_identity)
+                    if (delta is None or additions != expected_additions
+                            or delta[image.purpose] != (image.byte_count, 1)
+                            or any(delta[purpose] != (0, 0) for purpose in _WRITABLE
+                                   if purpose != image.purpose)
+                            or row != (file_record[2], image.byte_count, file_record[3][0])):
+                        self._ledger.retain_uncertain(operation, write_admission)
+                        self._invalid = True
+                        _fail("protected_asset_inventory_mismatch")
+                    result = self._ledger.complete_write(
+                        operation, write_admission, inventory, free_bytes)
+                    self._asset_writer_integrated = True
+                    return result
+        except BaseException:
+            self._retain_asset_write(operation, write_admission)
+            raise
+
+    def _retain_asset_write(self, operation, write_admission):
+        with self._lock:
+            try:
+                self._ledger.retain_uncertain(operation, write_admission)
+            except ValueError:
+                # Close/invalidation may already have moved this exact live
+                # token into retained-uncertain capacity.
+                pass
+            self._invalid = True
+
     def retain_uncertain_for_characterization(self, operation, write_admission):
         with self._lock:
             self._ledger.retain_uncertain(operation, write_admission)
@@ -574,6 +672,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
             pass
         with self._lock:
             base = self._ledger.readiness()
+            base["writer_integrated"] = self._asset_writer_integrated
             base.update({"filesystem": "local_ntfs_observed" if not self._invalid and not self._closed
                          else "unverified",
                          "native_root_identity": "observed_unchanged" if not self._invalid and not self._closed
@@ -593,21 +692,33 @@ class WindowsProtectedStorageAdmissionCharacterization:
             self._closed = True
 
     def _refresh(self):
-        try:
-            self._check_roots()
-            inventory = self._scan()
-            free_bytes = self._free_bytes()
-        except Exception:
-            with self._lock:
-                self._invalidate()
-            _fail("protected_storage_observation_unavailable")
-        with self._lock:
-            self._require_live()
+        with self._refresh_lock:
             try:
-                self._ledger.observe_inventory(inventory, free_bytes)
-            except ValueError:
-                self._invalidate()
-                raise
+                with self._lock:
+                    self._require_live()
+                    with self._ledger._lock:
+                        if self._ledger._active_write is not None:
+                            _fail("storage_write_in_progress")
+                self._check_roots()
+                inventory = self._scan()
+                free_bytes = self._free_bytes()
+            except ValueError as error:
+                if str(error) == "storage_write_in_progress":
+                    raise
+                with self._lock:
+                    self._invalidate()
+                _fail("protected_storage_observation_unavailable")
+            except Exception:
+                with self._lock:
+                    self._invalidate()
+                _fail("protected_storage_observation_unavailable")
+            with self._lock:
+                self._require_live()
+                try:
+                    self._ledger.observe_inventory(inventory, free_bytes)
+                except ValueError:
+                    self._invalidate()
+                    raise
 
     def _check_roots(self):
         if self._closed or self._invalid:
