@@ -43,6 +43,7 @@ class HTTPIOCompletion:
     kind: str
     correlation: HTTPIOCorrelation
     outcome: object = field(repr=False, compare=False)
+    _worker_witness: object = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,10 @@ class HostOwnedHTTPIOWorker:
         self._accepted_operations = 0
         self._completed_operations = 0
         self._uncertain_submissions = 0
+        # Local provenance for completed Worker tasks only. Refusal-shaped
+        # synthetic completions remain distinguishable from worker results.
+        self._completion_witness = object()
+        self._last_completion = None
 
     def start_for_characterization(self):
         with self._lock:
@@ -262,7 +267,11 @@ class HostOwnedHTTPIOWorker:
                     outcome = task.outcome
                     self._clear_task_locked(task)
                     self._completed_operations += 1
-                    return HTTPIOCompletion(task.task_id, kind, correlation, outcome)
+                    completion = HTTPIOCompletion(
+                        task.task_id, kind, correlation, outcome, self._completion_witness,
+                    )
+                    self._last_completion = completion
+                    return completion
                 if (task.abandoned or self._state in {"closing", "closed", "uncertain"}
                         or self._active_task is not task or task.state != "completed"):
                     if task.possible_send and kind == "submission" and task.state != "abandoned":
@@ -274,7 +283,10 @@ class HostOwnedHTTPIOWorker:
                         kind, correlation,
                         SubmissionResult("unknown") if kind == "submission"
                         else HistoryResult("unknown"))
-                completion = HTTPIOCompletion(task.task_id, kind, correlation, task.outcome)
+                completion = HTTPIOCompletion(
+                    task.task_id, kind, correlation, task.outcome, self._completion_witness,
+                )
+                self._last_completion = completion
                 self._clear_task_locked(task)
                 self._completed_operations += 1
                 if (kind == "submission" and type(task.outcome) is SubmissionResult
@@ -291,7 +303,13 @@ class HostOwnedHTTPIOWorker:
             return None
         return HTTPIOCompletion(0, kind, correlation, outcome)
 
-    def close_for_characterization(self):
+    def request_close_for_characterization(self):
+        """Fence new operations immediately without waiting for the Worker.
+
+        Host lifecycle revocation can call this while holding its short
+        publication boundary. It only changes bounded in-memory state and
+        never joins the thread or invokes a transport callback.
+        """
         with self._lock:
             if self._state == "closed":
                 return self._observation_locked()
@@ -316,6 +334,16 @@ class HostOwnedHTTPIOWorker:
                         self._mark_submission_uncertain_locked(task)
                     task.completed.set()
             thread = self._thread
+            if thread is None or not thread.is_alive():
+                self._state = "closed"
+            else:
+                self._state = "close_pending"
+            return self._observation_locked()
+
+    def close_for_characterization(self):
+        self.request_close_for_characterization()
+        with self._lock:
+            thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(self._join_timeout)
         with self._lock:
@@ -328,6 +356,13 @@ class HostOwnedHTTPIOWorker:
     def observation_for_characterization(self):
         with self._lock:
             return self._observation_locked()
+
+    def _is_issued_completion_for_characterization(self, completion):
+        """Identify only the exact latest completion object returned by this owner."""
+        with self._lock:
+            return (type(completion) is HTTPIOCompletion
+                    and completion is self._last_completion
+                    and completion._worker_witness is self._completion_witness)
 
     def _observation_locked(self):
         thread = self._thread
