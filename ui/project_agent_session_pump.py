@@ -5,6 +5,7 @@ capture token and the existing request bridge are used by the synchronous
 service point; neither the mailbox nor the fragment can capture a Project.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import threading
 
@@ -12,6 +13,13 @@ import streamlit as st
 from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
 from ui.agent_generation_job import GenerationJobRegistry
 from ui.agent_generation_executor_inbox import GenerationExecutorInbox
+from ui.agent_generation_original_host_lifecycle import (
+    GenerationWorkerCorrelation,
+    GenerationWorkerResultObservation,
+    OriginalHostGenerationLifecycle,
+    _HostEvidence,
+    unavailable_readiness,
+)
 
 from ui.project_agent_request_bridge import dispatch_project_agent_request
 from ui.agent_scene_module_swap_approval_lifecycle import (
@@ -50,6 +58,10 @@ class ProjectAgentSessionRuntime:
     _generation_publication_origin: object = field(default=None, init=False, repr=False)
     _generation_candidate_publication: object = field(default=None, init=False, repr=False)
     _generation_protected_candidate_admission: object = field(default=None, init=False, repr=False)
+    # Non-executing, exact original-host binding; never sent to a worker.
+    _generation_original_host_lifecycle: object = field(default=None, init=False, repr=False)
+    _generation_original_host_lifecycle_opt_in: bool = field(default=False, init=False, repr=False)
+    _generation_original_host_lifecycle_reason: str = field(default="lifecycle_not_opted_in", init=False, repr=False)
     # Host-only, one bounded detached executable carrier and acknowledgment.
     # These are never session widget values, mailbox replies or Start authority.
     _executable_review: object = field(default=None, init=False, repr=False)
@@ -95,7 +107,216 @@ class ProjectAgentSessionRuntime:
         # switch-away/back and Save As. No Project/path enters the job owner.
         self.generation_jobs.synchronize_target(epoch, epoch)
         self._prune_executable_review_locked(epoch)
+        self._synchronize_generation_original_host_lifecycle_locked(project, project_path, epoch)
         return epoch
+
+    def _retire_generation_original_host_lifecycle_locked(self, reason):
+        lifecycle = self._generation_original_host_lifecycle
+        self._generation_original_host_lifecycle = None
+        if lifecycle is not None:
+            lifecycle._retire_for_replacement(reason)
+
+    @contextmanager
+    def _current_generation_original_host_lifecycle_locked(self):
+        """Hold the exact live pairing boundary during one local observation.
+
+        The runtime publication gate is already held by callers. Lock order is
+        route operation lock, registry snapshot lock, then the lifecycle's
+        short lock. The route and registry locks remain held through the
+        bounded local observation. No Project, job, or inbox lock is acquired.
+        """
+        lifecycle = self._generation_original_host_lifecycle
+        if self._closed or lifecycle is None:
+            yield None
+            return
+
+        registration = self._registration
+        if registration is not lifecycle._registration:
+            self._retire_generation_original_host_lifecycle_locked("route_replaced")
+            self._generation_original_host_lifecycle_reason = "route_unavailable"
+            yield None
+            return
+
+        with self._registry._pairing_generation_guard(registration) as (
+            route_available, pairing_generation,
+        ):
+            mismatch = (
+                None
+                if route_available is True
+                else "route_replaced"
+            )
+            if mismatch is None:
+                mismatch = lifecycle._route_snapshot_mismatch(
+                    registry=self._registry,
+                    registration=registration,
+                    process_incarnation=self._registry.process_incarnation,
+                    pairing_generation=pairing_generation,
+                )
+            if mismatch is not None:
+                self._retire_generation_original_host_lifecycle_locked(mismatch)
+                self._generation_original_host_lifecycle_reason = "route_unavailable"
+                yield None
+                return
+            yield lifecycle
+
+    def _synchronize_generation_original_host_lifecycle_locked(self, project, project_path, epoch):
+        if not self._generation_original_host_lifecycle_opt_in:
+            return
+        lifecycle = self._generation_original_host_lifecycle
+        evidence, unavailable_reason = self._capture_generation_host_evidence_locked(
+            project, project_path, epoch,
+        )
+        if evidence is None:
+            reason = {
+                "no_active_project": "target_replaced",
+                "route_unavailable": "route_replaced",
+                "runtime_closed": "session_closed",
+            }.get(unavailable_reason, "host_evidence_unavailable")
+            self._retire_generation_original_host_lifecycle_locked(reason)
+            self._generation_original_host_lifecycle_reason = unavailable_reason
+            return
+        if lifecycle is not None and lifecycle._reconcile_evidence(evidence):
+            self._generation_original_host_lifecycle_reason = None
+            return
+        if lifecycle is not None:
+            reason = lifecycle._replacement_reason(evidence)
+            if reason == "terminal_same_binding":
+                self._generation_original_host_lifecycle_reason = "host_evidence_unavailable"
+                return
+            self._retire_generation_original_host_lifecycle_locked(reason)
+        try:
+            self._generation_original_host_lifecycle = (
+                OriginalHostGenerationLifecycle._create_for_runtime(self, evidence)
+            )
+        except Exception:
+            self._generation_original_host_lifecycle = None
+            self._generation_original_host_lifecycle_reason = "host_evidence_unavailable"
+        else:
+            self._generation_original_host_lifecycle_reason = None
+
+    def _capture_generation_host_evidence_locked(self, project, project_path, epoch):
+        if project is None:
+            return None, "no_active_project"
+        if type(project_path) is not str or len(project_path) > 4096:
+            return None, "host_evidence_unavailable"
+        registration = self._registration
+        if (self._closed or type(registration) is not ProjectAgentSessionRegistration
+                or registration._closed or registration._registry is not self._registry
+                or type(registration.route_id) is not str):
+            return None, "route_unavailable"
+        try:
+            route_available, pairing_generation = registration.inspect_pairing_generation()
+            process_incarnation = self._registry.process_incarnation
+        except Exception:
+            return None, "route_unavailable"
+        if route_available is not True:
+            return None, "route_unavailable"
+
+        from ui.agent_generation_job import _PROCESS_INCARNATION
+        from ui.agent_generation_executor_inbox import ExecutionEnvelope
+
+        jobs = self.generation_jobs
+        inbox = self._generation_executor_inbox
+        with jobs._lock:
+            if (jobs._closed or jobs._target != (epoch, epoch)
+                    or type(jobs._session_incarnation) is not str):
+                return None, "host_evidence_unavailable"
+            session_incarnation = jobs._session_incarnation
+            with inbox._lock:
+                if inbox._closed or inbox._state == "invalidated":
+                    return None, "host_evidence_unavailable"
+                envelope = inbox._envelope
+                job = None
+                job_id = claim_id = manifest_identity = None
+                request_count = 0
+                if envelope is not None:
+                    if (type(envelope) is not ExecutionEnvelope
+                            or inbox._state not in {"offered", "accepted", "unknown"}):
+                        return None, "host_evidence_unavailable"
+                    job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
+                    if job is None:
+                        return None, "host_evidence_unavailable"
+                    binding = envelope.binding
+                    if (binding.session_id != session_incarnation
+                            or binding.process_incarnation != _PROCESS_INCARNATION
+                            or (binding.target_epoch, binding.activation_id) != (epoch, epoch)
+                            or binding.pairing_generation != pairing_generation
+                            or job.binding != binding or job.claim_id != envelope.claim_id):
+                        return None, "host_evidence_unavailable"
+                    job_id = envelope.job_id
+                    claim_id = envelope.claim_id
+                    manifest_identity = envelope.manifest.manifest_identity
+                    request_count = len(envelope.manifest.requests)
+                evidence = _HostEvidence(
+                    runtime=self,
+                    project=project,
+                    project_path=project_path,
+                    target_epoch=epoch,
+                    activation_id=epoch,
+                    registry=self._registry,
+                    registration=registration,
+                    route_id=registration.route_id,
+                    process_incarnation=process_incarnation,
+                    session_incarnation=session_incarnation,
+                    job_process_incarnation=_PROCESS_INCARNATION,
+                    jobs=jobs,
+                    inbox=inbox,
+                    pairing_generation=pairing_generation,
+                    job=job,
+                    envelope=envelope,
+                    job_id=job_id,
+                    claim_id=claim_id,
+                    manifest_identity=manifest_identity,
+                    request_count=request_count,
+                )
+        return evidence, None
+
+    def opt_in_generation_original_host_lifecycle_for_characterization(self, project, project_path):
+        """Explicitly bind this runtime for offline lifecycle characterization only."""
+        with self._publication_gate:
+            if self._closed:
+                return "runtime_closed"
+            self._generation_original_host_lifecycle_opt_in = True
+            self._synchronize_target_locked(project, project_path)
+            if self._generation_original_host_lifecycle is not None:
+                return "bound_non_executing"
+            return self._generation_original_host_lifecycle_reason
+
+    def inspect_generation_original_host_readiness(self, *, purpose_roots=None, capacity_owner=None):
+        """Return a safe readiness projection; never refresh native storage here."""
+        with self._publication_gate:
+            if self._closed:
+                return unavailable_readiness("runtime_closed")
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return unavailable_readiness(self._generation_original_host_lifecycle_reason)
+                if purpose_roots is not None or capacity_owner is not None:
+                    lifecycle.observe_protected_references_for_characterization(
+                        purpose_roots, capacity_owner,
+                    )
+                return lifecycle.readiness()
+
+    def generation_worker_correlation_for_characterization(self):
+        """Return opaque correlation only; this does not start or authorize a Worker."""
+        with self._publication_gate:
+            if self._closed:
+                return GenerationWorkerCorrelation("lifecycle_unavailable")
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return GenerationWorkerCorrelation("lifecycle_unavailable")
+                return lifecycle.worker_correlation_for_characterization()
+
+    def observe_generation_worker_result_for_characterization(self, observation):
+        """Record only bounded correlation; never advances the Job Registry."""
+        if type(observation) is not GenerationWorkerResultObservation:
+            return "invalid_observation"
+        with self._publication_gate:
+            if self._closed:
+                return "stale_non_authoritative"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return "stale_non_authoritative"
+                return lifecycle.observe_worker_result_for_characterization(observation)
 
     def _clear_executable_review_locked(self):
         self._executable_review = None
@@ -525,6 +746,8 @@ class ProjectAgentSessionRuntime:
             self.mailbox.cancel_review_custody(self.review_custodian)
             self.mailbox.cancel_review_custody(self.generation_review_custodian)
             self._clear_executable_review_locked()
+            self._retire_generation_original_host_lifecycle_locked("pairing_replaced")
+            self._generation_original_host_lifecycle_reason = "route_unavailable"
             broker = self._named_pipe_broker
             self.generation_jobs.invalidate_execution_custody()
             self._generation_executor_inbox.invalidate()
@@ -542,6 +765,11 @@ class ProjectAgentSessionRuntime:
                 return
             self._closed = True
             self._clear_executable_review_locked()
+            lifecycle = self._generation_original_host_lifecycle
+            self._generation_original_host_lifecycle = None
+            self._generation_original_host_lifecycle_reason = "runtime_closed"
+            if lifecycle is not None:
+                lifecycle.close()
             admission = self._generation_protected_candidate_admission
             if admission is not None:
                 admission._close_under_runtime_gate()
