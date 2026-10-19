@@ -588,6 +588,10 @@ injected stream providers. This does not demonstrate live ComfyUI behavior,
 process-crash durability, production authorization or actual user storage
 policy.
 
+This assessment table is the PR #186 snapshot. The C2B-8D-19A addendum at
+the end records the later non-executing original-host lifecycle foundation and
+supersedes the table's recommendation to start by defining that foundation.
+
 ### Focused validation and environment evidence
 
 Validation was run on Windows 11 Pro x64 build 26200, CPython 3.14.4, Streamlit
@@ -649,14 +653,14 @@ model.
 | 5 | Candidate publication and Project JSON save | Existing Candidate/Undo/save owners have protected offline composition but no production call path for these receipts. | Connect only through the existing Gallery writer and exact-object/path save owner; prove idempotent provenance, Undo ordering, partial-append uncertainty, one-shot save and reload integrity in the supported host lifecycle. |
 | 6 | Restart, Recovery, retention and discard | Reopened Journal/Recovery data are inspect-only. After restart there is no independently retained original-host latest-head observation, so authority cannot be inferred from a valid prefix, digest, file or prompt ID. There is no production retention/discard lifecycle. | Define restart latest-head custody separately from live-host observations; require independent original-host evidence or retain `uncertain`. Add inspect-first Recovery and explicit human association/Discard, with bounded retention and no replay, automatic rollback or cleanup. |
 
-**Recommended next milestone:** define and test the production original-host
-lifecycle owner without enabling Start or transport. It should bind one exact
-Project/path, process/session, activation/pairing and claim; fence replacement
-and close; and establish how that owner selects the protected purpose roots
-and explicit capacity-integrated writers. Acceptance should be lifecycle and
-race evidence only, with all external execution and publication disabled. Root
-provisioning/capacity policy can then proceed as the next gate before any live
-ComfyUI integration.
+C2B-8D-19A now provides a non-executing original-host lifecycle foundation.
+The next bounded milestone is 19B: define and review the exact host integration
+that may use this foundation, including explicit Worker ownership/shutdown,
+current pairing/claim revalidation, and selection of the original protected
+purpose roots and capacity-integrated writers. No transport, Start, protected
+write, publication or save should be enabled as a side effect. Root
+provisioning/capacity policy remains a separate gate before live ComfyUI
+integration.
 
 Before activation, each gate needs its own implementation review and production-
 appropriate validation. In particular, protected Journal capacity integration
@@ -671,3 +675,85 @@ Until those gates are closed, keep
 `authorship=unverified`. Candidate publication remains unavailable and Human
 Recovery remains inspect-only. No automatic retry, replay, cleanup, or MCP
 execution substitutes for the required human and original-host authority.
+
+## C2B-8D-19A non-executing original-host lifecycle foundation
+
+ui/agent_generation_original_host_lifecycle.py adds one private lifecycle
+associated with the existing ProjectAgentSessionRuntime. It reuses the
+runtime's ProjectTargetTracker, ProjectAgentSessionRegistry,
+GenerationJobRegistry and GenerationExecutorInbox; it does not add another
+session manager, registry, inbox, or Project owner.
+
+A binding holds a weak reference to the exact selected Project object and
+compares the exact supplied Project path, tracker target epoch/activation,
+runtime, registration object and route ID, registry process incarnation,
+job-registry session/process incarnation, live pairing generation, and the
+exact currently held immutable envelope/job objects when a claim exists.
+Opaque IDs are only correlation within those exact owner references. Repeated
+full-app runs with the same observed target and owners retain the same lifecycle.
+Project object/path/epoch changes, route or registration replacement, pairing
+generation changes, issued job/claim replacement, explicit disarm, or runtime
+Close retires the old lifecycle permanently. Returning to a prior Project or
+path creates a new generation.
+
+States are bound_non_executing, revocation_requested, closed, and
+uncertain. A revoker marks revocation_requested immediately. The private
+characterization callback runs outside the runtime, job, inbox and lifecycle
+locks; while it is active, Close/replacement does not wait and does not close
+resources. When that bounded callback returns, the retired lifecycle becomes
+closed. Observation failure becomes terminal uncertain. This slice owns no
+protected operation or native handle, so it has nothing to close underneath an
+in-flight protected operation. Lock order is runtime publication gate, route
+registry snapshot, job registry, inbox, then the lifecycle's short lock.
+No native I/O, network request, worker wait, or user callback is made while
+holding those locks.
+
+The readiness projection reports only bound/unavailable categories and the
+presence or mismatch of dependencies. An optional characterization seam checks
+that the supplied five purpose-root objects are the exact objects held by the
+supplied WindowsProtectedStorageAdmissionCharacterization. It does not call
+root readiness, inspect paths, revalidate ACLs or file identities, provision
+roots, create a ledger, select a writer, or infer storage authorization.
+Writer dependencies remain absent unless a later reviewed integration adds
+them. native_acl_or_identity_revalidated is always false here.
+
+The Worker seam returns only bounded lifecycle/job/claim/manifest correlation
+scalars. Fixed-field worker observations may be retained in a bounded
+in-memory diagnostic queue, but even an exact observation is classified only
+as observed_non_authoritative; stale, foreign or late correlations are
+stale_non_authoritative. Neither path emits an ExecutorEvent, advances the
+Job Registry, authorizes the next request, or grants Candidate/save authority.
+The worker receives no Project, session state, mutable host owner, route handle,
+root object or executable capability from this lifecycle.
+
+All gates remain false: execution_available,
+protected_storage_available, promotion_available,
+candidate_publication_allowed, Project save, Recovery execution, Human Start,
+and cleanup. authorship=unverified.
+
+Focused characterization is in
+tests/test_agent_generation_original_host_lifecycle.py, alongside existing
+session runtime, Job Registry, handoff and review custody regressions. It proves
+same-target identity preservation, replacement/no-resurrection, pairing and
+registration rotation, bounded non-authoritative foreign/stale Worker results,
+revocation during a blocked callback, runtime-gate serialization, reentrant
+Close and reference-only root/capacity matching. These tests use no real
+transport or protected filesystem operation.
+
+### Required C2B-8D-19B boundary and remaining production NO-GO
+
+19B must be a separate design/review before it can connect any live Worker.
+It must specify how exact host-freshness checks are performed immediately before
+each external action, how accepted HTTP results return to the same live runtime,
+how close/replacement fences in-flight work without retry or replay, and how
+shutdown retains uncertain protected evidence. It must also select the exact
+original five root owners and capacity owner and route Journal, staging and
+promotion writes through the intended capacity-integrated methods. Root
+provisioning, reservation lifetime across app/process restart, and concurrent
+PromptGraph processes remain unresolved.
+
+This foundation is not production original-host integration: no production
+Worker registration/start, transport, explicit Human Start UI, protected root
+provisioning, Journal writer connection, Candidate publication, Project save,
+Recovery Apply, discard or cleanup exists. All production capability flags
+remain false. The production decision therefore remains NO-GO.
