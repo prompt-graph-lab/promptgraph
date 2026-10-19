@@ -553,6 +553,15 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 self._require_live()
                 return self._ledger.admit_write(operation, reservation)
 
+    def assert_write_admission_for_characterization(self, operation, write_admission):
+        """Check a live exact write token without rescanning native roots."""
+        with self._lock:
+            self._require_live()
+            with self._ledger._lock:
+                self._ledger._require_live()
+                self._ledger._find_active_write(operation, write_admission)
+                return True
+
     def complete_write_for_characterization(self, operation, write_admission):
         try:
             inventory = self._scan()
@@ -573,7 +582,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
             return result
 
     def complete_asset_write_for_characterization(
-            self, operation, write_admission, asset_owner, image):
+            self, operation, write_admission, asset_owner, image, *,
+            stream_attempt=None, stream_observation=None, stream_freshness=None):
         """Complete only the exact one-file delta from the issuing asset owner.
 
         Native inventory and image-byte verification run without owner locks.
@@ -589,6 +599,39 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 or any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
                        for purpose in ("temporary_containment", "promoted_assets"))):
             _fail("protected_asset_owner_mismatch")
+        if ((stream_attempt is None) != (stream_observation is None)
+                or (stream_attempt is None) != (stream_freshness is None)):
+            _fail("protected_stream_commit_invalid")
+        if stream_attempt is not None:
+            if (type(stream_attempt) is not tuple or len(stream_attempt) != 2
+                    or type(stream_observation) is not assets.VerifiedProtectedImageObservation
+                    or stream_attempt != (stream_observation.request_id,
+                                          stream_observation.descriptor_identity)
+                    or stream_observation.image is not image
+                    or not callable(stream_freshness)):
+                _fail("protected_stream_commit_invalid")
+            with asset_owner._lock:
+                pending = asset_owner._stream_pending_images.get(stream_attempt)
+                binding = asset_owner._stream_bindings.get(stream_attempt[0])
+                if (pending is None or pending[0] is not stream_observation
+                        or pending[1] is not stream_freshness
+                        or asset_owner._stream_envelope is None
+                        or binding is None or len(binding) != 2):
+                    _fail("protected_stream_commit_invalid")
+                prepared, remote = binding
+                if (not assets.is_owner_prepared_frozen_request(prepared)
+                        or remote.execution_succeeded is not True
+                        or stream_observation.job_id != remote.job_id
+                        or stream_observation.claim_id != remote.claim_id
+                        or stream_observation.manifest_identity != remote.manifest_identity
+                        or stream_observation.request_id != prepared.request_id
+                        or stream_observation.request_index != prepared.request_index
+                        or stream_observation.workflow_identity != prepared.workflow_identity
+                        or stream_observation.prompt_id != remote.prompt_id
+                        or stream_observation.remote_receipt_identity != remote.identity
+                        or stream_observation.descriptor_identity not in {
+                            item.identity for item in remote.images}):
+                    _fail("protected_stream_commit_invalid")
 
         try:
             with asset_owner._lock:
@@ -607,8 +650,17 @@ class WindowsProtectedStorageAdmissionCharacterization:
             free_bytes = self._free_bytes()
             if asset_owner._observe(image.storage_identity, image.purpose, extension) != image:
                 _fail("protected_asset_observation_mismatch")
-        except BaseException:
+            if stream_freshness is not None:
+                try:
+                    fresh = stream_freshness()
+                except Exception:
+                    _fail("host_freshness_lost")
+                if fresh is not True:
+                    _fail("host_freshness_lost")
+        except BaseException as error:
             self._retain_asset_write(operation, write_admission)
+            if type(error) is ValueError and str(error) == "host_freshness_lost":
+                raise
             _fail("protected_asset_observation_unavailable")
 
         try:
@@ -626,6 +678,12 @@ class WindowsProtectedStorageAdmissionCharacterization:
                             or file_record[0].name != image.storage_identity
                             or file_record[0].parent != asset_owner._roots[image.purpose]._path):
                         _fail("protected_asset_observation_mismatch")
+                    if stream_attempt is not None:
+                        if (stream_attempt not in asset_owner._stream_attempts
+                                or stream_attempt in asset_owner._stream_images
+                                or asset_owner._stream_busy is not True
+                                or asset_owner._capacity_busy is not True):
+                            _fail("protected_stream_commit_invalid")
                     delta = self._ledger._inventory_delta(self._ledger._inventory, inventory)
                     additions = ({purpose: set(inventory[purpose]) - set(self._ledger._inventory[purpose])
                                   for purpose in _WRITABLE}
@@ -642,11 +700,29 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         self._ledger.retain_uncertain(operation, write_admission)
                         self._invalid = True
                         _fail("protected_asset_inventory_mismatch")
-                    result = self._ledger.complete_write(
-                        operation, write_admission, inventory, free_bytes)
+                    if stream_attempt is not None:
+                        # The exact stream observation and its storage accounting
+                        # become visible under the same two-owner commit locks.
+                        # Roll it back if ledger completion refuses, retaining
+                        # the native file itself as uncertain evidence.
+                        asset_owner._stream_images[stream_attempt] = stream_observation
+                        asset_owner._stream_pending_images.pop(stream_attempt, None)
+                    try:
+                        result = self._ledger.complete_write(
+                            operation, write_admission, inventory, free_bytes)
+                    except BaseException:
+                        if stream_attempt is not None:
+                            asset_owner._stream_images.pop(stream_attempt, None)
+                            asset_owner._stream_pending_images.pop(stream_attempt, None)
+                        raise
                     self._asset_writer_integrated = True
                     return result
         except BaseException:
+            if stream_attempt is not None:
+                with asset_owner._lock:
+                    pending = asset_owner._stream_pending_images.get(stream_attempt)
+                    if pending is not None and pending[0] is stream_observation:
+                        asset_owner._stream_pending_images.pop(stream_attempt, None)
             self._retain_asset_write(operation, write_admission)
             raise
 

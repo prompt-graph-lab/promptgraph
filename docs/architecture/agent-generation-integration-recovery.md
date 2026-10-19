@@ -2,7 +2,7 @@
 
 This audit was established against the protected Generation path through PR #174,
 merge commit `064212a9e78da8456cb5eac4c7b82e224c77bb08`. Its later C2B-8D-14,
-C2B-8D-15A, C2B-8D-15B, C2B-8D-16A, C2B-8D-16B and C2B-8D-17A updates are recorded below. C2B-8D-1 through C2B-8D-12 collectively define and test, in separate and
+C2B-8D-15A, C2B-8D-15B, C2B-8D-16A, C2B-8D-16B and C2B-8D-17A/17B/17C updates are recorded below. C2B-8D-1 through C2B-8D-12 collectively define and test, in separate and
 partially composed characterization slices, a protected route from a frozen
 request through the existing Candidate writer and Project JSON save. C2B-8D-14
 connects the single-request v1 and multi-request offline Journal intents to the
@@ -178,15 +178,36 @@ upper bound. This is process-local policy accounting, not an OS quota or a
 guarantee that disk space is free. A fresh free-space sample is used only as a
 preflight observation and cannot prevent another process from consuming space.
 
-No Journal, asset or promotion writer consumes the reservation contract yet;
-there is no cross-process quota or restart-time reservation recovery. A fresh
-capture charges existing files as uncertain, but cannot restore a lost
-reservation whose write left no file. No existing user directory or ACL is
-repaired, and no cleanup occurs. The next smallest integration is one offline
-create-only protected asset writer using
-the exact reservation token and native inventory completion. Journal atomic
-replacement and production root/cross-process policy remain separate gates.
-All production flags remain false and authorship remains unverified.
+At the 17A baseline, no Journal, asset or promotion writer consumed the
+reservation contract. C2B-8D-17B and 17C below add offline byte and streamed
+asset writers. There is still no cross-process quota or restart-time
+reservation recovery. A fresh capture charges existing files as uncertain,
+but cannot restore a lost reservation whose write left no file. No existing
+user directory or ACL is repaired, and no cleanup occurs. Journal atomic
+replacement, promotion integration and production root/cross-process policy
+remain separate gates. All production flags remain false and authorship
+remains unverified.
+
+## C2B-8D-17B/17C protected asset writers consume reservations
+
+C2B-8D-17B integrates the existing byte-oriented protected image writer, and
+C2B-8D-17C integrates the existing streamed remote image writer. Both require
+the same exact asset-root owners as the capacity ledger, a unique one-shot
+operation identity, bounded reservation and native inventory completion. The
+stream boundary reserves the maximum single-image policy bound before native
+file creation or provider invocation, then commits actual bytes only after
+stream close, image verification, native identity/ACL/content checks, inventory
+comparison and final host freshness validation. The reservation's unused
+portion is released only at that successful commit. Uncertain admitted writes
+retain the full upper bound and evidence; existing Journal and promotion
+writers do not consume reservations.
+
+These are disposable offline contracts only. They do not provide a cross-
+process quota, restart reservation recovery, production root policy, actual
+disk guarantee, or production execution authorization. Native I/O and host
+callbacks remain outside lifecycle locks except for the bounded
+`CREATE_NEW`/handle-retention and final in-memory commit boundaries. All
+production flags remain false and authorship remains unverified.
 
 ## Evidence scope and current owners
 
@@ -500,7 +521,7 @@ file is narrowly part of a failed stream attempt; it is not this future general
 retention policy. C2B-6 has no destructive cleanup. Restart must never auto-adopt,
 auto-publish, auto-save, replay execution or revive expired authorization.
 
-## Readiness assessment (PR #174 audit, updated through C2B-8D-17A)
+## Readiness assessment (PR #174 audit, updated through C2B-8D-17C)
 
 At the PR #174 audit baseline, the owners and focused tests showed no concrete
 characterization defect requiring a runtime change. C2B-8D-14 connects the v1
@@ -519,12 +540,12 @@ missing authority.
 | --- | --- | --- | --- |
 | Exact original-host binding | Exact Project object/path, source snapshot, session/process, activation/epoch, pairing, job/claim/manifest, request and descriptor order are carried through protected admission, Candidate registration and save checks. | No production caller owns the complete route; only characterized callbacks and the serialized host-run assumption are present. | A stale/switching host or an unowned callback path could not be safely published. |
 | One-shot submission/publication/save | C2B-8D-14 keeps v1 intent-before-send for one request. C2B-8D-15B connects the separate ≤100-request/300-revision writer to actual sequential submissions and requires a typed live original-host settlement after each outcome. C2B-8D-16A composes injected HTTP submission/history transports through that same Journal-gated executor and exact original-host event sink; 16B adds the explicit disabled Worker lifecycle through those existing seams. A completed request still needs exact registered Candidate evidence; aggregate `partially_failed` is accepted only when that request itself is fully registered. Publication and JSON save remain separate existing one-shot owners. | Still no production HTTP/worker call sites, Human Start, restart continuation or durable original-host latest-head custody. Partial/uncertain per-request publication blocks progression. Reopen is inspect-only. | Retrying after lost state could duplicate remote work. An accepted prompt alone cannot authorize a later send; any unacknowledged or unknown state must stop the sequence. |
-| Native identity, DACL, bytes, promoted roots and Candidate paths | Disposable Windows-native tests pin protected roots/files, inspect owner-only ACLs and identities, reject path/reparse drift, verify streamed/copied bytes, and constrain protected Candidate paths to the frozen approved output root. C2B-8D-17A adds five-root identity/ACL preflight and bounded process-local reserved/observed/uncertain accounting. | No production root provisioning or writer consumes these reservations; no cross-process/OS quota, durable reservation recovery, production path policy or restart reconciliation. Profile A excludes hostile same-user processes; bounded checks are not continuous isolation. | Production storage could outlive custody or exceed disk capacity; this ledger cannot prevent other processes from consuming space. |
+| Native identity, DACL, bytes, promoted roots and Candidate paths | Disposable Windows-native tests pin protected roots/files, inspect owner-only ACLs and identities, reject path/reparse drift, verify streamed/copied bytes, and constrain protected Candidate paths to the frozen approved output root. C2B-8D-17A adds five-root identity/ACL preflight and bounded process-local reserved/observed/uncertain accounting; 17B integrates byte writes and 17C integrates streamed staging writes with actual native inventory completion. | No production root provisioning, cross-process/OS quota, durable reservation recovery, production path policy or restart reconciliation. Journal and promotion writers remain outside this ledger. Profile A excludes hostile same-user processes; bounded checks are not continuous isolation. | Production storage could outlive custody or exceed disk capacity; this ledger cannot prevent other processes from consuming space. |
 | Owner locks, close/invalidation and callbacks | Commit/terminal races are characterized; expensive native checks and external host callbacks run outside job/inbox locks, and leases fence final commits against close/invalidation. C2B-8D-16B characterizes Worker close before admission/transport and during POST/History, with bounded join and truthful live-thread observation. | Production event-loop scheduling, whole-operation deadlines, process shutdown integration and native transport behavior remain unproven. | A blocked or lost production worker callback may leave an honestly unknown, pinned operation. |
 | Partial registration, uncertainty and Undo | The existing Gallery writer records observed Candidate deltas and existing Undo history. A partial appender result remains `registration_uncertain`, is not replayed, and blocks final JSON save; later distinct requests may continue only after exact observed-state comparison. | No production path reaches this writer from protected receipts; no automatic rollback is authorized. | Partial Project mutation requires human inspection; it cannot be treated as all-or-nothing success. |
 | Bounded events and retained evidence | Job/inbox logs are bounded diagnostic history. The publisher privately retains the exact settled event pair after successful registration; a sticky late-output marker survives detail eviction. PR #174 tests save after the first pair is evicted and refusal after late-output detail eviction. | Evidence is process-local. Its loss on restart does not reconstruct authority. | Treating log presence/absence alone as authority would permit false save or forget late output; current owner refuses when private proof is absent/conflicting. |
 | Restart, Journal and Human Recovery | C2B-8A has native disposable Journal lifecycle and inspect-only reopen/inventory; C2B-8B has redacted, read-only recovery cases and non-executable intentions. Profile A accepts acknowledged live-writer latest-head observations only within the live host/process lifetime. | No production journal call site or restart checkpoint custody. After restart, without an independently retained host-observed tip, latest-head custody is unavailable; missing/conflicting evidence remains uncertain. No replay, Recovery association or Apply. | Old bytes or a digest-valid Journal prefix could be mistaken for current authority. |
-| Retention and cleanup | Evidence is retained on uncertain/failed promotion, registration and save paths; bounded in-memory event logs are not disk-retention policy. C2B-8D-17A adds bounded process-local reservations and classifies unattributed existing root files as retained uncertain. | Existing Journal/assets/promotion writers do not consume the reservation contract; no cross-process quota, durable reservation recovery or explicit human discard/cleanup lifecycle exists. | Disk exhaustion or unsafe deletion/adoption; elapsed time and expiry cannot authorize cleanup. |
+| Retention and cleanup | Evidence is retained on uncertain/failed promotion, registration and save paths; bounded in-memory event logs are not disk-retention policy. C2B-8D-17A adds bounded process-local reservations and classifies unattributed existing root files as retained uncertain; 17B/17C consume exact reservations for byte and streamed asset writes. | Journal/promotion writers remain outside the reservation contract; no cross-process quota, durable reservation recovery or explicit human discard/cleanup lifecycle exists. | Disk exhaustion or unsafe deletion/adoption; elapsed time and expiry cannot authorize cleanup. |
 | Transport, worker and real ComfyUI interoperability | `POST /prompt`, `GET /history/{prompt_id}` and streamed `GET /view` each have bounded offline contracts. C2B-8D-16A composes injected submission/history wires with the Journal-gated Executor and exact original-host count-only event delivery; 16B characterizes a separately opted-in Worker lifecycle over those same fake wires. | No real ComfyUI request, registered production HTTP/Worker, production host-event delivery or measured whole-operation deadline behavior. | Remote acceptance, history status, cancellation and output availability remain server/runtime assumptions. |
 | UI activation and Human Start | Review/confirmation UI and a separate characterized Start boundary exist. Source search found no non-test call site for `capture_executor_human_start_for_characterization`, `handoff_generation_for_characterization`, or the executor's characterization entry point. | No production UI activation, exact new Human Start dispatch, production Worker registration or production shutdown/replacement lifecycle. | Review confirmation could be confused with Start; an activation path could bypass the required fresh human action. |
 | Candidate publication and Project JSON save | PR #174 composes the protected evidence path through the existing Candidate factory/appender, Undo snapshot and exact save callback; its disposable JSON is reopened and provenance checked. | Protected Candidate and save entry points are characterization-only. No production publication or save authority is enabled. | A successful offline fixture does not establish production Project integrity, user confirmation or durability. |
@@ -560,7 +581,7 @@ uncertainty.
 | 1. Offline HTTP + multi-request Journal executor composition — characterized as C2B-8D-16A/16B | C2B-8D-14/15B connect exact acknowledged per-request intent, outcome and settlement to the existing executor; 16A composes injected HTTP submission/history with exact original-host event delivery; 16B adds an explicit disabled Worker lifecycle on the same seams. V1 remains unchanged and restart evidence stays inspect-only. | Both compositions use explicit in-memory wires and no default network transport. The Worker is not registered for production and no authority is recovered after restart. |
 | 2. Production transport/worker activation and original-host lifecycle — future boundary | Depends on protected-root lifecycle, endpoint/auth/deadline policy, production shutdown/replacement ownership, real transport interoperability and a concrete human Start/UI boundary. | Separately review production registration and event-loop delivery without weakening Journal gates or one-shot external-call semantics. |
 | 3. Real ComfyUI interoperability | Depends on reviewed transport/worker composition, supported version/endpoint behavior and disposable account/Project policy. | Separately human-authorized compatibility exercise; capture actual request/history/output behavior and server-side uncertainty. Offline/fake success is not evidence for this milestone. |
-| 4. Protected filesystem production policy | Depends on root provisioning/handle lifecycle, actual writer consumption of the C2B-8D-17A accounting contract and exact approved output destination policy. | Integrate a create-only disposable writer first; then specify local production roots, owner-only ACL/reparse/identity checks and any required cross-process quota without mutating existing Project/user ACLs. |
+| 4. Protected filesystem production policy | Depends on root provisioning/handle lifecycle, exact approved output destination policy, cross-process/durable capacity policy and production host lifecycle. | C2B-8D-17B/17C characterize byte and stream writer consumption offline. Next specify production roots, owner-only ACL/reparse/identity checks and any required cross-process quota without mutating existing Project/user ACLs; keep Journal and promotion integration separately reviewed. |
 | 5. Human Start and UI activation | Depends on worker/transport, protected storage and original-host fencing with visible unknown/unsaved states. | Add a distinct user-confirmed Start action; wire no execution until the whole authorization chain is current. Confirmation alone must remain non-executable. |
 | 6. Restart/recovery and retention/discard | Depends on adopted live/restart latest-head policy, protected Journal production lifecycle, source/review provenance, Project reconciliation and explicit human action. | Implement inspect-first restart inventory and human-authorized association/discard, with quotas and no automatic replay/cleanup. Missing/conflicting evidence remains uncertain. |
 

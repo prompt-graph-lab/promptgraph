@@ -1144,3 +1144,51 @@ remain false, including
 `execution_available=false`, `protected_storage_available=false`,
 `promotion_available=false`, and `candidate_publication_allowed=false`;
 `authorship=unverified`.
+
+## C2B-8D-17C protected remote stream writer admission
+
+`WindowsProtectedAssetsCharacterization.stage_remote_image_with_admission_for_characterization()`
+composes the existing streamed remote-image writer with the exact
+`WindowsProtectedStorageAdmissionCharacterization` that owns the same protected
+asset root objects. It requires explicit characterization/disposable opt-in,
+the exact frozen request and successful remote receipt binding, an exact
+descriptor object, a host freshness callback, and a unique operation identity.
+It does not accept paths, remote URLs, or a caller-provided byte-count estimate.
+
+Before `CREATE_NEW` and before calling the injected image stream provider, the
+owner reserves one `temporary_containment` entry and the policy upper bound
+`min(image_bytes, request_bytes, aggregate_bytes)`, then consumes the one-shot
+write admission. The remote `Content-Length` is examined only after that full
+reservation exists and cannot shrink it. The existing stream writer remains
+authoritative for atomic native file creation/handle retention, owner-only ACL,
+incremental writes, close, size/hash checks and image decoding. The capacity
+lease spans the entire stream lifecycle and makes asset-owner close signal
+revocation then wait for the writer to settle. No asset or admission lock is
+held around freshness callbacks, provider/read/close callbacks, native reads,
+decoding, writes or flushes; `CREATE_NEW` plus immediate handle retention stays
+atomic under the asset lifecycle lock.
+
+After streaming, the admission owner rechecks the exact image bytes, hash,
+native identity/ACL and complete inventory. A final original-host freshness
+callback runs outside locks; the exact `VerifiedProtectedImageObservation` and
+actual one-file/actual-byte accounting are committed under the existing
+protected-assets → admission-owner lock order. Thus the ledger records actual
+bytes and releases the unused upper bound only after success. Distinct image
+descriptors can be admitted sequentially because each successful inventory
+becomes the next ledger baseline. A duplicate descriptor attempt or reused
+operation identity is refused.
+
+Failures before a write token may release only the exact still-unused
+reservation. Once admitted, any exception, host loss, close/invalidation,
+failed stream, content/ACL/root drift or inventory mismatch retains the full
+upper bound and native file/handle evidence as uncertain; no retry, overwrite,
+adoption or cleanup occurs. If admission close has already retained the active
+token, the asset writer does not release it again. The stream observation is
+not published unless its final admission commit succeeds.
+
+This composes only disposable local characterization. It is not an OS quota or
+cross-process lock, does not prove disk availability or power-loss durability,
+and does not make the HTTP transport production-ready. Journal and promotion
+writers still do not consume the ledger. No production roots, Start action,
+Candidate publication, Project save, Recovery, cleanup or execution capability
+is enabled. All production flags remain false and `authorship=unverified`.
