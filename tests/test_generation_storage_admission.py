@@ -1334,13 +1334,10 @@ def test_native_integrated_journal_post_commit_ack_failure_retains_prior_and_ful
         prior_bytes = target.read_bytes()
         assert _capacity_root_row(capacity)["observed_used_bytes"] == len(prior_bytes)
 
-        original_mark = journal_owner._mark_lifecycle_lease_committed_locked
-
-        def mark_then_fail(lease, acknowledgement):
-            original_mark(lease, acknowledgement)
+        def fail_before_mark(_lease, _acknowledgement):
             raise RuntimeError("injected post-ledger-commit ACK publication failure")
 
-        monkeypatch.setattr(journal_owner, "_mark_lifecycle_lease_committed_locked", mark_then_fail)
+        monkeypatch.setattr(journal_owner, "_mark_lifecycle_lease_committed_locked", fail_before_mark)
         with pytest.raises(ValueError, match="journal_replacement_observation_unavailable"):
             journal_owner.append_with_capacity_for_characterization(
                 capacity, capacity_operation,
