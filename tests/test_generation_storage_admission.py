@@ -97,7 +97,7 @@ def _commit_portable_journal_replacement(ledger, owner, journal_owner, operation
     return write, binding, acknowledgement, summary
 
 
-def _native_journal_operation(scope):
+def _native_journal_operation(scope, request_count=1):
     project_path = scope / "selected-project.json"
     approved = journal.ApprovedRoot.capture_for_characterization(
         "project", str(scope), characterization=True)
@@ -107,7 +107,9 @@ def _native_journal_operation(scope):
         approved.path, approved.identity, project_path.name,
         journal._file_identity(journal._ordinary(project_path, directory=False)),
         "process", "session", "claim", "c" * 64,
-        (journal.FrozenRequestCorrelation("request", 0, "line", 1, "workflow"),))
+        tuple(journal.FrozenRequestCorrelation(
+            f"request-{index}", index, f"line-{index}", 1 + (index % 5), f"workflow-{index}")
+            for index in range(request_count)))
     return operation
 
 
@@ -131,6 +133,24 @@ def _native_append_journal(owner, schema, tip):
         return owner.append_multi_request_intent_for_characterization(None, 0)
     return owner.append_multi_request_outcome_for_characterization(
         tip, "pre_send_rejected", None)
+
+
+def _capacity_root_row(owner, purpose="private_journal"):
+    return next(row for row in owner._ledger.readiness()["roots"] if row["purpose"] == purpose)
+
+
+def _native_multi_settlement(writer, tip, request_index, disposition, prompt_id):
+    operation = writer.operation
+    request = operation.requests[request_index]
+    facts = multi_journal.ValidatedOriginalHostSettlement(
+        operation.operation_id, operation.job_id, operation.claim_id,
+        operation.manifest_identity, operation.process_identity, operation.session_identity,
+        request_index, request.request_id, request.illustration_id, request.run_index,
+        request.workflow_identity, disposition, prompt_id,
+        f"host-observation-{request_index}", tip.revision, tip.digest)
+    return multi_journal._issue_original_host_settlement_for_characterization(
+        writer, tip, request_index,
+        lambda observed_operation, observed_request, observed_tip: facts)
 
 
 def test_journal_replacement_accounts_old_snapshot_once_and_lock_as_zero_bytes():
@@ -694,6 +714,584 @@ def test_native_protected_journal_replacement_reserves_then_reconciles_exact_sna
     finally:
         journal_owner.close()
         capacity.close()
+
+
+def test_native_integrated_v1_writer_reserves_before_create_and_acks_after_reconciliation(
+        native_storage_roots):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope)
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    writer = journal_owner._writer
+    original_create = writer._create_exclusive_file
+    lock_reservations = []
+    replacement_peaks = []
+
+    def observe_reservation_before_create(path, flags):
+        if path.name.endswith(".lock"):
+            lock_reservations.append((capacity._ledger._active_write,
+                                      tuple(capacity._ledger._reserved["private_journal"])))
+        return original_create(path, flags)
+
+    writer._create_exclusive_file = observe_reservation_before_create
+    target = roots["private_journal"]._path / (operation.operation_id + ".json")
+
+    def observe_replace_boundary(point):
+        if point == "before_replace":
+            temporary = list(roots["private_journal"]._path.glob(operation.operation_id + ".*.tmp"))
+            lock_path = roots["private_journal"]._path / (operation.operation_id + ".lock")
+            old_size = target.stat().st_size if target.exists() else 0
+            temporary_size = temporary[0].stat().st_size if len(temporary) == 1 else -1
+            replacement_peaks.append((old_size, temporary_size, lock_path.stat().st_size))
+
+    journal_owner._fault = observe_replace_boundary
+    writer.fault = observe_replace_boundary
+    try:
+        first = journal_owner.append_with_capacity_for_characterization(
+            capacity, capacity_operation, journal.Observation("submission_intent", "intent"))
+        assert type(first) is journal.ReopenedJournal and first.revision == 1
+        first_row = _capacity_root_row(capacity)
+        assert first_row["reserved_bytes"] == first_row["reserved_entries"] == 0
+        assert first_row["observed_used_bytes"] == target.stat().st_size
+        assert first_row["observed_used_entries"] == 1
+
+        second = journal_owner.append_with_capacity_for_characterization(
+            capacity, capacity_operation,
+            journal.Observation("submission_observed", "unknown"))
+        assert type(second) is journal.ReopenedJournal and second.revision == 2
+        second_row = _capacity_root_row(capacity)
+        assert second_row["reserved_bytes"] == second_row["reserved_entries"] == 0
+        assert second_row["observed_used_bytes"] == target.stat().st_size
+        assert second_row["observed_used_entries"] == 1
+        assert len(lock_reservations) == 2
+        assert all(write is not None and reserve == (admission._JOURNAL_BYTES, 2)
+                   for write, reserve in lock_reservations)
+        assert len(replacement_peaks) == 2
+        assert replacement_peaks[0][0] == 0
+        assert all(temporary_size > 0 for _, temporary_size, _ in replacement_peaks)
+        assert 0 < replacement_peaks[1][0] <= admission._JOURNAL_BYTES
+        assert 0 < replacement_peaks[1][1] <= admission._JOURNAL_BYTES
+        assert sum(replacement_peaks[1][:2]) <= admission._JOURNAL_REPLACEMENT_LIVE_BYTES
+        assert all(lock_size == 0 for _, _, lock_size in replacement_peaks)
+        assert [path.name for path in roots["private_journal"]._path.iterdir()] == [target.name]
+        assert journal_owner._journal_capacity_integrated is True
+        assert journal_owner.readiness()["journal_lifecycle"] == "protected_observation"
+        view = capacity.readiness()
+        assert view["journal_writer_integrated"] is True
+        assert view["writer_integrated"] is False
+        assert view["execution_available"] is False
+        assert view["protected_storage_available"] is False
+        assert view["promotion_available"] is False
+        assert view["candidate_publication_allowed"] is False
+        assert view["authorship"] == "unverified"
+    finally:
+        journal_owner.close()
+        capacity.close()
+
+
+def test_native_integrated_multi_request_writer_accounts_sequential_intent_outcome_settlement(
+        native_storage_roots):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope, request_count=2)
+    journal_owner = _native_journal_owner(roots, operation, multi_journal.SCHEMA)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    writer = journal_owner._multi_request_writer
+    original_create = writer._create_exclusive_file
+    lock_reservations = []
+
+    def observe_reservation_before_create(path, flags):
+        if path.name.endswith(".lock"):
+            lock_reservations.append((capacity._ledger._active_write,
+                                      tuple(capacity._ledger._reserved["private_journal"])))
+        return original_create(path, flags)
+
+    writer._create_exclusive_file = observe_reservation_before_create
+    try:
+        tip = None
+        for index in range(2):
+            tip = journal_owner.append_multi_request_intent_with_capacity_for_characterization(
+                capacity, capacity_operation, tip, index)
+            assert tip.revision == index * 3 + 1
+            tip = journal_owner.append_multi_request_outcome_with_capacity_for_characterization(
+                capacity, capacity_operation, tip, "pre_send_rejected")
+            settlement = _native_multi_settlement(writer, tip, index, "pre_send_rejected", None)
+            tip = journal_owner.append_multi_request_settlement_with_capacity_for_characterization(
+                capacity, capacity_operation, tip, settlement)
+            row = _capacity_root_row(capacity)
+            assert row["reserved_bytes"] == row["reserved_entries"] == 0
+            assert row["observed_used_bytes"] == (roots["private_journal"]._path /
+                (operation.operation_id + ".json")).stat().st_size
+            assert row["observed_used_entries"] == 1
+
+        reopened = journal_owner.reopen_multi_request_journal_for_characterization(
+            operation.operation_id + ".json")
+        assert reopened.revision == 6
+        assert reopened.next_request_index == 2
+        assert reopened.state == "all_requests_settled"
+        assert len(reopened.events) == 6
+        assert len(lock_reservations) == 6
+        assert all(write is not None and reserve == (admission._JOURNAL_BYTES, 2)
+                   for write, reserve in lock_reservations)
+        assert [path.name for path in roots["private_journal"]._path.iterdir()] == [
+            operation.operation_id + ".json"]
+        assert journal_owner.readiness()["journal_capacity_integrated"] is True
+        view = capacity.readiness()
+        assert view["journal_writer_integrated"] is True
+        assert view["execution_available"] is False
+        assert view["protected_storage_available"] is False
+        assert view["promotion_available"] is False
+        assert view["candidate_publication_allowed"] is False
+        assert view["authorship"] == "unverified"
+    finally:
+        journal_owner.close()
+        capacity.close()
+
+
+def test_native_integrated_journal_capacity_refusal_happens_before_lock_create(native_storage_roots):
+    scope, _, _, roots = native_storage_roots
+    limits = replace(admission.ProtectedStorageCapacityLimits(), journal_entries=1)
+    capacity = _capture_native(scope, roots, limits)
+    operation = _native_journal_operation(scope)
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    try:
+        with pytest.raises(ValueError, match="journal_replacement_capacity_exceeded"):
+            journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_intent", "intent"))
+        assert list(roots["private_journal"]._path.iterdir()) == []
+        assert capacity._ledger._active_write is None
+        row = _capacity_root_row(capacity)
+        assert row["reserved_bytes"] == row["reserved_entries"] == 0
+        assert journal_owner._uncertain is False
+        assert journal_owner._writer._uncertain is False
+    finally:
+        journal_owner.close()
+        capacity.close()
+
+
+def test_native_integrated_multi_request_stale_tip_refuses_before_reservation(native_storage_roots):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope, request_count=2)
+    journal_owner = _native_journal_owner(roots, operation, multi_journal.SCHEMA)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    try:
+        with pytest.raises(ValueError, match="acknowledged_tip_conflict"):
+            journal_owner.append_multi_request_intent_with_capacity_for_characterization(
+                capacity, capacity_operation, object(), 0)
+        assert list(roots["private_journal"]._path.iterdir()) == []
+        assert capacity._ledger._active_write is None
+        row = _capacity_root_row(capacity)
+        assert row["reserved_bytes"] == row["reserved_entries"] == 0
+        assert journal_owner._uncertain is False
+        assert journal_owner._multi_request_writer._uncertain is False
+        assert capacity._ledger._operations[capacity_operation]["state"] == "open"
+    finally:
+        journal_owner.close()
+        capacity.close()
+
+
+@pytest.mark.parametrize("failure", ["after_lock_create", "after_tmp_create", "partial_write",
+                                     "fsync", "before_replace", "after_replace_before_ack",
+                                     "after_operation_before_ack", "reopen_mismatch",
+                                     "capacity_completion"])
+def test_native_integrated_journal_failure_withholds_ack_and_retains_capacity(
+        native_storage_roots, monkeypatch, failure):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope)
+
+    create_count = [0]
+
+    def fail_at(point):
+        if failure in ("after_lock_create", "after_tmp_create") and point == "after_file_create":
+            create_count[0] += 1
+            desired = 1 if failure == "after_lock_create" else 2
+            if create_count[0] == desired:
+                raise RuntimeError("injected journal uncertainty")
+        elif point == failure:
+            raise RuntimeError("injected journal uncertainty")
+
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA)
+    journal_owner._fault = fail_at
+    journal_owner._writer.fault = fail_at
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    if failure == "partial_write":
+        real_fdopen = journal.os.fdopen
+
+        class PartialWriter:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def write(self, data):
+                self.stream.write(data[:max(1, len(data) // 2)])
+                raise OSError("injected partial Journal write")
+
+            def flush(self):
+                return self.stream.flush()
+
+            def fileno(self):
+                return self.stream.fileno()
+
+        monkeypatch.setattr(journal.os, "fdopen",
+                            lambda fd, mode="r", *args, **kwargs:
+                            PartialWriter(real_fdopen(fd, mode, *args, **kwargs)))
+    elif failure == "fsync":
+        monkeypatch.setattr(journal.os, "fsync",
+                            lambda _fd: (_ for _ in ()).throw(OSError("injected fsync failure")))
+    elif failure == "reopen_mismatch":
+        real_reopen = journal.reopen_journal
+        reopen_count = [0]
+
+        def mismatched_reopen(*args, **kwargs):
+            reopened = real_reopen(*args, **kwargs)
+            reopen_count[0] += 1
+            if reopen_count[0] == 2:
+                return replace(reopened, digest="f" * 64)
+            return reopened
+
+        monkeypatch.setattr(journal, "reopen_journal", mismatched_reopen)
+    if failure == "capacity_completion":
+        def fail_completion(*args, **kwargs):
+            raise ValueError("journal_replacement_observation_unavailable")
+        monkeypatch.setattr(capacity, "complete_journal_replacement_for_characterization",
+                            fail_completion)
+    try:
+        with pytest.raises((RuntimeError, ValueError, OSError)):
+            journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_intent", "intent"))
+        assert journal_owner._uncertain is True
+        assert journal_owner._writer._uncertain is True
+        assert journal_owner._journal_capacity_integrated is False
+        assert capacity._ledger._active_write is None
+        row = _capacity_root_row(capacity)
+        assert row["reserved_bytes"] == row["reserved_entries"] == 0
+        assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
+        assert row["retained_uncertain_entries"] == 2
+        lock_path = roots["private_journal"]._path / (operation.operation_id + ".lock")
+        leaves_lock = failure not in ("after_operation_before_ack", "reopen_mismatch",
+                                      "capacity_completion")
+        assert lock_path.exists() is leaves_lock
+        temporary_paths = list(roots["private_journal"]._path.glob(operation.operation_id + ".*.tmp"))
+        leaves_temp = failure in ("after_tmp_create", "partial_write", "fsync", "before_replace")
+        assert bool(temporary_paths) is leaves_temp
+        target_path = roots["private_journal"]._path / (operation.operation_id + ".json")
+        assert target_path.exists() is (failure in (
+            "after_replace_before_ack", "after_operation_before_ack", "reopen_mismatch",
+            "capacity_completion"))
+        with pytest.raises(ValueError, match="writer_unavailable"):
+            journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_observed", "unknown"))
+    finally:
+        journal_owner.close()
+        capacity.close()
+
+
+def test_native_integrated_journal_capacity_close_during_blocked_write_withholds_ack(
+        native_storage_roots):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope)
+    entered_create = threading.Event()
+    release_create = threading.Event()
+
+    def block_after_create(point):
+        if point == "after_file_create":
+            entered_create.set()
+            if not release_create.wait(timeout=10):
+                raise RuntimeError("test release timed out")
+
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA, fault=block_after_create)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    result = []
+
+    def append():
+        try:
+            result.append(journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_intent", "intent")))
+        except BaseException as error:
+            result.append(error)
+
+    thread = threading.Thread(target=append)
+    thread.start()
+    try:
+        assert entered_create.wait(timeout=10)
+        capacity.close()
+        assert journal_owner._native._closed is False
+    finally:
+        release_create.set()
+        thread.join(timeout=10)
+        journal_owner.close()
+    assert not thread.is_alive()
+    assert len(result) == 1 and isinstance(result[0], ValueError)
+    assert journal_owner._journal_capacity_integrated is False
+    row = next(item for item in capacity._ledger.readiness()["roots"]
+               if item["purpose"] == "private_journal")
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
+    assert row["retained_uncertain_entries"] == 2
+    assert (roots["private_journal"]._path / (operation.operation_id + ".json")).exists()
+
+
+def test_native_integrated_multi_request_uncertainty_blocks_later_request(native_storage_roots):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope, request_count=2)
+    journal_owner = _native_journal_owner(roots, operation, multi_journal.SCHEMA)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    try:
+        tip = journal_owner.append_multi_request_intent_with_capacity_for_characterization(
+            capacity, capacity_operation, None, 0)
+        tip = journal_owner.append_multi_request_outcome_with_capacity_for_characterization(
+            capacity, capacity_operation, tip, "accepted", "prompt-0")
+
+        def fail_after_replace(point):
+            if point == "after_replace_before_ack":
+                raise RuntimeError("unknown multi-request settlement")
+
+        journal_owner._fault = fail_after_replace
+        journal_owner._multi_request_writer.fault = fail_after_replace
+        settlement = _native_multi_settlement(
+            journal_owner._multi_request_writer, tip, 0, "execution_completed", "prompt-0")
+        with pytest.raises(RuntimeError, match="unknown multi-request settlement"):
+            journal_owner.append_multi_request_settlement_with_capacity_for_characterization(
+                capacity, capacity_operation, tip, settlement)
+        assert journal_owner._uncertain is True
+        assert journal_owner._multi_request_writer._uncertain is True
+        row = _capacity_root_row(capacity)
+        assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
+        assert row["retained_uncertain_entries"] == 2
+        with pytest.raises(ValueError, match="writer_unavailable"):
+            journal_owner.append_multi_request_intent_with_capacity_for_characterization(
+                capacity, capacity_operation, tip, 1)
+    finally:
+        journal_owner.close()
+        capacity.close()
+
+
+@pytest.mark.parametrize("drift", ["acl", "target_substitution", "extra_file"])
+def test_native_integrated_journal_acl_identity_or_inventory_drift_withholds_ack(
+        native_storage_roots, drift):
+    from test_generation_windows_protected_storage import mutate_disposable_acl
+
+    scope, _, api, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope)
+    target = roots["private_journal"]._path / (operation.operation_id + ".json")
+
+    def create_protected_file(path, contents):
+        _, constants, file_api, _, _, _ = api
+        user = windows._current_user(api)
+        handle = file_api.CreateFile(str(path),
+            constants.GENERIC_READ | constants.GENERIC_WRITE | constants.READ_CONTROL,
+            constants.FILE_SHARE_READ | constants.FILE_SHARE_WRITE,
+            windows._security_attributes(api, user), constants.CREATE_NEW,
+            constants.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
+        try:
+            file_api.WriteFile(handle, contents)
+        finally:
+            handle.Close()
+
+    def introduce_drift(point):
+        if point != "after_operation_before_ack":
+            return
+        if drift == "acl":
+            mutate_disposable_acl(target, api, "writable_principal")
+        elif drift == "target_substitution":
+            contents = target.read_bytes()
+            replacement = target.with_name(operation.operation_id + ".replacement")
+            backup = target.with_name(operation.operation_id + ".retained")
+            create_protected_file(replacement, contents)
+            target.rename(backup)
+            replacement.rename(target)
+        else:
+            create_protected_file(
+                roots["private_journal"]._path / "untracked.json", b"disposable evidence")
+
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA)
+    journal_owner._fault = introduce_drift
+    journal_owner._writer.fault = introduce_drift
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    try:
+        with pytest.raises(ValueError):
+            journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_intent", "intent"))
+        assert journal_owner._uncertain is True
+        assert journal_owner._journal_capacity_integrated is False
+        row = _capacity_root_row(capacity)
+        assert row["reserved_bytes"] == row["reserved_entries"] == 0
+        assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
+        assert row["retained_uncertain_entries"] == 2
+        assert target.exists()
+        if drift == "target_substitution":
+            assert (roots["private_journal"]._path /
+                    (operation.operation_id + ".retained")).exists()
+        if drift == "extra_file":
+            assert (roots["private_journal"]._path / "untracked.json").exists()
+    finally:
+        journal_owner.close()
+        capacity.close()
+
+
+@pytest.mark.parametrize("attempt", [1, 2, 3])
+def test_native_integrated_journal_close_revokes_blocked_write_before_ack(
+        native_storage_roots, attempt):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope)
+    entered_create = threading.Event()
+    release_create = threading.Event()
+
+    def block_after_create(point):
+        if point == "after_file_create":
+            entered_create.set()
+            if not release_create.wait(timeout=10):
+                raise RuntimeError("test release timed out")
+
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA, fault=block_after_create)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    result = []
+
+    def append():
+        try:
+            result.append(journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_intent", "intent")))
+        except BaseException as error:
+            result.append(error)
+
+    append_thread = threading.Thread(target=append)
+    close_result = []
+
+    def close():
+        try:
+            journal_owner.close()
+        except BaseException as error:
+            close_result.append(error)
+
+    close_thread = None
+    append_thread.start()
+    try:
+        assert entered_create.wait(timeout=10), attempt
+        close_thread = threading.Thread(target=close)
+        close_thread.start()
+        assert journal_owner._revocation_published.wait(timeout=10), attempt
+        assert journal_owner._native._closed is False
+    finally:
+        release_create.set()
+        append_thread.join(timeout=10)
+        if close_thread is not None:
+            close_thread.join(timeout=10)
+        capacity.close()
+    assert not append_thread.is_alive()
+    assert close_thread is not None and not close_thread.is_alive()
+    assert close_result == []
+    assert len(result) == 1 and isinstance(result[0], ValueError)
+    assert journal_owner._native._closed is True
+    assert journal_owner._journal_capacity_integrated is False
+    row = next(item for item in capacity._ledger.readiness()["roots"]
+               if item["purpose"] == "private_journal")
+    assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
+    assert row["retained_uncertain_entries"] == 2
+    assert (roots["private_journal"]._path / (operation.operation_id + ".lock")).exists()
+
+
+def test_native_integrated_journal_reentrant_close_is_rejected_and_evidence_retained(
+        native_storage_roots):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope)
+    journal_owner = None
+
+    def reentrant_close(point):
+        if point == "after_file_create":
+            journal_owner.close()
+
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA, fault=reentrant_close)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    try:
+        with pytest.raises(ValueError, match="journal_close_reentrant"):
+            journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_intent", "intent"))
+        assert journal_owner._closed is False
+        assert journal_owner._revoking is False
+        assert journal_owner._uncertain is True
+        row = _capacity_root_row(capacity)
+        assert row["retained_uncertain_bytes"] == admission._JOURNAL_BYTES
+        assert row["retained_uncertain_entries"] == 2
+        assert (roots["private_journal"]._path / (operation.operation_id + ".lock")).exists()
+    finally:
+        journal_owner.close()
+        capacity.close()
+
+
+def test_native_integrated_journal_close_after_ledger_commit_returns_committed_ack(
+        native_storage_roots, monkeypatch):
+    scope, _, _, roots = native_storage_roots
+    capacity = _capture_native(scope, roots)
+    operation = _native_journal_operation(scope)
+    journal_owner = _native_journal_owner(roots, operation, journal.SCHEMA)
+    capacity_operation = capacity.begin_operation_for_characterization(operation.operation_id)
+    committed = threading.Event()
+    allow_return = threading.Event()
+    original_complete = capacity.complete_journal_replacement_for_characterization
+
+    def pause_after_commit(*args, **kwargs):
+        result = original_complete(*args, **kwargs)
+        committed.set()
+        if not allow_return.wait(timeout=10):
+            raise RuntimeError("test release timed out")
+        return result
+
+    monkeypatch.setattr(capacity, "complete_journal_replacement_for_characterization", pause_after_commit)
+    result = []
+
+    def append():
+        try:
+            result.append(journal_owner.append_with_capacity_for_characterization(
+                capacity, capacity_operation,
+                journal.Observation("submission_intent", "intent")))
+        except BaseException as error:
+            result.append(error)
+
+    append_thread = threading.Thread(target=append)
+    close_thread = threading.Thread(target=journal_owner.close)
+    append_thread.start()
+    try:
+        assert committed.wait(timeout=10)
+        close_thread.start()
+        assert journal_owner._revocation_published.wait(timeout=10)
+        assert journal_owner._native._closed is False
+    finally:
+        allow_return.set()
+        append_thread.join(timeout=10)
+        if close_thread.ident is not None:
+            close_thread.join(timeout=10)
+        capacity.close()
+    assert not append_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert len(result) == 1 and type(result[0]) is journal.ReopenedJournal
+    assert result[0].revision == 1
+    assert journal_owner._native._closed is True
+    row = next(item for item in capacity._ledger.readiness()["roots"]
+               if item["purpose"] == "private_journal")
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["observed_used_entries"] == 1
+    assert row["retained_uncertain_bytes"] == 0
 
 
 def test_native_journal_replacement_requires_exact_shared_root_owner(native_storage_roots):

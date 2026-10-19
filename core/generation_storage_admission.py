@@ -66,6 +66,7 @@ class _JournalReplacementBinding:
     previous_acknowledgement: object = field(repr=False, compare=False)
     prior_inventory: tuple = field(repr=False)
     _issuer: object = field(repr=False, compare=False)
+    journal_lease: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -284,6 +285,9 @@ class _CapacityLedger:
                     or binding.schema not in (journal.SCHEMA, multi_journal.SCHEMA)
                     or binding.root_owner is not binding.admission_owner._roots.get("private_journal")
                     or binding.journal_owner._native is not binding.root_owner
+                    or (binding.journal_lease is not None
+                        and (binding.journal_owner._active_lease is not binding.journal_lease
+                             or binding.journal_owner._revoking))
                     or _freeze_inventory(self._inventory) != binding.prior_inventory):
                 _fail("journal_replacement_binding_invalid")
             if self._active_write is not None:
@@ -378,6 +382,9 @@ class _CapacityLedger:
                     or completion._issuer is not _JOURNAL_REPLACEMENT_ISSUER
                     or completion.binding is not binding
                     or binding.admission_owner is not self._owner_identity
+                    or (binding.journal_lease is not None
+                        and (binding.journal_owner._active_lease is not binding.journal_lease
+                             or binding.journal_owner._revoking))
                     or _freeze_inventory(self._inventory) != binding.prior_inventory
                     or type(inventory) is not dict
                     or set(inventory) != set(_WRITABLE)):
@@ -814,11 +821,16 @@ class WindowsProtectedStorageAdmissionCharacterization:
         self._roots, self._limits = roots, limits
         self._ledger = _CapacityLedger(limits, owner_identity=self)
         self._lock = threading.RLock()
-        self._refresh_lock = threading.RLock()
+        # A refresh owns this token only as a serialization marker. Native
+        # filesystem observation runs after the mutex is released.
+        self._refresh_lock = threading.Lock()
+        self._refresh_active = False
+        self._refresh_done = None
         self._closed = False
         self._invalid = False
         self._asset_writer_integrated = False
         self._promotion_writer_integrated = False
+        self._journal_writer_integrated = False
 
     def begin_operation_for_characterization(self, operation_id):
         self._refresh()
@@ -846,91 +858,115 @@ class WindowsProtectedStorageAdmissionCharacterization:
         # Serialize the final pre-write inventory with admission publication.
         # Once the ledger marks a write active, other refreshes refuse to scan
         # its intentionally changing file inventory until exact completion.
-        with self._refresh_lock:
-            self._refresh()
+        refresh_token = self._claim_refresh_slot()
+        try:
+            self._refresh_observation()
             with self._lock:
                 self._require_live()
                 return self._ledger.admit_write(operation, reservation)
+        finally:
+            self._release_refresh_slot(refresh_token)
 
-    def admit_journal_replacement_for_characterization(self, operation, journal_owner):
-        """Preflight one protected Journal replacement before any CREATE_NEW."""
+    def admit_journal_replacement_for_characterization(
+            self, operation, journal_owner, *, _journal_lease=None):
+        """Preflight one protected Journal replacement before any CREATE_NEW.
+
+        The optional lease is supplied only by the owner's integrated append.
+        Direct C2B-17E-A callers get a temporary lease for the observation; it
+        does not alter the already established writer APIs.
+        """
         from core import generation_protected_journal as protected_journal
 
-        with self._refresh_lock:
-            self._refresh()
+        if type(journal_owner) is not protected_journal.WindowsProtectedJournalCharacterization:
+            _fail("journal_replacement_binding_invalid")
+        owns_lease = _journal_lease is None
+        if owns_lease:
+            lease, _, _ = journal_owner._begin_lifecycle_lease()
+        else:
+            lease = _journal_lease
+            journal_owner._assert_lifecycle_lease(lease)
+        refresh_token = self._claim_refresh_slot()
+        try:
+            self._refresh_observation()
             with self._lock:
                 self._require_live()
                 with self._ledger._lock:
                     operation_state = self._ledger._operations.get(operation)
                     operation_id = (operation_state or {}).get("operation_id")
-            if (type(journal_owner) is not protected_journal.WindowsProtectedJournalCharacterization
-                    or operation_id is None):
+            if operation_id is None:
                 _fail("journal_replacement_binding_invalid")
-
+            journal_owner._assert_lifecycle_lease(lease)
             with journal_owner._lock:
+                journal_owner._assert_lifecycle_lease_locked(lease)
                 root = self._roots.get("private_journal")
                 if (root is None or journal_owner._native is not root
-                        or not journal_owner._writable or journal_owner._closed
-                        or journal_owner._uncertain or root._closed
-                        or root._purpose != "private_journal"
+                        or not journal_owner._writable or journal_owner._uncertain
+                        or root._closed or root._purpose != "private_journal"
                         or root._identity != self._roots["private_journal"]._identity
                         or journal_owner._approved.path != str(root._path)
                         or journal_owner._approved.identity != root._identity):
                     _fail("journal_replacement_root_mismatch")
-                journal_owner._check()
-                scope_rows = [row for row in root._observations
-                              if row[0] == self._scope and row[1]]
-                if (len(scope_rows) != 1 or scope_rows[0][2] is not root._scope_handle
-                        or scope_rows[0][3] != self._scope_identity):
-                    _fail("journal_replacement_root_mismatch")
-
                 active = ((journal_owner._writer, journal.SCHEMA),
                           (journal_owner._multi_request_writer, multi_journal.SCHEMA))
                 selected = [(writer, schema) for writer, schema in active if writer is not None]
                 if len(selected) != 1:
                     _fail("journal_replacement_writer_unavailable")
                 writer, schema = selected[0]
-                expected_type = (protected_journal._ProtectedWriter if schema == journal.SCHEMA
-                                 else protected_journal._ProtectedMultiRequestWriter)
-                if (type(writer) is not expected_type
-                        or writer._uncertain or getattr(writer, "_closed", False)
-                        or (schema == multi_journal.SCHEMA and writer._busy.locked())
-                        or writer.root._owner is not journal_owner
-                        or writer.root.path != journal_owner._approved.path
-                        or writer.root.identity != journal_owner._approved.identity
-                        or type(writer.operation) is not journal.OperationObservation
-                        or writer.operation.operation_id != operation_id
-                        or writer.filename != operation_id + ".json"
-                        or type(writer._revision) is not int
-                        or (schema == journal.SCHEMA and not 0 <= writer._revision < 8)
-                        or (schema == multi_journal.SCHEMA
-                            and not 0 <= writer._revision < multi_journal.MAX_REVISIONS)):
-                    _fail("journal_replacement_writer_unavailable")
-                writer.root.check()
-                previous_revision = writer._revision
-                previous_digest = writer._digest
-                previous_file_identity = writer._file_identity
-                previous_acknowledgement = None
-                reopened_previous = None
-                if previous_revision == 0:
-                    if (previous_digest != "0" * 64 or previous_file_identity is not None
-                            or (schema == multi_journal.SCHEMA and writer._tip is not None)):
-                        _fail("journal_replacement_revision_conflict")
-                else:
-                    if schema == journal.SCHEMA:
-                        reopened_previous = journal_owner.reopen_journal_for_characterization(
-                            writer.filename, expected_revision=previous_revision,
-                            expected_digest=previous_digest)
-                    else:
-                        reopened_previous = journal_owner.reopen_multi_request_journal_for_characterization(
-                            writer.filename, expected_revision=previous_revision,
-                            expected_digest=previous_digest)
-                    if (reopened_previous.revision != previous_revision
-                            or reopened_previous.digest != previous_digest
-                            or reopened_previous.file_identity != previous_file_identity
-                            or reopened_previous.operation != writer.operation):
-                        _fail("journal_replacement_revision_conflict")
 
+            # Root/ACL checks and previous-tip reopen are native observations;
+            # they deliberately run without Journal, admission, ledger, or
+            # refresh mutexes held. Close can revoke the exact lease meanwhile.
+            journal_owner._check()
+            scope_rows = [row for row in root._observations
+                          if row[0] == self._scope and row[1]]
+            if (len(scope_rows) != 1 or scope_rows[0][2] is not root._scope_handle
+                    or scope_rows[0][3] != self._scope_identity):
+                _fail("journal_replacement_root_mismatch")
+            expected_type = (protected_journal._ProtectedWriter if schema == journal.SCHEMA
+                             else protected_journal._ProtectedMultiRequestWriter)
+            if (type(writer) is not expected_type
+                    or writer._uncertain or getattr(writer, "_closed", False)
+                    or (schema == multi_journal.SCHEMA and writer._busy.locked())
+                    or writer.root._owner is not journal_owner
+                    or writer.root.path != journal_owner._approved.path
+                    or writer.root.identity != journal_owner._approved.identity
+                    or type(writer.operation) is not journal.OperationObservation
+                    or writer.operation.operation_id != operation_id
+                    or writer.filename != writer.operation.operation_id + ".json"
+                    or type(writer._revision) is not int
+                    or (schema == journal.SCHEMA and not 0 <= writer._revision < 8)
+                    or (schema == multi_journal.SCHEMA
+                        and not 0 <= writer._revision < multi_journal.MAX_REVISIONS)):
+                _fail("journal_replacement_writer_unavailable")
+            operation_id = writer.operation.operation_id
+            previous_revision = writer._revision
+            previous_digest = writer._digest
+            previous_file_identity = writer._file_identity
+            previous_acknowledgement = None
+            reopened_previous = None
+            if previous_revision == 0:
+                if (previous_digest != "0" * 64 or previous_file_identity is not None
+                        or (schema == multi_journal.SCHEMA and writer._tip is not None)):
+                    _fail("journal_replacement_revision_conflict")
+            else:
+                if schema == journal.SCHEMA:
+                    reopened_previous = journal_owner._observe_for_lifecycle_lease(
+                        lease, lambda: journal.reopen_journal(
+                            writer.root, writer.filename, expected_revision=previous_revision,
+                            expected_digest=previous_digest))
+                else:
+                    reopened_previous = journal_owner._observe_for_lifecycle_lease(
+                        lease, lambda: multi_journal.reopen_multi_request_journal(
+                            writer.root, writer.filename, expected_revision=previous_revision,
+                            expected_digest=previous_digest))
+                if (reopened_previous.revision != previous_revision
+                        or reopened_previous.digest != previous_digest
+                        or reopened_previous.file_identity != previous_file_identity
+                        or reopened_previous.operation != writer.operation):
+                    _fail("journal_replacement_revision_conflict")
+
+            with journal_owner._lock:
+                journal_owner._assert_lifecycle_lease_locked(lease)
                 with self._lock:
                     self._require_live()
                     with self._ledger._lock:
@@ -974,16 +1010,26 @@ class WindowsProtectedStorageAdmissionCharacterization:
                             self, journal_owner, root, writer, schema, operation_id, filename,
                             previous_revision, previous_digest, previous_file_identity,
                             prior_row, previous_acknowledgement, prior_inventory,
-                            _JOURNAL_REPLACEMENT_ISSUER)
+                            _JOURNAL_REPLACEMENT_ISSUER,
+                            lease if not owns_lease else None)
                         return self._ledger.admit_journal_replacement(operation, binding)
+        finally:
+            self._release_refresh_slot(refresh_token)
+            if owns_lease:
+                journal_owner._release_lifecycle_lease(lease)
 
     def complete_journal_replacement_for_characterization(
-            self, operation, write_admission, journal_owner, acknowledgement):
+            self, operation, write_admission, journal_owner, acknowledgement, *,
+            _journal_lease=None):
         """Commit only a verified replacement returned by the bound live writer."""
         from core import generation_protected_journal as protected_journal
 
         bound_attempt = False
+        owns_lease = False
+        lease = _journal_lease
         try:
+            if type(journal_owner) is not protected_journal.WindowsProtectedJournalCharacterization:
+                _fail("journal_replacement_binding_invalid")
             with self._lock:
                 self._require_live()
                 with self._ledger._lock:
@@ -995,54 +1041,73 @@ class WindowsProtectedStorageAdmissionCharacterization:
                             or binding.journal_owner is not journal_owner):
                         _fail("journal_replacement_binding_invalid")
                     bound_attempt = True
+            if binding.journal_lease is not _journal_lease:
+                _fail("journal_replacement_binding_invalid")
+            if lease is None:
+                lease, _, _ = journal_owner._begin_lifecycle_lease(binding.schema)
+                owns_lease = True
+            else:
+                journal_owner._assert_lifecycle_lease(lease)
 
             with journal_owner._lock:
-                if (type(journal_owner) is not protected_journal.WindowsProtectedJournalCharacterization
-                        or journal_owner._closed or journal_owner._uncertain
-                        or journal_owner._native is not binding.root_owner
+                journal_owner._assert_lifecycle_lease_locked(lease)
+                if (journal_owner._uncertain or journal_owner._native is not binding.root_owner
                         or binding.root_owner is not self._roots.get("private_journal")):
                     _fail("journal_replacement_writer_unavailable")
-                journal_owner._check()
                 writer = binding.writer
                 if (writer._uncertain or getattr(writer, "_closed", False)
                         or writer.operation.operation_id != binding.operation_id
                         or writer._revision != binding.previous_revision + 1):
                     _fail("journal_replacement_ack_conflict")
-                if binding.schema == journal.SCHEMA:
-                    if (type(acknowledgement) is not journal.ReopenedJournal
-                            or acknowledgement is None):
-                        _fail("journal_replacement_ack_conflict")
-                    verified = journal_owner.reopen_journal_for_characterization(
-                        binding.filename, expected_revision=acknowledgement.revision,
-                        expected_digest=acknowledgement.digest)
-                    if (verified != acknowledgement or acknowledgement.operation != writer.operation):
-                        _fail("journal_replacement_ack_conflict")
-                else:
-                    if (type(acknowledgement) is not multi_journal.JournalAcknowledgement
-                            or writer._tip is not acknowledgement):
-                        _fail("journal_replacement_ack_conflict")
-                    verified = journal_owner.reopen_multi_request_journal_for_characterization(
-                        binding.filename, expected_revision=acknowledgement.revision,
-                        expected_digest=acknowledgement.digest)
-                    if (verified.revision != acknowledgement.revision
-                            or verified.digest != acknowledgement.digest
-                            or verified.file_identity != acknowledgement.file_identity
-                            or verified.operation != writer.operation):
-                        _fail("journal_replacement_ack_conflict")
 
-                target = binding.root_owner._path / binding.filename
-                file_identity = journal._file_identity(journal._ordinary(target, directory=False))
-                if (file_identity != acknowledgement.file_identity
-                        or writer._file_identity != file_identity
-                        or writer._digest != acknowledgement.digest):
+            # All reopen, native identity, and inventory observations happen
+            # outside Journal/admission/ledger locks. Close can publish
+            # revocation during any of these operations.
+            journal_owner._check()
+            if binding.schema == journal.SCHEMA:
+                if (type(acknowledgement) is not journal.ReopenedJournal
+                        or acknowledgement is None):
                     _fail("journal_replacement_ack_conflict")
-                inventory = self._scan()
-                free_bytes = self._free_bytes()
-                native_row = inventory["private_journal"].get(binding.filename)
-                if (native_row is None
-                        or journal_owner._file_acls.get(native_row[0]) != native_row[2]):
-                    _fail("journal_replacement_identity_conflict")
+                verified = journal_owner._observe_for_lifecycle_lease(
+                    lease, lambda: journal.reopen_journal(
+                        writer.root, binding.filename,
+                        expected_revision=acknowledgement.revision,
+                        expected_digest=acknowledgement.digest))
+                if (verified != acknowledgement or acknowledgement.operation != writer.operation):
+                    _fail("journal_replacement_ack_conflict")
+            else:
+                if (type(acknowledgement) is not multi_journal.JournalAcknowledgement
+                        or writer._tip is not acknowledgement):
+                    _fail("journal_replacement_ack_conflict")
+                verified = journal_owner._observe_for_lifecycle_lease(
+                    lease, lambda: multi_journal.reopen_multi_request_journal(
+                        writer.root, binding.filename,
+                        expected_revision=acknowledgement.revision,
+                        expected_digest=acknowledgement.digest))
+                if (verified.revision != acknowledgement.revision
+                        or verified.digest != acknowledgement.digest
+                        or verified.file_identity != acknowledgement.file_identity
+                        or verified.operation != writer.operation):
+                    _fail("journal_replacement_ack_conflict")
 
+            journal_owner._assert_lifecycle_lease(lease)
+            target = binding.root_owner._path / binding.filename
+            file_identity = journal._file_identity(journal._ordinary(target, directory=False))
+            if (file_identity != acknowledgement.file_identity
+                    or writer._file_identity != file_identity
+                    or writer._digest != acknowledgement.digest):
+                _fail("journal_replacement_ack_conflict")
+            inventory = self._scan()
+            free_bytes = self._free_bytes()
+            native_row = inventory["private_journal"].get(binding.filename)
+            with journal_owner._lock:
+                known_acl = journal_owner._file_acls.get(native_row[0]) if native_row is not None else None
+            if (native_row is None or known_acl != native_row[2]):
+                _fail("journal_replacement_identity_conflict")
+
+            journal_owner._assert_lifecycle_lease(lease)
+            with journal_owner._lock:
+                journal_owner._assert_lifecycle_lease_locked(lease)
                 with self._lock:
                     self._require_live()
                     with self._ledger._lock:
@@ -1054,6 +1119,10 @@ class WindowsProtectedStorageAdmissionCharacterization:
                             _JOURNAL_REPLACEMENT_ISSUER)
                         result = self._ledger.complete_journal_replacement(
                             operation, write_admission, inventory, free_bytes, completion)
+                        self._journal_writer_integrated = True
+                        if binding.journal_lease is not None:
+                            journal_owner._mark_lifecycle_lease_committed_locked(
+                                binding.journal_lease, acknowledgement)
                         return result
         except BaseException as error:
             if bound_attempt:
@@ -1068,6 +1137,9 @@ class WindowsProtectedStorageAdmissionCharacterization:
                          or str(error) == "write_admission_unavailable")):
                 raise
             _fail("journal_replacement_observation_unavailable")
+        finally:
+            if owns_lease:
+                journal_owner._release_lifecycle_lease(lease)
 
     def retain_journal_replacement_uncertain_for_characterization(self, operation, write_admission):
         """Retain the full replacement upper bound after any uncertain writer outcome."""
@@ -1499,6 +1571,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
             base = self._ledger.readiness()
             base["writer_integrated"] = self._asset_writer_integrated
             base["promotion_writer_integrated"] = self._promotion_writer_integrated
+            base["journal_writer_integrated"] = self._journal_writer_integrated
             base.update({"filesystem": "local_ntfs_observed" if not self._invalid and not self._closed
                          else "unverified",
                          "native_root_identity": "observed_unchanged" if not self._invalid and not self._closed
@@ -1517,34 +1590,62 @@ class WindowsProtectedStorageAdmissionCharacterization:
             self._ledger.close()
             self._closed = True
 
-    def _refresh(self):
+    def _claim_refresh_slot(self):
+        """Serialize root observations without holding a mutex during I/O."""
+        while True:
+            with self._refresh_lock:
+                if not self._refresh_active:
+                    token = threading.Event()
+                    self._refresh_active = True
+                    self._refresh_done = token
+                    return token
+                token = self._refresh_done
+            token.wait()
+
+    def _release_refresh_slot(self, token):
         with self._refresh_lock:
-            try:
-                with self._lock:
-                    self._require_live()
-                    with self._ledger._lock:
-                        if self._ledger._active_write is not None:
-                            _fail("storage_write_in_progress")
-                self._check_roots()
-                inventory = self._scan()
-                free_bytes = self._free_bytes()
-            except ValueError as error:
-                if str(error) == "storage_write_in_progress":
-                    raise
-                with self._lock:
-                    self._invalidate()
-                _fail("protected_storage_observation_unavailable")
-            except Exception:
-                with self._lock:
-                    self._invalidate()
-                _fail("protected_storage_observation_unavailable")
+            if self._refresh_done is not token:
+                return
+            self._refresh_active = False
+            self._refresh_done = None
+        token.set()
+
+    def _refresh_observation(self):
+        try:
             with self._lock:
                 self._require_live()
-                try:
-                    self._ledger.observe_inventory(inventory, free_bytes)
-                except ValueError:
-                    self._invalidate()
-                    raise
+                with self._ledger._lock:
+                    if self._ledger._active_write is not None:
+                        _fail("storage_write_in_progress")
+            # Native root/file enumeration and disk-space observation happen
+            # with no admission, ledger, or refresh mutex held.
+            self._check_roots()
+            inventory = self._scan()
+            free_bytes = self._free_bytes()
+        except ValueError as error:
+            if str(error) == "storage_write_in_progress":
+                raise
+            with self._lock:
+                self._invalidate()
+            _fail("protected_storage_observation_unavailable")
+        except Exception:
+            with self._lock:
+                self._invalidate()
+            _fail("protected_storage_observation_unavailable")
+        with self._lock:
+            self._require_live()
+            try:
+                self._ledger.observe_inventory(inventory, free_bytes)
+            except ValueError:
+                self._invalidate()
+                raise
+
+    def _refresh(self):
+        token = self._claim_refresh_slot()
+        try:
+            self._refresh_observation()
+        finally:
+            self._release_refresh_slot(token)
 
     def _check_roots(self):
         if self._closed or self._invalid:
