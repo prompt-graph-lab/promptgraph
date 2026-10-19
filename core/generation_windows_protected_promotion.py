@@ -200,6 +200,7 @@ class ProtectedDurablePromotionCharacterization:
         self._lock = threading.RLock()
         self._attempted = self._busy = self._closed = self._uncertain = self._revoking = False
         self._receipt = None
+        self._pending_receipt = None
         self._executor_event_boundary = _PromotionEventBoundary()
         # Candidate append is a separate commit from the executor's count-only
         # event. Keep its revocation lease independent and one-shot as well.
@@ -240,7 +241,6 @@ class ProtectedDurablePromotionCharacterization:
             if (protected._stream_images.get((observation.request_id, descriptor.identity)) is not observation
                     or protected._images.get(key) is not image):
                 w._fail("protected_promotion_source_mismatch")
-            protected._check()
             record = protected._files.get(key)
             if record is None:
                 w._fail("protected_promotion_source_mismatch")
@@ -248,17 +248,44 @@ class ProtectedDurablePromotionCharacterization:
             extension = path.suffix[1:]
             if extension not in SUPPORTED_EXTENSIONS or descriptor.image_format != extension:
                 w._fail("protected_promotion_source_mismatch")
-            if protected._observe(image.storage_identity, image.purpose, extension) != image:
-                w._fail("protected_promotion_source_changed")
-            data = protected._bytes(record)
-            image_format, width, height = protected._verifier._verify(io.BytesIO(data), extension)
-            if (len(data) != image.byte_count or hashlib.sha256(data).hexdigest() != image.content_sha256
-                    or (image_format, width, height) != (image.image_format, image.width, image.height)):
-                w._fail("protected_promotion_source_changed")
-            protected._check()
-            return data, extension
+        # File identity/ACL checks, byte reads and decode can block. The
+        # original image owner remains authoritative, but its lifecycle lock
+        # is held only while snapshotting the exact retained record.
+        protected._check()
+        if protected._observe(image.storage_identity, image.purpose, extension) != image:
+            w._fail("protected_promotion_source_changed")
+        data = protected._bytes(record)
+        image_format, width, height = protected._verifier._verify(io.BytesIO(data), extension)
+        if (len(data) != image.byte_count or hashlib.sha256(data).hexdigest() != image.content_sha256
+                or (image_format, width, height) != (image.image_format, image.width, image.height)):
+            w._fail("protected_promotion_source_changed")
+        protected._check()
+        with protected._lock:
+            if (protected._files.get(key) is not record
+                    or protected._stream_images.get((observation.request_id, descriptor.identity)) is not observation
+                    or protected._images.get(key) is not image):
+                w._fail("protected_promotion_source_mismatch")
+        return data, extension
 
     def promote_for_characterization(self):
+        return self._promote_for_characterization()
+
+    def promote_with_capacity_admission_for_characterization(
+            self, admission_owner, operation_id, *, characterization=False, disposable_opt_in=False):
+        """Opt into one operation-level capacity reservation for this exact batch."""
+        from core import generation_storage_admission as admission
+
+        if characterization is not True or disposable_opt_in is not True:
+            w._fail("execution_unavailable")
+        if type(admission_owner) is not admission.WindowsProtectedStorageAdmissionCharacterization:
+            w._fail("storage_admission_owner_required")
+        protected = self._protected_owner
+        if any(admission_owner._roots.get(purpose) is not protected._roots.get(purpose)
+               for purpose in ("temporary_containment", "promoted_assets")):
+            w._fail("storage_root_owner_mismatch")
+        return self._promote_for_characterization((admission_owner, operation_id))
+
+    def _promote_for_characterization(self, capacity=None):
         with self._lock:
             if self._closed or self._revoking:
                 w._fail("promotion_closed")
@@ -272,9 +299,16 @@ class ProtectedDurablePromotionCharacterization:
         prepared, remote = accepted._prepared, accepted._remote
         key = (prepared.request_id, remote.identity)
         claimed = False
+        admission_owner = operation_id = reservation = write_admission = None
+        capacity_lease = None
+        writer_started = False
+        receipt = None
         try:
             protected._claim_protected_promotion_for_characterization(self, acceptance, accepted, key)
             claimed = True
+            if capacity is not None:
+                admission_owner, operation_id = capacity
+                capacity_lease = protected._begin_promotion_capacity_lease_for_characterization(self)
             # Acceptance inspection performs exact original-host freshness and
             # complete source native/content verification outside owner locks.
             acceptance.inspect_for_characterization(accepted)
@@ -285,9 +319,21 @@ class ProtectedDurablePromotionCharacterization:
                     or tuple(item.descriptor_identity for item in sources)
                     != tuple(item.identity for item in descriptors)):
                 w._fail("protected_promotion_incomplete")
-            expected_bytes = sum(item.image.byte_count for item in sources)
+            expected_bytes = 0
+            if capacity is not None:
+                from core import generation_storage_admission as admission
+
+                maximum = admission_owner._limits.shared_temporary_and_promoted_bytes
+                for source in sources:
+                    size = source.image.byte_count
+                    if (type(size) is not int or size <= 0
+                            or expected_bytes > maximum - size):
+                        w._fail("storage_capacity_exceeded")
+                    expected_bytes += size
+            else:
+                expected_bytes = sum(item.image.byte_count for item in sources)
+            protected._check()
             with protected._lock:
-                protected._check()
                 if (len(protected._files) + len(protected._unobserved_files) + len(sources)
                         > protected._limits.images
                         or protected._used_bytes + expected_bytes > protected._limits.aggregate_bytes
@@ -297,27 +343,50 @@ class ProtectedDurablePromotionCharacterization:
                                for item in sources)):
                     w._fail("storage_capacity")
 
+            if capacity is not None:
+                from core import generation_storage_admission as admission
+
+                operation = admission_owner.begin_operation_for_characterization(operation_id)
+                reservation = admission_owner.reserve_for_characterization(operation, {
+                    "promoted_assets": admission.CapacityEstimate(expected_bytes, len(sources))})
+                write_admission = admission_owner.admit_write_for_characterization(operation, reservation)
+                admission_owner.assert_write_admission_for_characterization(operation, write_admission)
+
             promoted = []
             for descriptor, source in zip(descriptors, sources):
                 if source.image.purpose != "temporary_containment":
                     w._fail("protected_promotion_source_mismatch")
+                if admission_owner is not None:
+                    admission_owner.assert_write_admission_for_characterization(operation, write_admission)
                 data, extension = self._read_source_bytes(descriptor, source)
+                if admission_owner is not None and not promoted:
+                    # The first CREATE_NEW is downstream of both the complete
+                    # reservation and a fresh original-host/source recheck.
+                    acceptance.inspect_for_characterization(accepted)
+                    admission_owner.assert_write_admission_for_characterization(
+                        operation, write_admission)
+                writer_started = True
                 destination = protected.create_image_for_characterization(
-                    "promoted_assets", data, extension=extension, _promotion_owner=self)
+                    "promoted_assets", data, extension=extension, _promotion_owner=self,
+                    _admission_lease=capacity_lease,
+                    _admission_context=((admission_owner, operation, write_admission)
+                                        if admission_owner is not None else None))
                 if (destination.purpose != "promoted_assets"
                         or destination.byte_count != source.image.byte_count
                         or destination.content_sha256 != source.image.content_sha256
                         or (destination.image_format, destination.width, destination.height)
                         != (source.image.image_format, source.image.width, source.image.height)):
                     w._fail("protected_promotion_destination_mismatch")
-                if protected.inspect_image_for_characterization(destination) is not destination:
-                    w._fail("protected_promotion_destination_mismatch")
+                if admission_owner is None:
+                    if protected.inspect_image_for_characterization(destination) is not destination:
+                        w._fail("protected_promotion_destination_mismatch")
                 promoted.append(ProtectedPromotedImage(descriptor.identity, source, destination))
 
             # Recheck both sides after the last native destination verification.
             acceptance.inspect_for_characterization(accepted)
-            for row in promoted:
-                protected.inspect_image_for_characterization(row.promoted_image)
+            if admission_owner is None:
+                for row in promoted:
+                    protected.inspect_image_for_characterization(row.promoted_image)
             receipt = self._build_receipt(promoted)
             # Destination verification may be slow. Recheck the exact original
             # host binding after it, immediately before joint publication.
@@ -326,10 +395,25 @@ class ProtectedDurablePromotionCharacterization:
             # Serialize publication against protected close and acceptance
             # close/invalidation. Preserve protected -> acceptance lock order;
             # the host-freshness callback has already completed outside locks.
+            if admission_owner is not None:
+                with self._lock:
+                    if (self._closed or self._revoking or self._uncertain
+                            or not self._busy or self._receipt is not None
+                            or self._pending_receipt is not None):
+                        w._fail("protected_promotion_invalidated")
+                    self._pending_receipt = receipt
+                admission_owner.complete_protected_promotion_batch_for_characterization(
+                    operation, write_admission, protected, self, acceptance, accepted, receipt,
+                    capacity_lease,
+                    final_revalidate=lambda: acceptance.inspect_for_characterization(accepted))
+                return receipt
+
+            # The legacy path keeps its existing receipt contract. Move the
+            # directory observation out of the owner lock; only compare the
+            # bounded in-memory snapshot at the final boundary.
+            protected._check()
+            inventory = {(purpose, path.name) for purpose, _, path in protected._inventory()}
             with protected._lock:
-                protected._check()
-                inventory = {(purpose, path.name)
-                             for purpose, _, path in protected._inventory()}
                 if inventory != set(protected._files):
                     protected._uncertain = True
                     w._fail("unexpected_existing_file")
@@ -351,6 +435,22 @@ class ProtectedDurablePromotionCharacterization:
                         self._receipt = receipt
             return receipt
         except BaseException as error:
+            if admission_owner is not None:
+                try:
+                    if write_admission is not None:
+                        if writer_started:
+                            admission_owner.retain_uncertain_for_characterization(
+                                operation, write_admission)
+                        else:
+                            admission_owner.cancel_write_before_create_for_characterization(
+                                operation, write_admission)
+                    elif reservation is not None:
+                        admission_owner.cancel_before_write_for_characterization(operation, reservation)
+                except BaseException:
+                    # A concurrent admission close/invalidation has already
+                    # retained the unresolved upper bound, or authority was
+                    # lost before a safe release could be established.
+                    pass
             with self._lock:
                 self._uncertain = True
             if claimed:
@@ -362,11 +462,16 @@ class ProtectedDurablePromotionCharacterization:
         finally:
             with self._lock:
                 self._busy = False
+                if self._pending_receipt is receipt and self._receipt is not receipt:
+                    self._pending_receipt = None
             if claimed:
-                with protected._lock:
-                    if protected._promotion_owner is self:
-                        protected._promotion_busy = False
-                        protected._promotion_owner = protected._promotion_thread = None
+                if capacity_lease is not None:
+                    protected._finish_promotion_capacity_lease_for_characterization(self, capacity_lease)
+                else:
+                    with protected._lock:
+                        if protected._promotion_owner is self:
+                            protected._promotion_busy = False
+                            protected._promotion_owner = protected._promotion_thread = None
 
     def inspect_for_characterization(self, receipt=None):
         return self._inspect_for_characterization(receipt, None)

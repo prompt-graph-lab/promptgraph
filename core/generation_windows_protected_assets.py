@@ -225,7 +225,8 @@ class WindowsProtectedAssetsCharacterization:
                                          len(data), image_format, width, height)
 
     def create_image_for_characterization(self, purpose, data, *, extension="png",
-                                          _promotion_owner=None, _admission_lease=None):
+                                          _promotion_owner=None, _admission_lease=None,
+                                          _admission_context=None):
         # The admitted path owns a capacity lease which makes close wait for
         # its terminal accounting. Keep the native handle lifecycle lock short:
         # CREATE_NEW and immediate handle retention must be atomic with close,
@@ -233,7 +234,8 @@ class WindowsProtectedAssetsCharacterization:
         # from publishing revocation while this writer is suspended.
         if _admission_lease is not None:
             return self._create_admitted_image_for_characterization(
-                purpose, data, extension, _admission_lease)
+                purpose, data, extension, _admission_lease,
+                promotion_owner=_promotion_owner, admission_context=_admission_context)
         with self._lock:
             promotion_write = (self._promotion_busy and self._promotion_owner is _promotion_owner
                                and self._promotion_thread == threading.get_ident())
@@ -304,12 +306,43 @@ class WindowsProtectedAssetsCharacterization:
                 # until owner close. No cleanup or retry is attempted.
                 raise  # Retain incomplete/uncertain evidence; never remove it.
 
-    def _create_admitted_image_for_characterization(self, purpose, data, extension, lease):
+    def _create_admitted_image_for_characterization(
+            self, purpose, data, extension, lease, *, promotion_owner=None,
+            admission_context=None):
+        if promotion_owner is not None or admission_context is not None:
+            from core import generation_storage_admission as admission
+            from core import generation_windows_protected_promotion as promotion
+
+            if (promotion_owner is not None
+                    and type(promotion_owner) is not promotion.ProtectedDurablePromotionCharacterization):
+                w._fail("protected_promotion_binding_invalid")
+            if admission_context is not None:
+                if (type(admission_context) is not tuple or len(admission_context) != 3
+                        or type(admission_context[0]) is not
+                           admission.WindowsProtectedStorageAdmissionCharacterization):
+                    w._fail("protected_promotion_capacity_mismatch")
+        def assert_batch_leases():
+            # Keep the established asset -> promotion -> admission order. The
+            # checks are in-memory only and never enclose a native file call.
+            if promotion_owner is not None:
+                with promotion_owner._lock:
+                    if (promotion_owner._closed or promotion_owner._revoking
+                            or promotion_owner._uncertain or not promotion_owner._busy):
+                        w._fail("protected_promotion_invalidated")
+            if admission_context is not None:
+                admission_owner, operation, write_admission = admission_context
+                admission_owner.assert_write_admission_for_characterization(
+                    operation, write_admission)
+
         with self._lock:
             admitted_write = (self._capacity_busy and self._capacity_lease is lease
                               and self._capacity_thread == threading.get_ident())
+            promotion_write = (self._promotion_busy and self._promotion_owner is promotion_owner
+                               and self._promotion_thread == threading.get_ident()
+                               and promotion_owner is not None)
             if (not admitted_write or self._stream_busy or self._stream_batch_busy
-                    or self._promotion_busy):
+                    or self._promotion_busy and not promotion_write
+                    or promotion_owner is not None and not promotion_write):
                 w._fail("storage_busy")
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
@@ -325,8 +358,10 @@ class WindowsProtectedAssetsCharacterization:
         # filesystem. The capacity lease excludes other writes; keep those
         # observations outside the lifecycle lock so close can revoke promptly.
         self._check()
+        assert_batch_leases()
         inventory = {(stored_purpose, path.name)
                      for stored_purpose, _, path in self._inventory()}
+        assert_batch_leases()
         with self._lock:
             if inventory != set(self._files):
                 self._uncertain = True
@@ -343,6 +378,7 @@ class WindowsProtectedAssetsCharacterization:
             key = (purpose, name)
             path = root._path / name
             _, c, f, _, _, _ = root._api
+            assert_batch_leases()
             handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
                 c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
                 c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
@@ -362,25 +398,31 @@ class WindowsProtectedAssetsCharacterization:
             # These native reads can be slow. The retained unobserved handle
             # keeps the file owned while close waits on _capacity_idle.
             record = path, handle, w._identity(handle), _file_acl(handle, root)
+            assert_batch_leases()
             with self._lock:
                 self._files[key] = record
                 self._unobserved_files.remove((path, handle))
             self._check()
+            assert_batch_leases()
             self._fault("after_file_create")
             self._check()
+            assert_batch_leases()
             for offset in range(0, len(data), CHUNK_BYTES):
                 chunk = data[offset:offset + CHUNK_BYTES]
                 self._check()
+                assert_batch_leases()
                 try:
                     _, written = f.WriteFile(handle, chunk)
                 finally:
                     self._check()
+                    assert_batch_leases()
                 if written != len(chunk):
                     w._fail("incomplete_write")
                 self._fault("after_file_write")
                 self._check()
             f.FlushFileBuffers(handle)
             self._check()
+            assert_batch_leases()
             self._fault("after_file_sync")
             self._check()
             image = self._observe(name, purpose, extension)
@@ -403,6 +445,34 @@ class WindowsProtectedAssetsCharacterization:
             # The native file and handle remain recorded for owner close; no
             # cleanup, overwrite or retry is attempted.
             raise
+
+    def _begin_promotion_capacity_lease_for_characterization(self, promotion_owner):
+        """Pin a complete admitted promotion batch against asset close/writers."""
+        lease = object()
+        with self._lock:
+            if (self._closed or self._revoking or self._invalid or self._uncertain
+                    or not self._writable):
+                w._fail("storage_owner_unavailable")
+            if (not self._promotion_busy or self._promotion_owner is not promotion_owner
+                    or self._promotion_thread != threading.get_ident()
+                    or self._capacity_busy or self._stream_busy or self._stream_batch_busy):
+                w._fail("storage_busy")
+            self._capacity_busy = True
+            self._capacity_lease = lease
+            self._capacity_thread = threading.get_ident()
+            self._capacity_idle.clear()
+        return lease
+
+    def _finish_promotion_capacity_lease_for_characterization(self, promotion_owner, lease):
+        with self._lock:
+            if (self._capacity_busy and self._capacity_lease is lease
+                    and self._capacity_thread == threading.get_ident()
+                    and self._promotion_owner is promotion_owner):
+                self._capacity_busy = False
+                self._capacity_lease = self._capacity_thread = None
+                self._promotion_busy = False
+                self._promotion_owner = self._promotion_thread = None
+                self._capacity_idle.set()
 
     def create_image_with_admission_for_characterization(
             self, admission_owner, operation_id, purpose, data, *, extension="png",
@@ -1158,10 +1228,16 @@ class WindowsProtectedAssetsCharacterization:
     def _claim_protected_promotion_for_characterization(
             self, promotion_owner, acceptance_owner, accepted, key):
         """Pin the one original-owner promotion attempt before callbacks or I/O."""
+        # Root/file observations touch native handles and must not hold the
+        # lifecycle lock. The exact owner state is rechecked at the claim below.
+        self._check()
         with self._lock:
+            if self._closed:
+                w._fail("closed_observation")
+            if self._revoking:
+                w._fail("closing_observation")
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
-            self._check()
             with acceptance_owner._lock:
                 if (acceptance_owner._protected_owner is not self
                         or acceptance_owner._receipt is not accepted
