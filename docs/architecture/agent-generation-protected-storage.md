@@ -1256,11 +1256,12 @@ All production gates remain closed:
 
 ## C2B-8D-17E-A protected Journal replacement capacity contract
 
-`WindowsProtectedStorageAdmissionCharacterization` now has a private
-Journal-specific preflight and reconciliation seam for the existing protected
-v1 and multi-request Journal writers. It is accounting characterization only:
-neither Journal writer calls this seam, and no writer schema, revision rule,
-append implementation, or production capability was changed.
+`C2B-8D-17E-A` introduced a private Journal-specific preflight and
+reconciliation seam on `WindowsProtectedStorageAdmissionCharacterization` for
+the existing protected V1 and multi-request Journal writers. At that stage it
+was accounting characterization only: neither Journal writer called the
+seam, and no writer schema, revision rule, append implementation, or
+production capability was changed.
 
 `admit_journal_replacement_for_characterization(operation, journal_owner)`
 requires the exact live admission owner, its native `private_journal` root
@@ -1315,15 +1316,62 @@ again at completion. This is process-local accounting and native observation,
 not a cross-process quota, disk-space guarantee, power-loss guarantee,
 cryptographic author authentication, or production Journal authorization.
 
-The follow-up C2B-8D-17E-B boundary must compose the exact reservation around
-the existing v1 and multi-request writer calls: reserve before lock/TMP
-CREATE_NEW, retain the token across write/flush/fsync/replace/reopen/lock
-release, and pass only the actual writer acknowledgement into final
-reconciliation. It must account for before-create refusal separately from
-post-create or post-replace uncertainty, preserve both existing Journal
-contracts and the 100-request cumulative limits, and keep native I/O and writer
-callbacks outside ledger locks. Until that integration is separately
-characterized, `writer_integrated=false` and all production gates remain
-closed: `execution_available=false`,
-`protected_storage_available=false`, `promotion_available=false`,
-`candidate_publication_allowed=false`, and `authorship=unverified`.
+The ordinary Journal APIs remain available and preserve their existing
+behavior. The explicitly selected C2B-8D-17E-B methods on
+`WindowsProtectedJournalCharacterization` now compose one exact capacity
+admission around each existing V1 or multi-request append. The integration
+does not replace or reinterpret either Journal schema, checkpoint/event order,
+the V1 eight-checkpoint ceiling, the multi-request 100-request/300-revision
+ceiling, or its cumulative-write budget. It creates no alternate writer.
+
+For an integrated append, the protected Journal owner first claims one private
+lifecycle lease. A multi-request call first validates its caller-supplied
+acknowledged tip against the exact live writer tip; the admission owner then
+verifies the shared native root, writer, operation, schema and current
+revision, and reserves the full replacement TMP bound and lock entry. Only
+after that reservation is committed can the existing writer attempt `.lock`
+and `.tmp` creation. The existing writer still
+owns CREATE_NEW, flush/fsync, replace, native reopen and its internal
+acknowledgement. The integration then reopens and independently checks the
+exact next revision/digest/file identity, final protected ACL and byte count,
+and the complete expected inventory delta. It reconciles actual used capacity
+and clears the reservation before the host-visible acknowledgement is
+returned. Each later revision receives a fresh one-shot admission; a prior
+capacity operation can continue only for the same exact Journal operation and
+writer.
+
+The final ledger commit and publication of the exact acknowledgement share the
+lock order `Journal owner → admission owner → ledger`; native observations and
+writer/fault callbacks run outside those locks. The lifecycle lease lets a
+concurrent Journal-owner Close publish revocation while native I/O or a
+callback is blocked, then wait without closing the root underneath the
+operation. A reentrant Close from the active writer callback is rejected.
+Admission-owner Close or invalidation fences the same final commit. If Close or
+invalidation wins before the final commit, no acknowledgement is exposed and
+the full replacement upper bound is retained as uncertain. If the exact
+accounting/acknowledgement commit wins first, Close waits for the lease to
+finish and the completed acknowledgement remains valid.
+
+Pre-admission refusal leaves the writer and inventory untouched and creates
+no files. After an admission is issued, the implementation deliberately has no
+generic pre-create cancellation: any uncertain CREATE_NEW, write, flush/fsync,
+replace, reopen, ACL/identity observation, or ledger-completion outcome
+invalidates the integrated writer and retains the full 1 MiB/two-entry upper
+bound. The previous JSON remains separately observed-used; partial `.tmp`,
+`.lock`, or replaced JSON evidence is preserved. No retry, takeover, cleanup,
+replay, automatic capacity release, or later append follows an uncertain
+outcome. Successful replacements account the actual new JSON once, replacing
+the previous observed JSON charge.
+
+This is still an explicitly opted-in, disposable, offline characterization
+seam. It is not connected by default to `GenerationExecutorJournalIntent`,
+does not authorize a send, and does not reconstruct authority from reopened
+Journal bytes. A host must explicitly choose the integrated append method and
+hold the exact capacity operation if it wants this accounting boundary; the
+ordinary path remains unchanged. The process-local reservation is not an OS
+quota, cross-process exclusion, disk-space guarantee, power-loss durability,
+cryptographic author authentication, or production Journal authorization.
+All production gates remain closed:
+`execution_available=false`, `protected_storage_available=false`,
+`promotion_available=false`, `candidate_publication_allowed=false`, and
+`authorship=unverified`.
