@@ -4,13 +4,14 @@ This owner combines explicit native root observations with process-local
 accounting. A reservation is not an OS quota, writer capability, execution
 authorization, durable Journal guarantee, or cross-process lock.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import shutil
 import threading
 
 from core import generation_ownership_journal as journal
+from core import generation_multi_request_journal as multi_journal
 from core import generation_windows_protected_storage as windows
 from core.comfy_output_containment import ContainmentLimits
 
@@ -20,6 +21,7 @@ _PURPOSES = ("private_journal", "temporary_containment", "retained_uncertain",
              "promoted_assets", "selected_project_json")
 _WRITABLE = _PURPOSES[:-1]
 _JOURNAL_BYTES = journal.MAX_BYTES
+_JOURNAL_REPLACEMENT_LIVE_BYTES = multi_journal.MAX_LIVE_OPERATION_BYTES
 _ASSET_BYTES = ContainmentLimits().aggregate_bytes
 _MAX_OPERATION_BYTES = journal.MAX_OPERATION_BYTES + _JOURNAL_BYTES
 _MAX_INVENTORY_ENTRIES = 256
@@ -34,6 +36,7 @@ _MAX_PROCESS_ACCOUNTING_SCOPES = 128
 # constructing another ledger over the same writable roots.
 _PROCESS_ACCOUNTING_SCOPE_LOCK = threading.Lock()
 _PROCESS_ACCOUNTING_SCOPES = set()
+_JOURNAL_REPLACEMENT_ISSUER = object()
 
 
 def _fail(code):
@@ -45,6 +48,45 @@ class CapacityEstimate:
     """Host-supplied upper bound; it is not an observed file measurement."""
     byte_upper_bound: int
     entry_upper_bound: int
+
+
+@dataclass(frozen=True)
+class _JournalReplacementBinding:
+    admission_owner: object = field(repr=False, compare=False)
+    journal_owner: object = field(repr=False, compare=False)
+    root_owner: object = field(repr=False, compare=False)
+    writer: object = field(repr=False, compare=False)
+    schema: str
+    operation_id: str
+    filename: str
+    previous_revision: int
+    previous_digest: str = field(repr=False)
+    previous_file_identity: tuple | None = field(repr=False)
+    previous_native_row: tuple | None = field(repr=False)
+    previous_acknowledgement: object = field(repr=False, compare=False)
+    prior_inventory: tuple = field(repr=False)
+    _issuer: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class _JournalReplacementCompletion:
+    binding: _JournalReplacementBinding = field(repr=False, compare=False)
+    acknowledgement: object = field(repr=False, compare=False)
+    file_identity: tuple = field(repr=False)
+    native_row: tuple = field(repr=False)
+    _issuer: object = field(repr=False, compare=False)
+
+
+def _freeze_inventory(inventory):
+    if type(inventory) is not dict or set(inventory) != set(_WRITABLE):
+        return None
+    frozen = []
+    for purpose in _WRITABLE:
+        entries = inventory[purpose]
+        if type(entries) is not dict:
+            return None
+        frozen.append((purpose, tuple(sorted(entries.items()))))
+    return tuple(frozen)
 
 
 @dataclass(frozen=True)
@@ -95,11 +137,12 @@ def _fits(current, amount, limit):
 class _CapacityLedger:
     """Portable accounting kernel. Tokens are exact object identities."""
 
-    def __init__(self, limits):
+    def __init__(self, limits, *, owner_identity=None):
         if type(limits) is not ProtectedStorageCapacityLimits:
             _fail("invalid_capacity_limits")
         limits.validate()
         self._limits = limits
+        self._owner_identity = owner_identity
         self._lock = threading.RLock()
         self._closed = False
         self._invalid = False
@@ -112,6 +155,8 @@ class _CapacityLedger:
         self._uncertain = {p: [0, 0] for p in _WRITABLE}
         self._inventory = None
         self._available_free_bytes = None
+        self._journal_files = {}
+        self._journal_operation_writers = {}
 
     def set_initial_inventory(self, inventory, available_free_bytes=None):
         with self._lock:
@@ -150,7 +195,7 @@ class _CapacityLedger:
                 _fail("operation_identity_reused")
             self._operation_ids.add(operation_id)
             operation = _Opaque(_FACTORY)
-            self._operations[operation] = {"state": "open"}
+            self._operations[operation] = {"state": "open", "operation_id": operation_id}
             return operation
 
     def reserve(self, operation, estimates):
@@ -222,12 +267,224 @@ class _CapacityLedger:
             self._operations[record["operation"]]["state"] = "writing"
             return write
 
+    def admit_journal_replacement(self, operation, binding):
+        """Reserve one full TMP plus an empty lock for an exact live Journal tip."""
+        with self._lock:
+            self._require_live()
+            state = self._operations.get(operation)
+            if (type(binding) is not _JournalReplacementBinding
+                    or binding._issuer is not _JOURNAL_REPLACEMENT_ISSUER
+                    or binding.admission_owner is not self._owner_identity
+                    or state is None
+                    or binding.operation_id != state.get("operation_id")
+                    or state["state"] not in ("open", "journal_completed")
+                    or binding.filename != binding.operation_id + ".json"
+                    or type(binding.previous_revision) is not int
+                    or binding.previous_revision < 0
+                    or binding.schema not in (journal.SCHEMA, multi_journal.SCHEMA)
+                    or binding.root_owner is not binding.admission_owner._roots.get("private_journal")
+                    or binding.journal_owner._native is not binding.root_owner
+                    or _freeze_inventory(self._inventory) != binding.prior_inventory):
+                _fail("journal_replacement_binding_invalid")
+            if self._active_write is not None:
+                _fail("write_admission_busy")
+            if (type(binding.previous_digest) is not str
+                    or len(binding.previous_digest) != 64
+                    or any(char not in "0123456789abcdef" for char in binding.previous_digest)):
+                _fail("journal_replacement_binding_invalid")
+
+            prior_row = self._inventory["private_journal"].get(binding.filename)
+            prior_record = self._journal_files.get(binding.filename)
+            writer_record = self._journal_operation_writers.get(binding.operation_id)
+            if binding.previous_revision == 0:
+                if (binding.previous_digest != "0" * 64
+                        or binding.previous_file_identity is not None
+                        or binding.previous_native_row is not None
+                        or binding.previous_acknowledgement is not None
+                        or prior_row is not None or prior_record is not None
+                        or writer_record is not None):
+                    _fail("journal_replacement_revision_conflict")
+            else:
+                expected_previous = (prior_record is not None
+                    and prior_record["operation"] is operation
+                    and prior_record["writer"] is binding.writer
+                    and prior_record["schema"] == binding.schema
+                    and prior_record["revision"] == binding.previous_revision
+                    and prior_record["digest"] == binding.previous_digest
+                    and prior_record["file_identity"] == binding.previous_file_identity
+                    and prior_record["native_row"] == binding.previous_native_row
+                    and prior_record["acknowledgement"] is binding.previous_acknowledgement
+                    and writer_record is not None
+                    and writer_record["operation"] is operation
+                    and writer_record["writer"] is binding.writer
+                    and writer_record["schema"] == binding.schema)
+                if (not expected_previous or prior_row != binding.previous_native_row
+                        or type(binding.previous_native_row) is not tuple
+                        or len(binding.previous_native_row) != 3
+                        or type(binding.previous_native_row[1]) is not int
+                        or prior_row[1] != binding.previous_native_row[1]):
+                    _fail("journal_replacement_revision_conflict")
+            if (prior_row is None) != (binding.previous_revision == 0):
+                _fail("journal_replacement_revision_conflict")
+
+            inventory = self._inventory["private_journal"]
+            old_size = prior_row[1] if prior_row is not None else 0
+            current_bytes = sum(row[1] for row in inventory.values())
+            current_entries = len(inventory)
+            other_reserved_bytes = self._reserved["private_journal"][0]
+            other_reserved_entries = self._reserved["private_journal"][1]
+            # The old JSON is already in the observed/retained inventory. Only
+            # the new maximum-size TMP consumes additional bytes. The lock is
+            # an entry but is created empty, so it consumes zero reserved bytes.
+            if (old_size > _JOURNAL_BYTES
+                    or old_size + _JOURNAL_BYTES > _JOURNAL_REPLACEMENT_LIVE_BYTES
+                    or current_bytes + _JOURNAL_BYTES > _JOURNAL_REPLACEMENT_LIVE_BYTES
+                    or current_bytes - old_size + _JOURNAL_BYTES + other_reserved_bytes
+                        > self._limits.journal_bytes
+                    or current_entries + 2 + other_reserved_entries
+                        > self._limits.journal_entries):
+                _fail("journal_replacement_capacity_exceeded")
+            outstanding_reserved = sum(row[0] for row in self._reserved.values())
+            retained_upper_bound = sum(row[0] for row in self._uncertain.values())
+            available = self._available_free_bytes
+            if (outstanding_reserved > available
+                    or retained_upper_bound > available - outstanding_reserved
+                    or _JOURNAL_BYTES > available - outstanding_reserved - retained_upper_bound):
+                _fail("observed_free_capacity_insufficient")
+
+            reservation = _Opaque(_FACTORY)
+            write = _Opaque(_FACTORY)
+            record = {"operation": operation,
+                      "estimates": {"private_journal": (_JOURNAL_BYTES, 2)},
+                      "state": "writing", "write": write,
+                      "kind": "journal_replacement", "journal_binding": binding}
+            self._reservations[reservation] = record
+            self._reserved["private_journal"][0] += _JOURNAL_BYTES
+            self._reserved["private_journal"][1] += 2
+            self._active_write = write
+            state["state"] = "writing"
+            return write
+
+    def complete_journal_replacement(self, operation, write, inventory,
+                                     available_free_bytes, completion):
+        observed_free = self._validate_free_bytes(available_free_bytes)
+        with self._lock:
+            self._require_live()
+            record = self._find_active_write(operation, write)
+            if record.get("kind") != "journal_replacement":
+                self._fail_active_journal_replacement(record, "journal_replacement_commit_invalid")
+            binding = record["journal_binding"]
+            if (type(completion) is not _JournalReplacementCompletion
+                    or completion._issuer is not _JOURNAL_REPLACEMENT_ISSUER
+                    or completion.binding is not binding
+                    or binding.admission_owner is not self._owner_identity
+                    or _freeze_inventory(self._inventory) != binding.prior_inventory
+                    or type(inventory) is not dict
+                    or set(inventory) != set(_WRITABLE)):
+                self._fail_active_journal_replacement(record, "journal_replacement_inventory_conflict")
+
+            before = self._inventory
+            filename = binding.filename
+            expected = {purpose: dict(before[purpose]) for purpose in _WRITABLE}
+            old_row = expected["private_journal"].get(filename)
+            if binding.previous_revision == 0:
+                if old_row is not None:
+                    self._fail_active_journal_replacement(record, "journal_replacement_revision_conflict")
+            elif old_row != binding.previous_native_row:
+                self._fail_active_journal_replacement(record, "journal_replacement_revision_conflict")
+
+            new_row = inventory.get("private_journal", {}).get(filename)
+            if (type(new_row) is not tuple or len(new_row) != 3
+                    or type(new_row[0]) is not tuple or len(new_row[0]) != 2
+                    or any(type(value) is not int or value < 0 for value in new_row[0])
+                    or new_row != completion.native_row
+                    or type(new_row[1]) is not int or not 0 < new_row[1] <= _JOURNAL_BYTES
+                    or type(new_row[2]) is not tuple
+                    or type(completion.file_identity) is not tuple
+                    or len(completion.file_identity) != 2
+                    or any(type(value) is not int or value < 0 for value in completion.file_identity)
+                    or (old_row is not None and new_row[0] == old_row[0])
+                    or (old_row is not None and new_row[2] != old_row[2])):
+                self._fail_active_journal_replacement(record, "journal_replacement_identity_conflict")
+            expected["private_journal"][filename] = new_row
+            if inventory != expected:
+                self._fail_active_journal_replacement(record, "journal_replacement_inventory_conflict")
+            if any(row[0] == new_row[0]
+                   for purpose, entries in inventory.items()
+                   for name, row in entries.items()
+                   if purpose != "private_journal" or name != filename):
+                self._fail_active_journal_replacement(record, "journal_replacement_identity_conflict")
+
+            ack = completion.acknowledgement
+            writer = binding.writer
+            next_revision = binding.previous_revision + 1
+            if type(ack) is journal.ReopenedJournal and binding.schema == journal.SCHEMA:
+                ack_revision = ack.revision
+                ack_digest = ack.digest
+                ack_identity = ack.file_identity
+                ack_operation_id = ack.operation.operation_id
+                writer_operation_id = writer.operation.operation_id
+                ack_is_live_tip = True
+            elif (type(ack) is multi_journal.JournalAcknowledgement
+                  and binding.schema == multi_journal.SCHEMA):
+                ack_revision = ack.revision
+                ack_digest = ack.digest
+                ack_identity = ack.file_identity
+                ack_operation_id = ack.operation_id
+                writer_operation_id = writer.operation.operation_id
+                ack_is_live_tip = writer._tip is ack
+            else:
+                self._fail_active_journal_replacement(record, "journal_replacement_ack_conflict")
+            if (not ack_is_live_tip or ack_operation_id != binding.operation_id
+                    or writer_operation_id != binding.operation_id
+                    or ack_revision != next_revision
+                    or ack_digest != writer._digest
+                    or ack_identity != completion.file_identity
+                    or writer._revision != next_revision
+                    or writer._file_identity != completion.file_identity):
+                self._fail_active_journal_replacement(record, "journal_replacement_ack_conflict")
+
+            new_total = sum(row[1] for row in inventory["private_journal"].values())
+            if new_total > self._limits.journal_bytes:
+                self._fail_active_journal_replacement(record, "journal_replacement_capacity_exceeded")
+            if old_row is not None:
+                if (self._observed["private_journal"][0] < old_row[1]
+                        or self._observed["private_journal"][1] < 1):
+                    self._fail_active_journal_replacement(record, "journal_replacement_accounting_conflict")
+                self._observed["private_journal"][0] -= old_row[1]
+                self._observed["private_journal"][1] -= 1
+            self._release_reserved(record)
+            self._observed["private_journal"][0] += new_row[1]
+            self._observed["private_journal"][1] += 1
+            record["state"] = "completed"
+            self._operations[operation]["state"] = "journal_completed"
+            self._active_write = None
+            self._inventory = inventory
+            self._available_free_bytes = observed_free
+            self._journal_files[filename] = {
+                "operation": operation, "writer": writer, "schema": binding.schema,
+                "revision": next_revision, "digest": ack_digest,
+                "file_identity": completion.file_identity, "native_row": new_row,
+                "acknowledgement": ack,
+            }
+            self._journal_operation_writers[binding.operation_id] = {
+                "operation": operation, "writer": writer, "schema": binding.schema,
+            }
+            return self._summary_locked()
+
+    def _fail_active_journal_replacement(self, record, code):
+        self._retain_locked(record)
+        self._invalid = True
+        _fail(code)
+
     def complete_write(self, operation, write, inventory, available_free_bytes=None):
         observed_free = (self._validate_free_bytes(available_free_bytes)
                          if available_free_bytes is not None else None)
         with self._lock:
             self._require_live()
             record = self._find_active_write(operation, write)
+            if record.get("kind") == "journal_replacement":
+                self._fail_active_journal_replacement(record, "journal_replacement_commit_required")
             delta = self._inventory_delta(self._inventory, inventory)
             if delta is None:
                 self._retain_locked(record)
@@ -270,6 +527,10 @@ class _CapacityLedger:
         with self._lock:
             self._require_live()
             record = self._find_active_write(operation, write)
+            if record.get("kind") == "journal_replacement":
+                # The generic API has no Journal-writer observation proving
+                # CREATE_NEW was not attempted. Conservatively retain it.
+                _fail("journal_replacement_precreate_proof_required")
             self._release_reserved(record)
             record["state"] = "cancelled"
             self._operations[record["operation"]]["state"] = "cancelled"
@@ -551,7 +812,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
             _fail("host_storage_required")
         self._scope, self._scope_identity = scope, scope_identity
         self._roots, self._limits = roots, limits
-        self._ledger = _CapacityLedger(limits)
+        self._ledger = _CapacityLedger(limits, owner_identity=self)
         self._lock = threading.RLock()
         self._refresh_lock = threading.RLock()
         self._closed = False
@@ -590,6 +851,241 @@ class WindowsProtectedStorageAdmissionCharacterization:
             with self._lock:
                 self._require_live()
                 return self._ledger.admit_write(operation, reservation)
+
+    def admit_journal_replacement_for_characterization(self, operation, journal_owner):
+        """Preflight one protected Journal replacement before any CREATE_NEW."""
+        from core import generation_protected_journal as protected_journal
+
+        with self._refresh_lock:
+            self._refresh()
+            with self._lock:
+                self._require_live()
+                with self._ledger._lock:
+                    operation_state = self._ledger._operations.get(operation)
+                    operation_id = (operation_state or {}).get("operation_id")
+            if (type(journal_owner) is not protected_journal.WindowsProtectedJournalCharacterization
+                    or operation_id is None):
+                _fail("journal_replacement_binding_invalid")
+
+            with journal_owner._lock:
+                root = self._roots.get("private_journal")
+                if (root is None or journal_owner._native is not root
+                        or not journal_owner._writable or journal_owner._closed
+                        or journal_owner._uncertain or root._closed
+                        or root._purpose != "private_journal"
+                        or root._identity != self._roots["private_journal"]._identity
+                        or journal_owner._approved.path != str(root._path)
+                        or journal_owner._approved.identity != root._identity):
+                    _fail("journal_replacement_root_mismatch")
+                journal_owner._check()
+                scope_rows = [row for row in root._observations
+                              if row[0] == self._scope and row[1]]
+                if (len(scope_rows) != 1 or scope_rows[0][2] is not root._scope_handle
+                        or scope_rows[0][3] != self._scope_identity):
+                    _fail("journal_replacement_root_mismatch")
+
+                active = ((journal_owner._writer, journal.SCHEMA),
+                          (journal_owner._multi_request_writer, multi_journal.SCHEMA))
+                selected = [(writer, schema) for writer, schema in active if writer is not None]
+                if len(selected) != 1:
+                    _fail("journal_replacement_writer_unavailable")
+                writer, schema = selected[0]
+                expected_type = (protected_journal._ProtectedWriter if schema == journal.SCHEMA
+                                 else protected_journal._ProtectedMultiRequestWriter)
+                if (type(writer) is not expected_type
+                        or writer._uncertain or getattr(writer, "_closed", False)
+                        or (schema == multi_journal.SCHEMA and writer._busy.locked())
+                        or writer.root._owner is not journal_owner
+                        or writer.root.path != journal_owner._approved.path
+                        or writer.root.identity != journal_owner._approved.identity
+                        or type(writer.operation) is not journal.OperationObservation
+                        or writer.operation.operation_id != operation_id
+                        or writer.filename != operation_id + ".json"
+                        or type(writer._revision) is not int
+                        or (schema == journal.SCHEMA and not 0 <= writer._revision < 8)
+                        or (schema == multi_journal.SCHEMA
+                            and not 0 <= writer._revision < multi_journal.MAX_REVISIONS)):
+                    _fail("journal_replacement_writer_unavailable")
+                writer.root.check()
+                previous_revision = writer._revision
+                previous_digest = writer._digest
+                previous_file_identity = writer._file_identity
+                previous_acknowledgement = None
+                reopened_previous = None
+                if previous_revision == 0:
+                    if (previous_digest != "0" * 64 or previous_file_identity is not None
+                            or (schema == multi_journal.SCHEMA and writer._tip is not None)):
+                        _fail("journal_replacement_revision_conflict")
+                else:
+                    if schema == journal.SCHEMA:
+                        reopened_previous = journal_owner.reopen_journal_for_characterization(
+                            writer.filename, expected_revision=previous_revision,
+                            expected_digest=previous_digest)
+                    else:
+                        reopened_previous = journal_owner.reopen_multi_request_journal_for_characterization(
+                            writer.filename, expected_revision=previous_revision,
+                            expected_digest=previous_digest)
+                    if (reopened_previous.revision != previous_revision
+                            or reopened_previous.digest != previous_digest
+                            or reopened_previous.file_identity != previous_file_identity
+                            or reopened_previous.operation != writer.operation):
+                        _fail("journal_replacement_revision_conflict")
+
+                with self._lock:
+                    self._require_live()
+                    with self._ledger._lock:
+                        current_state = self._ledger._operations.get(operation)
+                        inventory = self._ledger._inventory
+                        if (current_state is None or current_state.get("operation_id") != operation_id
+                                or inventory is None):
+                            _fail("journal_replacement_binding_invalid")
+                        filename = operation_id + ".json"
+                        prior_inventory = _freeze_inventory(inventory)
+                        prior_row = inventory["private_journal"].get(filename)
+                        names = inventory["private_journal"]
+                        if (operation_id + ".lock" in names
+                                or any(name.startswith(operation_id + ".") and name.endswith(".tmp")
+                                       for name in names)):
+                            _fail("journal_replacement_evidence_conflict")
+                        if ((previous_revision == 0 and prior_row is not None)
+                                or (previous_revision > 0 and prior_row is None)):
+                            _fail("journal_replacement_revision_conflict")
+                        prior_record = self._ledger._journal_files.get(filename)
+                        if previous_revision > 0 and (prior_record is None
+                                or prior_record["operation"] is not operation
+                                or prior_record["writer"] is not writer
+                                or prior_record["schema"] != schema
+                                or prior_record["revision"] != previous_revision
+                                or prior_record["digest"] != previous_digest
+                                or prior_record["file_identity"] != previous_file_identity
+                                or prior_record["native_row"] != prior_row):
+                            _fail("journal_replacement_revision_conflict")
+                        if previous_revision > 0:
+                            previous_acknowledgement = prior_record["acknowledgement"]
+                            if schema == journal.SCHEMA:
+                                if reopened_previous != previous_acknowledgement:
+                                    _fail("journal_replacement_revision_conflict")
+                            elif (writer._tip is not previous_acknowledgement
+                                  or previous_acknowledgement.revision != previous_revision
+                                  or previous_acknowledgement.digest != previous_digest
+                                  or previous_acknowledgement.file_identity != previous_file_identity):
+                                _fail("journal_replacement_revision_conflict")
+                        binding = _JournalReplacementBinding(
+                            self, journal_owner, root, writer, schema, operation_id, filename,
+                            previous_revision, previous_digest, previous_file_identity,
+                            prior_row, previous_acknowledgement, prior_inventory,
+                            _JOURNAL_REPLACEMENT_ISSUER)
+                        return self._ledger.admit_journal_replacement(operation, binding)
+
+    def complete_journal_replacement_for_characterization(
+            self, operation, write_admission, journal_owner, acknowledgement):
+        """Commit only a verified replacement returned by the bound live writer."""
+        from core import generation_protected_journal as protected_journal
+
+        bound_attempt = False
+        try:
+            with self._lock:
+                self._require_live()
+                with self._ledger._lock:
+                    record = self._ledger._find_active_write(operation, write_admission)
+                    binding = record.get("journal_binding")
+                    if (record.get("kind") != "journal_replacement"
+                            or type(binding) is not _JournalReplacementBinding
+                            or binding.admission_owner is not self
+                            or binding.journal_owner is not journal_owner):
+                        _fail("journal_replacement_binding_invalid")
+                    bound_attempt = True
+
+            with journal_owner._lock:
+                if (type(journal_owner) is not protected_journal.WindowsProtectedJournalCharacterization
+                        or journal_owner._closed or journal_owner._uncertain
+                        or journal_owner._native is not binding.root_owner
+                        or binding.root_owner is not self._roots.get("private_journal")):
+                    _fail("journal_replacement_writer_unavailable")
+                journal_owner._check()
+                writer = binding.writer
+                if (writer._uncertain or getattr(writer, "_closed", False)
+                        or writer.operation.operation_id != binding.operation_id
+                        or writer._revision != binding.previous_revision + 1):
+                    _fail("journal_replacement_ack_conflict")
+                if binding.schema == journal.SCHEMA:
+                    if (type(acknowledgement) is not journal.ReopenedJournal
+                            or acknowledgement is None):
+                        _fail("journal_replacement_ack_conflict")
+                    verified = journal_owner.reopen_journal_for_characterization(
+                        binding.filename, expected_revision=acknowledgement.revision,
+                        expected_digest=acknowledgement.digest)
+                    if (verified != acknowledgement or acknowledgement.operation != writer.operation):
+                        _fail("journal_replacement_ack_conflict")
+                else:
+                    if (type(acknowledgement) is not multi_journal.JournalAcknowledgement
+                            or writer._tip is not acknowledgement):
+                        _fail("journal_replacement_ack_conflict")
+                    verified = journal_owner.reopen_multi_request_journal_for_characterization(
+                        binding.filename, expected_revision=acknowledgement.revision,
+                        expected_digest=acknowledgement.digest)
+                    if (verified.revision != acknowledgement.revision
+                            or verified.digest != acknowledgement.digest
+                            or verified.file_identity != acknowledgement.file_identity
+                            or verified.operation != writer.operation):
+                        _fail("journal_replacement_ack_conflict")
+
+                target = binding.root_owner._path / binding.filename
+                file_identity = journal._file_identity(journal._ordinary(target, directory=False))
+                if (file_identity != acknowledgement.file_identity
+                        or writer._file_identity != file_identity
+                        or writer._digest != acknowledgement.digest):
+                    _fail("journal_replacement_ack_conflict")
+                inventory = self._scan()
+                free_bytes = self._free_bytes()
+                native_row = inventory["private_journal"].get(binding.filename)
+                if (native_row is None
+                        or journal_owner._file_acls.get(native_row[0]) != native_row[2]):
+                    _fail("journal_replacement_identity_conflict")
+
+                with self._lock:
+                    self._require_live()
+                    with self._ledger._lock:
+                        record = self._ledger._find_active_write(operation, write_admission)
+                        if record.get("journal_binding") is not binding:
+                            _fail("journal_replacement_binding_invalid")
+                        completion = _JournalReplacementCompletion(
+                            binding, acknowledgement, file_identity, native_row,
+                            _JOURNAL_REPLACEMENT_ISSUER)
+                        result = self._ledger.complete_journal_replacement(
+                            operation, write_admission, inventory, free_bytes, completion)
+                        return result
+        except BaseException as error:
+            if bound_attempt:
+                with self._lock:
+                    try:
+                        self._ledger.retain_uncertain(operation, write_admission)
+                    except ValueError:
+                        pass
+                    self._invalid = True
+            if (type(error) is ValueError
+                    and (str(error).startswith("journal_replacement_")
+                         or str(error) == "write_admission_unavailable")):
+                raise
+            _fail("journal_replacement_observation_unavailable")
+
+    def retain_journal_replacement_uncertain_for_characterization(self, operation, write_admission):
+        """Retain the full replacement upper bound after any uncertain writer outcome."""
+        with self._lock:
+            with self._ledger._lock:
+                record = next((item for item in self._ledger._reservations.values()
+                               if item.get("write") is write_admission), None)
+                if (record is None or record["operation"] is not operation
+                        or record.get("kind") != "journal_replacement"):
+                    _fail("journal_replacement_binding_invalid")
+                if record["state"] == "retained_uncertain":
+                    self._invalid = True
+                    return self._ledger._summary_locked()
+                if record["state"] != "writing":
+                    _fail("journal_replacement_uncertain_unavailable")
+                self._ledger.retain_uncertain(operation, write_admission)
+                self._invalid = True
+                return self._ledger._summary_locked()
 
     def assert_write_admission_for_characterization(self, operation, write_admission):
         """Check a live exact write token without rescanning native roots."""

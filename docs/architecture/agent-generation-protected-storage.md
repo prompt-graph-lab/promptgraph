@@ -1253,3 +1253,77 @@ All production gates remain closed:
 `execution_available=false`, `protected_storage_available=false`,
 `promotion_available=false`, `candidate_publication_allowed=false`, and
 `authorship=unverified`.
+
+## C2B-8D-17E-A protected Journal replacement capacity contract
+
+`WindowsProtectedStorageAdmissionCharacterization` now has a private
+Journal-specific preflight and reconciliation seam for the existing protected
+v1 and multi-request Journal writers. It is accounting characterization only:
+neither Journal writer calls this seam, and no writer schema, revision rule,
+append implementation, or production capability was changed.
+
+`admit_journal_replacement_for_characterization(operation, journal_owner)`
+requires the exact live admission owner, its native `private_journal` root
+object, the same root object held by the writable protected Journal owner, one
+active protected writer, and the exact operation ID/schema/current writer tip.
+For revisions after the first, admission also requires the preceding
+owner-observed revision, digest, file identity, native inventory row and
+acknowledgement recorded by this ledger. The complete current root inventory
+must match its last successful observation and no operation-specific `.lock`
+or `.tmp` may already exist. Capacity refusal leaves the successful inventory
+and operation state unchanged.
+
+The completed Journal file remains bounded by the original 1 MiB file limit.
+Preflight reserves at most 1 MiB for a new full-snapshot TMP and two entries:
+one TMP plus one zero-byte exclusive lock. The existing JSON stays charged as
+observed-used during a replacement, so a maximum-size old snapshot plus the
+maximum TMP reaches, but does not exceed, the existing 2 MiB live-operation
+bound. It is counted only once; the lock adds an entry but zero bytes. The
+normal `private_journal` steady-state ceiling remains 1 MiB, so the predicted
+post-replacement inventory must still fit that ceiling. Free-space sampling
+remains observational and is not a disk reservation.
+
+`complete_journal_replacement_for_characterization(...)` publishes accounting
+only for the exact live writer and one-shot token after reopening the expected
+next revision, matching its digest and file identity to the writer
+acknowledgement, and observing the final target's native identity, unchanged
+owner-only ACL and bounded byte count. The complete native inventory must be
+identical to the prior inventory except for that one added/replaced JSON row;
+the exact comparison requires terminal `.tmp` and `.lock` absence and rejects
+extra, removed, substituted or changed entries. A replacement must have a new
+native identity, while its protected ACL policy remains unchanged. On success,
+the prior target's observed bytes and entry are atomically replaced in ledger
+accounting by the new target's actual size and one entry. The final file
+identity is also required to be unique across inventoried roots.
+
+Once the specialized token is issued, generic write completion cannot settle
+it and the generic cancellation API cannot release it without Journal-specific
+proof that CREATE_NEW was never attempted. This bounded contract chooses the
+conservative path: an unsettled token retains the full 1 MiB and two-entry
+upper bound on any writer uncertainty, inventory/identity/ACL/acknowledgement
+conflict, close or invalidation. Existing JSON remains separately charged as
+observed-used, accounting for old JSON plus a possibly retained TMP or replaced
+JSON. No filename disappearance, elapsed time, close, process exit, or later
+reopen releases that uncertainty. No retry, adoption, deletion or cleanup is
+performed.
+
+Native file I/O and Journal reopen/verification run outside the ledger lock.
+The final in-memory accounting commit is serialized under Journal-owner →
+admission-owner → ledger locks; admission close cannot turn an unsettled token
+into a success. The exact root handle, Journal owner and writer are required
+again at completion. This is process-local accounting and native observation,
+not a cross-process quota, disk-space guarantee, power-loss guarantee,
+cryptographic author authentication, or production Journal authorization.
+
+The follow-up C2B-8D-17E-B boundary must compose the exact reservation around
+the existing v1 and multi-request writer calls: reserve before lock/TMP
+CREATE_NEW, retain the token across write/flush/fsync/replace/reopen/lock
+release, and pass only the actual writer acknowledgement into final
+reconciliation. It must account for before-create refusal separately from
+post-create or post-replace uncertainty, preserve both existing Journal
+contracts and the 100-request cumulative limits, and keep native I/O and writer
+callbacks outside ledger locks. Until that integration is separately
+characterized, `writer_integrated=false` and all production gates remain
+closed: `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`,
+`candidate_publication_allowed=false`, and `authorship=unverified`.
