@@ -431,12 +431,17 @@ class WindowsProtectedAssetsCharacterization:
 
         lease = object()
         with self._lock:
+            if self._closed:
+                w._fail("closed_observation")
+            if self._revoking:
+                w._fail("closing_observation")
+            if self._invalid:
+                w._fail("invalidated_observation")
             if (self._stream_busy or self._stream_batch_busy or self._promotion_busy
                     or self._capacity_busy):
                 w._fail("storage_busy")
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
-            self._check()
             self._capacity_busy = True
             self._capacity_lease = lease
             self._capacity_thread = threading.get_ident()
@@ -445,6 +450,14 @@ class WindowsProtectedAssetsCharacterization:
         operation = reservation = write_admission = None
         writer_started = False
         try:
+            # Native root, identity and ACL observations can block. Publish a
+            # revocable capacity lease first, then perform them outside the
+            # Asset Owner lifecycle lock so close can signal revocation.
+            self._check()
+            with self._lock:
+                if (self._capacity_lease is not lease or self._revoking or self._closed
+                        or self._invalid or self._uncertain):
+                    w._fail("storage_owner_unavailable")
             operation = admission_owner.begin_operation_for_characterization(operation_id)
             reservation = admission_owner.reserve_for_characterization(operation, {
                 purpose: admission.CapacityEstimate(len(data), 1)})

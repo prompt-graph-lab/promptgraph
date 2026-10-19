@@ -436,6 +436,66 @@ def test_admitted_writer_close_race_retains_file_without_deadlock(admitted_owner
     assert row["retained_uncertain_entries"] == 1
 
 
+def test_admitted_writer_preflight_close_race_revokes_before_native_check_returns(admitted_owner):
+    store, storage, _, _, _ = admitted_owner
+    entered, release, writer_done, close_done = (threading.Event() for _ in range(4))
+    outcome = []
+    original_check = store._check
+
+    def paused_check():
+        entered.set()
+        assert release.wait(5)
+        original_check()
+
+    store._check = paused_check
+
+    def write():
+        try:
+            store.create_image_with_admission_for_characterization(
+                storage, "preflight-close-race", "temporary_containment", png(),
+                characterization=True, disposable_opt_in=True)
+            outcome.append("success")
+        except ValueError as error:
+            outcome.append(str(error))
+        finally:
+            writer_done.set()
+
+    def close():
+        try:
+            store.close()
+        finally:
+            close_done.set()
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    entered_check = entered.wait(5)
+    closer = threading.Thread(target=close)
+    if entered_check:
+        closer.start()
+        revoking_visible = store._revoking_event.wait(5)
+    else:
+        revoking_visible = False
+    release.set()
+    writer_finished = writer_done.wait(5)
+    close_finished = close_done.wait(5) if closer.ident is not None else False
+    writer.join(5)
+    if closer.ident is not None:
+        closer.join(5)
+
+    assert entered_check and revoking_visible and writer_finished and close_finished
+    assert not writer.is_alive() and (closer.ident is None or not closer.is_alive())
+    assert outcome == ["closing_observation"]
+    assert store._capacity_busy is False and store._capacity_lease is None
+    assert store._capacity_idle.is_set()
+    assert not store._files and not store._unobserved_files
+    assert not list(store._roots["temporary_containment"]._path.iterdir())
+    assert not storage._ledger._reservations
+    row = next(item for item in storage._ledger.readiness()["roots"]
+               if item["purpose"] == "temporary_containment")
+    assert row["reserved_bytes"] == row["reserved_entries"] == 0
+    assert row["retained_uncertain_bytes"] == row["retained_uncertain_entries"] == 0
+
+
 def test_admission_close_during_write_retains_full_upper_bound(admitted_owner):
     store, storage, _, _, _ = admitted_owner
     entered, release, writer_done = threading.Event(), threading.Event(), threading.Event()
