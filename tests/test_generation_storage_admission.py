@@ -144,6 +144,29 @@ def test_completed_write_releases_unused_reservation_and_records_observed_usage(
     assert row["retained_uncertain_bytes"] == 0 and row["remaining_policy_bytes"] == 88
 
 
+def test_unchanged_inventory_after_write_admission_retains_full_reservation():
+    ledger = _ready_ledger(_limits(assets=100))
+    operation = ledger.begin_operation("operation")
+    reservation = ledger.reserve(
+        operation, {"temporary_containment": admission.CapacityEstimate(40, 2)})
+    write = ledger.admit_write(operation, reservation)
+
+    with pytest.raises(ValueError, match="no_new_storage_observed"):
+        ledger.complete_write(operation, write, _empty_inventory())
+
+    summary = ledger.readiness()
+    row = next(row for row in summary["roots"]
+               if row["purpose"] == "temporary_containment")
+    assert summary["status"] == "unavailable"
+    assert row["reserved_bytes"] == 0 and row["reserved_entries"] == 0
+    assert row["observed_used_bytes"] == 0 and row["observed_used_entries"] == 0
+    assert row["retained_uncertain_bytes"] == 40
+    assert row["retained_uncertain_entries"] == 2
+    assert row["remaining_policy_bytes"] == 60
+    with pytest.raises(ValueError, match="storage_owner_unavailable"):
+        ledger.begin_operation("later")
+
+
 @pytest.mark.parametrize("state", ["explicit", "close"])
 def test_uncertain_or_closed_reservations_are_retained_not_released(state):
     ledger = _ready_ledger()
@@ -290,6 +313,23 @@ def test_native_distinct_roots_are_pinned_but_do_not_enable_storage(native_stora
     owner.close()
 
 
+def test_native_duplicate_capture_cannot_create_an_independent_capacity_ledger(native_storage_roots):
+    scope, project, _, roots = native_storage_roots
+    before = tuple(sorted(path.name for path in scope.iterdir()))
+    owner = _capture_native(scope, roots)
+    with pytest.raises(ValueError, match="storage_accounting_scope_already_captured"):
+        _capture_native(scope, roots)
+
+    # Closing the first owner cannot release an uncertain in-process claim and
+    # permit a fresh empty ledger over the same physical capacity.
+    owner.close()
+    with pytest.raises(ValueError, match="storage_accounting_scope_already_captured"):
+        _capture_native(scope, roots)
+
+    assert tuple(sorted(path.name for path in scope.iterdir())) == before
+    assert project.read_bytes() == b'{"disposable":true}'
+
+
 def test_native_admission_counts_existing_files_as_uncertain_without_adopting(native_storage_roots):
     scope, _, api, roots = native_storage_roots
     path = roots["temporary_containment"]._path / "unattributed.bin"
@@ -370,6 +410,30 @@ def test_native_write_admission_observes_new_protected_file_and_limits_usage(nat
     assert row["reserved_bytes"] == 0 and row["observed_used_bytes"] == 3
     assert row["observed_used_entries"] == 1 and row["retained_uncertain_bytes"] == 0
     assert path.read_bytes() == b"abc"
+    owner.close()
+
+
+def test_native_unchanged_inventory_after_write_admission_retains_capacity(native_storage_roots):
+    scope, _, _, roots = native_storage_roots
+    owner = _capture_native(scope, roots, _limits(assets=1024))
+    operation = owner.begin_operation_for_characterization("no-file-operation")
+    reservation = owner.reserve_for_characterization(
+        operation, {"temporary_containment": admission.CapacityEstimate(100, 1)})
+    write = owner.admit_write_for_characterization(operation, reservation)
+    before = tuple(sorted(path.name for path in roots["temporary_containment"]._path.iterdir()))
+
+    with pytest.raises(ValueError, match="no_new_storage_observed"):
+        owner.complete_write_for_characterization(operation, write)
+
+    view = owner.readiness()
+    row = next(row for row in view["roots"] if row["purpose"] == "temporary_containment")
+    after = tuple(sorted(path.name for path in roots["temporary_containment"]._path.iterdir()))
+    assert view["status"] == "unavailable"
+    assert row["reserved_bytes"] == 0 and row["reserved_entries"] == 0
+    assert row["observed_used_bytes"] == 0 and row["observed_used_entries"] == 0
+    assert row["retained_uncertain_bytes"] == 100
+    assert row["retained_uncertain_entries"] == 1
+    assert before == after == ()
     owner.close()
 
 

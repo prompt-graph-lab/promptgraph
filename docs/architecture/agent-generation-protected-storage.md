@@ -1029,6 +1029,15 @@ uncertain accounting; it is never adopted as successful output. The selected
 Project JSON is identity/ACL checked as a reference and is never read, written
 or used as a storage destination.
 
+Within one process, only one accounting owner may capture a given approved
+scope and writable-root path/native-identity set. A second capture is refused,
+including after the first owner closes or invalidates; closing cannot reset an
+unresolved ledger and permit a fresh empty one. The process-local claim table
+is bounded to 128 distinct scope keys, after which new captures fail closed.
+The selected Project JSON remains bound to the owner but is not part of the
+capacity key, so changing that read-only reference cannot create another
+ledger over the same storage roots.
+
 The accounting kernel issues one exact operation token and at most one
 reservation per operation. Estimates use bounded byte and entry upper bounds.
 Concurrent reservations share policy ceilings; staging and promoted assets
@@ -1047,21 +1056,25 @@ it is not a capacity guarantee.
 
 A known pre-write cancellation releases its exact reservation. A completed
 admitted write is counted as observed-used only when the native inventory shows
-new protected files within the reserved byte/entry bounds and no prior entry
-was removed or replaced. Unknown outcome, inventory drift, close or
-invalidation converts unsettled upper bounds into retained-uncertain capacity;
-there is no timeout release while the owner is live, retry or cleanup. A
-reservation or write-admission token is bound to its exact in-memory owner, operation and
-one-shot state; copied tokens, cross-operation use, duplicate operation IDs,
-double release and duplicate completion are rejected.
+at least one new protected file within the reserved byte/entry bounds and no
+prior entry was removed or replaced. An all-zero inventory delta does not prove
+completion: it invalidates the owner and moves the full write estimate into
+retained-uncertain capacity. Unknown outcome, inventory drift, close or
+invalidation likewise converts unsettled upper bounds into retained-uncertain
+capacity; there is no timeout release while the owner is live, retry or
+cleanup. A reservation or write-admission token is bound to its exact
+in-memory owner, operation and one-shot state; copied tokens, cross-operation
+use, duplicate operation IDs, double release and duplicate completion are
+rejected.
 
 This is a **process-local accounting contract**, not an OS quota or a claim
 that the corresponding disk space is free. It does not prevent another
-process from consuming disk or bypassing this ledger. Reservations are
-process-local and disappear from memory at process exit; a fresh capture
+process from consuming disk or bypassing this ledger. Successful scope claims
+and reservations disappear from memory at process exit; a fresh capture
 classifies existing files as retained uncertain, but cannot reconstruct a
-lost reservation whose write left no file. Therefore this characterization
-does not satisfy production restart accounting. Native identity and ACL observations are separately rechecked, but
+lost reservation whose write left no file. The in-process duplicate-capture
+guard is not restart-persistent and does not satisfy production restart
+accounting. Native identity and ACL observations are separately rechecked, but
 the accounting result does not itself prove pinned handles, content integrity,
 Journal durability, author identity, current Project/session authority or
 permission to execute. No current Journal, protected-assets or promotion

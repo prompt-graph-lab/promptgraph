@@ -27,6 +27,13 @@ _MAX_OPERATION_ENTRIES = 400
 _MAX_ASSET_ENTRIES = 16
 _MAX_JOURNAL_ENTRIES = 300
 _MAX_ROOT_FILE_BYTES = _MAX_OPERATION_BYTES
+_MAX_PROCESS_ACCOUNTING_SCOPES = 128
+
+# Successful captures leave a process-local claim until process exit, even
+# after close/invalidation, so uncertain reservations cannot be forgotten by
+# constructing another ledger over the same writable roots.
+_PROCESS_ACCOUNTING_SCOPE_LOCK = threading.Lock()
+_PROCESS_ACCOUNTING_SCOPES = set()
 
 
 def _fail(code):
@@ -226,6 +233,14 @@ class _CapacityLedger:
                 self._retain_locked(record)
                 self._invalid = True
                 _fail("storage_inventory_changed")
+            if not any(byte_count or entry_count for byte_count, entry_count in delta.values()):
+                # Once a write token is admitted, unchanged inventory cannot
+                # prove a create-only write completed. Keep the full estimate
+                # as uncertain rather than releasing capacity on absence of
+                # evidence.
+                self._retain_locked(record)
+                self._invalid = True
+                _fail("no_new_storage_observed")
             for purpose, (byte_count, entry_count) in delta.items():
                 reserved_bytes, reserved_entries = record["estimates"].get(purpose, (0, 0))
                 if byte_count > reserved_bytes or entry_count > reserved_entries:
@@ -467,14 +482,36 @@ class WindowsProtectedStorageAdmissionCharacterization:
             if any(path == other or path.is_relative_to(other) or other.is_relative_to(path)
                    for other in paths[index + 1:]):
                 _fail("purpose_overlap")
-        owner = cls(scope, scope_identity, roots, limits, _factory=_FACTORY)
-        inventory = owner._scan()
-        free_bytes = owner._free_bytes()
-        owner._ledger.set_initial_inventory(inventory, free_bytes)
-        # Revalidate after initial inventory; capture is not an ACL repair or
-        # directory creation operation.
-        owner._check_roots()
-        return owner
+        # The selected Project JSON is a binding input, not capacity storage.
+        # Key the accounting lease to the approved scope and writable roots so
+        # a different Project reference cannot create another ledger over the
+        # same physical capacity.
+        accounting_key = (
+            str(scope).casefold(), scope_identity,
+            tuple((purpose, str(roots[purpose]._path).casefold(), roots[purpose]._identity)
+                  for purpose in _WRITABLE),
+        )
+        with _PROCESS_ACCOUNTING_SCOPE_LOCK:
+            if accounting_key in _PROCESS_ACCOUNTING_SCOPES:
+                _fail("storage_accounting_scope_already_captured")
+            if len(_PROCESS_ACCOUNTING_SCOPES) >= _MAX_PROCESS_ACCOUNTING_SCOPES:
+                _fail("storage_accounting_scope_limit_exceeded")
+            _PROCESS_ACCOUNTING_SCOPES.add(accounting_key)
+        try:
+            owner = cls(scope, scope_identity, roots, limits, _factory=_FACTORY)
+            inventory = owner._scan()
+            free_bytes = owner._free_bytes()
+            owner._ledger.set_initial_inventory(inventory, free_bytes)
+            # Revalidate after initial inventory; capture is not an ACL repair
+            # or directory creation operation.
+            owner._check_roots()
+            return owner
+        except BaseException:
+            # No owner escaped and no write admission was possible, so a
+            # failed read-only capture may relinquish its provisional claim.
+            with _PROCESS_ACCOUNTING_SCOPE_LOCK:
+                _PROCESS_ACCOUNTING_SCOPES.discard(accounting_key)
+            raise
 
     def __init__(self, scope, scope_identity, roots, limits, *, _factory=None):
         if _factory is not _FACTORY:
