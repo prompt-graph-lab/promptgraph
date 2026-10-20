@@ -138,6 +138,23 @@ class GenerationWorkerStoragePreAdmissionObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerProtectedWriterObservation:
+    """Safe status for a privately retained single-image staging observation."""
+
+    status: str
+    request_index: int
+    verified_image_count: int
+    capacity_accounted: bool
+    write_authorized: bool = False
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass(frozen=True)
 class GenerationWorkerRemoteOutputWriterEvidence:
     """Exact remote-history evidence; never an actionable storage capability."""
 
@@ -188,6 +205,12 @@ class _StoragePreAdmissionAttempt:
     evidence_state: str = "awaiting_submission"
     validation_marker: object = None
     evidence: object = None
+    writer_handoff_state: str = "not_started"
+    writer_handoff_marker: object = None
+    writer_owner: object = None
+    writer_admission: object = None
+    writer_create_boundary_crossed: bool = False
+    writer_image_observation: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -339,6 +362,7 @@ class OriginalHostWorkerStorageIntegration:
         # capacity owner's opaque reservation; neither is returned as a
         # writer capability.
         self._storage_preadmission_attempts = {}
+        self._profile_a_writer_owner = None
         self._observations = deque(maxlen=_MAX_OBSERVATIONS)
         self._close_call_active = False
         self._last_worker_state = "created"
@@ -508,9 +532,9 @@ class OriginalHostWorkerStorageIntegration:
                 or (kind == "history" and (prompt_id is None or correlation.prompt_id != prompt_id))):
             return None, "correlation_mismatch"
         if self._profile_a:
-            if any(attempt.evidence_state in {
-                        "validating", "history_observed", "evidence_published",
-                    }
+            if any(attempt.evidence_state in {"validating", "history_observed"}
+                   or (attempt.evidence_state == "evidence_published"
+                       and attempt.writer_handoff_state != "staged_non_authoritative")
                    for attempt in self._storage_preadmission_attempts.values()):
                 return None, "remote_output_evidence_in_progress"
             attempt = self._storage_preadmission_attempts.get(index)
@@ -671,6 +695,17 @@ class OriginalHostWorkerStorageIntegration:
         try:
             if type(self._capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization:
                 raise ValueError("capacity_owner_unavailable")
+            terminal_state = self._capacity_owner._reservation_terminal_state_for_characterization(
+                capacity_operation, reservation,
+            )
+            if terminal_state == "cancelled":
+                with self._lock:
+                    if self._storage_preadmission_attempts.get(
+                            attempt.lease.request_index) is attempt:
+                        attempt.state = "cancelled"
+                return "cancelled_before_write"
+            if terminal_state != "reserved":
+                raise ValueError("reservation_not_cancellable")
             self._capacity_owner.cancel_before_write_for_characterization(
                 capacity_operation, reservation,
             )
@@ -844,6 +879,208 @@ class OriginalHostWorkerStorageIntegration:
                         attempt.validation_marker = None
                         return None, "worker_completion_changed"
                     return result
+
+    def _begin_single_image_writer_handoff_locked(
+            self, lifecycle, evidence, writer_owner):
+        """Claim one exact 19E-A evidence/reservation handoff before native work."""
+        from core import generation_windows_protected_assets as assets
+
+        if (not self._profile_a
+                or type(evidence) is not GenerationWorkerRemoteOutputWriterEvidence
+                or type(writer_owner) is not assets.WindowsProtectedAssetsCharacterization):
+            return None, "writer_handoff_owner_invalid"
+        with lifecycle._lock:
+            with self._capacity_owner._lock:
+                with self._lock:
+                    attempt = self._storage_preadmission_attempts.get(evidence.request_index)
+                    if (lifecycle._worker_storage_integration is not self
+                            or lifecycle._state != "bound_non_executing"
+                            or lifecycle._generation != self._lifecycle_generation
+                            or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                            or not self._root_binding_matches()
+                            or self._state != "bound_non_executing"
+                            or attempt is None or attempt.state != "pre_admitted"
+                            or attempt.evidence_state != "evidence_published"
+                            or attempt.evidence is not evidence
+                            or evidence._issuer is not self
+                            or evidence._attempt_nonce != attempt.lease.nonce
+                            or attempt.remote_receipt is None
+                            or attempt.writer_handoff_state != "not_started"
+                            or attempt.writer_handoff_marker is not None
+                            or attempt.writer_owner is not None
+                            or attempt.writer_image_observation is not None
+                            or self._active is not None):
+                        return None, "writer_handoff_evidence_unavailable"
+                    if (self._profile_a_writer_owner is not None
+                            and self._profile_a_writer_owner is not writer_owner):
+                        return None, "writer_handoff_owner_mismatch"
+                    if not writer_owner._is_fresh_profile_a_writer_for_handoff(
+                            self._capacity_owner, self._purpose_roots, integration=self):
+                        return None, "writer_handoff_root_mismatch"
+                    self._profile_a_writer_owner = writer_owner
+                    if (evidence.descriptor_count != 1
+                            or type(attempt.remote_receipt.images) is not tuple
+                            or len(attempt.remote_receipt.images) != 1
+                            or evidence.descriptor_count != len(attempt.remote_receipt.images)):
+                        attempt.writer_handoff_state = "refused"
+                        return (attempt, None, lifecycle._envelope, attempt.prepared,
+                                attempt.remote_receipt, attempt.capacity_operation,
+                                attempt.reservation), "single_image_output_required"
+                    if not self._capacity_owner._staging_reservation_covers_for_characterization(
+                            attempt.capacity_operation, attempt.reservation,
+                            "temporary_containment", _MAX_WRITER_IMAGE_BYTES, 1):
+                        return None, "writer_handoff_reservation_unavailable"
+                    descriptor = attempt.remote_receipt.images[0]
+                    marker = object()
+                    attempt.writer_handoff_state = "in_progress"
+                    attempt.writer_handoff_marker = marker
+                    attempt.writer_owner = writer_owner
+                    return (attempt, marker, lifecycle._envelope, attempt.prepared,
+                            attempt.remote_receipt, descriptor,
+                            attempt.capacity_operation, attempt.reservation), "handoff_claimed"
+
+    def _writer_handoff_matches_locked(
+            self, lifecycle, attempt, marker, evidence, writer_owner, *, states):
+        """Short identity/state check; caller holds the host and publication gates."""
+        try:
+            with lifecycle._lock:
+                with self._capacity_owner._lock:
+                    with self._lock:
+                        return bool(
+                            lifecycle._worker_storage_integration is self
+                            and lifecycle._state == "bound_non_executing"
+                            and lifecycle._generation == self._lifecycle_generation
+                            and self._lifecycle_profile_binding_matches_locked(lifecycle)
+                            and self._root_binding_matches()
+                            and self._state == "bound_non_executing"
+                            and self._storage_preadmission_attempts.get(
+                                attempt.lease.request_index) is attempt
+                            and attempt.state == "pre_admitted"
+                            and attempt.evidence_state == "evidence_published"
+                            and attempt.evidence is evidence
+                            and evidence._issuer is self
+                            and evidence._attempt_nonce == attempt.lease.nonce
+                            and attempt.remote_receipt is not None
+                            and attempt.writer_handoff_marker is marker
+                            and attempt.writer_owner is writer_owner
+                            and attempt.writer_handoff_state in states
+                            and not attempt.cancel_requested
+                        )
+        except Exception:
+            return False
+
+    def _record_writer_admission_locked(
+            self, lifecycle, attempt, marker, evidence, writer_owner,
+            operation, reservation, write_admission):
+        if (not self._writer_handoff_matches_locked(
+                lifecycle, attempt, marker, evidence, writer_owner,
+                states={"in_progress"})
+                or operation is not attempt.capacity_operation
+                or reservation is not attempt.reservation
+                or write_admission is None):
+            return False
+        with self._lock:
+            if (attempt.writer_handoff_marker is not marker
+                    or attempt.writer_handoff_state != "in_progress"
+                    or attempt.writer_admission is not None):
+                return False
+            attempt.writer_admission = write_admission
+            attempt.writer_handoff_state = "write_admitted"
+            return True
+
+    def _cross_writer_create_boundary_locked(
+            self, lifecycle, attempt, marker, evidence, writer_owner):
+        if not self._writer_handoff_matches_locked(
+                lifecycle, attempt, marker, evidence, writer_owner,
+                states={"write_admitted"}):
+            return False
+        if not self._capacity_owner._staging_write_is_live_before_create_for_characterization(
+                attempt.capacity_operation, attempt.reservation, attempt.writer_admission):
+            return False
+        with self._lock:
+            if (attempt.writer_handoff_marker is not marker
+                    or attempt.writer_handoff_state != "write_admitted"
+                    or attempt.writer_create_boundary_crossed):
+                return False
+            # This short in-memory transition is the one-shot authorization
+            # boundary. Native CREATE_NEW follows after all host locks release.
+            attempt.writer_create_boundary_crossed = True
+            attempt.writer_handoff_state = "create_boundary_crossed"
+            return True
+
+    def _publish_single_image_writer_observation_locked(
+            self, lifecycle, attempt, marker, evidence, writer_owner, image,
+            capacity_view, project_view, writer_view):
+        """Publish a count-only result after exact native/accounting observation."""
+        if (capacity_view.get("status") != "characterization_only"
+                or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                or capacity_view.get("scope_writer_lease") != "held"
+                or project_view.get("status") != "read_only_reference_observed"
+                or writer_view.get("asset_observation") != "observed"):
+            return None, "writer_handoff_storage_observation_unavailable"
+        from core.generation_windows_protected_assets import VerifiedProtectedImageObservation
+
+        if (type(image) is not VerifiedProtectedImageObservation
+                or image.job_id != lifecycle._job_id
+                or image.claim_id != lifecycle._claim_id
+                or image.manifest_identity != lifecycle._manifest_identity
+                or image.request_id != attempt.prepared.request_id
+                or image.request_index != attempt.lease.request_index
+                or image.workflow_identity != attempt.prepared.workflow_identity
+                or image.prompt_id != attempt.accepted_prompt_id
+                or image.remote_receipt_identity != attempt.remote_receipt.identity
+                or image.descriptor_identity != attempt.remote_receipt.images[0].identity):
+            return None, "writer_handoff_image_mismatch"
+        if not self._capacity_owner._asset_stream_write_completed_for_characterization(
+                attempt.capacity_operation, attempt.writer_admission, writer_owner,
+                (image.request_id, image.descriptor_identity), image):
+            return None, "writer_handoff_accounting_unavailable"
+        if not self._writer_handoff_matches_locked(
+                lifecycle, attempt, marker, evidence, writer_owner,
+                states={"create_boundary_crossed"}):
+            return None, "host_or_writer_changed"
+        with self._lock:
+            if (attempt.writer_image_observation is not None
+                    or attempt.writer_handoff_state != "create_boundary_crossed"
+                    or not attempt.writer_create_boundary_crossed):
+                return None, "writer_handoff_already_settled"
+            attempt.writer_image_observation = image
+            attempt.writer_handoff_state = "staged_non_authoritative"
+            return GenerationWorkerProtectedWriterObservation(
+                status="protected_image_staged_non_authoritative",
+                request_index=attempt.lease.request_index,
+                verified_image_count=1,
+                capacity_accounted=True,
+            ), "protected_image_staged_non_authoritative"
+
+    def _fail_single_image_writer_handoff(self, attempt, marker, *, uncertain):
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or attempt.writer_handoff_marker is not marker):
+                return "writer_handoff_stale"
+            if attempt.writer_handoff_state == "staged_non_authoritative":
+                return "protected_image_staged_non_authoritative"
+            attempt.writer_handoff_state = "retained_uncertain" if uncertain else "refused"
+            if uncertain:
+                attempt.evidence_state = "uncertain"
+            return attempt.writer_handoff_state
+
+    def _settle_cancelled_single_image_writer_handoff(self, attempt, marker, writer_owner):
+        """Publish only a ledger-confirmed pre-CREATE_NEW cancellation locally."""
+        if (self._capacity_owner._reservation_terminal_state_for_characterization(
+                attempt.capacity_operation, attempt.reservation) != "cancelled"
+                or writer_owner._uncertain):
+            return False
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or attempt.writer_handoff_marker is not marker
+                    or attempt.writer_owner is not writer_owner):
+                return False
+            attempt.state = "cancelled"
+            attempt.evidence_state = "cancelled"
+            attempt.cancel_requested = True
+            attempt.writer_handoff_state = "refused"
+            return True
 
     def _root_binding_matches(self):
         """Check exact owner references only; never touch the filesystem."""

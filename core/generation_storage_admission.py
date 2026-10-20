@@ -550,6 +550,10 @@ class _CapacityLedger:
             for purpose, (byte_count, entry_count) in delta.items():
                 self._observed[purpose][0] += byte_count
                 self._observed[purpose][1] += entry_count
+            # Preserve the exact committed inventory delta for the narrow
+            # joint-owner compensation path. A later host-publication failure
+            # must not reconstruct or approximate this quantity.
+            record["completed_observed_delta"] = dict(delta)
             record["state"] = "completed"
             self._operations[record["operation"]]["state"] = "completed"
             self._active_write = None
@@ -582,10 +586,21 @@ class _CapacityLedger:
         """Keep a verified write's full upper bound if its joint owner publish fails."""
         with self._lock:
             record = next((item for item in self._reservations.values()
-                           if item.get("write") is write and item["state"] == "completed"), None)
+                           if item.get("write") is write), None)
+            operation_state = self._operations.get(operation)
+            if (record is not None and record.get("operation") is operation
+                    and record.get("state") == "uncertain"
+                    and record.get("uncertain_completed_delta") == observed_delta
+                    and operation_state is not None
+                    and operation_state.get("state") == "uncertain"):
+                return self._summary_locked()
             if (record is None or record["operation"] is not operation
+                    or record.get("state") != "completed"
+                    or record.get("kind") == "journal_replacement"
+                    or operation_state is None or operation_state.get("state") != "completed"
                     or self._active_write is not None or type(observed_delta) is not dict
-                    or set(observed_delta) != set(_WRITABLE)):
+                    or set(observed_delta) != set(_WRITABLE)
+                    or record.get("completed_observed_delta") != observed_delta):
                 _fail("write_admission_unavailable")
             for purpose in _WRITABLE:
                 delta = observed_delta[purpose]
@@ -602,6 +617,7 @@ class _CapacityLedger:
                 self._uncertain[purpose][0] += estimate[0]
                 self._uncertain[purpose][1] += estimate[1]
             record["state"] = "uncertain"
+            record["uncertain_completed_delta"] = dict(observed_delta)
             self._operations[record["operation"]]["state"] = "uncertain"
             self._invalid = True
 
@@ -1044,6 +1060,124 @@ class WindowsProtectedStorageAdmissionCharacterization:
                     and operation_record.get("state") == "reserved"
                 )
 
+    def _staging_reservation_covers_for_characterization(
+            self, operation, reservation, purpose, minimum_bytes, minimum_entries):
+        """Check a live, exact single-purpose staging reservation by identity.
+
+        This does not refresh inventory or issue a write token. The protected
+        image writer uses it only to prove that an already host-retained 19D
+        reservation can cover its fixed single-image upper bound.
+        """
+        if (self._profile_a_root_set is not True
+                or purpose != "temporary_containment"
+                or type(minimum_bytes) is not int or minimum_bytes <= 0
+                or type(minimum_entries) is not int or minimum_entries <= 0
+                or type(reservation) is not _Opaque or type(operation) is not _Opaque):
+            return False
+        with self._lock:
+            if (self._closed or self._invalid or self._scope_lease is None
+                    or self._scope_lease._state != "held"):
+                return False
+            with self._ledger._lock:
+                record = self._ledger._reservations.get(reservation)
+                operation_record = self._ledger._operations.get(operation)
+                estimates = record.get("estimates") if record is not None else None
+                amount = estimates.get(purpose) if type(estimates) is dict else None
+                return bool(
+                    record is not None
+                    and record.get("operation") is operation
+                    and record.get("state") == "reserved"
+                    and type(estimates) is dict and set(estimates) == {purpose}
+                    and type(amount) is tuple and len(amount) == 2
+                    and type(amount[0]) is int and amount[0] >= minimum_bytes
+                    and type(amount[1]) is int and amount[1] >= minimum_entries
+                    and operation_record is not None
+                    and operation_record.get("state") == "reserved"
+                )
+
+    def _staging_write_is_live_before_create_for_characterization(
+            self, operation, reservation, write_admission):
+        """Check the exact Profile A lease/token at the final CREATE_NEW gate."""
+        if (self._profile_a_root_set is not True
+                or type(reservation) is not _Opaque
+                or type(operation) is not _Opaque
+                or type(write_admission) is not _Opaque):
+            return False
+        with self._lock:
+            if (self._closed or self._invalid or self._scope_lease is None
+                    or self._scope_lease._state != "held"):
+                return False
+            with self._ledger._lock:
+                record = self._ledger._reservations.get(reservation)
+                operation_record = self._ledger._operations.get(operation)
+                return bool(
+                    record is not None
+                    and record.get("operation") is operation
+                    and record.get("state") == "writing"
+                    and record.get("write") is write_admission
+                    and self._ledger._active_write is write_admission
+                    and operation_record is not None
+                    and operation_record.get("state") == "writing"
+                )
+
+    def _reservation_terminal_state_for_characterization(self, operation, reservation):
+        """Read the exact reservation state without refreshing or restoring authority."""
+        if type(reservation) is not _Opaque or type(operation) is not _Opaque:
+            return None
+        with self._lock:
+            with self._ledger._lock:
+                record = self._ledger._reservations.get(reservation)
+                if record is None or record.get("operation") is not operation:
+                    return None
+                return record.get("state")
+
+    def _asset_stream_write_completed_for_characterization(
+            self, operation, write_admission, asset_owner, stream_attempt,
+            stream_observation):
+        """Verify exact completed ledger custody for one protected stream image."""
+        from core import generation_windows_protected_assets as assets
+
+        if (type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(stream_observation) is not assets.VerifiedProtectedImageObservation
+                or type(stream_attempt) is not tuple or len(stream_attempt) != 2
+                or stream_attempt != (stream_observation.request_id,
+                                      stream_observation.descriptor_identity)
+                or stream_observation.image.purpose != "temporary_containment"
+                or any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
+                       for purpose in ("temporary_containment", "promoted_assets"))):
+            return False
+        # Follow the established protected-assets -> admission -> ledger order.
+        with asset_owner._lock:
+            key = ("temporary_containment", stream_observation.image.storage_identity)
+            if (asset_owner._closed or asset_owner._revoking or asset_owner._invalid
+                    or asset_owner._uncertain
+                    or asset_owner._stream_images.get(stream_attempt) is not stream_observation
+                    or asset_owner._images.get(key) is not stream_observation.image
+                    or key not in asset_owner._files):
+                return False
+            with self._lock:
+                if self._closed or self._invalid:
+                    return False
+                with self._ledger._lock:
+                    record = next((item for item in self._ledger._reservations.values()
+                                   if item.get("write") is write_admission
+                                   and item.get("operation") is operation), None)
+                    operation_record = self._ledger._operations.get(operation)
+                    return bool(
+                        record is not None and record.get("state") == "completed"
+                        and type(record.get("estimates")) is dict
+                        and set(record["estimates"]) == {"temporary_containment"}
+                        and record["estimates"]["temporary_containment"][0]
+                            >= stream_observation.image.byte_count
+                        and record["estimates"]["temporary_containment"][1] >= 1
+                        and operation_record is not None
+                        and operation_record.get("state") == "completed"
+                        and self._ledger._active_write is None
+                        and self._ledger._observed["temporary_containment"][0]
+                            >= stream_observation.image.byte_count
+                        and self._ledger._observed["temporary_containment"][1] >= 1
+                    )
+
     def admit_write_for_characterization(self, operation, reservation):
         # Serialize the final pre-write inventory with admission publication.
         # Once the ledger marks a write active, other refreshes refuse to scan
@@ -1382,8 +1516,72 @@ class WindowsProtectedStorageAdmissionCharacterization:
     def retain_completed_write_uncertain_for_characterization(
             self, operation, write_admission, observed_delta):
         with self._lock:
-            return self._ledger.retain_completed_write_as_uncertain(
+            result = self._ledger.retain_completed_write_as_uncertain(
                 operation, write_admission, observed_delta)
+            self._invalid = True
+            return result
+
+    def retain_completed_asset_stream_write_uncertain_for_characterization(
+            self, operation, write_admission, asset_owner, stream_observation):
+        """Retain one exact completed stream write after host publication fails.
+
+        The completed ledger delta and its asset/stream identities were bound
+        at the original native commit. This path performs only in-memory
+        checks under assets -> admission -> ledger lock order; it does not
+        rescan roots or invoke host callbacks.
+        """
+        from core import generation_windows_protected_assets as assets
+
+        if (type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(stream_observation) is not assets.VerifiedProtectedImageObservation):
+            _fail("write_admission_unavailable")
+        image = stream_observation.image
+        attempt = (stream_observation.request_id, stream_observation.descriptor_identity)
+        if (image.purpose != "temporary_containment"
+                or self._roots.get("temporary_containment") is not
+                    asset_owner._roots.get("temporary_containment")
+                or self._roots.get("promoted_assets") is not
+                    asset_owner._roots.get("promoted_assets")):
+            _fail("write_admission_unavailable")
+        expected_delta = {
+            purpose: ((image.byte_count, 1) if purpose == "temporary_containment" else (0, 0))
+            for purpose in _WRITABLE
+        }
+        with asset_owner._lock:
+            key = (image.purpose, image.storage_identity)
+            if (attempt not in asset_owner._stream_attempts
+                    or asset_owner._stream_images.get(attempt) is not stream_observation
+                    or asset_owner._images.get(key) is not image
+                    or key not in asset_owner._files):
+                _fail("write_admission_unavailable")
+            with self._lock:
+                with self._ledger._lock:
+                    record = next((item for item in self._ledger._reservations.values()
+                                   if item.get("write") is write_admission
+                                   and item.get("operation") is operation), None)
+                    binding = (record.get("asset_stream_completion")
+                               if record is not None else None)
+                    exact_binding = (
+                        type(binding) is tuple and len(binding) == 4
+                        and binding[0] is asset_owner and binding[1] is image
+                        and binding[2] == attempt and binding[3] is stream_observation
+                    )
+                    estimates = record.get("estimates") if record is not None else None
+                    staging_estimate = (estimates.get("temporary_containment")
+                                        if type(estimates) is dict else None)
+                    if (record is None or not exact_binding
+                            or type(estimates) is not dict
+                            or set(estimates) != {"temporary_containment"}
+                            or type(staging_estimate) is not tuple
+                            or len(staging_estimate) != 2
+                            or staging_estimate[0] < image.byte_count
+                            or staging_estimate[1] < 1
+                            or record.get("completed_observed_delta") != expected_delta
+                            or self._ledger._active_write is not None):
+                        _fail("write_admission_unavailable")
+                    return self.retain_completed_write_uncertain_for_characterization(
+                        operation, write_admission, expected_delta,
+                    )
 
     def complete_write_for_characterization(self, operation, write_admission):
         try:
@@ -1538,6 +1736,17 @@ class WindowsProtectedStorageAdmissionCharacterization:
                             asset_owner._stream_images.pop(stream_attempt, None)
                             asset_owner._stream_pending_images.pop(stream_attempt, None)
                         raise
+                    if stream_attempt is not None:
+                        with self._ledger._lock:
+                            record = next((item for item in self._ledger._reservations.values()
+                                           if item.get("write") is write_admission
+                                           and item.get("operation") is operation), None)
+                            if (record is None or record.get("state") != "completed"
+                                    or record.get("completed_observed_delta") != delta):
+                                _fail("protected_stream_commit_invalid")
+                            record["asset_stream_completion"] = (
+                                asset_owner, image, stream_attempt, stream_observation,
+                            )
                     self._asset_writer_integrated = True
                     return result
         except BaseException:
@@ -1828,7 +2037,15 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 active_host = True
             if integration is not None:
                 with integration._lock:
+                    unresolved_writer_handoff = any(
+                        attempt.writer_handoff_state in {
+                            "create_boundary_crossed", "retained_uncertain",
+                        }
+                        for attempt in integration._storage_preadmission_attempts.values()
+                    )
                     if integration._uncertain_leases:
+                        return "uncertain"
+                    if unresolved_writer_handoff:
                         return "uncertain"
                     if integration._state != "closed" or integration._active is not None:
                         active_host = True
@@ -1872,7 +2089,12 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 with integration._lock:
                     integration_active = (integration._state != "closed"
                                           or integration._active is not None)
-                    integration_uncertain = bool(integration._uncertain_leases)
+                    integration_uncertain = bool(integration._uncertain_leases) or any(
+                        attempt.writer_handoff_state in {
+                            "create_boundary_crossed", "retained_uncertain",
+                        }
+                        for attempt in integration._storage_preadmission_attempts.values()
+                    )
             if state != "closed" or integration_active or integration_uncertain:
                 retained.append(previous)
                 unsettled = True
