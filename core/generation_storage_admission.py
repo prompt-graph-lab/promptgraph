@@ -1583,6 +1583,72 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         operation, write_admission, expected_delta,
                     )
 
+    def retain_completed_asset_stream_batch_uncertain_for_characterization(
+            self, operation, write_admission, asset_owner, observations):
+        """Compensate one exact completed stream batch to uncertain capacity.
+
+        The receipt tuple is identity-bound to the single aggregate completion;
+        repeated compensation of that same completion is idempotent in the
+        underlying ledger. Native evidence is retained and never deleted.
+        """
+        from core import generation_windows_protected_assets as assets
+
+        if (type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(observations) is not tuple or not 2 <= len(observations) <= 16
+                or any(type(item) is not assets.VerifiedProtectedImageObservation
+                       for item in observations)
+                or any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
+                       for purpose in ("temporary_containment", "promoted_assets"))):
+            _fail("write_admission_unavailable")
+        prepared_id = observations[0].request_id
+        remote_id = observations[0].remote_receipt_identity
+        attempts = tuple((item.request_id, item.descriptor_identity) for item in observations)
+        expected_delta = {
+            purpose: ((sum(item.image.byte_count for item in observations), len(observations))
+                      if purpose == "temporary_containment" else (0, 0))
+            for purpose in _WRITABLE
+        }
+        with asset_owner._lock:
+            if (asset_owner._profile_a_stream_batches.get((prepared_id, remote_id))
+                    is not observations
+                    or len(set(attempts)) != len(attempts)
+                    or any(asset_owner._stream_images.get(attempt) is not observation
+                           or asset_owner._images.get((observation.image.purpose,
+                                                       observation.image.storage_identity))
+                              is not observation.image
+                           for attempt, observation in zip(attempts, observations))):
+                _fail("write_admission_unavailable")
+            with self._lock:
+                with self._ledger._lock:
+                    record = next((item for item in self._ledger._reservations.values()
+                                   if item.get("write") is write_admission
+                                   and item.get("operation") is operation), None)
+                    binding = (record.get("asset_stream_batch_completion")
+                               if record is not None else None)
+                    estimates = record.get("estimates") if record is not None else None
+                    staging_estimate = (estimates.get("temporary_containment")
+                                        if type(estimates) is dict else None)
+                    bound_state = (record.get("completed_observed_delta")
+                                   if record is not None and record.get("state") == "completed"
+                                   else record.get("uncertain_completed_delta")
+                                   if record is not None else None)
+                    if (record is None or record.get("operation") is not operation
+                            or record.get("state") not in {"completed", "retained_uncertain"}
+                            or type(binding) is not tuple or len(binding) != 3
+                            or binding[0] is not asset_owner or binding[1] != attempts
+                            or binding[2] is not observations
+                            or type(estimates) is not dict
+                            or set(estimates) != {"temporary_containment"}
+                            or type(staging_estimate) is not tuple or len(staging_estimate) != 2
+                            or staging_estimate[0] < expected_delta["temporary_containment"][0]
+                            or staging_estimate[1] < len(observations)
+                            or bound_state != expected_delta
+                            or self._ledger._active_write is not None):
+                        _fail("write_admission_unavailable")
+                    return self.retain_completed_write_uncertain_for_characterization(
+                        operation, write_admission, expected_delta,
+                    )
+
     def complete_write_for_characterization(self, operation, write_admission):
         try:
             inventory = self._scan()
@@ -1757,6 +1823,222 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         asset_owner._stream_pending_images.pop(stream_attempt, None)
             self._retain_asset_write(operation, write_admission)
             raise
+
+    def complete_asset_image_batch_for_characterization(
+            self, operation, write_admission, asset_owner, observations, *,
+            stream_freshness):
+        """Commit one complete Profile A stream batch and its aggregate delta.
+
+        The exact descriptor tuple, native image observations, inventory delta
+        and one ledger completion are published under the established
+        protected-assets -> admission -> ledger lock order. Native verification
+        and host freshness callbacks remain outside those locks.
+        """
+        from core import generation_windows_protected_assets as assets
+
+        if (type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(observations) is not tuple or not 2 <= len(observations) <= 16
+                or not callable(stream_freshness)
+                or any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
+                       for purpose in ("temporary_containment", "promoted_assets"))):
+            _fail("protected_stream_batch_commit_invalid")
+
+        with asset_owner._lock:
+            envelope = asset_owner._stream_envelope
+            binding = asset_owner._stream_bindings.get(
+                observations[0].request_id
+                if type(observations[0]) is assets.VerifiedProtectedImageObservation else None
+            )
+            if (type(observations[0]) is not assets.VerifiedProtectedImageObservation
+                    or envelope is None or binding is None or len(binding) != 2):
+                _fail("protected_stream_batch_commit_invalid")
+            prepared, remote = binding
+            descriptors = tuple(remote.images) if type(remote.images) is tuple else ()
+            if (not assets.is_owner_prepared_frozen_request(prepared)
+                    or remote.execution_succeeded is not True
+                    or len(descriptors) != len(observations)
+                    or len({item.identity for item in descriptors}) != len(descriptors)
+                    or tuple(item.descriptor_identity for item in observations)
+                        != tuple(item.identity for item in descriptors)
+                    or len({item.descriptor_identity for item in observations}) != len(observations)):
+                _fail("protected_stream_batch_incomplete")
+            attempts = tuple((prepared.request_id, item.identity) for item in descriptors)
+            batch_key = (prepared.request_id, remote.identity)
+            total_bytes = 0
+            records = []
+            for descriptor, attempt, observation in zip(descriptors, attempts, observations):
+                if (type(observation) is not assets.VerifiedProtectedImageObservation
+                        or observation.job_id != remote.job_id
+                        or observation.claim_id != remote.claim_id
+                        or observation.manifest_identity != remote.manifest_identity
+                        or observation.request_id != prepared.request_id
+                        or observation.request_index != prepared.request_index
+                        or observation.workflow_identity != prepared.workflow_identity
+                        or observation.prompt_id != remote.prompt_id
+                        or observation.remote_receipt_identity != remote.identity
+                        or observation.descriptor_identity != descriptor.identity
+                        or observation.image.purpose != "temporary_containment"):
+                    _fail("protected_stream_batch_substitution")
+                pending = asset_owner._stream_pending_images.get(attempt)
+                if (pending is None or pending[0] is not observation
+                        or pending[1] is not stream_freshness
+                        or attempt not in asset_owner._stream_attempts
+                        or attempt in asset_owner._stream_images):
+                    _fail("protected_stream_batch_owner_mismatch")
+                image = observation.image
+                if (type(image.byte_count) is not int or image.byte_count <= 0
+                        or image.byte_count > 32 * 1024 * 1024
+                        or total_bytes > 128 * 1024 * 1024 - image.byte_count):
+                    _fail("protected_stream_batch_size_invalid")
+                total_bytes += image.byte_count
+                key = (image.purpose, image.storage_identity)
+                file_record = asset_owner._files.get(key)
+                if (asset_owner._images.get(key) is not image or file_record is None
+                        or file_record[0].name != image.storage_identity
+                        or file_record[0].parent != asset_owner._roots[image.purpose]._path):
+                    _fail("protected_asset_observation_mismatch")
+                records.append((attempt, observation, image, key, file_record))
+            if (asset_owner._closed or asset_owner._revoking or asset_owner._invalid
+                    or asset_owner._uncertain or not asset_owner._stream_batch_busy
+                    or not asset_owner._capacity_busy
+                    or batch_key not in asset_owner._profile_a_stream_batch_attempts):
+                _fail("protected_stream_batch_owner_mismatch")
+
+        try:
+            # Verify every pinned handle/content record around one complete
+            # native inventory observation; do not trust remote lengths.
+            for _attempt, _observation, image, _key, file_record in records:
+                if asset_owner._observe(image.storage_identity, image.purpose,
+                                        file_record[0].suffix[1:]) != image:
+                    _fail("protected_asset_observation_mismatch")
+            inventory = self._scan()
+            free_bytes = self._free_bytes()
+            for _attempt, _observation, image, _key, file_record in records:
+                if asset_owner._observe(image.storage_identity, image.purpose,
+                                        file_record[0].suffix[1:]) != image:
+                    _fail("protected_asset_observation_mismatch")
+            try:
+                fresh = stream_freshness()
+            except Exception:
+                _fail("host_freshness_lost")
+            if fresh is not True:
+                _fail("host_freshness_lost")
+        except BaseException as error:
+            self._retain_asset_write(operation, write_admission)
+            if type(error) is ValueError and str(error) == "host_freshness_lost":
+                raise
+            _fail("protected_asset_observation_unavailable")
+
+        try:
+            with asset_owner._lock:
+                with self._lock:
+                    self._require_live()
+                    if (asset_owner._closed or asset_owner._revoking
+                            or asset_owner._invalid or asset_owner._uncertain
+                            or not asset_owner._stream_batch_busy
+                            or not asset_owner._capacity_busy):
+                        _fail("protected_stream_batch_owner_mismatch")
+                    for attempt, observation, image, key, file_record in records:
+                        pending = asset_owner._stream_pending_images.get(attempt)
+                        if (pending is None or pending[0] is not observation
+                                or pending[1] is not stream_freshness
+                                or asset_owner._stream_images.get(attempt) is not None
+                                or asset_owner._images.get(key) is not image
+                                or asset_owner._files.get(key) is not file_record):
+                            _fail("protected_stream_batch_owner_mismatch")
+                    delta = self._ledger._inventory_delta(self._ledger._inventory, inventory)
+                    additions = ({purpose: set(inventory[purpose]) - set(self._ledger._inventory[purpose])
+                                  for purpose in _WRITABLE}
+                                 if type(inventory) is dict and type(self._ledger._inventory) is dict
+                                 else None)
+                    expected_additions = {purpose: set() for purpose in _WRITABLE}
+                    expected_additions["temporary_containment"] = {
+                        image.storage_identity for _a, _o, image, _k, _r in records
+                    }
+                    expected_delta = {
+                        purpose: ((total_bytes, len(records)) if purpose == "temporary_containment"
+                                  else (0, 0))
+                        for purpose in _WRITABLE
+                    }
+                    native_rows_match = all(
+                        inventory.get(image.purpose, {}).get(image.storage_identity)
+                        == (file_record[2], image.byte_count, file_record[3][0])
+                        for _a, _o, image, _key, file_record in records
+                    )
+                    if (delta != expected_delta or additions != expected_additions
+                            or not native_rows_match):
+                        self._ledger.retain_uncertain(operation, write_admission)
+                        self._invalid = True
+                        _fail("protected_asset_inventory_mismatch")
+                    for attempt, observation, _image, _key, _file_record in records:
+                        asset_owner._stream_images[attempt] = observation
+                        asset_owner._stream_pending_images.pop(attempt, None)
+                    try:
+                        result = self._ledger.complete_write(
+                            operation, write_admission, inventory, free_bytes,
+                        )
+                    except BaseException:
+                        for attempt, _observation, _image, _key, _file_record in records:
+                            asset_owner._stream_images.pop(attempt, None)
+                        raise
+                    with self._ledger._lock:
+                        record = next((item for item in self._ledger._reservations.values()
+                                       if item.get("write") is write_admission
+                                       and item.get("operation") is operation), None)
+                        if (record is None or record.get("state") != "completed"
+                                or record.get("completed_observed_delta") != expected_delta):
+                            _fail("protected_stream_batch_commit_invalid")
+                        record["asset_stream_batch_completion"] = (
+                            asset_owner, attempts, observations,
+                        )
+                    asset_owner._profile_a_stream_batches[batch_key] = observations
+                    self._asset_writer_integrated = True
+                    return result
+        except BaseException:
+            self._retain_asset_write(operation, write_admission)
+            raise
+
+    def _asset_stream_image_batch_write_completed_for_characterization(
+            self, operation, write_admission, asset_owner, observations):
+        """Verify exact private batch custody after its one ledger completion."""
+        from core import generation_windows_protected_assets as assets
+
+        if (type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(observations) is not tuple or not 2 <= len(observations) <= 16):
+            return False
+        if any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
+               for purpose in ("temporary_containment", "promoted_assets")):
+            return False
+        if not observations or type(observations[0]) is not assets.VerifiedProtectedImageObservation:
+            return False
+        request_key = (observations[0].request_id, observations[0].remote_receipt_identity)
+        attempts = tuple((item.request_id, item.descriptor_identity) for item in observations)
+        with asset_owner._lock:
+            if (asset_owner._profile_a_stream_batches.get(request_key) is not observations
+                    or any(asset_owner._stream_images.get(attempt) is not observation
+                           or asset_owner._images.get((observation.image.purpose,
+                                                       observation.image.storage_identity))
+                              is not observation.image
+                           for attempt, observation in zip(attempts, observations))):
+                return False
+            with self._lock:
+                with self._ledger._lock:
+                    record = next((item for item in self._ledger._reservations.values()
+                                   if item.get("write") is write_admission
+                                   and item.get("operation") is operation), None)
+                    binding = (record.get("asset_stream_batch_completion")
+                               if record is not None else None)
+                    return bool(
+                        record is not None and record.get("state") == "completed"
+                        and type(binding) is tuple and len(binding) == 3
+                        and binding[0] is asset_owner and binding[1] == attempts
+                        and binding[2] is observations
+                        and self._ledger._active_write is None
+                        and record.get("completed_observed_delta", {}).get(
+                            "temporary_containment") == (
+                                sum(item.image.byte_count for item in observations), len(observations),
+                            )
+                    )
 
     def complete_protected_promotion_batch_for_characterization(
             self, operation, write_admission, asset_owner, promotion_owner,

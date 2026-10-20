@@ -1745,9 +1745,9 @@ be canceled on a definite refusal; uncertain evidence remains retained.
 writes an image, changes Journal state, promotes assets, registers Candidates,
 saves a Project, or reconstructs authority after restart. The legacy
 five-purpose binding and its owners remain unchanged. C2B-8D-19E-B below adds
-the first one-image Writer handoff; multi-image atomic staging remains a
-separate boundary. All production capability flags remain false and
-`authorship=unverified`.
+the one-image Writer handoff; C2B-8D-19E-C extends that same Profile A path to
+one complete multi-image request. All production capability flags remain
+false and `authorship=unverified`.
 
 ## C2B-8D-19E-B single-image protected Writer handoff
 
@@ -1825,3 +1825,49 @@ cross-process byte quotas, process-restart authority, multi-image atomicity,
 production transport/Worker registration, Human Start, promotion, Candidate
 publication, Project save, Recovery, retention or Discard. Every production
 capability flag remains false and `authorship=unverified`.
+
+## C2B-8D-19E-C multi-image protected Writer handoff
+
+`ProjectAgentSessionRuntime.stage_generation_worker_remote_output_batch_with_protected_writer_for_characterization()`
+accepts the exact host-retained 19E-A evidence only when its successful remote
+receipt has 2 through 16 distinct descriptors. The existing single-image API
+still requires exactly one descriptor. Both paths use the same 19D operation,
+reservation, capacity owner, borrowed protected Writer, and scope-writer lease;
+the batch path does not create a second ledger operation or reservation.
+
+For descriptor count `n`, the existing staging reservation must cover
+`min(32 MiB * n, 128 MiB)` and `n` entries before native write admission. The
+batch obtains one private write token and performs one native CREATE_NEW per
+descriptor in exact receipt order. Each file is separately streamed, flushed,
+decoded, hashed, reread and bound to its retained native handle/ACL observation.
+Only after all descriptors verify does the existing capacity owner compare one
+complete inventory delta and complete the ledger once with aggregate actual
+bytes and `n` entries. A successful original-host result contains only the
+request index, verified image count, and `capacity_accounted`; no path,
+descriptor, per-image observation, or write token is exposed.
+
+The result is withheld on a missing/duplicate descriptor, failed stream,
+native identity/ACL/byte mismatch, inventory disagreement, Claim or Project
+invalidation, capacity/writer close, or failure at the final host publication
+boundary. Before any CREATE_NEW may have been attempted, an exact confirmed
+pre-write cancellation can release the reservation. Once any CREATE_NEW may
+have been attempted, the whole count-based reservation is retained as
+uncertain, even if only some files were created; possible files and handles
+are not deleted, adopted or retried. If the ledger commits the aggregate delta
+but the final host publication fails, the exact batch commit is compensated
+back to the full byte-and-entry estimate. The cross-process scope-writer lease
+remains held for unresolved evidence. A fully published and settled batch can
+release the lease on clean close.
+
+The characterization tests use real disposable Windows-native protected
+roots and deterministic injected streams. They cover 2-image and 16-image
+success, ordered correlation and native file evidence, a second-image stream
+failure, Claim/Project/capacity invalidation between image writes, aggregate
+inventory mismatch, insufficient reservation before creation, Writer close
+waiting on an in-flight batch without deadlock, and capacity close racing
+post-commit compensation. This establishes only the offline Writer/ledger/host boundary.
+It does not enable production storage or execution, or prove OS-enforced
+quotas, production provisioning, power-loss durability, cross-process quota
+accounting, real ComfyUI interoperability, restart authority, promotion,
+Candidate publication, Project save, Recovery, retention or Discard. Every
+production capability flag remains false and `authorship=unverified`.

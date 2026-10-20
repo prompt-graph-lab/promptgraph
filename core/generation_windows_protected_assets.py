@@ -175,6 +175,8 @@ class WindowsProtectedAssetsCharacterization:
                 and not self._stream_attempts and not self._stream_bindings
                 and not self._stream_images and not self._stream_pending_images
                 and not self._stream_batch_attempts and not self._stream_batches
+                and not self._profile_a_stream_batch_attempts
+                and not self._profile_a_stream_batches
                 and not self._stream_batch_acceptances and not self._stream_promotions
             )
             settled = bool(
@@ -263,6 +265,7 @@ class WindowsProtectedAssetsCharacterization:
         self._stream_envelope = None
         self._stream_bindings, self._stream_attempts, self._stream_images = {}, set(), {}
         self._stream_pending_images = {}
+        self._profile_a_stream_batch_attempts, self._profile_a_stream_batches = set(), {}
         self._stream_batch_attempts, self._stream_batches = set(), {}
         self._stream_batch_freshness = {}
         self._stream_batch_acceptance_attempts, self._stream_batch_acceptances = set(), {}
@@ -774,6 +777,293 @@ class WindowsProtectedAssetsCharacterization:
             capacity_operation=operation, capacity_reservation=reservation,
             on_write_admitted=on_write_admitted, before_create=before_create,
         )
+
+    def _stage_remote_image_batch_with_existing_reservation_for_characterization(
+            self, envelope, prepared, remote, *, admission_owner, operation,
+            reservation, stream_provider, host_freshness, on_write_admitted,
+            before_create, characterization=False, disposable_opt_in=False):
+        """Stage one exact 2..16 image request under one Profile A write token.
+
+        Native CREATE_NEW is per image and cannot be rolled back. This owner
+        retains every possible file on any failure, and publishes the complete
+        ordered observation tuple only with one aggregate ledger completion.
+        """
+        from core import generation_storage_admission as admission
+
+        if characterization is not True or disposable_opt_in is not True:
+            w._fail("execution_unavailable")
+        if (type(admission_owner) is not admission.WindowsProtectedStorageAdmissionCharacterization
+                or self._profile_a_capacity_owner is not admission_owner
+                or self._owns_roots is not False or self._writable is not True):
+            w._fail("profile_a_writer_owner_mismatch")
+        if any(admission_owner._roots.get(purpose) is not self._roots.get(purpose)
+               for purpose in ("temporary_containment", "promoted_assets")):
+            w._fail("storage_root_owner_mismatch")
+        if not callable(on_write_admitted) or not callable(before_create):
+            w._fail("host_handoff_required")
+        try:
+            descriptors = tuple(remote.images)
+            if (not is_owner_prepared_frozen_request(prepared)
+                    or not 2 <= len(descriptors) <= MAX_REMOTE_IMAGES
+                    or len({item.identity for item in descriptors}) != len(descriptors)
+                    or any(item.image_format not in SUPPORTED_EXTENSIONS for item in descriptors)
+                    or not callable(stream_provider) or not callable(host_freshness)):
+                raise ValueError()
+            _validate_binding(envelope, prepared, remote)
+            if remote.execution_succeeded is not True:
+                raise ValueError()
+        except Exception:
+            w._fail("remote_correlation_mismatch")
+
+        count = len(descriptors)
+        upper_bound = min(32 * 1024 * 1024 * count, 128 * 1024 * 1024)
+        if not admission_owner._staging_reservation_covers_for_characterization(
+                operation, reservation, "temporary_containment", upper_bound, count):
+            w._fail("staging_reservation_unavailable")
+
+        fresh = lambda: host_freshness(envelope, remote)
+        attempts = tuple((prepared.request_id, item.identity) for item in descriptors)
+        batch_key = (prepared.request_id, remote.identity)
+        capacity_lease = object()
+        write_admission = None
+        create_attempted = False
+        active_stream = None
+        observations = []
+        with self._lock:
+            if not self._writable or self._uncertain:
+                w._fail("inspect_only_or_uncertain")
+            if self._closed:
+                w._fail("closed_observation")
+            if self._revoking:
+                w._fail("closing_observation")
+            if self._invalid:
+                w._fail("invalidated_observation")
+            if self._stream_envelope is not None and self._stream_envelope is not envelope:
+                w._fail("storage_owner_mismatch")
+            previous = self._stream_bindings.get(prepared.request_id)
+            if previous is not None and (previous[0] is not prepared or previous[1] is not remote):
+                w._fail("remote_binding_conflict")
+            if (batch_key in self._profile_a_stream_batch_attempts
+                    or any(item in self._stream_attempts for item in attempts)):
+                w._fail("already_attempted")
+            if (self._stream_busy or self._stream_batch_busy or self._promotion_busy
+                    or self._capacity_busy):
+                w._fail("storage_busy")
+            if (len(self._stream_bindings) >= 100 and previous is None
+                    or len(self._files) + len(self._unobserved_files) + count > self._limits.images
+                    or self._used_bytes + upper_bound > self._limits.aggregate_bytes
+                    or self._stream_request_bytes.get(prepared.request_id, 0) + upper_bound
+                        > self._limits.request_bytes):
+                w._fail("storage_capacity")
+            self._stream_envelope = envelope
+            self._stream_bindings[prepared.request_id] = (prepared, remote)
+            self._profile_a_stream_batch_attempts.add(batch_key)
+            self._stream_attempts.update(attempts)
+            self._stream_batch_busy = True
+            self._capacity_busy = True
+            self._capacity_lease = capacity_lease
+            self._capacity_thread = threading.get_ident()
+            self._capacity_idle.clear()
+
+        def check_capacity_admission():
+            if write_admission is not None:
+                admission_owner.assert_write_admission_for_characterization(
+                    operation, write_admission,
+                )
+
+        stream_freshness = lambda: self._stream_fresh(fresh) is None
+
+        try:
+            self._stream_fresh(fresh)
+            self._check()
+            existing_inventory = {(purpose, path.name) for purpose, _, path in self._inventory()}
+            if existing_inventory != set(self._files):
+                with self._lock:
+                    self._uncertain = True
+                w._fail("unexpected_existing_file")
+
+            # One reservation and one token cover the entire request.
+            write_admission = admission_owner.admit_write_for_characterization(
+                operation, reservation,
+            )
+            check_capacity_admission()
+            if on_write_admitted(operation, reservation, write_admission) is not True:
+                w._fail("host_freshness_lost")
+            with self._lock:
+                if (self._capacity_lease is not capacity_lease or self._revoking
+                        or self._closed or self._invalid or self._uncertain):
+                    w._fail("storage_owner_unavailable")
+
+            root = self._roots["temporary_containment"]
+            _, c, f, _, _, _ = root._api
+            for descriptor, attempt in zip(descriptors, attempts):
+                self._stream_fresh(fresh)
+                check_capacity_admission()
+                self._check()
+                if before_create() is not True:
+                    w._fail("host_freshness_lost")
+                name = uuid.uuid4().hex + "." + descriptor.image_format
+                key, path = ("temporary_containment", name), root._path / name
+                with self._lock:
+                    if (self._closed or self._revoking or self._invalid or self._uncertain
+                            or self._capacity_lease is not capacity_lease):
+                        w._fail("storage_owner_unavailable")
+                    # Once the host boundary is crossed, a failed CREATE_NEW is
+                    # conservatively considered a possible creation.
+                    create_attempted = True
+                    handle = f.CreateFile(
+                        str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
+                        c.FILE_SHARE_READ | c.FILE_SHARE_WRITE,
+                        w._security_attributes(root._api, root._user), c.CREATE_NEW,
+                        c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None,
+                    )
+                    self._unobserved_files.append((path, handle))
+                record = path, handle, w._identity(handle), _file_acl(handle, root)
+                self._check()
+                with self._lock:
+                    if (self._closed or self._revoking or self._invalid or self._uncertain
+                            or self._capacity_lease is not capacity_lease):
+                        w._fail("storage_owner_unavailable")
+                    self._files[key] = record
+                    self._unobserved_files.remove((path, handle))
+                self._stream_callback(self._fault, "after_file_create")
+                check_capacity_admission()
+
+                lookup = ImageDownloadLookup(
+                    prepared.prompt_url.removesuffix("/prompt"), descriptor.filename,
+                    descriptor.subfolder, descriptor.bucket, descriptor.identity,
+                )
+                self._stream_fresh(fresh)
+                try:
+                    try:
+                        active_stream = stream_provider(lookup)
+                    except Exception:
+                        raise ValueError("download_interrupted") from None
+                finally:
+                    self._stream_fresh(fresh)
+                    check_capacity_admission()
+                if (type(active_stream) is not DownloadStream
+                        or type(active_stream.content_length) is not int
+                        or not callable(active_stream.read) or not callable(active_stream.close)):
+                    w._fail("download_contract_invalid")
+                length = active_stream.content_length
+                request_bytes = self._stream_request_bytes.get(prepared.request_id, 0)
+                if (not 0 < length <= min(self._limits.image_bytes, 32 * 1024 * 1024)
+                        or request_bytes + length > min(self._limits.request_bytes, 128 * 1024 * 1024)
+                        or self._used_bytes + length > self._limits.aggregate_bytes):
+                    w._fail("download_size_limit")
+                # Count declared actual body bytes conservatively, but the
+                # reservation above was based on policy maxima, never this value.
+                self._used_bytes += length
+                self._stream_request_bytes[prepared.request_id] = request_bytes + length
+                written_total, digest = 0, hashlib.sha256()
+                while True:
+                    limit = min(CHUNK_BYTES, length - written_total + 1)
+                    chunk = self._stream_remote(
+                        fresh, active_stream.read, limit,
+                        admission_check=check_capacity_admission,
+                    )
+                    if type(chunk) is not bytes or len(chunk) > limit:
+                        w._fail("download_contract_invalid")
+                    if not chunk:
+                        if written_total != length:
+                            w._fail("short_download")
+                        break
+                    if written_total + len(chunk) > length:
+                        w._fail("extra_download")
+                    self._check()
+                    check_capacity_admission()
+                    try:
+                        _, written = f.WriteFile(handle, chunk)
+                    finally:
+                        self._check()
+                        check_capacity_admission()
+                    if written != len(chunk):
+                        w._fail("incomplete_write")
+                    written_total += len(chunk)
+                    digest.update(chunk)
+                    self._stream_callback(self._fault, "after_file_write")
+                closing, active_stream = active_stream, None
+                self._stream_close(closing, fresh, admission_check=check_capacity_admission)
+                self._check()
+                check_capacity_admission()
+                try:
+                    f.FlushFileBuffers(handle)
+                finally:
+                    self._check()
+                    check_capacity_admission()
+                self._stream_callback(self._fault, "after_file_sync")
+                check_capacity_admission()
+                image = self._observe(name, "temporary_containment", descriptor.image_format)
+                if image.byte_count != written_total or image.content_sha256 != digest.hexdigest():
+                    w._fail("content_changed")
+                self._stream_fresh(fresh)
+                check_capacity_admission()
+                observation = VerifiedProtectedImageObservation(
+                    remote.job_id, remote.claim_id, remote.manifest_identity,
+                    remote.request_id, remote.request_index, remote.workflow_identity,
+                    remote.prompt_id, remote.identity, descriptor.identity, image,
+                )
+                with self._lock:
+                    if (self._closed or self._revoking or self._invalid or self._uncertain
+                            or self._capacity_lease is not capacity_lease):
+                        w._fail("storage_owner_unavailable")
+                    self._images[key] = image
+                    self._stream_pending_images[attempt] = (observation, stream_freshness)
+                observations.append(observation)
+
+            ordered = tuple(observations)
+            admission_owner.complete_asset_image_batch_for_characterization(
+                operation, write_admission, self, ordered,
+                stream_freshness=stream_freshness,
+            )
+            return ordered
+        except BaseException:
+            if write_admission is not None:
+                terminal = admission_owner._reservation_terminal_state_for_characterization(
+                    operation, reservation,
+                )
+                if terminal in {"reserved", "writing"}:
+                    try:
+                        if create_attempted:
+                            admission_owner.retain_uncertain_for_characterization(
+                                operation, write_admission,
+                            )
+                        else:
+                            admission_owner.cancel_write_before_create_for_characterization(
+                                operation, write_admission,
+                            )
+                    except ValueError:
+                        if not create_attempted:
+                            try:
+                                admission_owner.retain_uncertain_for_characterization(
+                                    operation, write_admission,
+                                )
+                            except ValueError:
+                                pass
+                terminal = admission_owner._reservation_terminal_state_for_characterization(
+                    operation, reservation,
+                )
+                if create_attempted or terminal in {"retained_uncertain", "completed"}:
+                    with self._lock:
+                        self._uncertain = True
+            else:
+                try:
+                    admission_owner.cancel_before_write_for_characterization(operation, reservation)
+                except ValueError:
+                    pass
+            raise
+        finally:
+            try:
+                if type(active_stream) is DownloadStream and callable(active_stream.close):
+                    self._stream_close(active_stream, fresh)
+            finally:
+                with self._lock:
+                    self._stream_batch_busy = False
+                    if self._capacity_lease is capacity_lease:
+                        self._capacity_busy = False
+                        self._capacity_lease = self._capacity_thread = None
+                        self._capacity_idle.set()
 
     def _stage_remote_image_for_characterization(
             self, envelope, prepared, remote, descriptor, *, stream_provider,

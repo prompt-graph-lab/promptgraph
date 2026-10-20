@@ -905,11 +905,31 @@ class ProjectAgentSessionRuntime:
     def stage_generation_worker_remote_output_with_protected_writer_for_characterization(
             self, evidence, writer_owner, *, stream_provider,
             characterization=False, disposable_opt_in=False):
-        """Stage exactly one 19E-A image through the original 19D reservation.
+        return self._stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer_owner, stream_provider=stream_provider,
+            characterization=characterization, disposable_opt_in=disposable_opt_in,
+            allow_batch=False,
+        )
 
-        The result is a count-only non-authoritative observation. The image,
-        descriptor, write token, native identity and bytes remain retained by
-        their issuing owners and are never returned as publication authority.
+    def stage_generation_worker_remote_output_batch_with_protected_writer_for_characterization(
+            self, evidence, writer_owner, *, stream_provider,
+            characterization=False, disposable_opt_in=False):
+        """Stage one complete 2..16 descriptor batch as one non-authoritative result."""
+        return self._stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer_owner, stream_provider=stream_provider,
+            characterization=characterization, disposable_opt_in=disposable_opt_in,
+            allow_batch=True,
+        )
+
+    def _stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            self, evidence, writer_owner, *, stream_provider,
+            characterization=False, disposable_opt_in=False, allow_batch=False):
+        """Stage one exact 19E-A request through its original 19D reservation.
+
+        Single-image calls retain their one-descriptor contract; the explicit
+        batch API admits 2..16 descriptors. The result is a count-only,
+        non-authoritative observation. Images, descriptors, write tokens,
+        native identities and bytes remain retained by their issuing owners.
         """
         from core.generation_storage_admission import (
             WindowsProtectedStorageAdmissionCharacterization,
@@ -947,7 +967,7 @@ class ProjectAgentSessionRuntime:
 
                 def begin_handoff():
                     started, status = integration_snapshot._begin_single_image_writer_handoff_locked(
-                        lifecycle, evidence, writer_owner,
+                        lifecycle, evidence, writer_owner, allow_batch=allow_batch,
                     )
                     if started is not None:
                         attempt = started[0]
@@ -962,7 +982,7 @@ class ProjectAgentSessionRuntime:
                             "envelope": started[2],
                             "prepared": started[3],
                             "remote": started[4],
-                            "descriptor": started[5] if len(started) > 5 else None,
+                            "descriptors": started[5] if len(started) > 5 else (),
                             "operation": started[-2],
                             "reservation": started[-1],
                             "evidence": evidence,
@@ -988,7 +1008,8 @@ class ProjectAgentSessionRuntime:
 
         integration = captured["integration"]
         attempt, marker = captured["attempt"], captured["marker"]
-        if status == "single_image_output_required":
+        if status in {"single_image_output_required", "multi_image_output_required",
+                      "writer_handoff_descriptor_ambiguous"}:
             integration._cancel_staging_preadmission_attempt(attempt)
             return None, status
         if status != "handoff_claimed" or marker is None:
@@ -999,6 +1020,20 @@ class ProjectAgentSessionRuntime:
                 if captured["capacity_owner"]._reservation_terminal_state_for_characterization(
                         captured["operation"], captured["reservation"],
                 ) != "completed":
+                    return
+                if allow_batch:
+                    if image is None:
+                        batch_key = (captured["prepared"].request_id,
+                                     captured["remote"].identity)
+                        with writer_owner._lock:
+                            image = writer_owner._profile_a_stream_batches.get(batch_key)
+                    if type(image) is not tuple or len(image) != len(captured["descriptors"]):
+                        self._invalidate_uncertain_profile_a_capacity(captured["capacity_owner"])
+                        return
+                    captured["capacity_owner"].retain_completed_asset_stream_batch_uncertain_for_characterization(
+                        captured["operation"], captured["attempt"].writer_admission,
+                        writer_owner, image,
+                    )
                     return
                 if image is None:
                     attempt_key = (captured["prepared"].request_id,
@@ -1105,14 +1140,24 @@ class ProjectAgentSessionRuntime:
             return fail_before_or_after_write("stale_host_binding")
 
         try:
-            image = writer_owner._stage_remote_image_with_existing_reservation_for_characterization(
-                captured["envelope"], captured["prepared"], captured["remote"],
-                captured["descriptor"], admission_owner=captured["capacity_owner"],
-                operation=captured["operation"], reservation=captured["reservation"],
-                stream_provider=stream_provider, host_freshness=current_handoff,
-                on_write_admitted=on_write_admitted, before_create=before_create,
-                characterization=True, disposable_opt_in=True,
-            )
+            if allow_batch:
+                image = writer_owner._stage_remote_image_batch_with_existing_reservation_for_characterization(
+                    captured["envelope"], captured["prepared"], captured["remote"],
+                    admission_owner=captured["capacity_owner"],
+                    operation=captured["operation"], reservation=captured["reservation"],
+                    stream_provider=stream_provider, host_freshness=current_handoff,
+                    on_write_admitted=on_write_admitted, before_create=before_create,
+                    characterization=True, disposable_opt_in=True,
+                )
+            else:
+                image = writer_owner._stage_remote_image_with_existing_reservation_for_characterization(
+                    captured["envelope"], captured["prepared"], captured["remote"],
+                    captured["descriptors"][0], admission_owner=captured["capacity_owner"],
+                    operation=captured["operation"], reservation=captured["reservation"],
+                    stream_provider=stream_provider, host_freshness=current_handoff,
+                    on_write_admitted=on_write_admitted, before_create=before_create,
+                    characterization=True, disposable_opt_in=True,
+                )
         except Exception:
             state = captured["capacity_owner"]._reservation_terminal_state_for_characterization(
                 captured["operation"], captured["reservation"],
@@ -1153,9 +1198,15 @@ class ProjectAgentSessionRuntime:
                     if lifecycle is captured["lifecycle"]:
                         result = self._generation_original_host_evidence_current_locked(
                             lifecycle, captured["pairing_generation"],
-                            on_current=lambda: integration._publish_single_image_writer_observation_locked(
-                                lifecycle, attempt, marker, evidence, writer_owner,
-                                image, capacity_view, project_view, writer_view,
+                            on_current=lambda: (
+                                integration._publish_multi_image_writer_observation_locked(
+                                    lifecycle, attempt, marker, evidence, writer_owner,
+                                    image, capacity_view, project_view, writer_view,
+                                ) if allow_batch else
+                                integration._publish_single_image_writer_observation_locked(
+                                    lifecycle, attempt, marker, evidence, writer_owner,
+                                    image, capacity_view, project_view, writer_view,
+                                )
                             ),
                         )
                     else:
