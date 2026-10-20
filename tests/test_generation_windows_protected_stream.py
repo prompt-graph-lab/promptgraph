@@ -254,8 +254,16 @@ def test_real_native_admitted_stream_capacity_refusal_precedes_create_and_provid
     storage._limits = limited
     storage._ledger._limits = limited
     provider = Mock()
+    create_file = store._roots["temporary_containment"]._api[2].CreateFile
+    staging_root = store._roots["temporary_containment"]._path
+
+    def forbid_staging_create(path, *args, **kwargs):
+        if Path(path).parent == staging_root:
+            raise AssertionError("staging CREATE_NEW must not be reached")
+        return create_file(path, *args, **kwargs)
+
     with patch.object(store._roots["temporary_containment"]._api[2], "CreateFile",
-                      side_effect=AssertionError("CREATE_NEW must not be reached")):
+                      side_effect=forbid_staging_create):
         with pytest.raises(ValueError, match="storage_capacity_exceeded"):
             stage_admitted(store, storage, bound(), provider, operation_id="stream-over-capacity")
     provider.assert_not_called()

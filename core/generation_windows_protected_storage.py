@@ -1,10 +1,12 @@
 """Opt-in disposable Windows ACL observations. Never production readiness.
 
 Only new private-journal or disposable asset children may be provisioned. Existing purpose paths are
-inspected read-only. Handles deny delete sharing until explicit close; no cleanup.
+inspected read-only. Handles deny delete sharing until explicit close. A settled scope-owner close
+may release its zero-byte coordination marker; existing roots, Projects and evidence are not cleaned up.
 """
 from contextlib import ExitStack
 import ctypes
+import hashlib
 from ctypes import wintypes
 import sys
 import uuid
@@ -14,6 +16,7 @@ from core.generation_protected_storage import _path, _ordinary, _fail, PURPOSES
 
 _FACTORY = object()
 _FILE_ID_INFO = 18
+_FILE_DISPOSITION_INFO = 4
 _PERSISTENT_ACLS = 0x8
 # Retained uncertain evidence is a separately selected native root. Keep it
 # out of the older path-only policy owner so that owner remains four-purpose.
@@ -22,6 +25,10 @@ _NATIVE_PURPOSES = PURPOSES + ("retained_uncertain",)
 
 class _FileIdInfo(ctypes.Structure):
     _fields_ = [("volume", ctypes.c_ulonglong), ("identifier", ctypes.c_ubyte * 16)]
+
+
+class _FileDispositionInfo(ctypes.Structure):
+    _fields_ = [("delete_file", wintypes.BOOLEAN)]
 
 
 def _api():
@@ -48,6 +55,9 @@ def _kernel():
         wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
         ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR, wintypes.DWORD]
     kernel.GetVolumeInformationByHandleW.restype = wintypes.BOOL
+    kernel.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                  ctypes.c_void_p, wintypes.DWORD]
+    kernel.SetFileInformationByHandle.restype = wintypes.BOOL
     return kernel
 
 
@@ -170,6 +180,277 @@ def _revalidate(observations, api, user):
                 _fail("identity_changed")
             if _acl(handle, api, user) != acl:
                 _fail("native_observation_changed")
+
+
+def _project_reference_acl(handle, api):
+    """Validate a readable ordinary Project ACL without imposing the private-root ACL.
+
+    The Project reference is opened with read-only access. Its DACL must be
+    present and structurally ordinary, but may include inherited user,
+    Administrators, or SYSTEM entries. This observes and pins the ACL shape;
+    it does not claim same-user process isolation or deny writes by the user.
+    """
+    _, _, _, security, _, _ = api
+    information = security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION
+    try:
+        descriptor = security.GetSecurityInfo(handle, security.SE_FILE_OBJECT, information)
+        owner = descriptor.GetSecurityDescriptorOwner()
+        dacl = descriptor.GetSecurityDescriptorDacl()
+        if owner is None or dacl is None or not 1 <= dacl.GetAceCount() <= 64:
+            _fail("unsupported_project_reference_acl")
+        for index in range(dacl.GetAceCount()):
+            ace = dacl.GetAce(index)
+            if len(ace) != 3 or len(ace[0]) != 2:
+                _fail("unsupported_project_reference_acl")
+            (kind, flags), mask, sid = ace
+            if (kind not in (security.ACCESS_ALLOWED_ACE_TYPE, security.ACCESS_DENIED_ACE_TYPE)
+                    or flags & ~0x1F or type(mask) is not int or mask < 0 or sid is None):
+                _fail("unsupported_project_reference_acl")
+        return security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+            descriptor, security.SDDL_REVISION_1, information)
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError("project_reference_acl_unavailable") from error
+
+
+def _project_reference_revision(handle, api):
+    """Observe file size and last-write metadata without reading Project JSON."""
+    try:
+        information = api[2].GetFileInformationByHandle(handle)
+        high_size, low_size = information[5], information[6]
+        if (len(information) < 10 or type(high_size) is not int or type(low_size) is not int
+                or high_size < 0 or low_size < 0 or information[7] != 1):
+            _fail("project_reference_metadata_unavailable")
+        return information[3], high_size, low_size
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError("project_reference_metadata_unavailable") from error
+
+
+class WindowsProtectedScopeWriterLease:
+    """Cross-process CREATE_NEW lease marker for one exact protected scope.
+
+    An existing marker is never opened, interpreted, stolen, or removed. A
+    normal explicit close removes only this owner's pinned zero-byte marker
+    after its evidence has settled. Failure or uncertain work retains the
+    marker, so later processes fail closed.
+    """
+
+    _FACTORY = object()
+    execution_available = False
+
+    @classmethod
+    def _acquire_for_characterization(cls, scope, scope_identity, api, user):
+        scope = _path(str(scope))
+        digest = hashlib.sha256(
+            f"{scope_identity[0]}:{scope_identity[1]}".encode("ascii")
+        ).hexdigest()
+        path = scope / f".promptgraph-scope-lease-v1-{digest}"
+        _, constants, files, _, _, _ = api
+        handle = None
+        try:
+            handle = files.CreateFile(
+                str(path), constants.GENERIC_READ | constants.GENERIC_WRITE | constants.DELETE,
+                0, _security_attributes(api, user), constants.CREATE_NEW,
+                constants.FILE_ATTRIBUTE_NORMAL | 0x00200000, None,
+            )
+        except api[5].error as error:
+            if error.winerror in (80, 183):  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+                _fail("scope_writer_lease_unavailable")
+            raise ValueError("scope_writer_lease_unavailable") from error
+        try:
+            identity = _identity(handle)
+            acl = _acl(handle, api, user)
+            info = files.GetFileInformationByHandle(handle)
+            final = files.GetFinalPathNameByHandle(handle, 0)
+            scope_handle = _open(scope, True, api)
+            try:
+                scope_identity_matches = (
+                    _identity(scope_handle) == scope_identity
+                    and _ordinary(scope, directory=True) == scope_identity
+                )
+            finally:
+                scope_handle.Close()
+            if (info[0] & 0x400 or info[0] & 0x10 or info[7] != 1
+                    or files.GetFileSize(handle) != 0
+                    or identity != _ordinary(path, directory=False)
+                    or final.removeprefix("\\\\?\\").casefold() != str(path).casefold()
+                    or not scope_identity_matches):
+                _fail("scope_writer_lease_identity_unavailable")
+            if _filesystem(handle) != "local_ntfs_observed":
+                _fail("scope_writer_lease_filesystem_unavailable")
+            return cls(path, scope, scope_identity, handle, identity, acl, api, user,
+                       _factory=cls._FACTORY)
+        except BaseException:
+            # A marker created but not fully verified is retained as a
+            # fail-closed lease artifact; it is never auto-cleaned.
+            if handle is not None:
+                handle.Close()
+            raise
+
+    def __init__(self, path, scope, scope_identity, handle, identity, acl, api, user,
+                 *, _factory=None):
+        if _factory is not self._FACTORY:
+            _fail("protected_scope_lease_required")
+        self._path, self._scope, self._scope_identity = path, scope, scope_identity
+        self._handle, self._identity, self._acl = handle, identity, acl
+        self._api, self._user = api, user
+        self._state = "held"
+
+    def _revalidate(self):
+        if self._state != "held" or self._handle is None:
+            _fail("scope_writer_lease_unavailable")
+        files = self._api[2]
+        scope_handle = _open(self._scope, True, self._api)
+        try:
+            if (_identity(scope_handle) != self._scope_identity
+                    or _ordinary(self._scope, directory=True) != self._scope_identity):
+                _fail("scope_writer_lease_scope_changed")
+        finally:
+            scope_handle.Close()
+        final = files.GetFinalPathNameByHandle(self._handle, 0)
+        if (self._identity_value() != self._identity
+                or _ordinary(self._path, directory=False) != self._identity
+                or _acl(self._handle, self._api, self._user) != self._acl
+                or files.GetFileSize(self._handle) != 0
+                or final.removeprefix("\\\\?\\").casefold() != str(self._path).casefold()):
+            _fail("scope_writer_lease_changed")
+
+    def _identity_value(self):
+        return _identity(self._handle)
+
+    def readiness(self):
+        if self._state != "held":
+            return {"status": self._state, "native_identity": "unavailable",
+                    "execution_available": False, "protected_storage_available": False}
+        try:
+            self._revalidate()
+        except Exception:
+            return {"status": "unsafe_or_unavailable", "native_identity": "unavailable",
+                    "execution_available": False, "protected_storage_available": False}
+        return {"status": "held", "native_identity": "observed_unchanged",
+                "cross_process_exclusion": True, "stale_takeover": False,
+                "execution_available": False, "protected_storage_available": False}
+
+    def retain_uncertain_for_characterization(self):
+        if self._state != "held":
+            return self._state
+        self._state = "retained_uncertain"
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            handle.Close()
+        return self._state
+
+    def release_settled_for_characterization(self):
+        if self._state == "released":
+            return "released"
+        if self._state != "held":
+            return self._state
+        try:
+            self._revalidate()
+            disposition = _FileDispositionInfo(True)
+            if not _kernel().SetFileInformationByHandle(
+                    int(self._handle), _FILE_DISPOSITION_INFO,
+                    ctypes.byref(disposition), ctypes.sizeof(disposition)):
+                _fail("scope_writer_lease_release_unavailable")
+        except Exception:
+            self._state = "retained_uncertain"
+            handle, self._handle = self._handle, None
+            if handle is not None:
+                handle.Close()
+            return self._state
+        handle, self._handle = self._handle, None
+        try:
+            handle.Close()
+        except Exception:
+            self._state = "retained_uncertain"
+            return self._state
+        self._state = "released"
+        return self._state
+
+
+class WindowsProjectJsonReferenceCharacterization:
+    """Pinned read-only handle to an independently selected local Project JSON.
+
+    This uses a distinct policy from protected writable roots: an ordinary,
+    structurally supported NTFS DACL is observed and must remain unchanged,
+    but it is not required to be owner-only. The handle requests read access
+    only; this owner has no Project write or save operation.
+    """
+
+    execution_available = False
+    protected_storage_available = False
+    project_save_allowed = False
+
+    @classmethod
+    def capture_for_characterization(cls, selected_project_json, *,
+                                     characterization=False, disposable_opt_in=False):
+        if characterization is not True or disposable_opt_in is not True:
+            _fail("execution_unavailable")
+        path = _path(selected_project_json)
+        if path.suffix.lower() != ".json":
+            _fail("selected_json_required")
+        api = _api()
+        handle = _open(path, False, api)
+        try:
+            filesystem = _filesystem(handle)
+            identity = _identity(handle)
+            acl = _project_reference_acl(handle, api)
+            revision = _project_reference_revision(handle, api)
+            if identity != _ordinary(path, directory=False) or path.resolve() != path:
+                _fail("project_reference_identity_changed")
+            return cls(path, handle, identity, filesystem, acl, revision, api,
+                       _factory=cls._FACTORY)
+        except BaseException:
+            handle.Close()
+            raise
+
+    _FACTORY = object()
+
+    def __init__(self, path, handle, identity, filesystem, acl, revision, api, *, _factory=None):
+        if _factory is not self._FACTORY:
+            _fail("project_reference_owner_required")
+        self._path, self._handle = path, handle
+        self._identity, self._filesystem, self._acl, self._revision = identity, filesystem, acl, revision
+        self._api = api
+        self._closed = False
+
+    def _revalidate(self):
+        if self._closed or self._handle is None:
+            _fail("project_reference_closed")
+        if (_filesystem(self._handle) != "local_ntfs_observed"
+                or self._filesystem != "local_ntfs_observed"
+                or _identity(self._handle) != self._identity
+                or _ordinary(self._path, directory=False) != self._identity
+                or self._path.resolve() != self._path
+                or _project_reference_acl(self._handle, self._api) != self._acl
+                or _project_reference_revision(self._handle, self._api) != self._revision):
+            _fail("project_reference_changed")
+
+    def readiness(self):
+        try:
+            self._revalidate()
+        except Exception:
+            state = "closed" if self._closed else "unsafe_or_unavailable"
+        else:
+            state = "read_only_reference_observed"
+        return {"status": state,
+                "identity": "observed_unchanged" if state == "read_only_reference_observed" else "unavailable",
+                "read_access_only": state == "read_only_reference_observed",
+                "protected_root_acl_required": False,
+                "execution_available": False, "protected_storage_available": False,
+                "project_save_allowed": False, "authorship": "unverified"}
+
+    def close(self):
+        if self._closed:
+            return "closed"
+        self._closed = True
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            handle.Close()
+        return "closed"
 
 
 class WindowsProtectedRootCharacterization:

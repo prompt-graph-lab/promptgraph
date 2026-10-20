@@ -37,6 +37,7 @@ _PURPOSES = (
     "private_journal", "temporary_containment", "retained_uncertain",
     "promoted_assets", "selected_project_json",
 )
+_PROFILE_A_WRITABLE_PURPOSES = _PURPOSES[:-1]
 
 
 @dataclass(frozen=True)
@@ -188,6 +189,7 @@ def unavailable_readiness(reason="host_evidence_unavailable"):
         "route": "unavailable",
         "pairing": "unavailable",
         "job_claim": "unavailable",
+        "profile_a_storage": "unbound",
         "worker_results": "correlation_only_non_authoritative",
         "reason": safe_reason,
         "protected_dependencies": _empty_dependencies(),
@@ -248,6 +250,7 @@ class OriginalHostGenerationLifecycle:
         self._worker_observations = deque(maxlen=_MAX_OBSERVATIONS)
         self._dependencies = _empty_dependencies()
         self._protected_refs = None
+        self._profile_a_storage_binding = None
         self._worker_storage_integration = None
 
     @classmethod
@@ -405,6 +408,7 @@ class OriginalHostGenerationLifecycle:
         # uncertain Worker operation. Nothing is closed here.
         self._job = self._envelope = None
         self._protected_refs = None
+        self._profile_a_storage_binding = None
 
     def _retire_for_replacement(self, reason):
         """End this generation without waiting for an observation callback."""
@@ -584,6 +588,91 @@ class OriginalHostGenerationLifecycle:
             )
         return identity_status
 
+    def observe_profile_a_storage_binding_for_characterization(
+            self, capacity_owner, project_reference):
+        """Bind exact four-root storage and a separate read-only Project identity.
+
+        The caller must already have performed native readiness observations
+        outside runtime/lifecycle locks and must recheck the exact current host
+        target before calling this publication method. The state transition is
+        split into a lock-taking wrapper and a locked helper so the capacity
+        owner can publish its lifecycle reference in the documented
+        lifecycle -> owner lock order.
+        """
+        with self._lock:
+            return self._observe_profile_a_storage_binding_locked(
+                capacity_owner, project_reference,
+            )
+
+    def _profile_a_job_claim_current_locked(self):
+        """Check exact claim/Inbox identity with their locks already held."""
+        from ui.agent_generation_job import _TERMINAL
+
+        jobs, inbox = self._jobs, self._inbox
+        if (jobs._closed
+                or jobs._target != (self._target_epoch, self._activation_id)
+                or jobs._session_incarnation != self._session_incarnation
+                or inbox._closed or inbox._state == "invalidated"
+                or inbox._envelope is not self._envelope):
+            return False
+        envelope = self._envelope
+        if envelope is None:
+            return (self._job is None and self._job_id is None
+                    and self._claim_id is None and self._manifest_identity is None
+                    and self._request_count == 0)
+        if inbox._state not in {"offered", "accepted", "unknown"}:
+            return False
+        job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
+        binding = envelope.binding
+        return (
+            job is not None and job.state not in _TERMINAL and job is self._job
+            and binding.session_id == self._session_incarnation
+            and binding.process_incarnation == self._job_process_incarnation
+            and binding.target_epoch == self._target_epoch
+            and binding.activation_id == self._activation_id
+            and binding.pairing_generation == self._pairing_generation
+            and job.binding == binding and job.claim_id == envelope.claim_id
+            and self._job_id == envelope.job_id
+            and self._claim_id == envelope.claim_id
+            and self._manifest_identity == envelope.manifest.manifest_identity
+            and self._request_count == len(envelope.manifest.requests)
+        )
+
+    def _observe_profile_a_storage_binding_locked(
+            self, capacity_owner, project_reference, *, require_live_claim=False):
+        """Update the binding while caller holds lifecycle, Job and Inbox locks."""
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+        from core.generation_windows_protected_storage import WindowsProjectJsonReferenceCharacterization
+        from ui.project_agent_session_mailbox import _normalize_target_path
+
+        if (type(capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization
+                or capacity_owner._profile_a_root_set is not True
+                or type(capacity_owner._roots) is not dict
+                or set(capacity_owner._roots) != set(_PROFILE_A_WRITABLE_PURPOSES)
+                or capacity_owner._closed is not False or capacity_owner._invalid is not False
+                or capacity_owner._scope_lease is None
+                or capacity_owner._scope_lease._state != "held"
+                or type(project_reference) is not WindowsProjectJsonReferenceCharacterization
+                or project_reference._closed is not False):
+            return "binding_invalid"
+        project = self._project_ref()
+        if (project is None or not self._project_path
+                or _normalize_target_path(str(project_reference._path))
+                != _normalize_target_path(self._project_path)):
+            return "project_reference_mismatch"
+        if require_live_claim and not self._profile_a_job_claim_current_locked():
+            return "host_evidence_unavailable"
+        if self._state != "bound_non_executing":
+            return "lifecycle_unavailable"
+        existing = self._profile_a_storage_binding
+        requested = (capacity_owner, project_reference)
+        if existing is not None:
+            return "matched_reference_only" if (
+                existing[0] is capacity_owner and existing[1] is project_reference
+            ) else "binding_conflict"
+        self._profile_a_storage_binding = requested
+        return "matched_reference_only"
+
     def readiness(self):
         with self._lock:
             became_uncertain = False
@@ -604,6 +693,10 @@ class OriginalHostGenerationLifecycle:
             job_state = ("not_issued" if self._job_id is None else
                          "claim_not_issued" if self._claim_id is None else "bound")
             pairing_state = ("unpaired" if self._pairing_generation is None else "paired")
+            profile_a_storage = (
+                "bound_reference_only" if self._profile_a_storage_binding is not None
+                and state == "bound_non_executing" else "unbound"
+            )
         if integration is not None:
             integration.revoke("host_evidence_unavailable")
         available = state == "bound_non_executing"
@@ -619,6 +712,7 @@ class OriginalHostGenerationLifecycle:
             "pairing": pairing_state if available else "unavailable",
             "job_claim": job_state if available else "unavailable",
             "worker_results": "correlation_only_non_authoritative",
+            "profile_a_storage": profile_a_storage,
             "reason": reason,
             "protected_dependencies": dependencies,
             "execution_available": False,

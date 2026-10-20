@@ -1596,11 +1596,17 @@ def test_native_distinct_roots_are_pinned_but_do_not_enable_storage(native_stora
         "promotion_available", "candidate_publication_allowed", "disk_space_guaranteed",
         "writer_integrated", "cross_process_quota", "cleanup_allowed"))
     assert view["authorship"] == "unverified" and view["current_authorization"] == "absent"
-    assert tuple(sorted(path.name for path in scope.iterdir())) == before
+    lease_path = owner._scope_lease._path
+    assert lease_path.exists() and lease_path.stat().st_size == 0
+    assert view["scope_writer_lease"] == "held"
+    assert view["scope_writer_lease_cross_process"] is True
+    assert tuple(sorted(path.name for path in scope.iterdir())) == tuple(sorted((*before, lease_path.name)))
     assert project.read_bytes() == b'{"disposable":true}'
     assert native_descriptors(api, protected_paths) == before_acls
     assert roots["selected_project_json"]._purpose == "selected_project_json"
     owner.close()
+    assert not lease_path.exists()
+    assert tuple(sorted(path.name for path in scope.iterdir())) == before
 
 
 def test_native_duplicate_capture_cannot_create_an_independent_capacity_ledger(native_storage_roots):
