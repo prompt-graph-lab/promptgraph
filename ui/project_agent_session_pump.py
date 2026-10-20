@@ -287,13 +287,16 @@ class ProjectAgentSessionRuntime:
                 )
         return evidence, None
 
-    def _generation_original_host_evidence_current_locked(self, lifecycle, pairing_generation):
+    def _generation_original_host_evidence_current_locked(
+            self, lifecycle, pairing_generation, *, on_current=None):
         """Check the exact target, claim, and pairing while the route guard is held.
 
         Lock order is publication gate -> route/registry guard -> target
-        tracker -> Job Registry -> Inbox -> lifecycle -> worker-storage owner.
-        This is a bounded in-memory check; it performs no Worker, network,
-        Journal, filesystem, Project, or host callback work.
+        tracker -> Job Registry -> Inbox -> lifecycle -> storage owner. An
+        optional internal in-memory publication callback runs while Job
+        Registry and Inbox custody remain locked, so claim invalidation cannot
+        slip between the final check and binding publication. This performs no
+        Worker, network, Journal, filesystem, Project, or host callback work.
         """
         from ui.agent_generation_job import _TERMINAL
 
@@ -368,7 +371,7 @@ class ProjectAgentSessionRuntime:
                     request_count=request_count,
                 )
                 with lifecycle._lock:
-                    return (
+                    current = (
                         lifecycle._same_host_locked(evidence)
                         and lifecycle._job is job
                         and lifecycle._envelope is envelope
@@ -377,6 +380,9 @@ class ProjectAgentSessionRuntime:
                         and lifecycle._manifest_identity == manifest_identity
                         and lifecycle._request_count == request_count
                     )
+                if not current:
+                    return False
+                return on_current() if on_current is not None else True
 
     def bind_generation_worker_storage_for_characterization(
         self, worker, purpose_roots, capacity_owner,
@@ -665,12 +671,27 @@ class ProjectAgentSessionRuntime:
                         "host_evidence_unavailable",
                     )
                     return "host_evidence_unavailable"
-                try:
-                    return capacity_owner._bind_profile_a_lifecycle_for_characterization(
-                        lifecycle, project_reference,
+
+                def publish_binding():
+                    try:
+                        return capacity_owner._bind_profile_a_lifecycle_for_characterization(
+                            lifecycle, project_reference,
+                        )
+                    except ValueError:
+                        return "storage_binding_unavailable"
+
+                # The previous check is the final host snapshot after native
+                # observations. Recheck while holding Job/Inbox locks through
+                # the actual in-memory publication to close the claim race.
+                publication = self._generation_original_host_evidence_current_locked(
+                    lifecycle, pairing_generation, on_current=publish_binding,
+                )
+                if publication is False or publication == "host_evidence_unavailable":
+                    self._retire_generation_original_host_lifecycle_locked(
+                        "host_evidence_unavailable",
                     )
-                except ValueError:
-                    return "storage_binding_unavailable"
+                    return "host_evidence_unavailable"
+                return publication
 
     def generation_worker_correlation_for_characterization(self):
         """Return opaque correlation only; this does not start or authorize a Worker."""

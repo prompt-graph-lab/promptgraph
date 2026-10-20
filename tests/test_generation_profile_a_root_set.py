@@ -463,18 +463,18 @@ def test_owner_close_serializes_with_successful_profile_a_binding_publication(mo
     project = Project(project_metadata={"name": "publication-close-race"})
     runtime.opt_in_generation_original_host_lifecycle_for_characterization(project, path)
     lifecycle = runtime._generation_original_host_lifecycle
-    original_observe = lifecycle.observe_profile_a_storage_binding_for_characterization
+    original_observe = lifecycle._observe_profile_a_storage_binding_locked
     callback_entered, callback_release = threading.Event(), threading.Event()
     close_attempted, close_done = threading.Event(), threading.Event()
     outcome = []
 
-    def blocked_observe(capacity_owner, project_json_reference):
+    def blocked_observe(capacity_owner, project_json_reference, **kwargs):
         callback_entered.set()
         assert callback_release.wait(10)
-        return original_observe(capacity_owner, project_json_reference)
+        return original_observe(capacity_owner, project_json_reference, **kwargs)
 
     monkeypatch.setattr(
-        lifecycle, "observe_profile_a_storage_binding_for_characterization", blocked_observe,
+        lifecycle, "_observe_profile_a_storage_binding_locked", blocked_observe,
     )
     owner._lock = CloseObservedRLock(close_attempted)
 
@@ -503,6 +503,151 @@ def test_owner_close_serializes_with_successful_profile_a_binding_publication(mo
     assert close_done.is_set() and owner._closed is True
     assert lifecycle.readiness()["profile_a_storage"] == "bound_reference_only"
     assert owner._host_lifecycle_refs == [lifecycle]
+    runtime.close()
+
+
+def test_profile_a_binding_rechecks_claim_after_final_snapshot_before_publication(monkeypatch):
+    from test_agent_generation_executor_handoff import ready, start
+
+    owner = _synthetic_profile_a_owner()
+    values = ready()
+    runtime, _route, state = values[:3]
+    assert start(values).status == "characterized_acceptance"
+    assert runtime.opt_in_generation_original_host_lifecycle_for_characterization(
+        state["project"], state["current_project_path"],
+    ) == "bound_non_executing"
+    lifecycle = runtime._generation_original_host_lifecycle
+    reference = _synthetic_project_reference(state["current_project_path"])
+    original_check = runtime._generation_original_host_evidence_current_locked
+    checks = 0
+
+    def invalidate_between_snapshot_and_publish(current_lifecycle, pairing_generation,
+                                                *, on_current=None):
+        nonlocal checks
+        result = original_check(
+            current_lifecycle, pairing_generation, on_current=on_current,
+        )
+        if on_current is None:
+            checks += 1
+            if checks == 2:
+                # The final post-observation snapshot has returned and released
+                # Job/Inbox locks, but the atomic publication check has not run.
+                runtime.generation_jobs.invalidate_execution_custody()
+        return result
+
+    monkeypatch.setattr(
+        runtime, "_generation_original_host_evidence_current_locked",
+        invalidate_between_snapshot_and_publish,
+    )
+
+    assert runtime.bind_generation_profile_a_storage_for_characterization(
+        owner, reference,
+    ) == "host_evidence_unavailable"
+    assert checks == 2
+    assert lifecycle.readiness()["profile_a_storage"] == "unbound"
+    assert owner._host_lifecycle_refs == []
+    runtime.close()
+
+
+def test_profile_a_binding_refuses_reentrant_claim_invalidation_at_publication_callback(
+        monkeypatch):
+    from test_agent_generation_executor_handoff import ready, start
+
+    owner = _synthetic_profile_a_owner()
+    values = ready()
+    runtime, _route, state = values[:3]
+    assert start(values).status == "characterized_acceptance"
+    assert runtime.opt_in_generation_original_host_lifecycle_for_characterization(
+        state["project"], state["current_project_path"],
+    ) == "bound_non_executing"
+    lifecycle = runtime._generation_original_host_lifecycle
+    reference = _synthetic_project_reference(state["current_project_path"])
+    original_observe = lifecycle._observe_profile_a_storage_binding_locked
+    callback_reached = threading.Event()
+
+    def invalidate_before_actual_publication(capacity_owner, project_json_reference,
+                                             **kwargs):
+        callback_reached.set()
+        # The registry lock is reentrant on this thread, modeling invalidation
+        # at the last in-memory callback boundary after the host check returned.
+        runtime.generation_jobs.invalidate_execution_custody()
+        return original_observe(capacity_owner, project_json_reference, **kwargs)
+
+    monkeypatch.setattr(
+        lifecycle, "_observe_profile_a_storage_binding_locked",
+        invalidate_before_actual_publication,
+    )
+
+    assert runtime.bind_generation_profile_a_storage_for_characterization(
+        owner, reference,
+    ) == "host_evidence_unavailable"
+    assert callback_reached.is_set()
+    assert lifecycle.readiness()["profile_a_storage"] == "unbound"
+    assert owner._host_lifecycle_refs == []
+    runtime.close()
+
+
+def test_profile_a_binding_publication_serializes_against_claim_invalidation(monkeypatch):
+    from test_agent_generation_executor_handoff import ready, start
+
+    owner = _synthetic_profile_a_owner()
+    values = ready()
+    runtime, _route, state = values[:3]
+    assert start(values).status == "characterized_acceptance"
+    assert runtime.opt_in_generation_original_host_lifecycle_for_characterization(
+        state["project"], state["current_project_path"],
+    ) == "bound_non_executing"
+    lifecycle = runtime._generation_original_host_lifecycle
+    reference = _synthetic_project_reference(state["current_project_path"])
+    original_observe = lifecycle._observe_profile_a_storage_binding_locked
+    callback_entered, callback_release = threading.Event(), threading.Event()
+    invalidation_attempted, invalidation_done = threading.Event(), threading.Event()
+    binding_result = []
+
+    def blocked_observe(capacity_owner, project_json_reference, **kwargs):
+        callback_entered.set()
+        assert callback_release.wait(10)
+        return original_observe(capacity_owner, project_json_reference, **kwargs)
+
+    monkeypatch.setattr(
+        lifecycle, "_observe_profile_a_storage_binding_locked", blocked_observe,
+    )
+    original_invalidate = runtime.generation_jobs.invalidate_execution_custody
+
+    def observed_invalidation():
+        invalidation_attempted.set()
+        original_invalidate()
+        invalidation_done.set()
+
+    monkeypatch.setattr(
+        runtime.generation_jobs, "invalidate_execution_custody", observed_invalidation,
+    )
+    binding_thread = threading.Thread(target=lambda: binding_result.append(
+        runtime.bind_generation_profile_a_storage_for_characterization(owner, reference)
+    ))
+
+    binding_thread.start()
+    try:
+        assert callback_entered.wait(10)
+        invalidation_thread = threading.Thread(target=runtime.generation_jobs.invalidate_execution_custody)
+        invalidation_thread.start()
+        assert invalidation_attempted.wait(10)
+        assert not invalidation_done.is_set()
+    finally:
+        callback_release.set()
+        binding_thread.join(10)
+        if "invalidation_thread" in locals():
+            invalidation_thread.join(10)
+
+    assert not binding_thread.is_alive()
+    assert "invalidation_thread" not in locals() or not invalidation_thread.is_alive()
+    assert binding_result == ["matched_reference_only"]
+    assert invalidation_done.is_set()
+    assert lifecycle.readiness()["profile_a_storage"] == "bound_reference_only"
+    assert owner._host_lifecycle_refs == [lifecycle]
+    assert not runtime._generation_original_host_evidence_current_locked(
+        lifecycle, lifecycle._pairing_generation,
+    )
     runtime.close()
 
 

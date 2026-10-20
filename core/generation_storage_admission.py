@@ -1810,11 +1810,11 @@ class WindowsProtectedStorageAdmissionCharacterization:
             self, lifecycle, project_reference):
         """Publish the host binding and its lease-retention reference atomically.
 
-        The lifecycle callback is an in-memory state update only. Keep the
-        owner lock across that update and association publication so close()
-        either wins before binding or observes the successfully bound lifecycle.
-        This prevents a clean close from releasing or stranding the lease in a
-        gap between those two publications.
+        The lifecycle update is an in-memory state change only. Publish under
+        lifecycle -> owner locks so lifecycle transition and close() either
+        win before binding or observe the completed association. Callers that
+        need current claim custody keep Job Registry/Inbox locks held across
+        this method; all native observations happen before entry.
         """
         with self._lock:
             if (not self._profile_a_root_set or self._closed or self._invalid
@@ -1823,13 +1823,14 @@ class WindowsProtectedStorageAdmissionCharacterization:
             references = tuple(self._host_lifecycle_refs)
             already_registered = any(previous is lifecycle for previous in references)
         if already_registered:
-            with self._lock:
-                if (self._closed or self._invalid
-                        or tuple(self._host_lifecycle_refs) != references):
-                    _fail("profile_a_storage_unavailable")
-                return lifecycle.observe_profile_a_storage_binding_for_characterization(
-                    self, project_reference,
-                )
+            with lifecycle._lock:
+                with self._lock:
+                    if (self._closed or self._invalid
+                            or tuple(self._host_lifecycle_refs) != references):
+                        _fail("profile_a_storage_unavailable")
+                    return lifecycle._observe_profile_a_storage_binding_locked(
+                        self, project_reference, require_live_claim=True,
+                    )
 
         retained = []
         unsettled = False
@@ -1848,22 +1849,23 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 retained.append(previous)
                 unsettled = True
 
-        with self._lock:
-            if (self._closed or self._invalid or not self._profile_a_root_set
-                    or tuple(self._host_lifecycle_refs) != references):
-                _fail("profile_a_storage_unavailable")
-            if unsettled:
-                self._host_lifecycle_refs = retained
-                _fail("profile_a_storage_lifecycle_unsettled")
-            if len(retained) >= _MAX_PROFILE_A_HOST_LIFECYCLES:
-                _fail("profile_a_storage_lifecycle_limit_exceeded")
-            next_references = [*retained, lifecycle]
-            status = lifecycle.observe_profile_a_storage_binding_for_characterization(
-                self, project_reference,
-            )
-            if status == "matched_reference_only":
-                self._host_lifecycle_refs = next_references
-            return status
+        with lifecycle._lock:
+            with self._lock:
+                if (self._closed or self._invalid or not self._profile_a_root_set
+                        or tuple(self._host_lifecycle_refs) != references):
+                    _fail("profile_a_storage_unavailable")
+                if unsettled:
+                    self._host_lifecycle_refs = retained
+                    _fail("profile_a_storage_lifecycle_unsettled")
+                if len(retained) >= _MAX_PROFILE_A_HOST_LIFECYCLES:
+                    _fail("profile_a_storage_lifecycle_limit_exceeded")
+                next_references = [*retained, lifecycle]
+                status = lifecycle._observe_profile_a_storage_binding_locked(
+                    self, project_reference, require_live_claim=True,
+                )
+                if status == "matched_reference_only":
+                    self._host_lifecycle_refs = next_references
+                return status
 
     def release_scope_writer_lease_if_settled_for_characterization(self):
         if not self._closed:
