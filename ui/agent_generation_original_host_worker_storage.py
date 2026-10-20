@@ -1,8 +1,10 @@
 """Non-executing host ownership for a supplied Worker and protected roots.
 
-This owner only binds references and retains bounded diagnostic observations.
-It never starts or performs Worker I/O, invokes a Journal/storage/promotion
-writer, advances the Job Registry/Inbox, or grants publication authority.
+This owner binds exact references, retains bounded diagnostic observations and
+may reserve one pre-write staging estimate per request through the existing
+Profile A capacity ledger. It never starts or performs Worker I/O, invokes a
+Journal/storage/promotion writer, advances the Job Registry/Inbox, or grants
+write or publication authority.
 """
 
 from collections import deque
@@ -16,6 +18,7 @@ import weakref
 _FACTORY = object()
 _MAX_OBSERVATIONS = 16
 _MAX_HISTORY_READS_PER_REQUEST = 16
+_MAX_PREADMISSION_REQUESTS = 100
 _PURPOSES = (
     "private_journal", "temporary_containment", "retained_uncertain",
     "promoted_assets", "selected_project_json",
@@ -113,6 +116,36 @@ class GenerationWorkerStorageObservation:
     authorship: str = "unverified"
 
 
+@dataclass(frozen=True)
+class GenerationWorkerStoragePreAdmissionObservation:
+    """Bounded capacity observation; never a writer or execution capability."""
+
+    status: str
+    purpose: str
+    request_index: int
+    byte_upper_bound: int
+    entry_upper_bound: int
+    write_authorized: bool = False
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass
+class _StoragePreAdmissionAttempt:
+    lease: object
+    operation_id: str
+    estimate: object
+    state: str = "preparing"
+    capacity_operation: object = None
+    reservation: object = None
+    observation: object = None
+    cancel_requested: bool = False
+
+
 def unavailable_observation(status="unavailable"):
     return GenerationWorkerStorageObservation(
         status=status,
@@ -128,7 +161,7 @@ def unavailable_observation(status="unavailable"):
 
 
 class OriginalHostWorkerStorageIntegration:
-    """One exact lifecycle's supplied Worker/root references, permanently inert."""
+    """One exact lifecycle's Worker/root references and bounded pre-admission."""
 
     execution_available = False
     protected_storage_available = False
@@ -256,6 +289,11 @@ class OriginalHostWorkerStorageIntegration:
         self._submitted = set()
         self._history_attempts = {}
         self._accepted_prompt_ids = {}
+        # One staging pre-admission attempt per manifest request. The entries
+        # privately retain only the exact host lease and the existing
+        # capacity owner's opaque reservation; neither is returned as a
+        # writer capability.
+        self._storage_preadmission_attempts = {}
         self._observations = deque(maxlen=_MAX_OBSERVATIONS)
         self._close_call_active = False
         self._last_worker_state = "created"
@@ -435,6 +473,156 @@ class OriginalHostWorkerStorageIntegration:
         self._active = lease
         return lease, "admitted_non_executing"
 
+    def _begin_staging_preadmission_for_characterization(self, lifecycle, lease, estimate):
+        """Reserve bounded staging capacity for one exact active Profile A lease."""
+        from core.comfy_output_containment import ContainmentLimits
+        from core.generation_storage_admission import CapacityEstimate
+
+        if not self._profile_a:
+            return None, "profile_a_required"
+        if (type(estimate) is not CapacityEstimate
+                or type(estimate.byte_upper_bound) is not int
+                or type(estimate.entry_upper_bound) is not int
+                or not 1 <= estimate.byte_upper_bound <= ContainmentLimits().aggregate_bytes
+                or not 1 <= estimate.entry_upper_bound <= ContainmentLimits().images):
+            return None, "invalid_capacity_estimate"
+        attempt = None
+        with lifecycle._lock:
+            with self._capacity_owner._lock:
+                with self._lock:
+                    if (self._state != "bound_non_executing"
+                            or lifecycle._worker_storage_integration is not self
+                            or lifecycle._generation != self._lifecycle_generation
+                            or not self._lifecycle_profile_binding_matches_locked(lifecycle)):
+                        return None, "host_or_storage_unavailable"
+                    if (type(lease) is not GenerationWorkerOperationLease
+                            or self._active is not lease
+                            or lease.lifecycle_generation != self._lifecycle_generation
+                            or lease.kind != "submission"
+                            or type(lease.request_index) is not int
+                            or not 0 <= lease.request_index < lifecycle._request_count
+                            or lease.correlation.request_index != lease.request_index
+                            or self._issued.get(self._correlation_key(
+                                lease.kind, lease.correlation)) is not lease.correlation):
+                        return None, "operation_lease_mismatch"
+                    if lease.request_index in self._storage_preadmission_attempts:
+                        return None, "preadmission_already_attempted"
+                    if len(self._storage_preadmission_attempts) >= min(
+                            _MAX_PREADMISSION_REQUESTS, lifecycle._request_count):
+                        return None, "preadmission_limit"
+                    attempt = _StoragePreAdmissionAttempt(
+                        lease=lease,
+                        operation_id=f"worker-stage:{self._operation_id}:{lease.nonce}",
+                        estimate=estimate,
+                    )
+                    self._storage_preadmission_attempts[lease.request_index] = attempt
+        return attempt, "preparing"
+
+    def _attach_staging_capacity_operation(self, attempt, capacity_operation):
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or attempt.capacity_operation is not None):
+                return False
+            attempt.capacity_operation = capacity_operation
+            return not attempt.cancel_requested and attempt.state == "preparing"
+
+    def _attach_staging_reservation(self, attempt, reservation):
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or attempt.reservation is not None):
+                return False
+            attempt.reservation = reservation
+            if attempt.cancel_requested or attempt.state != "preparing":
+                attempt.state = "cancellation_requested"
+                return False
+            attempt.state = "reserved"
+            return True
+
+    def _finish_staging_preadmission(self, attempt, state):
+        with self._lock:
+            if self._storage_preadmission_attempts.get(attempt.lease.request_index) is attempt:
+                if attempt.state not in {"pre_admitted", "cancelled", "retained_uncertain"}:
+                    attempt.state = state
+
+    def _publish_staging_preadmission_locked(
+            self, lifecycle, lease, attempt, capacity_view, project_view):
+        """Publish one non-authoritative observation at the final host gate."""
+        if (capacity_view.get("status") != "characterization_only"
+                or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                or capacity_view.get("scope_writer_lease") != "held"
+                or project_view.get("status") != "read_only_reference_observed"):
+            return None, "storage_observation_unavailable"
+        with lifecycle._lock:
+            with self._capacity_owner._lock:
+                with self._lock:
+                    if (self._storage_preadmission_attempts.get(lease.request_index) is not attempt
+                            or attempt.state != "reserved" or attempt.cancel_requested
+                            or self._state != "bound_non_executing"
+                            or self._active is not lease
+                            or lifecycle._worker_storage_integration is not self
+                            or lifecycle._generation != self._lifecycle_generation
+                            or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                            or not self._capacity_owner._staging_reservation_is_live_for_characterization(
+                                attempt.capacity_operation, attempt.reservation, attempt.estimate)):
+                        attempt.cancel_requested = True
+                        return None, "host_or_capacity_changed"
+                    observation = GenerationWorkerStoragePreAdmissionObservation(
+                        status="pre_admitted_non_authoritative",
+                        purpose="temporary_containment",
+                        request_index=lease.request_index,
+                        byte_upper_bound=attempt.estimate.byte_upper_bound,
+                        entry_upper_bound=attempt.estimate.entry_upper_bound,
+                    )
+                    attempt.observation = observation
+                    attempt.state = "pre_admitted"
+                    return observation, "pre_admitted_non_authoritative"
+
+    def _cancel_staging_preadmission_attempt(self, attempt):
+        """Release only an exact still-reserved token, outside the integration lock."""
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or attempt.state in {"cancelled", "retained_uncertain", "refused"}):
+                return "preadmission_unavailable"
+            attempt.cancel_requested = True
+            if attempt.reservation is None or attempt.capacity_operation is None:
+                if attempt.state == "preparing":
+                    attempt.state = "cancellation_requested"
+                    return "cancellation_requested"
+                return "preadmission_unavailable"
+            if attempt.state == "cancellation_in_progress":
+                return "cancellation_requested"
+            attempt.state = "cancellation_in_progress"
+            capacity_operation, reservation = attempt.capacity_operation, attempt.reservation
+
+        try:
+            if type(self._capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization:
+                raise ValueError("capacity_owner_unavailable")
+            self._capacity_owner.cancel_before_write_for_characterization(
+                capacity_operation, reservation,
+            )
+        except Exception:
+            with self._lock:
+                if self._storage_preadmission_attempts.get(attempt.lease.request_index) is attempt:
+                    attempt.state = "retained_uncertain"
+            return "retained_uncertain"
+        with self._lock:
+            if self._storage_preadmission_attempts.get(attempt.lease.request_index) is attempt:
+                attempt.state = "cancelled"
+        return "cancelled_before_write"
+
+    def cancel_staging_preadmission_for_characterization(self, observation):
+        """Cancel only the exact returned observation; it never authorizes a write."""
+        if type(observation) is not GenerationWorkerStoragePreAdmissionObservation:
+            return "invalid_preadmission"
+        with self._lock:
+            attempt = self._storage_preadmission_attempts.get(observation.request_index)
+            if (attempt is None or attempt.observation is not observation
+                    or attempt.state != "pre_admitted"):
+                return "foreign_or_settled_preadmission"
+        return self._cancel_staging_preadmission_attempt(attempt)
+
     def _root_binding_matches(self):
         """Check exact owner references only; never touch the filesystem."""
         from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
@@ -594,6 +782,7 @@ class OriginalHostWorkerStorageIntegration:
         if reason not in {"target_replaced", "route_replaced", "pairing_replaced",
                           "job_claim_replaced", "host_evidence_unavailable", "session_closed"}:
             reason = "host_evidence_unavailable"
+        preadmissions_to_cancel = []
         with self._lock:
             if self._state == "closed":
                 worker = None
@@ -609,6 +798,18 @@ class OriginalHostWorkerStorageIntegration:
                     self._active = None
                     self._state = "uncertain"
                 worker = self._worker
+            # A pre-admission has never produced a write token. It is safe to
+            # release only its exact still-reserved capacity token. If native
+            # owner close/invalidation wins, that owner retains the estimate
+            # as uncertain and the cancellation below remains fail-closed.
+            for attempt in self._storage_preadmission_attempts.values():
+                if attempt.state in {"preparing", "reserved", "pre_admitted"}:
+                    attempt.cancel_requested = True
+                    if attempt.reservation is not None and attempt.capacity_operation is not None:
+                        attempt.state = "cancellation_requested"
+                        preadmissions_to_cancel.append(attempt)
+                    else:
+                        attempt.state = "cancellation_requested"
         # This is a nonjoining Worker state transition. The bounded join and
         # terminal observation happen only from an explicit host call after
         # runtime/lifecycle/registry/job/inbox locks have been released.
@@ -617,6 +818,10 @@ class OriginalHostWorkerStorageIntegration:
             with self._lock:
                 if self._state == "revocation_requested":
                     self._state = "close_pending" if worker_view.thread_alive else "closed"
+        for attempt in preadmissions_to_cancel:
+            # The reservation cancellation is in-memory only; no readiness,
+            # inventory, filesystem or Worker callback runs under this lock.
+            self._cancel_staging_preadmission_attempt(attempt)
         return self._safe_state()
 
     def finish_close_for_characterization(self):

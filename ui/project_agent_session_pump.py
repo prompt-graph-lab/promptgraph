@@ -482,6 +482,159 @@ class ProjectAgentSessionRuntime:
                     kind, prepared, prompt_id, correlation,
                 )
 
+    def pre_admit_generation_worker_staging_for_characterization(self, lease, estimate):
+        """Reserve staging capacity for one exact Profile A Worker lease only.
+
+        This two-phase observation deliberately stops before the existing
+        `admit_write` boundary. Capacity and Project-reference readiness run
+        outside host/Job/Inbox/lifecycle locks; exact host and reservation
+        custody are then revalidated at the in-memory publication point.
+        """
+        from core.generation_storage_admission import CapacityEstimate
+
+        if type(estimate) is not CapacityEstimate:
+            return None, "invalid_capacity_estimate"
+        captured = {}
+        with self._publication_gate:
+            if self._closed:
+                return None, "runtime_closed"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return None, self._generation_original_host_lifecycle_reason or "lifecycle_unavailable"
+                integration = lifecycle._worker_storage_integration
+                if integration is None:
+                    return None, "integration_unavailable"
+
+                def begin_attempt():
+                    attempt, status = integration._begin_staging_preadmission_for_characterization(
+                        lifecycle, lease, estimate,
+                    )
+                    if attempt is not None:
+                        captured.update({
+                            "lifecycle": lifecycle,
+                            "integration": integration,
+                            "capacity_owner": integration._capacity_owner,
+                            "project_reference": integration._project_reference,
+                            "pairing_generation": lifecycle._pairing_generation,
+                            "attempt": attempt,
+                        })
+                    return attempt, status
+
+                result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation, on_current=begin_attempt,
+                )
+                if result is False:
+                    self._retire_generation_original_host_lifecycle_locked("host_evidence_unavailable")
+                    return None, "host_evidence_unavailable"
+                attempt, status = result
+                if attempt is None:
+                    return None, status
+
+        integration = captured["integration"]
+        capacity_owner = captured["capacity_owner"]
+        try:
+            capacity_operation = capacity_owner.begin_operation_for_characterization(
+                captured["attempt"].operation_id,
+            )
+        except ValueError:
+            integration._finish_staging_preadmission(captured["attempt"], "refused")
+            return None, "capacity_refused"
+        except Exception:
+            self._invalidate_uncertain_profile_a_capacity(capacity_owner)
+            integration._finish_staging_preadmission(
+                captured["attempt"], "retained_uncertain",
+            )
+            return None, "capacity_uncertain"
+
+        if not integration._attach_staging_capacity_operation(
+                captured["attempt"], capacity_operation):
+            integration._finish_staging_preadmission(captured["attempt"], "cancelled")
+            return None, "cancelled_before_reserve"
+
+        try:
+            reservation = capacity_owner.reserve_for_characterization(
+                capacity_operation, {"temporary_containment": estimate},
+            )
+        except ValueError:
+            integration._finish_staging_preadmission(captured["attempt"], "refused")
+            return None, "capacity_refused"
+        except Exception:
+            # An unexpected failure at the reserve boundary cannot prove that
+            # no ledger token was committed. Closing the existing owner moves
+            # any unsettled reservation to its retained-uncertain accounting.
+            self._invalidate_uncertain_profile_a_capacity(capacity_owner)
+            integration._finish_staging_preadmission(
+                captured["attempt"], "retained_uncertain",
+            )
+            return None, "capacity_uncertain"
+
+        if not integration._attach_staging_reservation(captured["attempt"], reservation):
+            integration._cancel_staging_preadmission_attempt(captured["attempt"])
+            return None, "cancelled_before_publication"
+
+        try:
+            # These owners perform their filesystem/native observations here,
+            # with no host, Job, Inbox, lifecycle or integration lock held.
+            capacity_view = capacity_owner.readiness()
+            project_view = captured["project_reference"].readiness()
+        except Exception:
+            integration._cancel_staging_preadmission_attempt(captured["attempt"])
+            return None, "storage_observation_unavailable"
+
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not captured["lifecycle"]):
+                result = None
+                status = "stale_host_binding"
+            else:
+                with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                    if lifecycle is not captured["lifecycle"]:
+                        result = None
+                        status = "stale_host_binding"
+                    else:
+                        def publish_attempt():
+                            return integration._publish_staging_preadmission_locked(
+                                lifecycle, lease, captured["attempt"],
+                                capacity_view, project_view,
+                            )
+
+                        result = self._generation_original_host_evidence_current_locked(
+                            lifecycle, captured["pairing_generation"],
+                            on_current=publish_attempt,
+                        )
+                        if result is False:
+                            self._retire_generation_original_host_lifecycle_locked(
+                                "host_evidence_unavailable",
+                            )
+                            status = "host_evidence_unavailable"
+                        elif type(result) is tuple:
+                            observation, status = result
+                            if observation is not None:
+                                return observation, status
+                        else:
+                            status = "host_evidence_unavailable"
+        # If final host publication lost a race, release only the exact
+        # pre-write reservation. A closed/invalid owner retains it uncertain.
+        integration._cancel_staging_preadmission_attempt(captured["attempt"])
+        return None, status
+
+    def cancel_generation_worker_staging_preadmission_for_characterization(self, observation):
+        """Release an exact pre-admission observation; never yields writer authority."""
+        lifecycle = self._generation_original_host_lifecycle
+        integration = (lifecycle._worker_storage_integration if lifecycle is not None else None)
+        if integration is None:
+            return "preadmission_unavailable"
+        return integration.cancel_staging_preadmission_for_characterization(observation)
+
+    @staticmethod
+    def _invalidate_uncertain_profile_a_capacity(capacity_owner):
+        """Fence the existing ledger if reserve acknowledgment itself is uncertain."""
+        try:
+            with capacity_owner._lock:
+                capacity_owner._invalidate()
+        except Exception:
+            pass
+
     def observe_generation_worker_http_result_for_characterization(
         self, lease, completion,
     ):
