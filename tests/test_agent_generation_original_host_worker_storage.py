@@ -2212,6 +2212,139 @@ def test_profile_a_single_image_writer_handoff_reuses_exact_reservation_and_is_n
         runtime.close()
 
 
+def test_profile_a_post_write_claim_invalidation_compensates_completed_capacity_and_retains_scope_lease(
+        native_profile_a_worker_storage, monkeypatch):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    provider = _WriterDownloadStream(image_bytes())
+    original_readiness = writer.readiness
+    readiness_calls = 0
+    compensation_entered = threading.Event()
+    continue_compensation = threading.Event()
+    stage_thread = None
+    stage_result = []
+    original_compensation = capacity.retain_completed_asset_stream_write_uncertain_for_characterization
+
+    def revoke_after_completed_native_write():
+        nonlocal readiness_calls
+        readiness_calls += 1
+        # The first readiness is preflight; the second is post-write, after
+        # complete_asset_write_for_characterization committed the ledger.
+        if readiness_calls == 2:
+            lifecycle.close()
+        return original_readiness()
+
+    def pause_compensation(*args):
+        compensation_entered.set()
+        assert continue_compensation.wait(5)
+        return original_compensation(*args)
+
+    monkeypatch.setattr(writer, "readiness", revoke_after_completed_native_write)
+    monkeypatch.setattr(
+        capacity, "retain_completed_asset_stream_write_uncertain_for_characterization",
+        pause_compensation,
+    )
+
+    def stage():
+        stage_result.append(
+            runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+                evidence, writer, stream_provider=provider,
+                characterization=True, disposable_opt_in=True,
+            )
+        )
+
+    try:
+        stage_thread = threading.Thread(target=stage)
+        stage_thread.start()
+        assert compensation_entered.wait(5)
+        assert readiness_calls == 2
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+        assert attempt.writer_handoff_state == "create_boundary_crossed"
+
+        # Close races the host's final publication and the exact ledger
+        # compensation. The unresolved handoff itself must retain the marker.
+        capacity.close()
+        assert capacity._scope_lease._state == "retained_uncertain"
+        assert capacity._scope_lease._path.exists()
+    finally:
+        continue_compensation.set()
+        if stage_thread is not None:
+            stage_thread.join(5)
+            assert not stage_thread.is_alive()
+        writer.close()
+        runtime.close()
+
+    assert stage_result == [(None, "host_or_writer_changed")]
+    assert provider.closed == 1 and len(provider.lookups) == 1
+    assert attempt.writer_image_observation is None
+    assert attempt.writer_handoff_state == "retained_uncertain"
+    assert attempt.evidence_state == "uncertain"
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "uncertain"
+    assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "uncertain"
+    assert capacity._ledger._observed["temporary_containment"] == [0, 0]
+    assert capacity._ledger._uncertain["temporary_containment"] == [32 * 1024 * 1024, 1]
+    files = list(roots["temporary_containment"]._path.iterdir())
+    assert len(files) == 1 and files[0].read_bytes() == image_bytes()
+    assert capacity._scope_lease._state == "retained_uncertain"
+    assert capacity._scope_lease._path.exists()
+
+
+def test_profile_a_final_writer_publication_failure_reason_is_preserved(
+        native_profile_a_worker_storage, monkeypatch):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    integration = lifecycle._worker_storage_integration
+    provider = _WriterDownloadStream(image_bytes())
+    monkeypatch.setattr(
+        integration, "_publish_single_image_writer_observation_locked",
+        lambda *_args: (None, "writer_handoff_accounting_unavailable"),
+    )
+    try:
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "writer_handoff_accounting_unavailable")
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "uncertain"
+        assert attempt.writer_image_observation is None
+    finally:
+        writer.close()
+        runtime.close()
+
+
+def test_profile_a_settled_writer_publication_allows_clean_scope_lease_release(
+        native_profile_a_worker_storage):
+    from test_comfy_output_containment import image_bytes
+
+    _roots, capacity, _reference, project_path = native_profile_a_worker_storage
+    runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(_roots, capacity, _reference, project_path)
+    )
+    try:
+        observation, status = runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=_WriterDownloadStream(image_bytes()),
+            characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_image_staged_non_authoritative"
+        assert observation.verified_image_count == 1
+        assert attempt.writer_handoff_state == "staged_non_authoritative"
+    finally:
+        writer.close()
+        runtime.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+    capacity.close()
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+    assert capacity._scope_lease._state == "released"
+    assert not capacity._scope_lease._path.exists()
+
+
 def test_profile_a_writer_handoff_reuses_one_borrowed_owner_for_sequential_requests(
         native_profile_a_worker_storage):
     from test_comfy_output_containment import image_bytes

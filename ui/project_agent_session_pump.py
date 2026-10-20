@@ -994,7 +994,32 @@ class ProjectAgentSessionRuntime:
         if status != "handoff_claimed" or marker is None:
             return None, status
 
-        def fail_before_or_after_write(reason, *, uncertain=False):
+        def retain_completed_write_if_needed(image):
+            try:
+                if captured["capacity_owner"]._reservation_terminal_state_for_characterization(
+                        captured["operation"], captured["reservation"],
+                ) != "completed":
+                    return
+                if image is None:
+                    attempt_key = (captured["prepared"].request_id,
+                                   captured["remote"].images[0].identity)
+                    with writer_owner._lock:
+                        image = writer_owner._stream_images.get(attempt_key)
+                if image is None:
+                    self._invalidate_uncertain_profile_a_capacity(captured["capacity_owner"])
+                    return
+                captured["capacity_owner"].retain_completed_asset_stream_write_uncertain_for_characterization(
+                    captured["operation"], captured["attempt"].writer_admission,
+                    writer_owner, image,
+                )
+            except Exception:
+                # The handoff itself remains unresolved and fences scope-lease
+                # release even if an exact compensation observation fails.
+                self._invalidate_uncertain_profile_a_capacity(captured["capacity_owner"])
+
+        def fail_before_or_after_write(reason, *, uncertain=False, image=None):
+            if uncertain:
+                retain_completed_write_if_needed(image)
             if not uncertain:
                 integration._settle_cancelled_single_image_writer_handoff(
                     attempt, marker, writer_owner,
@@ -1114,8 +1139,10 @@ class ProjectAgentSessionRuntime:
             project_view = captured["project_reference"].readiness()
             writer_view = writer_owner.readiness()
         except Exception:
-            return fail_before_or_after_write("writer_handoff_post_write_observation_unavailable",
-                                              uncertain=True)
+            return fail_before_or_after_write(
+                "writer_handoff_post_write_observation_unavailable",
+                uncertain=True, image=image,
+            )
 
         with self._publication_gate:
             if (self._closed
@@ -1135,7 +1162,15 @@ class ProjectAgentSessionRuntime:
                         result = None
         if type(result) is tuple and result[0] is not None:
             return result
-        return fail_before_or_after_write("host_or_writer_changed", uncertain=True)
+        failure_reason = "host_or_writer_changed"
+        if (type(result) is tuple and len(result) > 1
+                and type(result[1]) is str and result[1]
+                and len(result[1]) <= 96
+                and result[1].replace("_", "").isalnum()):
+            failure_reason = result[1]
+        return fail_before_or_after_write(
+            failure_reason, uncertain=True, image=image,
+        )
 
     @staticmethod
     def _invalidate_uncertain_profile_a_capacity(capacity_owner):

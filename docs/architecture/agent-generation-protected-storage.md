@@ -1798,6 +1798,17 @@ capacity ledger records actual bytes and one entry. No local receipt, batch
 receipt, Candidate-ready result, promotion, Candidate, Project-save or Journal
 authority is issued. The observation does not authenticate authorship.
 
+The handoff remains unresolved between native ledger completion and the final
+original-host count-only publication. Closing the capacity owner in that
+interval retains the cross-process scope marker even though the ledger write
+has reached `completed`. If host publication fails after that commit, the
+exact stream observation and committed one-file inventory delta are used to
+move the reservation from observed usage to its full retained-uncertain upper
+bound; the file remains in place. The compensation is serialized with owner
+close, and a fully published `staged_non_authoritative` handoff remains
+settleable on clean close. Specific bounded publication failure codes are
+preserved for the caller.
+
 Before CREATE_NEW is attempted, the exact reservation/write token is canceled
 only when the existing ledger confirms cancellation. Once CREATE_NEW may have
 been called, incomplete streams, close, host invalidation, native drift or
