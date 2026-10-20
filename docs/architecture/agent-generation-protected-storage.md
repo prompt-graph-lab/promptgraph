@@ -1375,3 +1375,186 @@ All production gates remain closed:
 `execution_available=false`, `protected_storage_available=false`,
 `promotion_available=false`, `candidate_publication_allowed=false`, and
 `authorship=unverified`.
+
+## C2B-8D-19C-A Profile A protected-root placement and capacity policy
+
+This section records the proposed local Windows placement and admission policy
+for the adopted **Profile A: Local Single-User Application**. It is a
+non-executing policy contract, not a provisioning implementation or activation
+decision. Profile A excludes hostile processes running as the same Windows
+user, administrators/SYSTEM, and compromised host code from its storage
+isolation guarantee. LLM/MCP instructions and returned values remain untrusted
+inputs; explicit human Start, Recovery, and Discard authorization, exact source
+and review provenance, Project integrity, Candidate idempotence, and save
+uncertainty fences remain required. `authorship=unverified` is unchanged.
+
+### Intended Windows placement and current incompatibility
+
+The policy target for app-owned writable evidence is one local, app-specific
+scope beneath the user's Local AppData, resolved and checked at runtime:
+
+```text
+%LOCALAPPDATA%\PromptGraph\AgentGeneration\v1\
+  private_journal\
+  temporary_containment\
+  retained_uncertain\
+  promoted_assets\
+```
+
+The names describe four distinct, non-overlapping purpose roots. This is a
+target layout only: the current native owner accepts a host-supplied existing
+scope and may create only opted-in disposable child roots. It does not create
+the production scope, repair an existing directory, adopt its contents, or
+change any ACL. A future provisioner must resolve the path to local fixed NTFS,
+reject reparse/identity changes, create new app-owned roots exclusively with
+the reviewed protected DACL, and stop on any pre-existing conflicting path.
+The owner-only DACL model is a bounded observation, not defense against a
+same-user process or privileged administrator.
+
+`selected_project_json` is different: it is the exact, independently selected
+Project JSON used as a **read-only host reference**, not a storage destination
+or a child of the app-owned protected scope. Ordinary Projects must stay at
+their user-selected locations; this policy does not move a Project, copy it
+into the private scope, or change its ACL.
+
+The current `WindowsProtectedStorageAdmissionCharacterization` cannot yet
+represent that intended relationship. Its exact five-purpose map requires the
+`selected_project_json` file to be under the same approved scope as all four
+writable roots, on the same observed local NTFS volume, with the same modeled
+owner-only ACL and a distinct non-overlapping identity. An ordinary Project
+outside that scope is refused; a Project inside it is not made a suitable
+production binding merely by being copied there. In addition,
+`ProjectAgentSessionRuntime.observe_protected_references_for_characterization`
+and the 19B Worker/storage association compare exact supplied owner objects
+but do not compare the selected-JSON root path/identity with the live
+original-host Project path. The current seam therefore does not prove that its
+Project reference is the Project being generated. This is a concrete
+architecture incompatibility, not a reason to relocate or re-ACL user data.
+Production admission remains NO-GO until a separate read-only Project binding
+is tied to the exact original-host Project path/identity while the four
+app-owned writable roots remain under their private scope.
+
+| Selected Project placement | Current characterization result | Profile A policy target |
+| --- | --- | --- |
+| Ordinary local Project outside the app-owned scope | Rejected by the five-root admission contract as outside the approved scope | Keep in place and bind its exact read-only identity separately to the active original-host Project. |
+| Project JSON placed inside the private scope | May fit the current path shape if it also passes the protected ACL and identity checks, but no active-Project path comparison is made | Do not move or copy a Project here to satisfy storage admission; the path alone is not proof of Project binding. |
+| Missing Project file, UNC/mapped/network path, reparse path, or unverified filesystem | Existing-path capture or native filesystem validation refuses it; no creation or repair is performed | No production use until the independent read-only Project binding's supported path/filesystem policy is reviewed. |
+
+The intended local app-storage placement does not imply that every possible
+user-selected Project location is supported. The separate Project-reference
+design must define which local filesystems and reparse conditions are accepted;
+until then, unsupported or ambiguous locations fail closed.
+
+### Ownership and lifecycle policy
+
+The protected scope belongs to the local PromptGraph installation/user storage
+lifecycle, not to one Project, Scene, Streamlit rerun, or ComfyUI endpoint.
+Within a live process, same-target reruns may preserve the exact host binding;
+Project switch, Save As, activation/epoch or pairing change, disarm, claim
+replacement, and runtime close permanently retire the old authorization. A
+new Project requires a fresh host binding to the same app-owned storage scope;
+it must not recapture a second process-local ledger for the same scope or
+inherit the previous Project's authority.
+
+Every operation receives its own non-reusable capacity operation and
+reservation. A Worker operation lease remains associated with its exact
+request and roots until the call is known quiescent. Close/revocation fences
+new work; it does not prove an in-flight write did not occur. An unresolved
+write, stream, promotion, or Journal replacement remains uncertain and keeps
+its full reserved upper bound. Native owner `close()` releases handles only;
+it does not delete roots or files. Process shutdown must not discard uncertain
+files or treat handle closure as cleanup.
+
+After restart, native roots and files may be freshly inspected, but live
+operation tokens, Worker leases, reservation acknowledgements and original-host
+latest-head observations are not reconstructed from paths or Journal bytes.
+Existing files are charged as uncertain inventory. Inventory cannot recover a
+lost reservation whose write left no file. The adopted Profile A latest-head
+policy allows bounded acknowledged live-writer observations only during that
+live host/process; absent an independently retained host-observed tip after
+restart, latest-head custody is unavailable. Until a separately reviewed
+restart/capacity policy supplies that missing evidence, the post-restart
+storage path remains inspect-only and new production writes must fail closed.
+No automatic replay, rollback repair, reservation release, cleanup, or
+Recovery association follows a restart.
+
+Retention is independent of session expiry, Project replacement, Worker close,
+root close, and ledger close. Those actions may retire authority or close
+handles; none grants deletion. A future Discard operation needs separate human
+authorization and current ownership/reference checks. No automatic TTL or
+capacity-driven eviction is authorized here.
+
+### Capacity policy represented by the existing ledger
+
+`ProtectedStorageCapacityLimits.validate()` allows a deployment to lower the
+compiled ceilings, never raise them. The current defaults and effective
+constraints are:
+
+| Purpose | Current policy ceiling | Accounting interpretation |
+| --- | --- | --- |
+| `private_journal` | 1 MiB aggregate observed bytes across direct files; configured 300 entries, but the native inventory scan stops at 256 direct files per root | Replacements account current inventory, not cumulative write amplification. Journal JSON is separately capped at 1 MiB per file; the multi-request Journal allows 100 requests, 300 revisions, at most 2 MiB old-plus-temporary live bytes, and 128 MiB cumulative writes per operation. V1 remains its existing eight-revision contract. |
+| `temporary_containment` + `promoted_assets` | One shared 256 MiB and 16-entry pool | This is one joint limit, not 256 MiB per root. Staging and promoted copies can coexist and compete for the same budget. Existing containment limits also bound one image to 32 MiB, one request to 128 MiB, and one store to 256 MiB. |
+| `retained_uncertain` | 256 MiB and 256 entries | Direct files already present in this root are counted as uncertain. A failed write is charged to uncertainty under its original purpose; it is not moved into this root. |
+| `selected_project_json` | No writable byte or entry budget | Read-only identity reference only; excluded from writable-root inventory and capacity destinations. The future policy keeps it outside the app-owned scope. |
+
+Across writable purposes, each reservation is bounded to at most 257 MiB and
+400 entries, with arithmetic checked before admission. Each writable root's
+initial inventory is limited to 256 direct files, and each file is bounded by
+the 257 MiB root-file ceiling before the tighter purpose limit is applied.
+The 128-scope process-local capture ceiling also applies. These are
+implementation ceilings, not recommended user quotas; a product-facing
+retention policy and warning UX remain undecided. Because the Journal capacity
+setting permits 300 entries while native root scanning stops at 256, the
+effective current Journal inventory ceiling is 256 files/root. Do not claim all
+300 can be inventoried until that bound is reconciled.
+
+Concurrent reservations within one ledger are summed against the purpose
+budgets; only one native write admission may be active at a time. Staging and
+promotion share their pool. The sampled free-disk value is only a momentary
+preflight observation: another process or the OS can consume space, and
+`ENOSPC` remains possible after admission. A partial or unacknowledged write
+retains its reservation as uncertain, so future admissions can be refused
+before more work is authorized. On initial capture, files already present in
+the writable roots are charged as uncertain inventory, never adopted as
+successful outputs; reaching a byte or entry ceiling refuses further admission.
+
+The ledger and duplicate-scope claim are process-local. They are neither an OS
+quota nor cross-process coordination. Profile A's exclusion of malicious
+same-user processes does not make ordinary two-instance oversubscription safe.
+The production policy is therefore **one active writer process per protected
+scope**, enforced by a separately reviewed scope lease; while no enforceable
+lease exists, concurrent processes must not receive production write
+admission. An abandoned or ambiguous lease must fail closed, not be taken over
+by inspecting a matching path.
+
+On process exit, process-local reservations disappear. Fresh inventory can
+observe retained files, but cannot distinguish a settled file from uncertain
+evidence or reconstruct a no-file reservation. Until a restart checkpoint or
+an explicit inspect-only human reconciliation policy is reviewed, a new
+process must not interpret a successful free-space sample or a fresh ledger as
+proof that prior reservations settled. Disk free space is never guaranteed by
+this accounting contract.
+
+### Production decision and next boundary
+
+The current production decision remains **NO-GO**. The five-root native
+characterization, 17B/17C image writers, 17D promotion writer, and 17E-B
+Journal replacement methods remain opt-in and disposable. Journal capacity
+integration is still not selected by default by
+`GenerationExecutorJournalIntent`. No production root provisioning,
+cross-process scope lease, restart reservation reconciliation, Project
+reference binding, retention/Discard owner, or Start path is implemented.
+All production flags remain false, and `authorship=unverified`.
+
+The recommended next bounded implementation is **C2B-8D-19C-B: characterize a
+Profile A app-owned root-set binding that separates storage admission from
+Project reference identity**. Acceptance should require: (1) four exact
+disposable writable roots under one protected local scope; (2) an independently
+observed read-only Project path/file identity bound to the current original
+host without requiring it beneath that scope; (3) one enforced writer lease
+per scope or a fail-closed refusal when another process owns it; (4) restart
+reopen that grants inspection only and cannot restore reservations or worker
+authority; (5) capacity and uncertainty tests at the shared staging/promotion,
+Journal, and retained-evidence boundaries; and (6) no project movement, ACL
+repair, cleanup, execution, Candidate publication, or save. Production
+provisioning and UI activation remain later, separately reviewed gates.
