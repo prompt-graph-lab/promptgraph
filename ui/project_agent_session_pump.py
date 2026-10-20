@@ -605,6 +605,7 @@ class ProjectAgentSessionRuntime:
                     project = lifecycle._project_ref()
                     project_path = lifecycle._project_path
                     target_epoch = lifecycle._target_epoch
+                    pairing_generation = lifecycle._pairing_generation
                 with self.target_tracker._lock:
                     target_matches = (
                         self.target_tracker._initialized
@@ -615,6 +616,12 @@ class ProjectAgentSessionRuntime:
                     )
                 if not target_matches or project is None or not project_path:
                     return "host_target_unavailable"
+                if not self._generation_original_host_evidence_current_locked(
+                        lifecycle, pairing_generation):
+                    self._retire_generation_original_host_lifecycle_locked(
+                        "host_evidence_unavailable",
+                    )
+                    return "host_evidence_unavailable"
 
         # These calls can enumerate native storage, inspect ACLs and reopen the
         # selected file path. They must stay outside every host publication lock.
@@ -628,11 +635,6 @@ class ProjectAgentSessionRuntime:
         if (_normalize_target_path(str(project_reference._path))
                 != _normalize_target_path(project_path)):
             return "project_reference_mismatch"
-
-        try:
-            capacity_owner._register_profile_a_lifecycle_for_characterization(lifecycle)
-        except ValueError:
-            return "storage_binding_unavailable"
 
         with self._publication_gate:
             if self._closed:
@@ -657,9 +659,18 @@ class ProjectAgentSessionRuntime:
                     )
                 if not target_matches:
                     return "stale_host_binding"
-                return lifecycle.observe_profile_a_storage_binding_for_characterization(
-                    capacity_owner, project_reference,
-                )
+                if not self._generation_original_host_evidence_current_locked(
+                        lifecycle, pairing_generation):
+                    self._retire_generation_original_host_lifecycle_locked(
+                        "host_evidence_unavailable",
+                    )
+                    return "host_evidence_unavailable"
+                try:
+                    return capacity_owner._bind_profile_a_lifecycle_for_characterization(
+                        lifecycle, project_reference,
+                    )
+                except ValueError:
+                    return "storage_binding_unavailable"
 
     def generation_worker_correlation_for_characterization(self):
         """Return opaque correlation only; this does not start or authorize a Worker."""

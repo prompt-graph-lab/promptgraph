@@ -1778,7 +1778,14 @@ class WindowsProtectedStorageAdmissionCharacterization:
     def _scope_lease_retention_reason(self):
         with self._ledger._lock:
             states = {record["state"] for record in self._ledger._operations.values()}
-            uncertain = (self._ledger._active_write is not None
+            # Initial inventory has no operation record to inspect, but its
+            # bytes and entries are still retained-uncertain evidence. Keep
+            # the cross-process scope lease across close/restart in that case.
+            uncertain_inventory = any(
+                byte_count or entry_count
+                for byte_count, entry_count in self._ledger._uncertain.values()
+            )
+            uncertain = (uncertain_inventory or self._ledger._active_write is not None
                          or bool(states & {"reserved", "writing", "retained_uncertain"}))
         if uncertain or self._invalid:
             return "uncertain"
@@ -1799,14 +1806,30 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         active_host = True
         return "active_host" if active_host else "settled"
 
-    def _register_profile_a_lifecycle_for_characterization(self, lifecycle):
+    def _bind_profile_a_lifecycle_for_characterization(
+            self, lifecycle, project_reference):
+        """Publish the host binding and its lease-retention reference atomically.
+
+        The lifecycle callback is an in-memory state update only. Keep the
+        owner lock across that update and association publication so close()
+        either wins before binding or observes the successfully bound lifecycle.
+        This prevents a clean close from releasing or stranding the lease in a
+        gap between those two publications.
+        """
         with self._lock:
             if (not self._profile_a_root_set or self._closed or self._invalid
                     or lifecycle is None):
                 _fail("profile_a_storage_unavailable")
             references = tuple(self._host_lifecycle_refs)
-        if any(previous is lifecycle for previous in references):
-            return
+            already_registered = any(previous is lifecycle for previous in references)
+        if already_registered:
+            with self._lock:
+                if (self._closed or self._invalid
+                        or tuple(self._host_lifecycle_refs) != references):
+                    _fail("profile_a_storage_unavailable")
+                return lifecycle.observe_profile_a_storage_binding_for_characterization(
+                    self, project_reference,
+                )
 
         retained = []
         unsettled = False
@@ -1834,7 +1857,13 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 _fail("profile_a_storage_lifecycle_unsettled")
             if len(retained) >= _MAX_PROFILE_A_HOST_LIFECYCLES:
                 _fail("profile_a_storage_lifecycle_limit_exceeded")
-            self._host_lifecycle_refs = [*retained, lifecycle]
+            next_references = [*retained, lifecycle]
+            status = lifecycle.observe_profile_a_storage_binding_for_characterization(
+                self, project_reference,
+            )
+            if status == "matched_reference_only":
+                self._host_lifecycle_refs = next_references
+            return status
 
     def release_scope_writer_lease_if_settled_for_characterization(self):
         if not self._closed:
