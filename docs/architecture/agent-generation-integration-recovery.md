@@ -826,3 +826,39 @@ Project save, executable Recovery, Discard and cleanup remain separate gates.
 Process restart, concurrent PromptGraph processes and capacity reservation
 recovery are unresolved. All production capability flags remain false and the
 production decision remains NO-GO.
+
+## C2B-8D-19C-A Profile A protected-root placement and capacity policy
+
+The proposed Profile A layout places the four app-owned writable roots
+(`private_journal`, `temporary_containment`, `retained_uncertain`, and
+`promoted_assets`) under one local app-specific scope in the user's Local
+AppData. The independently selected Project JSON remains at its ordinary
+user-selected path and is a read-only original-host reference, not part of the
+private storage tree. No Project move, copy, ACL repair, or production root
+provisioning is authorized by this policy.
+
+The current 17A admission seam cannot represent that layout: it requires all
+five purpose roots, including `selected_project_json`, beneath one approved
+scope with distinct owner-only native identities. The 19A/19B host association
+checks exact supplied root-owner references but does not compare the selected
+JSON root path/file identity with the live Project path. Thus it does not prove
+that the supplied Project reference is the Project being generated. This
+compatibility gap keeps production admission NO-GO until a reviewed boundary
+separates four app-owned storage roots from the exact read-only Project binding.
+
+Capacity is process-local rather than a disk quota or cross-process lock. The
+256 MiB staging-plus-promotion budget and 16 entries are shared; uncertainty
+remains charged and is never automatically moved or deleted. Free-space checks
+are observations and cannot prevent later `ENOSPC`. Process restart loses
+reservation tokens and live latest-head custody; fresh inventory is uncertain
+and cannot restore a reservation whose write left no file. Until a reviewed
+scope lease and restart policy exist, no second process or restarted process
+may receive production write admission for that scope. Root close releases
+handles only; it does not delete files. The detailed policy, current bounds,
+exact incompatibilities and proposed C2B-8D-19C-B acceptance criteria are in
+the [protected-storage architecture](agent-generation-protected-storage.md#c2b-8d-19c-a-profile-a-protected-root-placement-and-capacity-policy).
+
+This is policy-only. It does not create a scope lease, change any writer,
+connect Journal capacity by default, enable execution, or grant Project,
+Candidate, Recovery, or cleanup authority. All production flags remain false
+and `authorship=unverified`.
