@@ -6,6 +6,7 @@ writer, advances the Job Registry/Inbox, or grants publication authority.
 """
 
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 import threading
 import uuid
@@ -19,6 +20,65 @@ _PURPOSES = (
     "private_journal", "temporary_containment", "retained_uncertain",
     "promoted_assets", "selected_project_json",
 )
+_PROFILE_A_PURPOSES = _PURPOSES[:-1]
+
+
+def _profile_a_references_match(lifecycle, purpose_roots, capacity_owner,
+                                project_reference, *, lifecycle_locked=False):
+    """Check Profile A identities only; never perform native readiness I/O."""
+    from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+    from core.generation_windows_protected_storage import (
+        WindowsProjectJsonReferenceCharacterization, WindowsProtectedRootCharacterization,
+    )
+    from ui.project_agent_session_mailbox import _normalize_target_path
+
+    if (type(capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization
+            or capacity_owner._profile_a_root_set is not True
+            or type(purpose_roots) is not dict
+            or set(purpose_roots) != set(_PROFILE_A_PURPOSES)
+            or type(capacity_owner._roots) is not dict
+            or set(capacity_owner._roots) != set(_PROFILE_A_PURPOSES)
+            or capacity_owner._closed is not False or capacity_owner._invalid is not False
+            or capacity_owner._scope_lease is None
+            or capacity_owner._scope_lease._state != "held"
+            or type(project_reference) is not WindowsProjectJsonReferenceCharacterization
+            or project_reference._closed is not False):
+        return False
+    if any(
+        type(purpose_roots[purpose]) is not WindowsProtectedRootCharacterization
+        or purpose_roots[purpose]._purpose != purpose
+        or purpose_roots[purpose]._closed is not False
+        or capacity_owner._roots[purpose] is not purpose_roots[purpose]
+        for purpose in _PROFILE_A_PURPOSES
+    ):
+        return False
+    if lifecycle is None:
+        return False
+    if lifecycle_locked:
+        binding = lifecycle._profile_a_storage_binding
+        project_path = lifecycle._project_path
+        if (lifecycle._state != "bound_non_executing"
+                or type(binding) is not tuple or len(binding) != 2
+                or binding[0] is not capacity_owner
+                or binding[1] is not project_reference):
+            return False
+    else:
+        with lifecycle._lock:
+            return _profile_a_references_match(
+                lifecycle, purpose_roots, capacity_owner, project_reference,
+                lifecycle_locked=True,
+            )
+    project = lifecycle._project_ref()
+    if (project is None or type(project_path) is not str or not project_path
+            or _normalize_target_path(str(project_reference._path))
+            != _normalize_target_path(project_path)):
+        return False
+    # The 19C-B binding registered this exact lifecycle with the app-owned
+    # ledger so its scope lease can observe late Worker uncertainty.
+    with capacity_owner._lock:
+        return (capacity_owner._closed is False and capacity_owner._invalid is False
+                and any(previous is lifecycle
+                        for previous in capacity_owner._host_lifecycle_refs))
 
 
 @dataclass(frozen=True)
@@ -117,7 +177,60 @@ class OriginalHostWorkerStorageIntegration:
             lifecycle._worker_storage_integration = owner
         return owner, "bound_non_executing"
 
-    def __init__(self, lifecycle, runtime, worker, purpose_roots, capacity_owner, *, _factory=None):
+    @classmethod
+    def _bind_profile_a_for_runtime(cls, lifecycle, runtime, worker, purpose_roots,
+                                    capacity_owner, project_reference):
+        """Claim a Worker for an already-bound Profile A lifecycle.
+
+        The caller owns the final runtime/route/Job/Inbox host gate. This
+        method performs only short in-memory identity checks; native readiness
+        must have been observed before entering that gate.
+        """
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+        from core.generation_windows_protected_storage import WindowsProjectJsonReferenceCharacterization
+        from ui.agent_generation_http_io_worker import HostOwnedHTTPIOWorker
+        from ui.agent_generation_original_host_lifecycle import OriginalHostGenerationLifecycle
+        from ui.project_agent_session_pump import ProjectAgentSessionRuntime
+
+        if (type(lifecycle) is not OriginalHostGenerationLifecycle
+                or type(runtime) is not ProjectAgentSessionRuntime
+                or lifecycle._runtime_ref() is not runtime
+                or type(worker) is not HostOwnedHTTPIOWorker
+                or type(capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization
+                or type(project_reference) is not WindowsProjectJsonReferenceCharacterization
+                or type(purpose_roots) is not dict
+                or set(purpose_roots) != set(_PROFILE_A_PURPOSES)):
+            return None, "binding_invalid"
+
+        owner = cls(
+            lifecycle, runtime, worker, purpose_roots, capacity_owner,
+            project_reference=project_reference, profile_a=True, _factory=_FACTORY,
+        )
+        # Lock order is Job Registry -> Inbox -> lifecycle -> capacity owner
+        # -> Worker. Capacity close and a competing Worker claim are
+        # linearized against this short publication.
+        with lifecycle._lock:
+            if (lifecycle._state != "bound_non_executing"
+                    or lifecycle._worker_storage_integration is not None
+                    or not lifecycle._profile_a_job_claim_current_locked()
+                    or not _profile_a_references_match(
+                        lifecycle, purpose_roots, capacity_owner, project_reference,
+                        lifecycle_locked=True,
+                    )):
+                return None, "profile_a_binding_unavailable"
+            with capacity_owner._lock:
+                if (capacity_owner._closed is not False or capacity_owner._invalid is not False
+                        or not any(previous is lifecycle
+                                   for previous in capacity_owner._host_lifecycle_refs)):
+                    return None, "storage_binding_mismatch"
+                if not worker._claim_original_host_for_characterization(
+                        owner._worker_owner_claim):
+                    return None, "worker_unavailable"
+                lifecycle._worker_storage_integration = owner
+        return owner, "bound_non_executing"
+
+    def __init__(self, lifecycle, runtime, worker, purpose_roots, capacity_owner, *,
+                 project_reference=None, profile_a=False, _factory=None):
         if _factory is not _FACTORY:
             raise ValueError("original_host_binding_required")
         self._lifecycle_ref = weakref.ref(lifecycle)
@@ -127,6 +240,12 @@ class OriginalHostWorkerStorageIntegration:
         self._worker_owner_claim = object()
         self._purpose_roots = dict(purpose_roots)
         self._capacity_owner = capacity_owner
+        self._profile_a = profile_a is True
+        self._project_reference = project_reference if self._profile_a else None
+        self._binding_label = (
+            "matched_profile_a_reference_only" if self._profile_a
+            else "matched_reference_only"
+        )
         self._operation_id = uuid.uuid4().hex
         self._lock = threading.RLock()
         self._state = "bound_non_executing"
@@ -143,74 +262,90 @@ class OriginalHostWorkerStorageIntegration:
 
     def correlation_for_request_for_characterization(self, request_index, *, kind, prompt_id=None):
         """Issue scalars for an exact manifest member; never perform the Worker."""
-        from core.comfy_remote_output_receipts import valid_prompt_id
-        from ui.agent_generation_http_io_worker import HTTPIOCorrelation
-
         lifecycle = self._lifecycle_ref()
         if (lifecycle is None or type(request_index) is not int
                 or kind not in {"submission", "history"}):
             return None
-        if not self._root_binding_matches():
+        if not self._profile_a and not self._root_binding_matches():
             self.revoke("host_evidence_unavailable")
             return None
         # Match the 19A host order: lifecycle -> integration. Revocation never
         # acquires these locks in the opposite order.
+        binding_invalid = False
+        correlation = None
         with lifecycle._lock:
-            if (lifecycle._state != "bound_non_executing"
-                    or lifecycle._generation != self._lifecycle_generation
-                    or lifecycle._envelope is None or not self._root_binding_matches()):
-                return None
-            with self._lock:
-                if self._state != "bound_non_executing":
+            capacity_guard = self._capacity_owner._lock if self._profile_a else nullcontext()
+            with capacity_guard:
+                if self._profile_a and (
+                        not self._root_binding_matches()
+                        or not self._lifecycle_profile_binding_matches_locked(lifecycle)):
+                    binding_invalid = True
+                elif (lifecycle._state != "bound_non_executing"
+                      or lifecycle._generation != self._lifecycle_generation
+                      or lifecycle._envelope is None):
                     return None
-                envelope = lifecycle._envelope
-                if not 0 <= request_index < len(envelope.manifest.requests):
-                    return None
-                request = envelope.manifest.requests[request_index]
-                if kind == "submission":
-                    if prompt_id is not None:
-                        return None
-                    attempt_id = 1
-                    key = (kind, request_index, attempt_id)
-                    if key in self._issued:
-                        return None
                 else:
-                    if not valid_prompt_id(prompt_id):
-                        return None
-                    if self._accepted_prompt_ids.get(request_index) != prompt_id:
-                        return None
-                    key_prefix = (kind, request_index, prompt_id)
-                    attempt_id = self._history_attempts.get(key_prefix, 0) + 1
-                    if attempt_id > _MAX_HISTORY_READS_PER_REQUEST:
-                        return None
-                    key = (kind, request_index, prompt_id, attempt_id)
-                    if key in self._issued:
-                        return None
-                    self._history_attempts[key_prefix] = attempt_id
-                correlation = HTTPIOCorrelation(
-                    operation_id=self._operation_id,
-                    job_id=envelope.job_id,
-                    claim_id=envelope.claim_id,
-                    manifest_identity=envelope.manifest.manifest_identity,
-                    session_identity=lifecycle._session_incarnation,
-                    process_identity=lifecycle._process_incarnation,
-                    request_id=request.request_id,
-                    request_index=request.request_index,
-                    illustration_id=request.illustration_id,
-                    run_index=request.run_index,
-                    workflow_identity=request.workflow_identity,
-                    attempt_id=attempt_id,
-                    prompt_id=prompt_id,
-                )
-                self._issued[key] = correlation
-                return correlation
+                    with self._lock:
+                        correlation = self._issue_correlation_locked(
+                            lifecycle, request_index, kind=kind, prompt_id=prompt_id,
+                        )
+        if binding_invalid:
+            self.revoke("host_evidence_unavailable")
+            return None
+        return correlation
+
+    def _issue_correlation_locked(self, lifecycle, request_index, *, kind, prompt_id):
+        """Issue one correlation while lifecycle and integration locks are held."""
+        from core.comfy_remote_output_receipts import valid_prompt_id
+        from ui.agent_generation_http_io_worker import HTTPIOCorrelation
+
+        if self._state != "bound_non_executing":
+            return None
+        envelope = lifecycle._envelope
+        if not 0 <= request_index < len(envelope.manifest.requests):
+            return None
+        request = envelope.manifest.requests[request_index]
+        if kind == "submission":
+            if prompt_id is not None:
+                return None
+            attempt_id = 1
+            key = (kind, request_index, attempt_id)
+            if key in self._issued:
+                return None
+        else:
+            if not valid_prompt_id(prompt_id):
+                return None
+            if self._accepted_prompt_ids.get(request_index) != prompt_id:
+                return None
+            key_prefix = (kind, request_index, prompt_id)
+            attempt_id = self._history_attempts.get(key_prefix, 0) + 1
+            if attempt_id > _MAX_HISTORY_READS_PER_REQUEST:
+                return None
+            key = (kind, request_index, prompt_id, attempt_id)
+            if key in self._issued:
+                return None
+            self._history_attempts[key_prefix] = attempt_id
+        correlation = HTTPIOCorrelation(
+            operation_id=self._operation_id,
+            job_id=envelope.job_id,
+            claim_id=envelope.claim_id,
+            manifest_identity=envelope.manifest.manifest_identity,
+            session_identity=lifecycle._session_incarnation,
+            process_identity=lifecycle._process_incarnation,
+            request_id=request.request_id,
+            request_index=request.request_index,
+            illustration_id=request.illustration_id,
+            run_index=request.run_index,
+            workflow_identity=request.workflow_identity,
+            attempt_id=attempt_id,
+            prompt_id=prompt_id,
+        )
+        self._issued[key] = correlation
+        return correlation
 
     def begin_operation_for_characterization(self, kind, prepared, prompt_id, correlation):
         """Pin one host operation before an external caller uses its Worker."""
-        from core.comfy_prompt_request import (
-            _frozen_fields, is_owner_prepared_frozen_request,
-            prepare_frozen_prompt_request,
-        )
+        from core.comfy_prompt_request import is_owner_prepared_frozen_request
         from ui.agent_generation_http_io_worker import HTTPIOCorrelation
 
         if (kind not in {"submission", "history"}
@@ -220,63 +355,85 @@ class OriginalHostWorkerStorageIntegration:
         lifecycle = self._lifecycle_ref()
         if lifecycle is None:
             return None, "lifecycle_unavailable"
-        if not self._root_binding_matches():
+        if not self._profile_a and not self._root_binding_matches():
             self.revoke("host_evidence_unavailable")
             return None, "storage_binding_mismatch"
+        binding_invalid = False
+        result = None
         with lifecycle._lock:
-            if (lifecycle._state != "bound_non_executing"
-                    or lifecycle._generation != self._lifecycle_generation
-                    or lifecycle._envelope is None or not self._root_binding_matches()):
-                return None, "stale_non_authoritative"
-            with self._lock:
-                if self._state != "bound_non_executing" or self._active is not None:
-                    return None, "operation_unavailable"
-                envelope = lifecycle._envelope
-                index = correlation.request_index
-                if (type(index) is not int or not 0 <= index < len(envelope.manifest.requests)):
-                    return None, "correlation_mismatch"
-                request = envelope.manifest.requests[index]
-                expected = (
-                    envelope.job_id, envelope.claim_id, envelope.manifest.manifest_identity,
-                    lifecycle._session_incarnation, lifecycle._process_incarnation,
-                    request.request_id, request.request_index, request.illustration_id,
-                    request.run_index, request.workflow_identity,
-                )
-                actual = (
-                    correlation.job_id, correlation.claim_id, correlation.manifest_identity,
-                    correlation.session_identity, correlation.process_identity,
-                    correlation.request_id, correlation.request_index, correlation.illustration_id,
-                    correlation.run_index, correlation.workflow_identity,
-                )
-                try:
-                    expected_prepared = prepare_frozen_prompt_request(
-                        envelope.manifest, request, client_id=prepared.client_id,
-                    )
-                except Exception:
-                    return None, "request_mismatch"
-                if (actual != expected
-                        or prepared.request_id != request.request_id
-                        or prepared.request_index != request.request_index
-                        or prepared.workflow_identity != request.workflow_identity
-                        or _frozen_fields(prepared) != _frozen_fields(expected_prepared)
-                        or correlation.operation_id != self._operation_id
-                        or self._issued.get(self._correlation_key(kind, correlation)) is not correlation
-                        or ((kind, index, correlation.attempt_id) in self._submitted
-                            if kind == "submission" else False)
-                        or (kind == "submission" and (prompt_id is not None or correlation.prompt_id is not None))
-                        or (kind == "history" and (prompt_id is None or correlation.prompt_id != prompt_id))):
-                    return None, "correlation_mismatch"
-                if not self._worker._register_original_host_operation_for_characterization(
-                    self._worker_owner_claim, kind, correlation,
-                ):
-                    return None, "worker_unavailable"
-                if kind == "submission":
-                    self._submitted.add((kind, index, correlation.attempt_id))
-                lease = GenerationWorkerOperationLease(
-                    lifecycle._generation, uuid.uuid4().hex, kind, index, correlation,
-                )
-                self._active = lease
-                return lease, "admitted_non_executing"
+            capacity_guard = self._capacity_owner._lock if self._profile_a else nullcontext()
+            with capacity_guard:
+                if self._profile_a and (
+                        not self._root_binding_matches()
+                        or not self._lifecycle_profile_binding_matches_locked(lifecycle)):
+                    binding_invalid = True
+                elif (lifecycle._state != "bound_non_executing"
+                      or lifecycle._generation != self._lifecycle_generation
+                      or lifecycle._envelope is None):
+                    return None, "stale_non_authoritative"
+                else:
+                    with self._lock:
+                        result = self._begin_operation_locked(
+                            kind, prepared, prompt_id, correlation, lifecycle,
+                        )
+        if binding_invalid:
+            self.revoke("host_evidence_unavailable")
+            return None, "stale_non_authoritative"
+        return result
+
+    def _begin_operation_locked(self, kind, prepared, prompt_id, correlation, lifecycle):
+        """Install exact Worker admission while lifecycle/capacity are pinned."""
+        from core.comfy_prompt_request import (
+            _frozen_fields, prepare_frozen_prompt_request,
+        )
+
+        if self._state != "bound_non_executing" or self._active is not None:
+            return None, "operation_unavailable"
+        envelope = lifecycle._envelope
+        index = correlation.request_index
+        if (type(index) is not int or not 0 <= index < len(envelope.manifest.requests)):
+            return None, "correlation_mismatch"
+        request = envelope.manifest.requests[index]
+        expected = (
+            envelope.job_id, envelope.claim_id, envelope.manifest.manifest_identity,
+            lifecycle._session_incarnation, lifecycle._process_incarnation,
+            request.request_id, request.request_index, request.illustration_id,
+            request.run_index, request.workflow_identity,
+        )
+        actual = (
+            correlation.job_id, correlation.claim_id, correlation.manifest_identity,
+            correlation.session_identity, correlation.process_identity,
+            correlation.request_id, correlation.request_index, correlation.illustration_id,
+            correlation.run_index, correlation.workflow_identity,
+        )
+        try:
+            expected_prepared = prepare_frozen_prompt_request(
+                envelope.manifest, request, client_id=prepared.client_id,
+            )
+        except Exception:
+            return None, "request_mismatch"
+        if (actual != expected
+                or prepared.request_id != request.request_id
+                or prepared.request_index != request.request_index
+                or prepared.workflow_identity != request.workflow_identity
+                or _frozen_fields(prepared) != _frozen_fields(expected_prepared)
+                or correlation.operation_id != self._operation_id
+                or self._issued.get(self._correlation_key(kind, correlation)) is not correlation
+                or ((kind, index, correlation.attempt_id) in self._submitted
+                    if kind == "submission" else False)
+                or (kind == "submission" and (prompt_id is not None or correlation.prompt_id is not None))
+                or (kind == "history" and (prompt_id is None or correlation.prompt_id != prompt_id))):
+            return None, "correlation_mismatch"
+        if not self._worker._register_original_host_operation_for_characterization(
+                self._worker_owner_claim, kind, correlation):
+            return None, "worker_unavailable"
+        if kind == "submission":
+            self._submitted.add((kind, index, correlation.attempt_id))
+        lease = GenerationWorkerOperationLease(
+            lifecycle._generation, uuid.uuid4().hex, kind, index, correlation,
+        )
+        self._active = lease
+        return lease, "admitted_non_executing"
 
     def _root_binding_matches(self):
         """Check exact owner references only; never touch the filesystem."""
@@ -286,19 +443,41 @@ class OriginalHostWorkerStorageIntegration:
         roots = self._purpose_roots
         capacity = self._capacity_owner
         try:
-            owned_roots = capacity._roots
-            return (
-                type(capacity) is WindowsProtectedStorageAdmissionCharacterization
-                and capacity._closed is False and capacity._invalid is False
-                and type(roots) is dict and set(roots) == set(_PURPOSES)
-                and type(owned_roots) is dict and set(owned_roots) == set(_PURPOSES)
-                and all(
+            if type(capacity) is not WindowsProtectedStorageAdmissionCharacterization:
+                return False
+            purposes = _PROFILE_A_PURPOSES if self._profile_a else _PURPOSES
+            capacity_guard = capacity._lock if self._profile_a else nullcontext()
+            with capacity_guard:
+                owned_roots = capacity._roots
+                if (capacity._closed is not False or capacity._invalid is not False
+                        or type(roots) is not dict or set(roots) != set(purposes)
+                        or type(owned_roots) is not dict or set(owned_roots) != set(purposes)):
+                    return False
+                if self._profile_a and (
+                        capacity._profile_a_root_set is not True
+                        or capacity._scope_lease is None
+                        or capacity._scope_lease._state != "held"
+                        or self._project_reference is None
+                        or self._project_reference._closed is not False):
+                    return False
+                return all(
                     type(roots[purpose]) is WindowsProtectedRootCharacterization
                     and roots[purpose]._purpose == purpose
                     and roots[purpose]._closed is False
                     and owned_roots[purpose] is roots[purpose]
-                    for purpose in _PURPOSES
+                    for purpose in purposes
                 )
+        except Exception:
+            return False
+
+    def _lifecycle_profile_binding_matches_locked(self, lifecycle):
+        """Check the current lifecycle's Profile A refs while its lock is held."""
+        if not self._profile_a:
+            return True
+        try:
+            return _profile_a_references_match(
+                lifecycle, self._purpose_roots, self._capacity_owner,
+                self._project_reference, lifecycle_locked=True,
             )
         except Exception:
             return False
@@ -317,6 +496,21 @@ class OriginalHostWorkerStorageIntegration:
 
         if type(worker_observation) is not HTTPIOWorkerObservation:
             return "invalid_observation"
+        if self._profile_a:
+            lifecycle = self._lifecycle_ref()
+            binding_current = lifecycle is not None
+            if binding_current:
+                with lifecycle._lock:
+                    with self._capacity_owner._lock:
+                        binding_current = (
+                            self._root_binding_matches()
+                            and self._lifecycle_profile_binding_matches_locked(lifecycle)
+                        )
+            if not binding_current:
+                # A completion after Profile A evidence was closed, replaced or
+                # detached cannot settle the retained Worker lease.
+                self.revoke("host_evidence_unavailable")
+                return "stale_non_authoritative"
         worker_issued = self._worker._is_issued_completion_for_characterization(completion)
         accepted_prompt_id = None
         if (worker_issued and type(completion) is HTTPIOCompletion
@@ -487,10 +681,19 @@ class OriginalHostWorkerStorageIntegration:
                 active_operations=int(self._active is not None),
                 retained_uncertain_operations=len(self._uncertain_leases),
                 result_observations=len(self._observations),
-                protected_binding="matched_reference_only",
+                protected_binding=self._binding_label,
             )
 
     def readiness(self):
         if not self._root_binding_matches():
             return self.revoke("host_evidence_unavailable")
+        if self._profile_a:
+            lifecycle = self._lifecycle_ref()
+            if lifecycle is None:
+                return self.revoke("host_evidence_unavailable")
+            with lifecycle._lock:
+                with self._capacity_owner._lock:
+                    binding_matches = self._lifecycle_profile_binding_matches_locked(lifecycle)
+            if not binding_matches:
+                return self.revoke("host_evidence_unavailable")
         return self._safe_state()

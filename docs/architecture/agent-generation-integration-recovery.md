@@ -653,11 +653,13 @@ model.
 | 5 | Candidate publication and Project JSON save | Existing Candidate/Undo/save owners have protected offline composition but no production call path for these receipts. | Connect only through the existing Gallery writer and exact-object/path save owner; prove idempotent provenance, Undo ordering, partial-append uncertainty, one-shot save and reload integrity in the supported host lifecycle. |
 | 6 | Restart, Recovery, retention and discard | Reopened Journal/Recovery data are inspect-only. After restart there is no independently retained original-host latest-head observation, so authority cannot be inferred from a valid prefix, digest, file or prompt ID. There is no production retention/discard lifecycle. | Define restart latest-head custody separately from live-host observations; require independent original-host evidence or retain `uncertain`. Add inspect-first Recovery and explicit human association/Discard, with bounded retention and no replay, automatic rollback or cleanup. |
 
-C2B-8D-19A provides a non-executing original-host lifecycle foundation, and
-19B adds a non-executing association to an explicitly supplied Worker and
-protected-purpose-root/capacity owners. Neither milestone enables a production
-transport, Start, protected write, publication or save. Root provisioning and
-capacity-writer integration remain separate gates before live ComfyUI use.
+C2B-8D-19A provides a non-executing original-host lifecycle foundation; 19B
+adds the legacy five-root Worker association; 19C-B binds a four-root Profile A
+capacity owner and separate Project reference; and 19C-C associates that
+binding with one supplied Worker. These remain non-executing
+characterizations. They do not enable a production transport, Start, protected
+write, publication or save. Root provisioning and capacity-writer integration
+remain separate gates before live ComfyUI use.
 
 Before activation, each gate needs its own implementation review and production-
 appropriate validation. In particular, protected Journal capacity integration
@@ -914,10 +916,60 @@ authorization. After restart, reservations and host authority remain
 unavailable; existing files are uncertain, and an orphaned marker blocks
 capture pending separately authorized resolution.
 
-The next bounded milestone is **C2B-8D-19C-C**: adapt 19B's existing
-original-host Worker/storage association to the four-root capacity owner and
-separate Project reference, without starting the Worker or invoking writers.
-It should verify that target invalidation clears Project/Worker binding while
-leaving globally retained storage evidence open. Production root provisioning,
-real transport, Human Start, Candidate/Project publication, restart and
-retention/Discard remain separate NO-GO gates.
+The next bounded milestone after the C2B-8D-19C-C characterization is an
+offline Profile A Worker-to-writer admission composition: prove that one exact
+host-registered operation lease can be presented to the already characterized
+protected writer admission owners, while keeping writes opt-in, non-executing,
+and independently fenced. Production root provisioning, real transport,
+Human Start, Candidate/Project publication, restart and retention/Discard
+remain separate NO-GO gates.
+
+## C2B-8D-19C-C Profile A Worker/storage association
+
+`ProjectAgentSessionRuntime.bind_generation_profile_a_worker_storage_for_characterization()`
+adds an explicit path that binds the existing 19B
+`OriginalHostWorkerStorageIntegration` to exactly four writable root owners,
+their `_profile_a_root_set=True` capacity owner, the separately captured
+read-only `WindowsProjectJsonReferenceCharacterization`, the already-bound
+19A lifecycle and one supplied fresh `HostOwnedHTTPIOWorker`. The legacy
+`bind_generation_worker_storage_for_characterization()` path remains a
+separate five-root contract; it does not infer Profile A from a changed root
+map or silently drop `selected_project_json`.
+
+Profile A binding requires the 19C-B lifecycle/reference binding and a current
+nonterminal Job Claim, Inbox envelope and manifest before Worker ownership is
+claimed. Capacity-root and Project-reference `readiness()` calls are performed
+outside host locks. The final publication rechecks Project object and
+normalized path, target epoch, activation, route/pairing, lifecycle generation,
+Claim and manifest, then serializes lifecycle -> capacity owner -> Worker
+claim. Capacity-owner close cannot interleave with the final Worker claim; if
+close wins earlier, or a Project, Claim, route, lifecycle, root or reference
+changes, the binding is refused. The Worker's existing one-shot owner claim is
+preserved and is never transferred or resurrected.
+
+At each later correlation/admission/result boundary, Profile A mode rechecks
+that the exact four supplied root objects still match the capacity owner's
+four-root map, the capacity owner and scope lease remain open/held, and the
+same independent Project-reference object remains bound to the current
+lifecycle and path. These are in-memory reference checks. Native ACL, handle,
+file-identity and Project-reference freshness are observed at bind time only;
+reference equality does not claim a fresh native verification. Native
+readiness is never called while host/Claim locks are held. Results remain
+diagnostic and non-authoritative, and invalidation prevents new operations or
+settles an active operation as uncertain.
+
+Project switch, Save As, epoch, activation, pairing, Claim or lifecycle
+retirement revokes the Worker association and requests a nonjoining Worker
+close. Active or uncertain operations retain their exact roots, capacity owner,
+Project-reference object and scope-lease evidence. Project transitions never
+close the app-owned owner or roots, release uncertain capacity, retry work, or
+restore the old association on switch-back. An explicitly completed bounded
+close can settle only resources whose existing owner contracts permit it;
+there is no implicit cleanup.
+
+The Profile A and legacy paths both leave execution, protected storage,
+promotion, Candidate publication, Project save and Recovery gates false, with
+`authorship=unverified`. C2B-8D-19C-C does not invoke a storage writer, Journal,
+HTTP transport, Candidate publisher or Project save. It does not enable
+production root provisioning, cross-process quotas, restart authority
+reconstruction, retention/Discard, or production worker execution.

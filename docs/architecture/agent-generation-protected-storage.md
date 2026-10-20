@@ -1540,17 +1540,17 @@ writers, 17D promotion writer, and 17E-B Journal replacement methods are all
 opt-in disposable characterizations. Journal capacity integration is still
 not selected by default by `GenerationExecutorJournalIntent`. There is no
 production root provisioning, restart reservation reconciliation,
-production Worker/storage binding, retention/Discard owner, or Start path.
-All production flags remain false, and `authorship=unverified`.
+production Worker/storage writer integration, retention/Discard owner, or
+Start path. C2B-8D-19C-C adds only a non-executing Worker/reference association
+characterization. All production flags remain false, and
+`authorship=unverified`.
 
-The next bounded implementation is **C2B-8D-19C-C**: update the existing 19B
-original-host Worker/storage association to consume the four-root capacity
-owner plus the separate Project reference, while keeping all writer calls
-opt-in and non-executing. It should preserve the current exact lifecycle
-binding and prove that host target changes revoke only Project/Worker binding,
-not globally retained storage evidence. Production provisioning, real
-transport, activation and write authorization remain later, separately
-reviewed gates.
+The next bounded implementation recommendation after C2B-8D-19C-C is an
+offline Profile A Worker-to-writer admission composition: bind the exact
+original-host Worker operation lease to the existing protected writer
+admission owners without changing their ownership or enabling production
+writes. Production provisioning, real transport, activation and write
+authorization remain later, separately reviewed gates.
 
 ## C2B-8D-19C-B four-root Profile A binding and scope-writer lease
 
@@ -1608,3 +1608,50 @@ still grants no execution, protected write, promotion, Candidate, save,
 Recovery or cleanup authority. After restart, neither the lease nor the ledger
 reconstructs operation tokens or host authority; pre-existing inventory remains
 uncertain and an orphaned marker blocks admission until separately resolved.
+
+## C2B-8D-19C-C Profile A Worker/storage association
+
+The explicit
+`ProjectAgentSessionRuntime.bind_generation_profile_a_worker_storage_for_characterization()`
+path extends the existing 19B `OriginalHostWorkerStorageIntegration` to four
+exact writable purpose-root references, their exact `_profile_a_root_set=True`
+capacity owner, the independently captured read-only
+`WindowsProjectJsonReferenceCharacterization`, the current 19A lifecycle and
+one supplied fresh `HostOwnedHTTPIOWorker`. The legacy binding API remains an
+independent five-root path and is not reinterpreted as Profile A.
+
+The Profile A association requires an established 19C-B lifecycle/reference
+binding and a live nonterminal Job Claim, Inbox envelope and manifest. Native
+capacity and Project-reference readiness are revalidated outside host locks,
+then the exact Project object/path, target epoch, activation, pairing,
+lifecycle and Claim are checked again before the Worker claim. Final in-memory
+publication follows the existing host -> route -> target -> Job Registry ->
+Inbox -> lifecycle -> capacity owner -> Worker order. The capacity lock
+serializes close against the one-shot Worker ownership claim. The Worker claim
+cannot be shared, released for reuse, or reconstructed after lifecycle
+retirement.
+
+Correlation, operation admission and result observation recheck exact root-map
+identity, owner/lease liveness, and the same separate Project-reference object
+and normalized path on the bound lifecycle. This is reference-only freshness.
+Native ACL, handle and file-identity readiness is checked at binding; later
+reference equality is not a fresh native observation. No native readiness I/O
+runs under host locks. Closed/replaced references, root-map drift, revoked
+scope lease, retired lifecycle or host invalidation refuse new operations.
+
+Project/Claim/pairing invalidation revokes the Worker and requests a
+nonjoining close. An active or uncertain operation retains the exact roots,
+capacity owner, Project-reference evidence and scope lease. Project changes
+retire only the Project/Worker association; they do not close the app-owned
+storage owner or roots. No writer, Journal, Candidate publisher, Project save,
+HTTP transport, cleanup or retry is invoked. The association grants no
+execution, protected-storage, promotion, Candidate, Project-save or Recovery
+authority, and `authorship` remains `unverified`.
+
+The remaining production gates include approved real-user root provisioning,
+writer integration and write authorization, production Worker lifecycle and
+real ComfyUI interoperability, explicit Human Start/UI activation, Candidate
+publication and Project save, and restart/recovery/retention/Discard policy.
+The process-local capacity ledger is still not an OS quota or restart-resolved
+reservation system; the separate Project reference observes identity and
+metadata, not content integrity.
