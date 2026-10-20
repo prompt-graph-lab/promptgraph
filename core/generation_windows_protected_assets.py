@@ -96,6 +96,116 @@ class WindowsProtectedAssetsCharacterization:
                             limits, lambda boundary: None)
 
     @classmethod
+    def borrow_profile_a_writer_for_characterization(
+            cls, capacity_owner, *, characterization=False, disposable_opt_in=False,
+            limits=ContainmentLimits(), fault=lambda boundary: None):
+        """Create a disposable writer that borrows the exact Profile A root handles.
+
+        This is a distinct writer owner, not an upgrade of an inspect-only
+        reopened owner. Its close lifecycle never closes the app-owned roots.
+        """
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+
+        if characterization is not True or disposable_opt_in is not True:
+            w._fail("execution_unavailable")
+        if type(capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization:
+            w._fail("storage_admission_owner_required")
+        defaults = ContainmentLimits()
+        if (type(limits) is not ContainmentLimits
+                or any(type(value) is not int or not 0 < value <= getattr(defaults, key)
+                       for key, value in vars(limits).items())
+                or not limits.image_bytes <= limits.request_bytes <= limits.aggregate_bytes):
+            w._fail("invalid_storage_limits")
+
+        with capacity_owner._lock:
+            roots = capacity_owner._roots
+            if (capacity_owner._profile_a_root_set is not True
+                    or capacity_owner._closed is not False or capacity_owner._invalid is not False
+                    or capacity_owner._scope_lease is None
+                    or capacity_owner._scope_lease._state != "held"
+                    or type(roots) is not dict
+                    or set(roots) != {"private_journal", "temporary_containment",
+                                      "retained_uncertain", "promoted_assets"}):
+                w._fail("profile_a_capacity_owner_unavailable")
+            borrowed = {
+                purpose: roots[purpose]
+                for purpose in ("temporary_containment", "promoted_assets")
+            }
+            if any(type(root) is not w.WindowsProtectedRootCharacterization
+                   or root._purpose != purpose or root._closed is not False
+                   for purpose, root in borrowed.items()):
+                w._fail("storage_root_owner_mismatch")
+
+        # Native root and ACL observations are performed without the ledger
+        # mutex; the exact objects are checked again after they complete.
+        for root in borrowed.values():
+            if root.readiness().get("acl_verified") is not True:
+                w._fail("protected_root_unavailable")
+        capacity_view = capacity_owner.readiness()
+        if (capacity_view.get("status") != "characterization_only"
+                or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                or capacity_view.get("scope_writer_lease") != "held"):
+            w._fail("profile_a_capacity_owner_unavailable")
+        owner = cls(
+            borrowed, limits, True, fault, _factory=_FACTORY,
+            owns_roots=False, profile_a_capacity_owner=capacity_owner,
+        )
+        owner._check()
+        with capacity_owner._lock:
+            if (capacity_owner._closed is not False or capacity_owner._invalid is not False
+                    or capacity_owner._roots.get("temporary_containment")
+                    is not borrowed["temporary_containment"]
+                    or capacity_owner._roots.get("promoted_assets") is not borrowed["promoted_assets"]
+                    or capacity_owner._scope_lease._state != "held"):
+                owner.close()
+                w._fail("profile_a_capacity_owner_unavailable")
+        return owner
+
+    def _is_fresh_profile_a_writer_for_handoff(
+            self, capacity_owner, purpose_roots, integration=None):
+        """Claim or check one Profile A integration's borrowed Writer owner.
+
+        The first handoff requires an unused owner. Later requests may reuse
+        that same owner after completed, verified images; a different
+        integration can never inherit the accumulated Writer state.
+        """
+        with self._lock:
+            empty = bool(
+                not self._files and not self._images and not self._unobserved_files
+                and not self._stream_attempts and not self._stream_bindings
+                and not self._stream_images and not self._stream_pending_images
+                and not self._stream_batch_attempts and not self._stream_batches
+                and not self._stream_batch_acceptances and not self._stream_promotions
+            )
+            settled = bool(
+                not self._unobserved_files
+                and set(self._files) == set(self._images)
+                and not self._stream_pending_images
+                and not self._stream_busy and not self._stream_batch_busy
+                and not self._promotion_busy and not self._capacity_busy
+            )
+            identity_matches = bool(
+                self._profile_a_capacity_owner is capacity_owner
+                and self._owns_roots is False and self._writable is True
+                and type(purpose_roots) is dict
+                and self._roots.get("temporary_containment")
+                    is purpose_roots.get("temporary_containment")
+                and self._roots.get("promoted_assets") is purpose_roots.get("promoted_assets")
+            )
+            if not identity_matches or not settled:
+                return False
+            if integration is not None:
+                if self._profile_a_handoff_integration is None and empty:
+                    self._profile_a_handoff_integration = integration
+                elif self._profile_a_handoff_integration is not integration:
+                    return False
+            return bool(
+                self._profile_a_handoff_integration is not None
+                and self._closed is False and self._revoking is False
+                and self._invalid is False and self._uncertain is False
+            )
+
+    @classmethod
     def _capture(cls, scope, paths, characterization, opt_in, limits, fault):
         if characterization is not True or opt_in is not True:
             w._fail("execution_unavailable")
@@ -132,10 +242,14 @@ class WindowsProtectedAssetsCharacterization:
                 root.close()
             raise  # Any successfully created evidence remains on disk.
 
-    def __init__(self, roots, limits, writable, fault, *, _factory=None):
+    def __init__(self, roots, limits, writable, fault, *, _factory=None,
+                 owns_roots=True, profile_a_capacity_owner=None):
         if _factory is not _FACTORY:
             w._fail("host_storage_required")
         self._roots, self._limits, self._writable, self._fault = roots, limits, writable, fault
+        self._owns_roots = owns_roots is True
+        self._profile_a_capacity_owner = profile_a_capacity_owner
+        self._profile_a_handoff_integration = None
         # Names are unique only inside one purpose root; never key by filename alone.
         self._files, self._images = {}, {}
         self._used_bytes = 0
@@ -227,6 +341,8 @@ class WindowsProtectedAssetsCharacterization:
     def create_image_for_characterization(self, purpose, data, *, extension="png",
                                           _promotion_owner=None, _admission_lease=None,
                                           _admission_context=None):
+        if getattr(self, "_profile_a_capacity_owner", None) is not None:
+            w._fail("profile_a_writer_handoff_required")
         # The admitted path owns a capacity lease which makes close wait for
         # its terminal accounting. Keep the native handle lifecycle lock short:
         # CREATE_NEW and immediate handle retention must be atomic with close,
@@ -485,6 +601,8 @@ class WindowsProtectedAssetsCharacterization:
         """
         from core import generation_storage_admission as admission
 
+        if getattr(self, "_profile_a_capacity_owner", None) is not None:
+            w._fail("profile_a_writer_handoff_required")
         if characterization is not True or disposable_opt_in is not True:
             w._fail("execution_unavailable")
         if type(admission_owner) is not admission.WindowsProtectedStorageAdmissionCharacterization:
@@ -587,6 +705,8 @@ class WindowsProtectedAssetsCharacterization:
         surrounded by native checks; remote operations also by freshness checks.
         No other file creation is permitted during this owner's stream attempt.
         """
+        if getattr(self, "_profile_a_capacity_owner", None) is not None:
+            w._fail("profile_a_writer_handoff_required")
         return self._stage_remote_image_for_characterization(
             envelope, prepared, remote, descriptor, stream_provider=stream_provider,
             host_freshness=host_freshness)
@@ -602,6 +722,8 @@ class WindowsProtectedAssetsCharacterization:
         """
         from core import generation_storage_admission as admission
 
+        if getattr(self, "_profile_a_capacity_owner", None) is not None:
+            w._fail("profile_a_writer_handoff_required")
         if characterization is not True or disposable_opt_in is not True:
             w._fail("execution_unavailable")
         if type(admission_owner) is not admission.WindowsProtectedStorageAdmissionCharacterization:
@@ -614,9 +736,50 @@ class WindowsProtectedAssetsCharacterization:
             host_freshness=host_freshness, admission_owner=admission_owner,
             operation_id=operation_id)
 
+    def _stage_remote_image_with_existing_reservation_for_characterization(
+            self, envelope, prepared, remote, descriptor, *, admission_owner,
+            operation, reservation, stream_provider, host_freshness,
+            on_write_admitted, before_create,
+            characterization=False, disposable_opt_in=False):
+        """Consume the exact original-host reservation through a borrowed writer.
+
+        This private seam is called only by the Profile A host integration.
+        Legacy admitted streaming continues to own its independent operation
+        and reservation path above.
+        """
+        from core import generation_storage_admission as admission
+
+        if characterization is not True or disposable_opt_in is not True:
+            w._fail("execution_unavailable")
+        if (type(admission_owner) is not admission.WindowsProtectedStorageAdmissionCharacterization
+                or self._profile_a_capacity_owner is not admission_owner
+                or self._owns_roots is not False or self._writable is not True):
+            w._fail("profile_a_writer_owner_mismatch")
+        if (type(remote.images) is not tuple or len(remote.images) != 1
+                or descriptor is not remote.images[0]):
+            w._fail("single_image_output_required")
+        if any(admission_owner._roots.get(purpose) is not self._roots.get(purpose)
+               for purpose in ("temporary_containment", "promoted_assets")):
+            w._fail("storage_root_owner_mismatch")
+        if not callable(on_write_admitted) or not callable(before_create):
+            w._fail("host_handoff_required")
+        if not admission_owner._staging_reservation_covers_for_characterization(
+                operation, reservation, "temporary_containment",
+                32 * 1024 * 1024, 1):
+            w._fail("staging_reservation_unavailable")
+        return self._stage_remote_image_for_characterization(
+            envelope, prepared, remote, descriptor,
+            stream_provider=stream_provider, host_freshness=host_freshness,
+            admission_owner=admission_owner,
+            capacity_operation=operation, capacity_reservation=reservation,
+            on_write_admitted=on_write_admitted, before_create=before_create,
+        )
+
     def _stage_remote_image_for_characterization(
             self, envelope, prepared, remote, descriptor, *, stream_provider,
-            host_freshness, admission_owner=None, operation_id=None):
+            host_freshness, admission_owner=None, operation_id=None,
+            capacity_operation=None, capacity_reservation=None,
+            on_write_admitted=None, before_create=None):
         try:
             if not is_owner_prepared_frozen_request(prepared):
                 raise ValueError()
@@ -631,11 +794,17 @@ class WindowsProtectedAssetsCharacterization:
         fresh = lambda: host_freshness(envelope, remote)
         attempt = (prepared.request_id, descriptor.identity)
         admitted = admission_owner is not None
+        reused_reservation = capacity_operation is not None or capacity_reservation is not None
+        if reused_reservation and (capacity_operation is None or capacity_reservation is None):
+            w._fail("staging_reservation_unavailable")
         capacity_lease = object() if admitted else None
-        operation = reservation = write_admission = None
+        operation = capacity_operation
+        reservation = capacity_reservation
+        write_admission = None
         published_image_key = None
         observed = None
         stream_freshness = None
+        create_attempted = False
         with self._lock:
             if not self._writable or self._uncertain:
                 w._fail("inspect_only_or_uncertain")
@@ -697,12 +866,20 @@ class WindowsProtectedAssetsCharacterization:
                         or self._used_bytes + upper_bound > self._limits.aggregate_bytes
                         or len(self._files) + len(self._unobserved_files) >= self._limits.images):
                     w._fail("storage_capacity")
-                operation = admission_owner.begin_operation_for_characterization(operation_id)
-                reservation = admission_owner.reserve_for_characterization(operation, {
-                    "temporary_containment": admission.CapacityEstimate(upper_bound, 1)})
+                if reused_reservation:
+                    if not admission_owner._staging_reservation_covers_for_characterization(
+                            operation, reservation, "temporary_containment", upper_bound, 1):
+                        w._fail("staging_reservation_unavailable")
+                else:
+                    operation = admission_owner.begin_operation_for_characterization(operation_id)
+                    reservation = admission_owner.reserve_for_characterization(operation, {
+                        "temporary_containment": admission.CapacityEstimate(upper_bound, 1)})
                 write_admission = admission_owner.admit_write_for_characterization(
                     operation, reservation)
                 check_capacity_admission()
+                if on_write_admitted is not None and on_write_admitted(operation, reservation,
+                                                                         write_admission) is not True:
+                    w._fail("host_freshness_lost")
                 with self._lock:
                     if (self._capacity_lease is not capacity_lease or self._revoking
                             or self._closed or self._invalid or self._uncertain):
@@ -718,10 +895,13 @@ class WindowsProtectedAssetsCharacterization:
             self._stream_fresh(fresh)
             check_capacity_admission()
             self._check()
+            if before_create is not None and before_create() is not True:
+                w._fail("host_freshness_lost")
             with self._lock:
                 if (self._closed or self._revoking or self._invalid or self._uncertain
                         or admitted and self._capacity_lease is not capacity_lease):
                     w._fail("storage_owner_unavailable")
+                create_attempted = True
                 handle = f.CreateFile(str(path), c.GENERIC_READ | c.GENERIC_WRITE | c.READ_CONTROL,
                     c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, w._security_attributes(root._api, root._user),
                     c.CREATE_NEW, c.FILE_ATTRIBUTE_NORMAL | 0x00200000, None)
@@ -848,15 +1028,28 @@ class WindowsProtectedAssetsCharacterization:
         except BaseException:
             if admitted:
                 if write_admission is not None:
-                    try:
-                        admission_owner.retain_uncertain_for_characterization(
-                            operation, write_admission)
-                    except ValueError:
-                        # The admission owner's close may already have retained
-                        # this exact active upper bound.
-                        pass
-                    with self._lock:
-                        self._uncertain = True
+                    if reused_reservation and not create_attempted:
+                        try:
+                            admission_owner.cancel_write_before_create_for_characterization(
+                                operation, write_admission)
+                        except ValueError:
+                            try:
+                                admission_owner.retain_uncertain_for_characterization(
+                                    operation, write_admission)
+                            except ValueError:
+                                pass
+                            with self._lock:
+                                self._uncertain = True
+                    else:
+                        try:
+                            admission_owner.retain_uncertain_for_characterization(
+                                operation, write_admission)
+                        except ValueError:
+                            # The admission owner's close may already have retained
+                            # this exact active upper bound.
+                            pass
+                        with self._lock:
+                            self._uncertain = True
                 elif reservation is not None:
                     try:
                         admission_owner.cancel_before_write_for_characterization(
@@ -944,6 +1137,8 @@ class WindowsProtectedAssetsCharacterization:
         receipt. Any incomplete or uncertain first attempt retains evidence and
         makes this owner inspect-only; no image or batch is retried or cleaned.
         """
+        if getattr(self, "_profile_a_capacity_owner", None) is not None:
+            w._fail("profile_a_writer_handoff_required")
         try:
             if (not is_owner_prepared_frozen_request(prepared)
                     or type(observations) is not tuple
@@ -1391,10 +1586,11 @@ class WindowsProtectedAssetsCharacterization:
                     except BaseException:
                         failed = True
                 for root in self._roots.values():
-                    try:
-                        root.close()
-                    except BaseException:
-                        failed = True
+                    if self._owns_roots:
+                        try:
+                            root.close()
+                        except BaseException:
+                            failed = True
                 if failed:
                     self._invalid = self._uncertain = True
                     w._fail("native_close_failed")

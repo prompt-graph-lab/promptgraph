@@ -1077,13 +1077,74 @@ Project. A safe pre-write refusal may cancel only its exact still
 reserved estimate; worker/host uncertainty or failed settlement retains
 capacity rather than authorizing replay.
 
-C2B-8D-19E-B remains the next boundary: it must accept only this exact
-owner-held evidence and consume the existing 19D reservation once, then
-revalidate the original host and four protected roots immediately before the
-existing protected stream writer's `CREATE_NEW`. It must enforce actual
-per-image/request byte limits while streaming, verify decoded image content,
-retain partial-write uncertainty, and avoid creating a second reservation or
-operation. Production root provisioning, production Worker/transport
-registration, real ComfyUI interoperability, Human Start/UI activation,
-Candidate/Project publication, restart authority, Recovery, retention and
-Discard remain separate NO-GO gates.
+C2B-8D-19E-B below adds the one-image protected Writer handoff. Production root
+provisioning, production Worker/transport registration, real ComfyUI
+interoperability, Human Start/UI activation, Candidate/Project publication,
+restart authority, Recovery, retention and Discard remain separate NO-GO
+gates.
+
+## C2B-8D-19E-B single-image protected Writer handoff
+
+The characterization-only runtime seam
+`ProjectAgentSessionRuntime.stage_generation_worker_remote_output_with_protected_writer_for_characterization()`
+connects the exact 19E-A Worker evidence and privately retained successful
+remote receipt to one protected staging stream. It requires the original
+Profile A Worker/storage integration, the same bound four-root capacity owner
+and scope-writer lease, the exact frozen request and one validated descriptor.
+Copied evidence, another integration's evidence, stale host/Claim/Project
+state, an inspect-only or foreign Writer, changed root identity, or a closed
+capacity scope is refused. More than one descriptor is rejected before
+`admit_write`, provider invocation or file creation.
+
+The disposable Asset Writer borrows the original `temporary_containment` and
+`promoted_assets` root objects. One Writer is pinned to one exact Worker/storage
+integration and may be reused for later single-image requests after each
+previous handoff settles; another Writer or integration cannot take over its
+retained contents. Its close does not close those app-owned root handles. The
+existing 19D reservation must cover 32 MiB and one staging entry. The handoff
+consumes that exact reservation and calls the existing
+`admit_write_for_characterization()` once; it creates no second operation or
+reservation. The resulting opaque write token remains inside the designated
+Writer. Its Profile A borrowed mode rejects direct legacy create and
+batch-commit entry points.
+
+The Writer uses the existing offline stream implementation and bounded
+descriptor lookup. It validates the declared and actual body lengths against
+the image, request and storage limits, decodes image data, hashes and rereads
+stored bytes, checks native identity/owner-only ACL, and requires exactly one
+new staging file in the ledger's inventory delta. Immediately before CREATE_NEW,
+capacity/root and Project-reference readiness are reobserved outside host
+locks; the exact write token and held scope-writer lease are checked at the
+short in-memory commit gate. Native readiness, inventory scans, stream and
+image observations happen outside Host, Job, Inbox and lifecycle locks.
+Original-host checks fence the one-shot handoff before admission, at CREATE_NEW
+authorization, during external stream callbacks, and before the count-only
+result is published.
+
+On success, the host returns only a bounded
+`protected_image_staged_non_authoritative` count observation. The exact
+`VerifiedProtectedImageObservation` and write token remain private to the
+original integration and Writer. This is local byte/image evidence plus
+capacity accounting only; it is not a `LocalOutputReceipt`, accepted batch,
+promotion receipt, Candidate admission or Project-save authorization. It does
+not prove authorship or enable any capability flag.
+
+Before a CREATE_NEW call is possible, the exact unused reservation or admitted
+write is canceled only when the native/capacity owner can prove cancellation.
+If CREATE_NEW may have been called, a failed stream, Writer close, host
+revocation, ACL/identity/content drift, or uncertain accounting retains the
+partial file/handle evidence and capacity. No automatic retry, overwrite,
+deletion or cleanup occurs. A successful pre-create cancellation remains a
+terminal cancellation even when an earlier host callback began the final
+authorization boundary.
+
+Tests characterize injected stream bytes against disposable Windows-native
+roots. They do not exercise a live ComfyUI endpoint or production Worker.
+Multi-image atomic staging remains the next bounded storage step; after that,
+separate gates remain for production root provisioning, cross-process capacity
+policy, live HTTP interoperability, production Worker/original-host lifecycle,
+explicit Human Start/UI activation, durable Journal ordering and restart
+inspection, protected promotion, Candidate publication and Project save,
+Recovery, retention and Discard. Execution, protected storage, promotion,
+Candidate publication and Project-save flags remain false; `authorship` stays
+unverified.

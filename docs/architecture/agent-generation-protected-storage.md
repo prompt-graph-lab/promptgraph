@@ -1741,13 +1741,76 @@ latest history completion. Close, invalidation, stale host state or completion
 replacement prevents evidence publication. A provably unused reservation may
 be canceled on a definite refusal; uncertain evidence remains retained.
 
-19E-A never calls `admit_write`, issues a writer token, downloads or writes an
-image, changes Journal state, promotes assets, registers Candidates, saves a
-Project, or reconstructs authority after restart. The legacy five-purpose
-binding and its owners remain unchanged. The next 19E-B boundary must accept
-only this exact evidence from its issuing integration, reuse its same live
-19D reservation rather than reserve twice, recheck host/root identity and ACL
-immediately before `CREATE_NEW`, enforce actual streamed byte limits, verify
-decoded image content, and retain any partial/uncertain file evidence without
-retry or cleanup. All production capability flags remain false and
+19E-A itself never calls `admit_write`, issues a writer token, downloads or
+writes an image, changes Journal state, promotes assets, registers Candidates,
+saves a Project, or reconstructs authority after restart. The legacy
+five-purpose binding and its owners remain unchanged. C2B-8D-19E-B below adds
+the first one-image Writer handoff; multi-image atomic staging remains a
+separate boundary. All production capability flags remain false and
 `authorship=unverified`.
+
+## C2B-8D-19E-B single-image protected Writer handoff
+
+`ProjectAgentSessionRuntime.stage_generation_worker_remote_output_with_protected_writer_for_characterization()`
+accepts only the exact `GenerationWorkerRemoteOutputWriterEvidence` privately
+retained by its issuing Profile A Worker/storage integration. The integration
+also retains the exact successful `RemoteOutputReceipt`, frozen request,
+accepted prompt identity, original host/Claim binding, 19D capacity operation
+and reservation. The request must contain exactly one validated descriptor;
+multiple descriptors are refused before write admission or file creation.
+
+The host creates a distinct disposable Asset Writer that borrows the exact
+`temporary_containment` and `promoted_assets` root objects from the same
+four-root Profile A capacity owner. It does not upgrade an inspect-only owner
+or capture replacement roots. One Writer is pinned to the exact original-host
+Worker/storage integration and may be reused for later single-image requests
+after each prior handoff settles; another Writer or integration cannot take
+over its retained contents. Borrowed Writers close only their own file handles
+and never close the application-owned roots. Their direct legacy image
+creation and batch-commit entry points refuse use; the one-shot host handoff
+uses a private stream path only.
+
+The Writer consumes the existing 19D `temporary_containment` reservation. It
+does not begin another capacity operation or reserve a second estimate. For
+this one-image contract the existing reservation must cover the fixed 32 MiB
+image maximum and one entry. The existing admission owner refreshes actual
+root/inventory state and issues its normal `admit_write` token; the token stays
+private to the borrowed Writer. The explicit stream provider receives only the
+existing bounded `/view` lookup derived from the frozen request and exact
+remote descriptor.
+
+Immediately before the host's one-shot CREATE_NEW authorization boundary,
+capacity/root and Project-reference readiness are reobserved outside host
+locks; the exact write token and held scope-writer lease are checked at the
+short in-memory commit gate together with Worker evidence, Claim and host
+freshness. The existing Writer rechecks native root/file identity and ACL
+outside Host, Job, Inbox and lifecycle locks. Inventory scans, stream callbacks
+and image verification also run outside those locks. The Writer enforces the
+32 MiB image limit and 128 MiB request limit while streaming, retains the
+native handle, decodes the image, checks actual byte count and SHA-256,
+rereads stored bytes, and submits the exact one-file inventory delta to the
+same capacity ledger.
+
+A successful in-memory result is only a count-only
+`protected_image_staged_non_authoritative` observation. The original
+integration privately retains the exact verified image observation, and the
+capacity ledger records actual bytes and one entry. No local receipt, batch
+receipt, Candidate-ready result, promotion, Candidate, Project-save or Journal
+authority is issued. The observation does not authenticate authorship.
+
+Before CREATE_NEW is attempted, the exact reservation/write token is canceled
+only when the existing ledger confirms cancellation. Once CREATE_NEW may have
+been called, incomplete streams, close, host invalidation, native drift or
+accounting failure retain the file/handle evidence and conservative capacity;
+there is no retry, overwrite, deletion or automatic cleanup. A writer closed
+after CREATE_NEW does not close the borrowed app-owned roots. A verified
+pre-create cancellation remains canceled even if an earlier in-memory
+authorization callback had begun.
+
+This slice is characterization-only. The native tests use disposable roots
+and injected stream bytes, not a live ComfyUI server. It does not prove
+production root provisioning, disk-space guarantees, power-loss durability,
+cross-process byte quotas, process-restart authority, multi-image atomicity,
+production transport/Worker registration, Human Start, promotion, Candidate
+publication, Project save, Recovery, retention or Discard. Every production
+capability flag remains false and `authorship=unverified`.

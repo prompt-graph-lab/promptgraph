@@ -1,6 +1,7 @@
 """C2B-8D-19B worker/storage association; offline characterization only."""
 
 import json
+import io
 import threading
 import uuid
 from dataclasses import replace
@@ -341,7 +342,7 @@ def _profile_a_history_observed(*, descriptor_count=1, estimate_bytes=32 * 1024 
             history_lease, history, observed_status, prompt_id)
 
 
-def _ready_generation_at_project_path(project_path):
+def _ready_generation_at_project_path(project_path, *, run_count=1):
     from core import agent_facade
     from ui.agent_generation_executor_handoff import (
         capture_executor_human_start_for_characterization, handoff_generation_for_characterization,
@@ -373,10 +374,11 @@ def _ready_generation_at_project_path(project_path):
         epoch,
     ]
     preview = agent_facade.preview_generation(
-        state["project"], "scene", run_count=1,
+        state["project"], "scene", run_count=run_count,
         host_context_provider=provider, observation_binding=binding,
     )
-    args = {"scene_id": "scene", "run_count": 1, "expected_plan_id": preview["plan_id"]}
+    args = {"scene_id": "scene", "run_count": run_count,
+            "expected_plan_id": preview["plan_id"]}
     assert send(runtime, route, epoch, state, args, provider=provider) == "completed"
     route.consume_reply(epoch)
     pending = runtime.mailbox.inspect_review_custody(runtime.generation_review_custodian)
@@ -1980,3 +1982,738 @@ def test_reentrant_runtime_close_from_fake_transport_does_not_join_worker_or_dea
     assert closed is not None
     assert closed.lifecycle_state == "uncertain"
     assert closed.retained_uncertain_operations == 1
+
+
+def _native_profile_a_writer_handoff(
+        roots, capacity, reference, project_path, *, descriptor_count=1,
+        run_count=1, request_index=0):
+    from core import generation_windows_protected_assets as assets
+
+    runtime, _route, _state, lifecycle = _ready_generation_at_project_path(
+        project_path, run_count=run_count,
+    )
+    prompt_id = str(uuid.uuid4())
+    worker = _worker(prompt_id=prompt_id)
+    try:
+        assert runtime.bind_generation_profile_a_storage_for_characterization(
+            capacity, reference,
+        ) == "matched_reference_only"
+        assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+            worker, roots, capacity, reference,
+        ) == "bound_non_executing"
+        assert worker.start_for_characterization().state == "running"
+        prepared = _prepared(lifecycle, request_index)
+        submission_correlation = runtime.generation_worker_http_correlation_for_characterization(
+            request_index, kind="submission",
+        )
+        submission_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+            "submission", prepared, None, submission_correlation,
+        )
+        assert status == "admitted_non_executing"
+        estimate = CapacityEstimate(32 * 1024 * 1024 * descriptor_count, descriptor_count)
+        preadmission, status = runtime.pre_admit_generation_worker_staging_for_characterization(
+            submission_lease, estimate,
+        )
+        assert status == "pre_admitted_non_authoritative"
+        submission = worker.perform_for_characterization(
+            "submission", prepared, None, submission_correlation,
+        )
+        assert runtime.observe_generation_worker_http_result_for_characterization(
+            submission_lease, submission,
+        ) == "observed_non_authoritative"
+
+        worker._test_history_body_ref[0] = _history_json_for(
+            prepared, prompt_id, descriptor_count=descriptor_count,
+        )
+        history_correlation = runtime.generation_worker_http_correlation_for_characterization(
+            request_index, kind="history", prompt_id=prompt_id,
+        )
+        history_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+            "history", prepared, prompt_id, history_correlation,
+        )
+        assert status == "admitted_non_executing"
+        history = worker.perform_for_characterization(
+            "history", prepared, prompt_id, history_correlation,
+        )
+        assert runtime.observe_generation_worker_http_result_for_characterization(
+            history_lease, history,
+        ) == "observed_non_authoritative"
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+        assert evidence.descriptor_count == descriptor_count
+        attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[request_index]
+        writer = assets.WindowsProtectedAssetsCharacterization.borrow_profile_a_writer_for_characterization(
+            capacity, characterization=True, disposable_opt_in=True,
+        )
+        return runtime, lifecycle, worker, prepared, preadmission, evidence, attempt, writer
+    except BaseException:
+        runtime.close()
+        raise
+
+
+class _WriterDownloadStream:
+    def __init__(self, data, *, declared_length=None, on_call=None, on_read=None, on_close=None):
+        from core.comfy_output_containment import DownloadStream
+
+        self._data = io.BytesIO(data)
+        self._length = len(data) if declared_length is None else declared_length
+        self._on_call, self._on_read, self._on_close = on_call, on_read, on_close
+        self.lookups = []
+        self.closed = 0
+        self._stream_type = DownloadStream
+
+    def __call__(self, lookup):
+        self.lookups.append(lookup)
+        if self._on_call is not None:
+            self._on_call()
+        return self._stream_type(self._length, self.read, self.close)
+
+    def read(self, size):
+        if self._on_read is not None:
+            self._on_read()
+        return self._data.read(size)
+
+    def close(self):
+        self.closed += 1
+        if self._on_close is not None:
+            self._on_close()
+        self._data.close()
+
+
+def test_profile_a_single_image_writer_handoff_reuses_exact_reservation_and_is_non_authoritative(
+        native_profile_a_worker_storage, monkeypatch):
+    import hashlib
+
+    from core import generation_windows_protected_storage as windows
+    from test_comfy_output_containment import image_bytes
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedWriterObservation,
+    )
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, lifecycle, _worker_instance, prepared, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    integration = lifecycle._worker_storage_integration
+    operation, reservation = attempt.capacity_operation, attempt.reservation
+    data = image_bytes()
+    provider = _WriterDownloadStream(data)
+    operation_keys = set(capacity._ledger._operations)
+    reservation_keys = set(capacity._ledger._reservations)
+    original_capacity_readiness = capacity.readiness
+    original_project_readiness = reference.readiness
+    original_writer_readiness = writer.readiness
+    readiness_calls = []
+
+    def assert_host_locks_released():
+        assert not runtime._publication_gate.locked()
+        acquired = lifecycle._lock.acquire(blocking=False)
+        assert acquired
+        if acquired:
+            lifecycle._lock.release()
+        assert not runtime.generation_jobs._lock._is_owned()
+        assert not runtime._generation_executor_inbox._lock._is_owned()
+
+    def capacity_readiness():
+        assert_host_locks_released()
+        readiness_calls.append("capacity")
+        return original_capacity_readiness()
+
+    def project_readiness():
+        assert_host_locks_released()
+        readiness_calls.append("project")
+        return original_project_readiness()
+
+    def writer_readiness():
+        assert_host_locks_released()
+        readiness_calls.append("writer")
+        return original_writer_readiness()
+
+    monkeypatch.setattr(capacity, "readiness", capacity_readiness)
+    monkeypatch.setattr(reference, "readiness", project_readiness)
+    monkeypatch.setattr(writer, "readiness", writer_readiness)
+    provider._on_call = provider._on_read = provider._on_close = assert_host_locks_released
+    try:
+        assert writer._roots["temporary_containment"] is roots["temporary_containment"]
+        assert writer._roots["promoted_assets"] is roots["promoted_assets"]
+        assert writer._owns_roots is False
+        assert writer._profile_a_capacity_owner is capacity
+        with pytest.raises(ValueError, match="profile_a_writer_handoff_required"):
+            writer.create_image_for_characterization(
+                "temporary_containment", data, extension="png",
+            )
+        assert not list(roots["temporary_containment"]._path.iterdir())
+
+        observation, status = runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        )
+        assert type(observation) is GenerationWorkerProtectedWriterObservation, status
+        assert status == "protected_image_staged_non_authoritative"
+        assert (observation.request_index, observation.verified_image_count,
+                observation.capacity_accounted) == (0, 1, True)
+        assert observation.write_authorized is False
+        assert observation.execution_available is False
+        assert observation.protected_storage_available is False
+        assert observation.promotion_available is False
+        assert observation.candidate_publication_allowed is False
+        assert observation.project_save_allowed is False
+        assert observation.authorship == "unverified"
+        assert not ({"image", "path", "descriptor", "receipt", "write_admission"}
+                    & set(observation.__dataclass_fields__))
+
+        remote = attempt.remote_receipt
+        assert provider.lookups[0].descriptor_identity == remote.images[0].identity
+        assert provider.closed == 1
+        assert set(capacity._ledger._operations) == operation_keys
+        assert set(capacity._ledger._reservations) == reservation_keys
+        assert len(operation_keys) == len(reservation_keys) == 1
+        assert capacity._ledger._operations[operation]["state"] == "completed"
+        assert capacity._ledger._reservations[reservation]["state"] == "completed"
+        assert capacity._ledger._reservations[reservation]["write"] is attempt.writer_admission
+        assert capacity._ledger._active_write is None
+        assert attempt.writer_handoff_state == "staged_non_authoritative"
+        assert attempt.writer_image_observation is writer._stream_images[
+            (prepared.request_id, remote.images[0].identity)
+        ]
+
+        image = attempt.writer_image_observation.image
+        path, handle, identity, acl = writer._files[(image.purpose, image.storage_identity)]
+        assert path.parent == roots["temporary_containment"]._path
+        assert path.read_bytes() == data
+        assert image.content_sha256 == hashlib.sha256(data).hexdigest()
+        assert image.byte_count == len(data)
+        assert windows._identity(handle) == identity == windows._ordinary(path, directory=False)
+        assert windows._acl(handle, roots["temporary_containment"]._api,
+                            roots["temporary_containment"]._user) == acl[0]
+        assert image.image_format == "PNG"
+        assert not list(roots["promoted_assets"]._path.iterdir())
+        row = next(item for item in capacity.readiness()["roots"]
+                   if item["purpose"] == "temporary_containment")
+        assert (row["reserved_bytes"], row["reserved_entries"],
+                row["observed_used_bytes"], row["observed_used_entries"],
+                row["retained_uncertain_bytes"], row["retained_uncertain_entries"]) == (
+                    0, 0, len(data), 1, 0, 0,
+                )
+        assert readiness_calls.count("capacity") >= 2
+        assert readiness_calls.count("project") >= 2
+        assert readiness_calls.count("writer") >= 2
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "writer_handoff_evidence_unavailable")
+        assert len(provider.lookups) == 1
+    finally:
+        writer.close()
+        assert all(root._closed is False for root in roots.values())
+        assert capacity.readiness()["status"] == "characterization_only"
+        runtime.close()
+
+
+def test_profile_a_writer_handoff_reuses_one_borrowed_owner_for_sequential_requests(
+        native_profile_a_worker_storage):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, lifecycle, worker, _prepared_request, _preadmission, evidence0, attempt0, writer = (
+        _native_profile_a_writer_handoff(
+            roots, capacity, reference, project_path, run_count=2,
+        )
+    )
+    try:
+        first, status = runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence0, writer, stream_provider=_WriterDownloadStream(image_bytes()),
+            characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_image_staged_non_authoritative"
+        assert first.request_index == 0
+        assert attempt0.writer_handoff_state == "staged_non_authoritative"
+
+        prepared1 = _prepared(lifecycle, 1)
+        submission_correlation = runtime.generation_worker_http_correlation_for_characterization(
+            1, kind="submission",
+        )
+        submission_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+            "submission", prepared1, None, submission_correlation,
+        )
+        assert status == "admitted_non_executing"
+        preadmission1, status = runtime.pre_admit_generation_worker_staging_for_characterization(
+            submission_lease, CapacityEstimate(32 * 1024 * 1024, 1),
+        )
+        assert status == "pre_admitted_non_authoritative"
+        prompt_id1 = str(uuid.uuid4())
+        worker._submission_transport._wire_factory = lambda _origin, _timeout: _Connection(
+            prompt_id=prompt_id1, history_body_ref=worker._test_history_body_ref,
+        )
+        submission1 = worker.perform_for_characterization(
+            "submission", prepared1, None, submission_correlation,
+        )
+        submission_status = runtime.observe_generation_worker_http_result_for_characterization(
+            submission_lease, submission1,
+        )
+        assert submission_status == "observed_non_authoritative", (
+            submission_status, submission1.outcome, worker.observation_for_characterization(),
+        )
+
+        worker._test_history_body_ref[0] = _history_json_for(prepared1, prompt_id1)
+        history_correlation = runtime.generation_worker_http_correlation_for_characterization(
+            1, kind="history", prompt_id=prompt_id1,
+        )
+        history_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+            "history", prepared1, prompt_id1, history_correlation,
+        )
+        assert status == "admitted_non_executing"
+        history1 = worker.perform_for_characterization(
+            "history", prepared1, prompt_id1, history_correlation,
+        )
+        assert runtime.observe_generation_worker_http_result_for_characterization(
+            history_lease, history1,
+        ) == "observed_non_authoritative"
+        evidence1, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission1,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+
+        attempt1 = lifecycle._worker_storage_integration._storage_preadmission_attempts[1]
+        assert attempt1.reservation is not attempt0.reservation
+        assert attempt1.capacity_operation is not attempt0.capacity_operation
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+        )
+        alternate_writer = WindowsProtectedAssetsCharacterization.borrow_profile_a_writer_for_characterization(
+            capacity, characterization=True, disposable_opt_in=True,
+        )
+        alternate_provider = _WriterDownloadStream(image_bytes())
+        try:
+            assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+                evidence1, alternate_writer, stream_provider=alternate_provider,
+                characterization=True, disposable_opt_in=True,
+            ) == (None, "writer_handoff_owner_mismatch")
+            assert alternate_writer._profile_a_handoff_integration is None
+            assert alternate_provider.lookups == []
+            assert len(writer._files) == 1
+        finally:
+            alternate_writer.close()
+        second, status = runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence1, writer, stream_provider=_WriterDownloadStream(image_bytes()),
+            characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_image_staged_non_authoritative"
+        assert second.request_index == 1
+        assert attempt1.writer_handoff_state == "staged_non_authoritative"
+        assert writer._profile_a_handoff_integration is lifecycle._worker_storage_integration
+        assert len(writer._files) == len(writer._images) == 2
+        assert len(capacity._ledger._reservations) == 2
+        assert all(record["state"] == "completed"
+                   for record in capacity._ledger._reservations.values())
+    finally:
+        writer.close()
+        assert all(root._closed is False for root in roots.values())
+        runtime.close()
+
+
+def test_profile_a_writer_handoff_refuses_multiple_descriptors_before_admission(
+        native_profile_a_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(
+            roots, capacity, reference, project_path, descriptor_count=2,
+        )
+    )
+    provider = _WriterDownloadStream(b"unused")
+    try:
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "single_image_output_required")
+        assert provider.lookups == []
+        assert writer._stream_attempts == set()
+        assert not writer._files and not writer._unobserved_files
+        assert capacity._ledger._active_write is None
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "cancelled"
+        assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "cancelled"
+        assert capacity._ledger._reserved["temporary_containment"] == [0, 0]
+        assert capacity._ledger._uncertain["temporary_containment"] == [0, 0]
+        assert not list(roots["temporary_containment"]._path.iterdir())
+    finally:
+        writer.close()
+        runtime.close()
+
+
+def test_profile_a_writer_handoff_rejects_copied_evidence_but_keeps_exact_evidence_usable(
+        native_profile_a_worker_storage):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, _attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    provider = _WriterDownloadStream(image_bytes())
+    try:
+        for forged in (replace(evidence), replace(evidence, request_index=1),
+                       replace(evidence, descriptor_count=2)):
+            assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+                forged, writer, stream_provider=provider,
+                characterization=True, disposable_opt_in=True,
+            ) == (None, "writer_handoff_evidence_unavailable")
+        assert provider.lookups == []
+        assert not writer._files
+        observation, status = runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_image_staged_non_authoritative"
+        assert observation.write_authorized is False
+        assert len(provider.lookups) == 1
+    finally:
+        writer.close()
+        runtime.close()
+
+
+def test_profile_a_writer_handoff_rejects_foreign_borrowed_writer_owner(
+        native_profile_a_worker_storage, tmp_path):
+    from core import generation_windows_protected_assets as assets
+    from core import generation_windows_protected_storage as windows
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, _attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    api = windows._api()
+    user = windows._current_user(api)
+    foreign_scope = tmp_path / "foreign-profile-a-scope"
+    api[2].CreateDirectory(str(foreign_scope), windows._security_attributes(api, user))
+    foreign_roots = {}
+    foreign_capacity = None
+    foreign_writer = None
+    provider = _WriterDownloadStream(image_bytes())
+    try:
+        for purpose in _PROFILE_A_PURPOSES:
+            path = foreign_scope / purpose
+            api[2].CreateDirectory(str(path), windows._security_attributes(api, user))
+            foreign_roots[purpose] = windows.WindowsProtectedRootCharacterization.capture_for_characterization(
+                str(foreign_scope), str(path), purpose,
+                characterization=True, disposable_opt_in=True,
+            )
+        foreign_capacity = WindowsProtectedStorageAdmissionCharacterization.capture_profile_a_root_set_for_characterization(
+            str(foreign_scope), foreign_roots,
+            characterization=True, disposable_opt_in=True,
+        )
+        foreign_writer = assets.WindowsProtectedAssetsCharacterization.borrow_profile_a_writer_for_characterization(
+            foreign_capacity, characterization=True, disposable_opt_in=True,
+        )
+        attempt = _lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, foreign_writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "writer_handoff_root_mismatch")
+        assert provider.lookups == []
+        assert foreign_capacity._ledger._reservations == {}
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "reserved"
+        assert not list(foreign_roots["temporary_containment"]._path.iterdir())
+
+        observation, status = runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_image_staged_non_authoritative"
+        assert observation.verified_image_count == 1
+        assert len(provider.lookups) == 1
+    finally:
+        if foreign_writer is not None:
+            foreign_writer.close()
+        if foreign_capacity is not None:
+            foreign_capacity.close()
+        for root in foreign_roots.values():
+            root.close()
+        writer.close()
+        runtime.close()
+
+
+def test_profile_a_writer_handoff_cancels_exact_admission_on_host_revocation_before_create(
+        native_profile_a_worker_storage, monkeypatch):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    original_admit = capacity.admit_write_for_characterization
+    provider = _WriterDownloadStream(image_bytes())
+
+    def admit_then_revoke(operation, reservation):
+        token = original_admit(operation, reservation)
+        lifecycle.close()
+        return token
+
+    monkeypatch.setattr(capacity, "admit_write_for_characterization", admit_then_revoke)
+    try:
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_writer_stage_failed")
+        assert attempt.writer_create_boundary_crossed is False
+        assert provider.lookups == []
+        assert not writer._files and not writer._unobserved_files
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "cancelled"
+        assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "cancelled"
+        assert capacity._ledger._active_write is None
+        assert capacity._ledger._reserved["temporary_containment"] == [0, 0]
+        assert capacity._ledger._uncertain["temporary_containment"] == [0, 0]
+        assert attempt.state == "cancelled"
+        assert attempt.writer_handoff_state == "refused"
+        assert not writer._uncertain
+        assert not list(roots["temporary_containment"]._path.iterdir())
+    finally:
+        writer.close()
+        runtime.close()
+
+
+def test_profile_a_writer_close_before_create_cancels_unused_admission(
+        native_profile_a_worker_storage, monkeypatch):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    original_admit = capacity.admit_write_for_characterization
+    close_started = threading.Event()
+    close_thread = None
+    provider = _WriterDownloadStream(image_bytes())
+
+    def admit_then_start_close(operation, reservation):
+        nonlocal close_thread
+        token = original_admit(operation, reservation)
+
+        def close_writer():
+            close_started.set()
+            writer.close()
+
+        close_thread = threading.Thread(target=close_writer)
+        close_thread.start()
+        assert close_started.wait(5)
+        assert writer._revoking_event.wait(5)
+        return token
+
+    monkeypatch.setattr(capacity, "admit_write_for_characterization", admit_then_start_close)
+    try:
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_writer_stage_failed")
+        close_thread.join(5)
+        assert not close_thread.is_alive()
+        assert writer._closed is True
+        assert attempt.writer_create_boundary_crossed is False
+        assert provider.lookups == []
+        assert not writer._files and not writer._unobserved_files
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "cancelled"
+        assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "cancelled"
+        assert capacity._ledger._active_write is None
+        assert capacity._ledger._uncertain["temporary_containment"] == [0, 0]
+        assert all(root._closed is False for root in roots.values())
+    finally:
+        if close_thread is not None:
+            close_thread.join(5)
+        if not writer._closed:
+            writer.close()
+        runtime.close()
+
+
+def test_profile_a_scope_lease_loss_before_create_cancels_unused_admission(
+        native_profile_a_worker_storage, monkeypatch):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    original_project_readiness = reference.readiness
+    calls = 0
+    provider = _WriterDownloadStream(image_bytes())
+
+    def lose_lease_on_final_project_observation():
+        nonlocal calls
+        calls += 1
+        view = original_project_readiness()
+        if calls == 2:
+            capacity._scope_lease._state = "released"
+        return view
+
+    monkeypatch.setattr(reference, "readiness", lose_lease_on_final_project_observation)
+    try:
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_writer_stage_failed")
+        assert calls == 2
+        assert attempt.writer_create_boundary_crossed is False
+        assert provider.lookups == []
+        assert not writer._files and not writer._unobserved_files
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "cancelled"
+        assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "cancelled"
+        assert capacity._ledger._active_write is None
+        assert capacity._ledger._uncertain["temporary_containment"] == [0, 0]
+    finally:
+        writer.close()
+        runtime.close()
+
+
+def test_profile_a_capacity_close_after_write_admission_retains_without_create(
+        native_profile_a_worker_storage, monkeypatch):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    original_admit = capacity.admit_write_for_characterization
+    provider = _WriterDownloadStream(image_bytes())
+
+    def admit_then_close(operation, reservation):
+        token = original_admit(operation, reservation)
+        capacity.close()
+        return token
+
+    monkeypatch.setattr(capacity, "admit_write_for_characterization", admit_then_close)
+    try:
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_writer_stage_failed")
+        assert attempt.writer_create_boundary_crossed is False
+        assert provider.lookups == []
+        assert not writer._files and not writer._unobserved_files
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "retained_uncertain"
+        assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "retained_uncertain"
+        assert capacity._ledger._active_write is None
+        assert capacity._ledger._uncertain["temporary_containment"] == [32 * 1024 * 1024, 1]
+        assert attempt.writer_handoff_state == "retained_uncertain"
+    finally:
+        writer.close()
+        runtime.close()
+
+
+@pytest.mark.parametrize("failure", ["short", "oversized", "decode", "readback"])
+def test_profile_a_writer_stream_failure_retains_file_and_exact_capacity(
+        native_profile_a_worker_storage, failure):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    data = image_bytes() if failure != "decode" else b"not an image"
+    declared_length = len(data) + 1 if failure == "short" else (
+        32 * 1024 * 1024 + 1 if failure == "oversized" else len(data)
+    )
+    provider = _WriterDownloadStream(data, declared_length=declared_length)
+
+    def mutate_after_sync(boundary):
+        if boundary == "after_file_sync" and failure == "readback":
+            path = next(iter(writer._files.values()))[0]
+            path.write_bytes(b"changed after flush")
+
+    writer._fault = mutate_after_sync
+    try:
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_writer_stage_failed")
+        assert provider.closed == 1
+        assert writer._uncertain is True
+        assert attempt.writer_handoff_state == "retained_uncertain"
+        assert attempt.evidence_state == "uncertain"
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "retained_uncertain"
+        assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "retained_uncertain"
+        assert capacity._ledger._uncertain["temporary_containment"] == [32 * 1024 * 1024, 1]
+        files = list(roots["temporary_containment"]._path.iterdir())
+        assert len(files) == 1
+        if failure == "oversized":
+            assert files[0].read_bytes() == b""
+        assert provider.lookups[0].descriptor_identity == attempt.remote_receipt.images[0].identity
+        assert len(writer._stream_attempts) == 1
+        assert runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        ) == (None, "writer_handoff_evidence_unavailable")
+        assert len(provider.lookups) == 1
+    finally:
+        writer.close()
+        runtime.close()
+
+
+def test_profile_a_writer_close_after_create_retains_native_file_and_capacity(
+        native_profile_a_worker_storage):
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(roots, capacity, reference, project_path)
+    )
+    created = threading.Event()
+    continue_writer = threading.Event()
+    close_finished = threading.Event()
+    stream_provider = _WriterDownloadStream(image_bytes())
+    stage_result = []
+    close_errors = []
+
+    def pause_after_create(boundary):
+        if boundary == "after_file_create":
+            created.set()
+            assert continue_writer.wait(5)
+
+    writer._fault = pause_after_create
+
+    def stage():
+        stage_result.append(runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=stream_provider,
+            characterization=True, disposable_opt_in=True,
+        ))
+
+    def close_writer():
+        try:
+            writer.close()
+        except BaseException as exc:
+            close_errors.append(exc)
+        finally:
+            close_finished.set()
+
+    stage_thread = threading.Thread(target=stage)
+    close_thread = None
+    try:
+        stage_thread.start()
+        assert created.wait(5)
+        close_thread = threading.Thread(target=close_writer)
+        close_thread.start()
+        assert writer._revoking_event.wait(5)
+        continue_writer.set()
+        stage_thread.join(5)
+        close_thread.join(5)
+        assert not stage_thread.is_alive()
+        assert not close_thread.is_alive()
+        assert close_finished.is_set() and not close_errors
+        assert stage_result == [(None, "protected_writer_stage_failed")]
+        assert stream_provider.lookups == []
+        assert writer._closed and writer._uncertain
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "retained_uncertain"
+        assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "retained_uncertain"
+        assert capacity._ledger._active_write is None
+        assert capacity._ledger._reserved["temporary_containment"] == [0, 0]
+        assert capacity._ledger._uncertain["temporary_containment"] == [32 * 1024 * 1024, 1]
+        files = list(roots["temporary_containment"]._path.iterdir())
+        assert len(files) == 1
+        assert files[0].read_bytes() == b""
+        assert all(root._closed is False for root in roots.values())
+    finally:
+        continue_writer.set()
+        stage_thread.join(5)
+        if close_thread is not None:
+            close_thread.join(5)
+        if not writer._closed:
+            writer.close()
+        runtime.close()

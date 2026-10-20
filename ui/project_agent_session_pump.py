@@ -902,6 +902,241 @@ class ProjectAgentSessionRuntime:
         )
         return None, status
 
+    def stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            self, evidence, writer_owner, *, stream_provider,
+            characterization=False, disposable_opt_in=False):
+        """Stage exactly one 19E-A image through the original 19D reservation.
+
+        The result is a count-only non-authoritative observation. The image,
+        descriptor, write token, native identity and bytes remain retained by
+        their issuing owners and are never returned as publication authority.
+        """
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+        )
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerRemoteOutputWriterEvidence,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if (type(evidence) is not GenerationWorkerRemoteOutputWriterEvidence
+                or type(writer_owner) is not WindowsProtectedAssetsCharacterization
+                or not callable(stream_provider)):
+            return None, "writer_handoff_arguments_invalid"
+
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+                                if lifecycle_snapshot is not None else None)
+        if (integration_snapshot is None or integration_snapshot._profile_a is not True
+                or type(integration_snapshot._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "profile_a_writer_handoff_unavailable"
+
+        captured = {}
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not lifecycle_snapshot):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_handoff():
+                    started, status = integration_snapshot._begin_single_image_writer_handoff_locked(
+                        lifecycle, evidence, writer_owner,
+                    )
+                    if started is not None:
+                        attempt = started[0]
+                        captured.update({
+                            "lifecycle": lifecycle,
+                            "integration": integration_snapshot,
+                            "capacity_owner": integration_snapshot._capacity_owner,
+                            "project_reference": integration_snapshot._project_reference,
+                            "purpose_roots": integration_snapshot._purpose_roots,
+                            "attempt": attempt,
+                            "marker": started[1],
+                            "envelope": started[2],
+                            "prepared": started[3],
+                            "remote": started[4],
+                            "descriptor": started[5] if len(started) > 5 else None,
+                            "operation": started[-2],
+                            "reservation": started[-1],
+                            "evidence": evidence,
+                            "writer_owner": writer_owner,
+                            "generation": lifecycle._generation,
+                            "pairing_generation": lifecycle._pairing_generation,
+                        })
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation, on_current=begin_handoff,
+                )
+                if start_result is False:
+                    self._retire_generation_original_host_lifecycle_locked(
+                        "host_evidence_unavailable",
+                    )
+                    return None, "host_evidence_unavailable"
+                if not type(start_result) is tuple:
+                    return None, "host_evidence_unavailable"
+                started, status = start_result
+                if started is None:
+                    return None, status
+
+        integration = captured["integration"]
+        attempt, marker = captured["attempt"], captured["marker"]
+        if status == "single_image_output_required":
+            integration._cancel_staging_preadmission_attempt(attempt)
+            return None, status
+        if status != "handoff_claimed" or marker is None:
+            return None, status
+
+        def fail_before_or_after_write(reason, *, uncertain=False):
+            if not uncertain:
+                integration._settle_cancelled_single_image_writer_handoff(
+                    attempt, marker, writer_owner,
+                )
+            state = integration._fail_single_image_writer_handoff(
+                attempt, marker, uncertain=uncertain,
+            )
+            if state == "writer_handoff_stale":
+                return None, reason
+            return None, reason
+
+        try:
+            # Root/ACL/inventory and selected-Project reference observations
+            # run outside every host, Job, Inbox, lifecycle and Worker lock.
+            capacity_view = captured["capacity_owner"].readiness()
+            project_view = captured["project_reference"].readiness()
+            writer_view = writer_owner.readiness()
+        except Exception:
+            integration._cancel_staging_preadmission_attempt(attempt)
+            return fail_before_or_after_write("writer_handoff_storage_observation_unavailable")
+
+        if (capacity_view.get("status") != "characterization_only"
+                or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                or capacity_view.get("scope_writer_lease") != "held"
+                or project_view.get("status") != "read_only_reference_observed"
+                or writer_view.get("asset_observation") != "observed"
+                or not writer_owner._is_fresh_profile_a_writer_for_handoff(
+                    captured["capacity_owner"], captured["purpose_roots"],
+                    integration=integration,
+                )):
+            integration._cancel_staging_preadmission_attempt(attempt)
+            return fail_before_or_after_write("writer_handoff_storage_observation_unavailable")
+
+        def with_current_host(on_current):
+            with self._publication_gate:
+                if (self._closed
+                        or self._generation_original_host_lifecycle is not captured["lifecycle"]):
+                    return False
+                with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                    if lifecycle is not captured["lifecycle"]:
+                        return False
+                    result = self._generation_original_host_evidence_current_locked(
+                        lifecycle, captured["pairing_generation"],
+                        on_current=on_current,
+                    )
+                    return result is True
+
+        def current_handoff(*args):
+            if args and (args[0] is not captured["envelope"]
+                         or (len(args) > 1 and args[1] is not captured["remote"])):
+                return False
+            return with_current_host(lambda: integration._writer_handoff_matches_locked(
+                captured["lifecycle"], attempt, marker, evidence, writer_owner,
+                states={"in_progress", "write_admitted", "create_boundary_crossed"},
+            ))
+
+        def on_write_admitted(operation, reservation, write_admission):
+            if (operation is not captured["operation"]
+                    or reservation is not captured["reservation"]):
+                return False
+            return with_current_host(lambda: integration._record_writer_admission_locked(
+                captured["lifecycle"], attempt, marker, evidence, writer_owner,
+                operation, reservation, write_admission,
+            ))
+
+        def before_create():
+            try:
+                current_capacity = captured["capacity_owner"].readiness()
+                current_project = captured["project_reference"].readiness()
+            except Exception:
+                return False
+            if (current_capacity.get("status") != "characterization_only"
+                    or current_capacity.get("root_set_contract") != "profile_a_four_writable_roots"
+                    or current_capacity.get("scope_writer_lease") != "held"
+                    or current_project.get("status") != "read_only_reference_observed"):
+                return False
+            return with_current_host(lambda: integration._cross_writer_create_boundary_locked(
+                captured["lifecycle"], attempt, marker, evidence, writer_owner,
+            ))
+
+        if not current_handoff(captured["envelope"], captured["remote"]):
+            integration._cancel_staging_preadmission_attempt(attempt)
+            return fail_before_or_after_write("stale_host_binding")
+
+        try:
+            image = writer_owner._stage_remote_image_with_existing_reservation_for_characterization(
+                captured["envelope"], captured["prepared"], captured["remote"],
+                captured["descriptor"], admission_owner=captured["capacity_owner"],
+                operation=captured["operation"], reservation=captured["reservation"],
+                stream_provider=stream_provider, host_freshness=current_handoff,
+                on_write_admitted=on_write_admitted, before_create=before_create,
+                characterization=True, disposable_opt_in=True,
+            )
+        except Exception:
+            state = captured["capacity_owner"]._reservation_terminal_state_for_characterization(
+                captured["operation"], captured["reservation"],
+            )
+            uncertain = bool(writer_owner._uncertain or state in {"retained_uncertain", "completed"})
+            if state == "cancelled":
+                integration._cancel_staging_preadmission_attempt(attempt)
+            elif not uncertain and state in {"reserved", "writing"}:
+                cancelled = integration._cancel_staging_preadmission_attempt(attempt)
+                terminal = captured["capacity_owner"]._reservation_terminal_state_for_characterization(
+                    captured["operation"], captured["reservation"],
+                )
+                uncertain = terminal != "cancelled" or cancelled == "retained_uncertain"
+            elif state is None:
+                uncertain = bool(attempt.writer_create_boundary_crossed)
+            # The writer's exact ledger terminal state is stronger evidence
+            # than the earlier in-memory pre-CREATE_NEW boundary marker.
+            return fail_before_or_after_write("protected_writer_stage_failed", uncertain=uncertain)
+
+        try:
+            # Reobserve after the native write; final publication remains a
+            # count-only host observation under the exact current Claim gate.
+            capacity_view = captured["capacity_owner"].readiness()
+            project_view = captured["project_reference"].readiness()
+            writer_view = writer_owner.readiness()
+        except Exception:
+            return fail_before_or_after_write("writer_handoff_post_write_observation_unavailable",
+                                              uncertain=True)
+
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not captured["lifecycle"]):
+                result = None
+            else:
+                with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                    if lifecycle is captured["lifecycle"]:
+                        result = self._generation_original_host_evidence_current_locked(
+                            lifecycle, captured["pairing_generation"],
+                            on_current=lambda: integration._publish_single_image_writer_observation_locked(
+                                lifecycle, attempt, marker, evidence, writer_owner,
+                                image, capacity_view, project_view, writer_view,
+                            ),
+                        )
+                    else:
+                        result = None
+        if type(result) is tuple and result[0] is not None:
+            return result
+        return fail_before_or_after_write("host_or_writer_changed", uncertain=True)
+
     @staticmethod
     def _invalidate_uncertain_profile_a_capacity(capacity_owner):
         """Fence the existing ledger if reserve acknowledgment itself is uncertain."""
