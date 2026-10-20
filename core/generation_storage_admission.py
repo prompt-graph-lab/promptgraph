@@ -1016,6 +1016,34 @@ class WindowsProtectedStorageAdmissionCharacterization:
             self._require_live()
             return self._ledger.cancel_before_write(operation, reservation)
 
+    def _staging_reservation_is_live_for_characterization(
+            self, operation, reservation, estimate):
+        """Check one exact Profile A staging reservation without filesystem I/O."""
+        if (self._profile_a_root_set is not True
+                or type(estimate) is not CapacityEstimate
+                or type(reservation) is not _Opaque
+                or type(operation) is not _Opaque):
+            return False
+        try:
+            normalized = self._ledger._validate_estimates({"temporary_containment": estimate})
+        except ValueError:
+            return False
+        with self._lock:
+            if (self._closed or self._invalid or self._scope_lease is None
+                    or self._scope_lease._state != "held"):
+                return False
+            with self._ledger._lock:
+                record = self._ledger._reservations.get(reservation)
+                operation_record = self._ledger._operations.get(operation)
+                return bool(
+                    record is not None
+                    and record.get("operation") is operation
+                    and record.get("state") == "reserved"
+                    and record.get("estimates") == normalized
+                    and operation_record is not None
+                    and operation_record.get("state") == "reserved"
+                )
+
     def admit_write_for_characterization(self, operation, reservation):
         # Serialize the final pre-write inventory with admission publication.
         # Once the ledger marks a write active, other refreshes refuse to scan

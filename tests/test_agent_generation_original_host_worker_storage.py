@@ -11,7 +11,10 @@ import pytest
 from core.comfy_http_history import PromptHTTPHistoryTransport
 from core.comfy_http_submission import PromptHTTPSubmissionTransport
 from core.comfy_prompt_request import prepare_frozen_prompt_request
-from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+from core.generation_storage_admission import (
+    CapacityEstimate, ProtectedStorageCapacityLimits,
+    WindowsProtectedStorageAdmissionCharacterization, _CapacityLedger,
+)
 from core.generation_windows_protected_storage import (
     WindowsProjectJsonReferenceCharacterization, WindowsProtectedRootCharacterization,
 )
@@ -178,6 +181,70 @@ def _profile_a_bound_claim(*, prompt_id=None):
     ) == "matched_reference_only"
     worker = _worker(prompt_id=prompt_id)
     return values, runtime, route, state, lifecycle, roots, capacity, reference, worker
+
+
+def _configure_portable_profile_a_capacity(capacity, *, asset_bytes=16 * 1024):
+    """Use the real ledger with filesystem refresh injected for portable tests."""
+    ledger = _CapacityLedger(
+        replace(
+            ProtectedStorageCapacityLimits(),
+            shared_temporary_and_promoted_bytes=asset_bytes,
+            retained_uncertain_bytes=asset_bytes,
+            shared_temporary_and_promoted_entries=16,
+        ),
+        owner_identity=capacity,
+    )
+    ledger.set_initial_inventory(
+        {purpose: {} for purpose in _PROFILE_A_PURPOSES}, available_free_bytes=1024 * 1024,
+    )
+    capacity._ledger = ledger
+    capacity._refresh = lambda: None
+    capacity.begin_operation_for_characterization = ledger.begin_operation
+    capacity.reserve_for_characterization = lambda operation, estimates: ledger.reserve(
+        operation, estimates,
+    )
+    capacity.cancel_before_write_for_characterization = ledger.cancel_before_write
+
+    def readiness():
+        view = ledger.readiness()
+        view.update({
+            "status": "unavailable" if capacity._closed or capacity._invalid
+            else "characterization_only",
+            "root_set_contract": "profile_a_four_writable_roots",
+            "scope_writer_lease": "held" if capacity._scope_lease._state == "held"
+            else "released",
+            "execution_available": False,
+            "protected_storage_available": False,
+            "promotion_available": False,
+            "candidate_publication_allowed": False,
+            "project_save_allowed": False,
+            "authorship": "unverified",
+        })
+        return view
+
+    capacity.readiness = readiness
+    return ledger
+
+
+def _profile_a_submission_lease(runtime, lifecycle, worker):
+    from ui.agent_generation_original_host_worker_storage import GenerationWorkerOperationLease
+
+    if lifecycle._worker_storage_integration is None:
+        assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+            worker, lifecycle._profile_a_storage_binding[0]._roots,
+            lifecycle._profile_a_storage_binding[0], lifecycle._profile_a_storage_binding[1],
+        ) == "bound_non_executing"
+    else:
+        assert lifecycle._worker_storage_integration._worker is worker
+    correlation = runtime.generation_worker_http_correlation_for_characterization(
+        0, kind="submission",
+    )
+    lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+        "submission", _prepared(lifecycle), None, correlation,
+    )
+    assert status == "admitted_non_executing"
+    assert type(lease) is GenerationWorkerOperationLease
+    return lease
 
 
 def _ready_generation_at_project_path(project_path):
@@ -445,6 +512,367 @@ def test_profile_a_worker_storage_binds_real_native_roots_and_project_reference(
         assert integration.authorship == "unverified"
     finally:
         runtime.close()
+
+
+def test_profile_a_staging_preadmission_uses_native_capacity_and_project_observations(
+        native_profile_a_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    before_project = project_path.read_bytes()
+    runtime, _route, _state, lifecycle = _ready_generation_at_project_path(project_path)
+    worker = _worker()
+    assert runtime.bind_generation_profile_a_storage_for_characterization(
+        capacity, reference,
+    ) == "matched_reference_only"
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    lease = _profile_a_submission_lease(runtime, lifecycle, worker)
+    actual_capacity_readiness = capacity.readiness
+    actual_project_readiness = reference.readiness
+    assert actual_capacity_readiness()["status"] == "characterization_only"
+    assert actual_project_readiness()["status"] == "read_only_reference_observed"
+    observed_views = []
+    readiness_errors = []
+    integration = lifecycle._worker_storage_integration
+    actual_publish = integration._publish_staging_preadmission_locked
+
+    def capture_views(current_lifecycle, current_lease, attempt, capacity_view, project_view):
+        observed_views.append((capacity_view, project_view))
+        return actual_publish(
+            current_lifecycle, current_lease, attempt, capacity_view, project_view,
+        )
+
+    def assert_no_host_locks():
+        assert not runtime._publication_gate.locked()
+        lifecycle_lock_acquired = lifecycle._lock.acquire(blocking=False)
+        assert lifecycle_lock_acquired
+        if lifecycle_lock_acquired:
+            lifecycle._lock.release()
+        assert not runtime.generation_jobs._lock._is_owned()
+        assert not runtime._generation_executor_inbox._lock._is_owned()
+
+    def capacity_readiness():
+        try:
+            assert_no_host_locks()
+        except Exception as exc:
+            readiness_errors.append(repr(exc))
+            raise
+        return actual_capacity_readiness()
+
+    def project_readiness():
+        try:
+            assert_no_host_locks()
+        except Exception as exc:
+            readiness_errors.append(repr(exc))
+            raise
+        return actual_project_readiness()
+
+    monkeypatch.setattr(capacity, "readiness", capacity_readiness)
+    monkeypatch.setattr(reference, "readiness", project_readiness)
+    integration._publish_staging_preadmission_locked = capture_views
+    try:
+        observation, status = runtime.pre_admit_generation_worker_staging_for_characterization(
+            lease, CapacityEstimate(8192, 1),
+        )
+        assert status == "pre_admitted_non_authoritative", (status, readiness_errors)
+        assert observed_views and observed_views[0][0]["status"] == "characterization_only", observed_views
+        assert observed_views[0][1]["status"] == "read_only_reference_observed", observed_views
+        assert status == "pre_admitted_non_authoritative"
+        assert observation.write_authorized is False
+        assert capacity._ledger._active_write is None
+        assert capacity._ledger._reserved["temporary_containment"] == [8192, 1]
+        assert list(roots["temporary_containment"]._path.iterdir()) == []
+        assert project_path.read_bytes() == before_project
+        assert worker.observation_for_characterization().state == "created"
+        assert runtime.cancel_generation_worker_staging_preadmission_for_characterization(
+            observation,
+        ) == "cancelled_before_write"
+        assert capacity._ledger._reserved["temporary_containment"] == [0, 0]
+    finally:
+        runtime.close()
+
+
+def test_profile_a_worker_staging_preadmission_is_exact_bounded_and_non_authoritative():
+    (_values, runtime, _route, _state, lifecycle, _roots, capacity,
+     _reference, worker) = _profile_a_bound_claim()
+    ledger = _configure_portable_profile_a_capacity(capacity)
+    lease = _profile_a_submission_lease(runtime, lifecycle, worker)
+    estimate = CapacityEstimate(4096, 2)
+    before_job = runtime.generation_jobs.snapshot(lifecycle._job_id)
+
+    observation, status = runtime.pre_admit_generation_worker_staging_for_characterization(
+        lease, estimate,
+    )
+
+    assert status == "pre_admitted_non_authoritative"
+    assert observation.status == "pre_admitted_non_authoritative"
+    assert observation.purpose == "temporary_containment"
+    assert (observation.request_index, observation.byte_upper_bound,
+            observation.entry_upper_bound) == (0, 4096, 2)
+    assert observation.write_authorized is False
+    assert observation.execution_available is False
+    assert observation.protected_storage_available is False
+    assert observation.promotion_available is False
+    assert observation.candidate_publication_allowed is False
+    assert observation.project_save_allowed is False
+    assert observation.authorship == "unverified"
+    assert not {"correlation", "reservation", "capacity_operation", "path"} & set(
+        observation.__dataclass_fields__
+    )
+    assert ledger._reserved["temporary_containment"] == [4096, 2]
+    assert ledger._active_write is None
+    assert worker.observation_for_characterization().state == "created"
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id) == before_job
+
+    assert runtime.pre_admit_generation_worker_staging_for_characterization(
+        replace(lease), estimate,
+    ) == (None, "operation_lease_mismatch")
+    assert runtime.pre_admit_generation_worker_staging_for_characterization(
+        lease, estimate,
+    ) == (None, "preadmission_already_attempted")
+    assert runtime.cancel_generation_worker_staging_preadmission_for_characterization(
+        replace(observation),
+    ) == "foreign_or_settled_preadmission"
+    assert runtime.cancel_generation_worker_staging_preadmission_for_characterization(
+        observation,
+    ) == "cancelled_before_write"
+    assert ledger._reserved["temporary_containment"] == [0, 0]
+    assert ledger._active_write is None
+    assert runtime.cancel_generation_worker_staging_preadmission_for_characterization(
+        observation,
+    ) == "foreign_or_settled_preadmission"
+    runtime.close()
+
+
+def test_profile_a_staging_preadmission_refuses_capacity_exhaustion_and_invalid_estimate():
+    (_values, runtime, _route, _state, lifecycle, _roots, capacity,
+     _reference, worker) = _profile_a_bound_claim()
+    ledger = _configure_portable_profile_a_capacity(capacity, asset_bytes=10)
+    lease = _profile_a_submission_lease(runtime, lifecycle, worker)
+    competing_promotion = capacity.begin_operation_for_characterization(
+        "characterization-promotion-capacity-reservation",
+    )
+    capacity.reserve_for_characterization(
+        competing_promotion, {"promoted_assets": CapacityEstimate(7, 1)},
+    )
+
+    assert runtime.pre_admit_generation_worker_staging_for_characterization(
+        lease, CapacityEstimate(4, 1),
+    ) == (None, "capacity_refused")
+    assert ledger._reserved["temporary_containment"] == [0, 0]
+    assert ledger._reserved["promoted_assets"] == [7, 1]
+    assert runtime.pre_admit_generation_worker_staging_for_characterization(
+        lease, CapacityEstimate(1, 1),
+    ) == (None, "preadmission_already_attempted")
+
+    other = _worker()
+    assert runtime.pre_admit_generation_worker_staging_for_characterization(
+        lease, CapacityEstimate(0, 1),
+    ) == (None, "invalid_capacity_estimate")
+    assert other.observation_for_characterization().state == "created"
+    runtime.close()
+
+
+def test_profile_a_staging_preadmission_rejects_cross_lifecycle_lease():
+    (_values_a, runtime_a, _route_a, _state_a, lifecycle_a, _roots_a, capacity_a,
+     _reference_a, worker_a) = _profile_a_bound_claim()
+    ledger_a = _configure_portable_profile_a_capacity(capacity_a)
+    lease_a = _profile_a_submission_lease(runtime_a, lifecycle_a, worker_a)
+
+    (_values_b, runtime_b, _route_b, _state_b, lifecycle_b, _roots_b, capacity_b,
+     _reference_b, worker_b) = _profile_a_bound_claim()
+    ledger_b = _configure_portable_profile_a_capacity(capacity_b)
+    lease_b = _profile_a_submission_lease(runtime_b, lifecycle_b, worker_b)
+
+    assert runtime_b.pre_admit_generation_worker_staging_for_characterization(
+        lease_a, CapacityEstimate(1024, 1),
+    ) == (None, "operation_lease_mismatch")
+    assert ledger_b._reserved["temporary_containment"] == [0, 0]
+    observation, status = runtime_b.pre_admit_generation_worker_staging_for_characterization(
+        lease_b, CapacityEstimate(1024, 1),
+    )
+    assert status == "pre_admitted_non_authoritative"
+    assert observation.request_index == 0
+    assert ledger_a._reserved["temporary_containment"] == [0, 0]
+    assert ledger_b._reserved["temporary_containment"] == [1024, 1]
+    runtime_a.close()
+    runtime_b.close()
+
+
+def test_profile_a_staging_preadmission_refuses_observed_free_capacity_shortage():
+    (_values, runtime, _route, _state, lifecycle, _roots, capacity,
+     _reference, worker) = _profile_a_bound_claim()
+    ledger = _configure_portable_profile_a_capacity(capacity)
+    ledger._available_free_bytes = 1023
+    lease = _profile_a_submission_lease(runtime, lifecycle, worker)
+
+    assert runtime.pre_admit_generation_worker_staging_for_characterization(
+        lease, CapacityEstimate(1024, 1),
+    ) == (None, "capacity_refused")
+    assert ledger._reserved["temporary_containment"] == [0, 0]
+    assert ledger._active_write is None
+    runtime.close()
+
+
+def test_legacy_five_root_worker_binding_does_not_gain_profile_a_preadmission():
+    (_values, runtime, _route, _state, lifecycle, _roots, _capacity, _worker_obj) = _bound_claim()
+    correlation = runtime.generation_worker_http_correlation_for_characterization(
+        0, kind="submission",
+    )
+    lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+        "submission", _prepared(lifecycle), None, correlation,
+    )
+    assert status == "admitted_non_executing"
+    assert runtime.pre_admit_generation_worker_staging_for_characterization(
+        lease, CapacityEstimate(1024, 1),
+    ) == (None, "profile_a_required")
+    runtime.close()
+
+
+@pytest.mark.parametrize("invalidation", ["claim", "project_switch", "worker_revocation"])
+def test_profile_a_claim_or_project_invalidation_during_reserve_cancels_pre_admission(
+        invalidation):
+    (_values, runtime, _route, state, lifecycle, _roots, capacity,
+     _reference, worker) = _profile_a_bound_claim()
+    ledger = _configure_portable_profile_a_capacity(capacity)
+    lease = _profile_a_submission_lease(runtime, lifecycle, worker)
+    reserved, release = threading.Event(), threading.Event()
+    actual_reserve = capacity.reserve_for_characterization
+    result = []
+
+    def blocked_reserve(operation, estimates):
+        token = actual_reserve(operation, estimates)
+        reserved.set()
+        assert release.wait(3)
+        return token
+
+    capacity.reserve_for_characterization = blocked_reserve
+    thread = threading.Thread(target=lambda: result.append(
+        runtime.pre_admit_generation_worker_staging_for_characterization(
+            lease, CapacityEstimate(2048, 1),
+        ),
+    ))
+    thread.start()
+    try:
+        assert reserved.wait(3)
+        if invalidation == "claim":
+            runtime.generation_jobs.invalidate_execution_custody()
+        elif invalidation == "project_switch":
+            runtime.synchronize_target(
+                type(state["project"])(project_metadata={"name": "replacement"}),
+                r"C:\PG\replacement.json",
+            )
+        else:
+            lifecycle._worker_storage_integration.revoke("job_claim_replaced")
+    finally:
+        release.set()
+        thread.join(3)
+    assert not thread.is_alive()
+    assert result[0][0] is None
+    assert result[0][1] in {
+        "cancelled_before_publication", "host_evidence_unavailable", "stale_host_binding",
+        "host_or_capacity_changed",
+    }
+    assert ledger._reserved["temporary_containment"] == [0, 0]
+    assert ledger._uncertain["temporary_containment"] == [0, 0]
+    assert ledger._active_write is None
+    runtime.close()
+
+
+@pytest.mark.parametrize("drift", ["close", "scope_lease_loss"])
+def test_profile_a_capacity_close_or_scope_loss_fences_pre_admission(drift):
+    (_values, runtime, _route, _state, lifecycle, _roots, capacity,
+     _reference, worker) = _profile_a_bound_claim()
+    ledger = _configure_portable_profile_a_capacity(capacity)
+    lease = _profile_a_submission_lease(runtime, lifecycle, worker)
+    reserved, release = threading.Event(), threading.Event()
+    actual_reserve = capacity.reserve_for_characterization
+    result = []
+
+    def blocked_reserve(operation, estimates):
+        token = actual_reserve(operation, estimates)
+        reserved.set()
+        assert release.wait(3)
+        return token
+
+    capacity.reserve_for_characterization = blocked_reserve
+    thread = threading.Thread(target=lambda: result.append(
+        runtime.pre_admit_generation_worker_staging_for_characterization(
+            lease, CapacityEstimate(3072, 1),
+        ),
+    ))
+    thread.start()
+    try:
+        assert reserved.wait(3)
+        if drift == "close":
+            capacity.close()
+        else:
+            capacity._scope_lease._state = "released"
+    finally:
+        release.set()
+        thread.join(3)
+    assert not thread.is_alive()
+    assert result[0] == (None, "storage_observation_unavailable")
+    assert ledger._reserved["temporary_containment"] == [0, 0]
+    if drift == "close":
+        assert ledger._uncertain["temporary_containment"] == [3072, 1]
+    else:
+        assert ledger._uncertain["temporary_containment"] == [0, 0]
+    assert ledger._active_write is None
+    runtime.close()
+
+
+def test_profile_a_claim_invalidation_cannot_interleave_final_preadmission_publication():
+    (_values, runtime, _route, state, lifecycle, _roots, capacity,
+     _reference, worker) = _profile_a_bound_claim()
+    ledger = _configure_portable_profile_a_capacity(capacity)
+    lease = _profile_a_submission_lease(runtime, lifecycle, worker)
+    integration = lifecycle._worker_storage_integration
+    entered, release, invalidator_started, invalidated = (
+        threading.Event(), threading.Event(), threading.Event(), threading.Event(),
+    )
+    actual_publish = integration._publish_staging_preadmission_locked
+    result = []
+
+    def blocked_publish(*args):
+        entered.set()
+        assert release.wait(3)
+        return actual_publish(*args)
+
+    integration._publish_staging_preadmission_locked = blocked_publish
+    preadmitter = threading.Thread(target=lambda: result.append(
+        runtime.pre_admit_generation_worker_staging_for_characterization(
+            lease, CapacityEstimate(1024, 1),
+        ),
+    ))
+
+    def invalidate_claim():
+        invalidator_started.set()
+        runtime.generation_jobs.invalidate_execution_custody()
+        invalidated.set()
+
+    invalidator = threading.Thread(target=invalidate_claim)
+    preadmitter.start()
+    try:
+        assert entered.wait(3)
+        invalidator.start()
+        assert invalidator_started.wait(3)
+    finally:
+        release.set()
+        preadmitter.join(3)
+        invalidator.join(3)
+    assert not preadmitter.is_alive() and not invalidator.is_alive()
+    assert invalidated.is_set()
+    assert result[0][1] in {"pre_admitted_non_authoritative", "host_evidence_unavailable"}
+    if result[0][0] is not None:
+        assert result[0][0].write_authorized is False
+        runtime.synchronize_target(
+            type(state["project"])(project_metadata={"name": "after-invalidation"}),
+            r"C:\PG\after-invalidation.json",
+        )
+    assert ledger._reserved["temporary_containment"] == [0, 0]
+    assert ledger._active_write is None
+    runtime.close()
 
 
 @pytest.mark.parametrize("mismatch", [

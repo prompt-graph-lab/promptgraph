@@ -1545,12 +1545,14 @@ Start path. C2B-8D-19C-C adds only a non-executing Worker/reference association
 characterization. All production flags remain false, and
 `authorship=unverified`.
 
-The next bounded implementation recommendation after C2B-8D-19C-C is an
-offline Profile A Worker-to-writer admission composition: bind the exact
-original-host Worker operation lease to the existing protected writer
-admission owners without changing their ownership or enabling production
-writes. Production provisioning, real transport, activation and write
-authorization remain later, separately reviewed gates.
+The next bounded implementation recommendation after C2B-8D-19C-C is the
+C2B-8D-19D Worker-to-protected-writer pre-admission characterization: bind one
+exact original-host submission lease to the existing Profile A capacity
+ledger, reserve staging capacity, and stop before native writer admission.
+The later writer-authorization boundary must validate exact remote output
+evidence and fresh host/native state before calling the existing writer
+admission. Production provisioning, real transport, activation and actual
+write authorization remain separately reviewed gates.
 
 ## C2B-8D-19C-B four-root Profile A binding and scope-writer lease
 
@@ -1655,3 +1657,46 @@ publication and Project save, and restart/recovery/retention/Discard policy.
 The process-local capacity ledger is still not an OS quota or restart-resolved
 reservation system; the separate Project reference observes identity and
 metadata, not content integrity.
+
+## C2B-8D-19D Profile A Worker-to-protected-writer pre-admission
+
+`ProjectAgentSessionRuntime.pre_admit_generation_worker_staging_for_characterization()`
+is an offline preflight for one exact active Profile A `submission` operation
+lease. The original `OriginalHostWorkerStorageIntegration` retains the lease
+and private reservation tokens; the returned immutable observation exposes
+only request index, purpose and the host-supplied byte/entry estimate. One
+request may be attempted once, up to the existing 100-request manifest bound.
+The estimate is limited to the existing staging batch contract (at most
+256 MiB and 16 images), then charged by the existing ledger against
+`temporary_containment`, including its shared `temporary_containment` plus
+`promoted_assets` limits and retained-uncertain/free-space accounting.
+
+Pre-admission never calls `admit_write` and cannot be converted to a native
+write token. It starts or performs no Worker, consumes no output stream, and
+creates no image or Journal file. The Worker operation is only the exact
+current host registration; a later Worker completion would remain
+observational and is not trusted-output evidence or permission to write.
+The legacy five-purpose owner remains unchanged and cannot use this Profile A
+pre-admission API.
+
+Fresh capacity inventory and Project-reference readiness execute outside
+host, Job, Inbox, lifecycle and integration locks. The final in-memory
+publication is serialized with exact current Claim, Project/path, activation,
+pairing, Worker lease, four-root owner and scope lease custody. Duplicate,
+copied, cross-lifecycle, replayed, stale and already-attempted leases fail
+closed. Claim, Project or Worker revocation cancels only a provably still
+reserved pre-write token. If owner close or invalidation races after reserve,
+the existing ledger transfers that estimate to retained-uncertain capacity;
+it is not silently released. Native state drift prevents observation
+publication. This remains a process-local admission estimate, not a disk
+quota, successful-write guarantee or restart-persistent reservation.
+
+The next distinct authorization boundary must bind successful remote history,
+the exact validated output receipt/descriptors, frozen request and prompt
+correlation, active original-host Claim, and fresh native root/ACL/inventory
+observations before it can issue the existing `admit_write` token to the
+protected stream owner. That follow-up must preserve one-shot send, output
+uncertainty, cancellation and close behavior. Production root provisioning,
+real transport/ComfyUI interoperability, Human Start, Candidate/Project
+publication, restart/recovery, retention and discard remain NO-GO; all
+production flags remain false and `authorship=unverified`.

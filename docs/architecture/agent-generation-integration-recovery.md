@@ -916,13 +916,13 @@ authorization. After restart, reservations and host authority remain
 unavailable; existing files are uncertain, and an orphaned marker blocks
 capture pending separately authorized resolution.
 
-The next bounded milestone after the C2B-8D-19C-C characterization is an
-offline Profile A Worker-to-writer admission composition: prove that one exact
-host-registered operation lease can be presented to the already characterized
-protected writer admission owners, while keeping writes opt-in, non-executing,
-and independently fenced. Production root provisioning, real transport,
-Human Start, Candidate/Project publication, restart and retention/Discard
-remain separate NO-GO gates.
+The next bounded milestone after C2B-8D-19C-C is the C2B-8D-19D
+Worker-to-protected-writer pre-admission characterization below. It reserves
+capacity only; the later writer-authorization boundary must still bind exact
+remote output evidence and issue the existing native writer admission only
+after a fresh original-host check. Production root provisioning, real
+transport, Human Start, Candidate/Project publication, restart and
+retention/Discard remain separate NO-GO gates.
 
 ## C2B-8D-19C-C Profile A Worker/storage association
 
@@ -973,3 +973,61 @@ promotion, Candidate publication, Project save and Recovery gates false, with
 HTTP transport, Candidate publisher or Project save. It does not enable
 production root provisioning, cross-process quotas, restart authority
 reconstruction, retention/Discard, or production worker execution.
+
+## C2B-8D-19D Profile A Worker-to-protected-writer pre-admission
+
+`ProjectAgentSessionRuntime.pre_admit_generation_worker_staging_for_characterization()`
+associates one exact currently active host-registered `submission`
+`GenerationWorkerOperationLease` with a single bounded
+`temporary_containment` reservation in the already bound Profile A
+`WindowsProtectedStorageAdmissionCharacterization`. The lease must be the
+original object held by the same lifecycle's Worker integration; a copied,
+foreign, stale, replayed, or legacy five-root lease is refused. There is at
+most one attempt per manifest request, capped at the existing 100-request
+manifest bound. The host supplies a `CapacityEstimate` for one request's
+staging batch: at most the existing 256 MiB containment aggregate and 16
+images. The existing ledger remains responsible for its purpose and shared
+temporary/promoted byte and entry limits, retained-uncertain inventory, and
+observed free-space refusal.
+
+The runtime first validates the live Project object/path, activation, epoch,
+pairing, Job Claim, Inbox envelope, Profile A storage binding, and exact Worker
+lease under the existing host lock hierarchy. The native capacity owner then
+creates an internal operation and reservation outside host, Job, Inbox,
+lifecycle and integration locks. Capacity and separately bound read-only
+Project-reference readiness are observed outside those locks. A final host
+publication rechecks the same lifecycle, Claim, Project binding, Worker lease,
+capacity owner, scope-writer lease, and exact still-reserved ledger tokens.
+Only then is a bounded immutable `pre_admitted_non_authoritative` observation
+returned. It contains the request index and estimate only; it contains no
+correlation, filesystem path, capacity token, operation token, or writer
+capability.
+
+This observation does not authorize a download, native write, Journal update,
+promotion, Candidate, save, Recovery, or execution. Worker completion remains
+diagnostic evidence and is not required or accepted as proof of trusted local
+output, successful authorship, or write permission. The API never calls
+`admit_write`, starts/performs the Worker, invokes a stream/writer, or creates
+files. The legacy five-root binding keeps its previous contract and does not
+gain this Profile A pre-admission path.
+
+Duplicate attempts cannot create another reservation. The exact observation
+can cancel only its own still-reserved pre-write estimate; Claim/Project/Worker
+revocation also fences publication and cancels a provably unconsumed
+reservation. If capacity-owner close/invalidation wins after reserve, the
+existing ledger retains the estimate as uncertain rather than releasing it.
+No capacity reservation or host authority is reconstructed after restart.
+The reservation remains process-local accounting, not an OS quota, a disk
+space guarantee, or a promise that a later write will succeed. It accounts for
+the existing shared staging/promoted cap but does not reserve external worker,
+network, Journal-replacement, or unrelated filesystem capacity.
+
+The next writer-authorization milestone must separately bind exact remote
+receipt and descriptor evidence, the immutable request/manifest and prompt
+correlation, a current original-host Claim, and fresh protected-root identity,
+ACL, inventory, and capacity observations before issuing the existing
+`admit_write` token to the protected stream owner. It must preserve the current
+one-shot send and uncertain-output rules and prove cancellation/close races.
+Until that boundary and later production transport/root/Start/publication
+gates are reviewed, all production capability flags remain false and
+`authorship=unverified`.
