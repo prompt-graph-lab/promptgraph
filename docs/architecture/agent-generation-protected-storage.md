@@ -1417,28 +1417,22 @@ or a child of the app-owned protected scope. Ordinary Projects must stay at
 their user-selected locations; this policy does not move a Project, copy it
 into the private scope, or change its ACL.
 
-The current `WindowsProtectedStorageAdmissionCharacterization` cannot yet
-represent that intended relationship. Its exact five-purpose map requires the
-`selected_project_json` file to be under the same approved scope as all four
-writable roots, on the same observed local NTFS volume, with the same modeled
-owner-only ACL and a distinct non-overlapping identity. An ordinary Project
-outside that scope is refused; a Project inside it is not made a suitable
-production binding merely by being copied there. In addition,
-`ProjectAgentSessionRuntime.observe_protected_references_for_characterization`
-and the 19B Worker/storage association compare exact supplied owner objects
-but do not compare the selected-JSON root path/identity with the live
-original-host Project path. The current seam therefore does not prove that its
-Project reference is the Project being generated. This is a concrete
-architecture incompatibility, not a reason to relocate or re-ACL user data.
-Production admission remains NO-GO until a separate read-only Project binding
-is tied to the exact original-host Project path/identity while the four
-app-owned writable roots remain under their private scope.
+At the 19C-A policy checkpoint, the five-purpose admission map could not
+represent this relationship: it required `selected_project_json` beneath the
+same scope and owner-only ACL as the four writable roots, and the original-host
+association did not compare that reference with the live Project path. C2B-8D-19C-B
+adds a separate four-writable-root characterization and independently captured
+read-only Project reference, then binds the normalized reference path to the
+exact current original-host Project lifecycle. This closes that specific
+characterization gap without moving or re-ACLing user data. It does not enable
+production admission or prove Project content integrity; see the 19C-B section
+below.
 
-| Selected Project placement | Current characterization result | Profile A policy target |
+| Selected Project placement | 19C-A behavior / current 19C-B characterization | Profile A policy target |
 | --- | --- | --- |
-| Ordinary local Project outside the app-owned scope | Rejected by the five-root admission contract as outside the approved scope | Keep in place and bind its exact read-only identity separately to the active original-host Project. |
-| Project JSON placed inside the private scope | May fit the current path shape if it also passes the protected ACL and identity checks, but no active-Project path comparison is made | Do not move or copy a Project here to satisfy storage admission; the path alone is not proof of Project binding. |
-| Missing Project file, UNC/mapped/network path, reparse path, or unverified filesystem | Existing-path capture or native filesystem validation refuses it; no creation or repair is performed | No production use until the independent read-only Project binding's supported path/filesystem policy is reviewed. |
+| Ordinary local Project outside the app-owned scope | 19C-A rejected it; 19C-B can observe a separately selected local NTFS JSON and bind its normalized path to the live lifecycle | Keep it in place. Its read-only native identity observation is distinct from protected-root ACL policy. |
+| Project JSON placed inside the private scope | 19C-A could admit it as a fifth protected purpose without proving active-Project binding; 19C-B does not require or infer this placement | Do not move or copy a Project to satisfy storage admission. The live host binding remains required. |
+| Missing Project file, UNC/mapped/network path, reparse path, or unverified filesystem | 19C-B refuses missing, non-JSON, reparse/linked or non-local-fixed-NTFS references; supported ordinary file DACL structure is observed separately | Unsupported or ambiguous locations fail closed; no creation, repair or ACL change. |
 
 The intended local app-storage placement does not imply that every possible
 user-selected Project location is supported. The separate Project-reference
@@ -1518,43 +1512,99 @@ before more work is authorized. On initial capture, files already present in
 the writable roots are charged as uncertain inventory, never adopted as
 successful outputs; reaching a byte or entry ceiling refuses further admission.
 
-The ledger and duplicate-scope claim are process-local. They are neither an OS
-quota nor cross-process coordination. Profile A's exclusion of malicious
-same-user processes does not make ordinary two-instance oversubscription safe.
-The production policy is therefore **one active writer process per protected
-scope**, enforced by a separately reviewed scope lease; while no enforceable
-lease exists, concurrent processes must not receive production write
-admission. An abandoned or ambiguous lease must fail closed, not be taken over
-by inspecting a matching path.
+The accounting ledger remains process-local; it is not an OS quota or durable
+reservation. C2B-8D-19C-B adds a native scope-writer lease for characterization:
+the exact scope volume/file identity determines a zero-byte marker name,
+created with `CREATE_NEW` and a protected owner-only DACL. The marker is held
+without sharing, so another process using either the four-root or legacy
+five-purpose capture API cannot create a second admission owner for that
+scope. Existing markers are not read, adopted, stolen or timed out. This
+excludes competing cooperating PromptGraph admission owners; it does not stop
+an unrelated process that ignores the marker and is not an OS quota.
 
-On process exit, process-local reservations disappear. Fresh inventory can
-observe retained files, but cannot distinguish a settled file from uncertain
-evidence or reconstruct a no-file reservation. Until a restart checkpoint or
-an explicit inspect-only human reconciliation policy is reviewed, a new
-process must not interpret a successful free-space sample or a fresh ledger as
+On process exit, process-local reservations disappear. An abandoned lease
+marker remains and blocks another admission owner; there is no takeover or
+restart authority reconstruction. After an explicit settled close, only that
+owner's verified zero-byte marker may be released. Roots and evidence files
+are never deleted by scope close. Fresh inventory can observe retained files,
+but cannot distinguish settled from uncertain evidence or reconstruct a
+no-file reservation. A successful free-space sample or fresh ledger is not
 proof that prior reservations settled. Disk free space is never guaranteed by
 this accounting contract.
 
 ### Production decision and next boundary
 
-The current production decision remains **NO-GO**. The five-root native
-characterization, 17B/17C image writers, 17D promotion writer, and 17E-B
-Journal replacement methods remain opt-in and disposable. Journal capacity
-integration is still not selected by default by
-`GenerationExecutorJournalIntent`. No production root provisioning,
-cross-process scope lease, restart reservation reconciliation, Project
-reference binding, retention/Discard owner, or Start path is implemented.
+The current production decision remains **NO-GO**. The four-root Profile A
+root-set, separate read-only Project reference, scope lease, 17B/17C image
+writers, 17D promotion writer, and 17E-B Journal replacement methods are all
+opt-in disposable characterizations. Journal capacity integration is still
+not selected by default by `GenerationExecutorJournalIntent`. There is no
+production root provisioning, restart reservation reconciliation,
+production Worker/storage binding, retention/Discard owner, or Start path.
 All production flags remain false, and `authorship=unverified`.
 
-The recommended next bounded implementation is **C2B-8D-19C-B: characterize a
-Profile A app-owned root-set binding that separates storage admission from
-Project reference identity**. Acceptance should require: (1) four exact
-disposable writable roots under one protected local scope; (2) an independently
-observed read-only Project path/file identity bound to the current original
-host without requiring it beneath that scope; (3) one enforced writer lease
-per scope or a fail-closed refusal when another process owns it; (4) restart
-reopen that grants inspection only and cannot restore reservations or worker
-authority; (5) capacity and uncertainty tests at the shared staging/promotion,
-Journal, and retained-evidence boundaries; and (6) no project movement, ACL
-repair, cleanup, execution, Candidate publication, or save. Production
-provisioning and UI activation remain later, separately reviewed gates.
+The next bounded implementation is **C2B-8D-19C-C**: update the existing 19B
+original-host Worker/storage association to consume the four-root capacity
+owner plus the separate Project reference, while keeping all writer calls
+opt-in and non-executing. It should preserve the current exact lifecycle
+binding and prove that host target changes revoke only Project/Worker binding,
+not globally retained storage evidence. Production provisioning, real
+transport, activation and write authorization remain later, separately
+reviewed gates.
+
+## C2B-8D-19C-B four-root Profile A binding and scope-writer lease
+
+`WindowsProtectedStorageAdmissionCharacterization.capture_profile_a_root_set_for_characterization()`
+accepts exactly four writable root owners: `private_journal`,
+`temporary_containment`, `retained_uncertain`, and `promoted_assets`. They must
+be distinct, non-overlapping native roots under one independently approved
+scope. Existing native file identity, owner-only DACL, local fixed NTFS,
+reparse and scope checks remain authoritative. This path reuses the existing
+`_CapacityLedger` and 17A limits; it does not introduce an independent ledger.
+The legacy five-purpose `capture_for_characterization()` remains available
+with its original contract and now shares the same per-scope writer exclusion.
+
+`WindowsProjectJsonReferenceCharacterization.capture_for_characterization()`
+separately pins an explicitly selected existing JSON on local fixed NTFS. It
+rejects links/reparse paths, multiple hard links, identity changes and
+unsupported filesystem or ACL structures. Its DACL is observed and rechecked,
+but does not need the protected-root owner-only ACL; the handle requests
+read-only access. The owner records native file identity, size and last-write
+metadata, not Project JSON content or a content hash. This characterizes file
+identity and unchanged metadata, not same-user write prevention or content
+integrity. The Project file is never moved, copied, written, saved or re-ACL'd.
+
+`ProjectAgentSessionRuntime.bind_generation_profile_a_storage_for_characterization()`
+revalidates both native owners outside runtime, route and lifecycle locks,
+then rechecks the exact lifecycle generation, Project object, normalized path,
+target epoch and tracker before publishing the binding through
+`OriginalHostGenerationLifecycle.observe_profile_a_storage_binding_for_characterization()`.
+Same-target reruns may retain the reference-only binding. Project/path/epoch,
+pairing, claim or session lifecycle retirement clears it permanently; returning
+to the old path creates a new lifecycle with no restored binding. Storage
+ownership remains separately held and is not automatically closed on target
+change. The capacity owner retains a bounded set of exact lifecycle references
+for lease-release checks; this prevents runtime garbage collection from hiding
+late Worker uncertainty. It refuses a new association while a prior lifecycle
+is unsettled and retains at most one lifecycle association.
+
+`WindowsProtectedScopeWriterLease` derives its marker name from the approved
+scope's native volume/file identity and acquires a zero-byte owner-only file
+with `CREATE_NEW`, no sharing, and native identity/ACL/path checks. All
+capacity captures use this lease, so separate PromptGraph processes cannot
+silently create competing ledgers when both follow the owner API. An existing
+or abandoned marker is not inspected or adopted and causes fail-closed refusal;
+there is no timeout, stale takeover, restart recovery or automatic cleanup.
+After a settled owner close, the exact pinned marker can be explicitly
+released. If an operation is uncertain or an associated host/Worker lifecycle
+is still active, the marker is retained. Close never deletes protected roots,
+Project data, staged files, promoted assets, Journal files or other evidence.
+
+Windows disposable tests cover four-root capture, Project JSON outside the
+scope, DACL and identity checks, path/target mismatch, target replacement
+during blocked native readiness, cross-process exclusion, abandoned and
+uncertain marker retention, and no binding resurrection. The characterization
+still grants no execution, protected write, promotion, Candidate, save,
+Recovery or cleanup authority. After restart, neither the lease nor the ledger
+reconstructs operation tokens or host authority; pre-existing inventory remains
+uncertain and an orphaned marker blocks admission until separately resolved.

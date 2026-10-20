@@ -574,6 +574,93 @@ class ProjectAgentSessionRuntime:
                     )
                 return lifecycle.readiness()
 
+    def bind_generation_profile_a_storage_for_characterization(
+            self, capacity_owner, project_reference):
+        """Bind a Profile A root set to the exact current Project lifecycle.
+
+        Native storage and Project-file observations run between two host
+        snapshots, outside the publication, route, and lifecycle locks. The
+        second snapshot must still identify the same lifecycle, target epoch,
+        Project object/path, session, route and pairing before references are
+        published. This is characterization only and grants no write gate.
+        """
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+        from core.generation_windows_protected_storage import WindowsProjectJsonReferenceCharacterization
+        from ui.project_agent_session_mailbox import _normalize_target_path
+
+        if (type(capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization
+                or type(project_reference) is not WindowsProjectJsonReferenceCharacterization):
+            return "binding_invalid"
+
+        with self._publication_gate:
+            if self._closed:
+                return "runtime_closed"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return "lifecycle_unavailable"
+                with lifecycle._lock:
+                    if lifecycle._state != "bound_non_executing":
+                        return "lifecycle_unavailable"
+                    generation = lifecycle._generation
+                    project = lifecycle._project_ref()
+                    project_path = lifecycle._project_path
+                    target_epoch = lifecycle._target_epoch
+                with self.target_tracker._lock:
+                    target_matches = (
+                        self.target_tracker._initialized
+                        and self.target_tracker._project_ref is not None
+                        and self.target_tracker._project_ref() is project
+                        and self.target_tracker._project_path == _normalize_target_path(project_path)
+                        and self.target_tracker._epoch == target_epoch
+                    )
+                if not target_matches or project is None or not project_path:
+                    return "host_target_unavailable"
+
+        # These calls can enumerate native storage, inspect ACLs and reopen the
+        # selected file path. They must stay outside every host publication lock.
+        capacity_view = capacity_owner.readiness()
+        project_view = project_reference.readiness()
+        if (capacity_view.get("status") != "characterization_only"
+                or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                or capacity_view.get("scope_writer_lease") != "held"
+                or project_view.get("status") != "read_only_reference_observed"):
+            return "storage_observation_unavailable"
+        if (_normalize_target_path(str(project_reference._path))
+                != _normalize_target_path(project_path)):
+            return "project_reference_mismatch"
+
+        try:
+            capacity_owner._register_profile_a_lifecycle_for_characterization(lifecycle)
+        except ValueError:
+            return "storage_binding_unavailable"
+
+        with self._publication_gate:
+            if self._closed:
+                return "runtime_closed"
+            with self._current_generation_original_host_lifecycle_locked() as current:
+                if current is not lifecycle:
+                    return "stale_host_binding"
+                with lifecycle._lock:
+                    if (lifecycle._state != "bound_non_executing"
+                            or lifecycle._generation != generation
+                            or lifecycle._project_ref() is not project
+                            or lifecycle._project_path != project_path
+                            or lifecycle._target_epoch != target_epoch):
+                        return "stale_host_binding"
+                with self.target_tracker._lock:
+                    target_matches = (
+                        self.target_tracker._initialized
+                        and self.target_tracker._project_ref is not None
+                        and self.target_tracker._project_ref() is project
+                        and self.target_tracker._project_path == _normalize_target_path(project_path)
+                        and self.target_tracker._epoch == target_epoch
+                    )
+                if not target_matches:
+                    return "stale_host_binding"
+                return lifecycle.observe_profile_a_storage_binding_for_characterization(
+                    capacity_owner, project_reference,
+                )
+
     def generation_worker_correlation_for_characterization(self):
         """Return opaque correlation only; this does not start or authorize a Worker."""
         with self._publication_gate:

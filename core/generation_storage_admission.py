@@ -30,6 +30,7 @@ _MAX_ASSET_ENTRIES = 16
 _MAX_JOURNAL_ENTRIES = 300
 _MAX_ROOT_FILE_BYTES = _MAX_OPERATION_BYTES
 _MAX_PROCESS_ACCOUNTING_SCOPES = 128
+_MAX_PROFILE_A_HOST_LIFECYCLES = 1
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -41,6 +42,40 @@ _JOURNAL_REPLACEMENT_ISSUER = object()
 
 def _fail(code):
     raise ValueError(code)
+
+
+def _validate_profile_a_root_set_shape(purpose_roots):
+    """Pure shape gate for the four independently captured writable owners."""
+    from core.generation_windows_protected_storage import WindowsProtectedRootCharacterization
+
+    if type(purpose_roots) is not dict or set(purpose_roots) != set(_WRITABLE):
+        _fail("profile_a_four_roots_required")
+    roots = dict(purpose_roots)
+    owners, identities, paths = set(), set(), []
+    for purpose in _WRITABLE:
+        root = roots[purpose]
+        if (type(root) is not WindowsProtectedRootCharacterization
+                or root._purpose != purpose or root._closed is not False
+                or not isinstance(root._path, Path)):
+            _fail("profile_a_root_purpose_mismatch")
+        if id(root) in owners:
+            _fail("profile_a_root_alias")
+        owners.add(id(root))
+        identity = root._identity
+        if identity is not None and (type(identity) is not tuple or len(identity) != 2
+                                     or any(type(value) is not int or value < 0
+                                            for value in identity)):
+            _fail("profile_a_root_identity_invalid")
+        if type(identity) is tuple and identity in identities:
+            _fail("profile_a_root_alias")
+        if identity is not None:
+            identities.add(identity)
+        path = root._path
+        if any(path == prior or path.is_relative_to(prior) or prior.is_relative_to(path)
+               for prior in paths):
+            _fail("profile_a_root_overlap")
+        paths.append(path)
+    return roots
 
 
 @dataclass(frozen=True)
@@ -808,20 +843,49 @@ class WindowsProtectedStorageAdmissionCharacterization:
     def capture_for_characterization(cls, approved_scope, purpose_roots, *,
                                      characterization=False, disposable_opt_in=False,
                                      limits=ProtectedStorageCapacityLimits()):
+        return cls._capture_for_characterization(
+            approved_scope, purpose_roots, expected_purposes=_PURPOSES,
+            characterization=characterization, disposable_opt_in=disposable_opt_in,
+            limits=limits, profile_a=False,
+        )
+
+    @classmethod
+    def capture_profile_a_root_set_for_characterization(
+            cls, approved_scope, purpose_roots, *,
+            characterization=False, disposable_opt_in=False,
+            limits=ProtectedStorageCapacityLimits()):
+        """Capture the four writable Profile A roots under the shared 17A ledger.
+
+        The independently selected Project JSON is bound later by the
+        original-host lifecycle and is intentionally not a capacity root.
+        """
+        return cls._capture_for_characterization(
+            approved_scope, purpose_roots, expected_purposes=_WRITABLE,
+            characterization=characterization, disposable_opt_in=disposable_opt_in,
+            limits=limits, profile_a=True,
+        )
+
+    @classmethod
+    def _capture_for_characterization(cls, approved_scope, purpose_roots, *,
+                                      expected_purposes, characterization,
+                                      disposable_opt_in, limits, profile_a):
         if characterization is not True or disposable_opt_in is not True:
             _fail("execution_unavailable")
         if type(limits) is not ProtectedStorageCapacityLimits:
             _fail("invalid_capacity_limits")
         limits.validate()
         scope = windows._path(approved_scope)
-        if type(purpose_roots) is not dict or set(purpose_roots) != set(_PURPOSES):
-            _fail("explicit_purpose_roots_required")
-        roots = dict(purpose_roots)
+        if profile_a:
+            roots = _validate_profile_a_root_set_shape(purpose_roots)
+        else:
+            if type(purpose_roots) is not dict or set(purpose_roots) != set(expected_purposes):
+                _fail("explicit_purpose_roots_required")
+            roots = dict(purpose_roots)
         identities = []
         paths = []
         scope_identity = None
         user_sid = None
-        for purpose in _PURPOSES:
+        for purpose in expected_purposes:
             root = roots[purpose]
             if type(root) is not windows.WindowsProtectedRootCharacterization:
                 _fail("native_root_owner_required")
@@ -859,44 +923,61 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 _fail("approved_scope_identity_mismatch")
             identities.append(root._identity)
             paths.append(path)
-        if len(set(identities)) != len(_PURPOSES):
+        if len(set(identities)) != len(expected_purposes):
             _fail("purpose_alias")
         for index, path in enumerate(paths):
             if any(path == other or path.is_relative_to(other) or other.is_relative_to(path)
                    for other in paths[index + 1:]):
                 _fail("purpose_overlap")
-        # One process-local ledger owns the approved scope. Keying by the
-        # complete scope identity prevents alternate or partially overlapping
-        # root sets from creating independent capacity ledgers. The selected
-        # Project JSON remains a binding input, not capacity storage.
+        # The scope marker adds atomic exclusion across processes to the
+        # process-local accounting registry. An existing marker is never
+        # inspected or adopted, so a crashed/ambiguous writer cannot be stolen.
         accounting_key = scope_identity
         with _PROCESS_ACCOUNTING_SCOPE_LOCK:
             if accounting_key in _PROCESS_ACCOUNTING_SCOPES:
                 _fail("storage_accounting_scope_already_captured")
             if len(_PROCESS_ACCOUNTING_SCOPES) >= _MAX_PROCESS_ACCOUNTING_SCOPES:
                 _fail("storage_accounting_scope_limit_exceeded")
-            _PROCESS_ACCOUNTING_SCOPES.add(accounting_key)
+
+        lease = windows.WindowsProtectedScopeWriterLease._acquire_for_characterization(
+            scope, scope_identity, roots[expected_purposes[0]]._api,
+            roots[expected_purposes[0]]._user,
+        )
+        registered = False
         try:
-            owner = cls(scope, scope_identity, roots, limits, _factory=_FACTORY)
+            with _PROCESS_ACCOUNTING_SCOPE_LOCK:
+                if accounting_key in _PROCESS_ACCOUNTING_SCOPES:
+                    _fail("storage_accounting_scope_already_captured")
+                _PROCESS_ACCOUNTING_SCOPES.add(accounting_key)
+                registered = True
+            owner = cls(scope, scope_identity, roots, limits, lease,
+                        profile_a=profile_a, _factory=_FACTORY)
             inventory = owner._scan()
             free_bytes = owner._free_bytes()
             owner._ledger.set_initial_inventory(inventory, free_bytes)
             # Revalidate after initial inventory; capture is not an ACL repair
             # or directory creation operation.
             owner._check_roots()
+            if lease.readiness().get("status") != "held":
+                _fail("scope_writer_lease_changed")
             return owner
         except BaseException:
             # No owner escaped and no write admission was possible, so a
             # failed read-only capture may relinquish its provisional claim.
-            with _PROCESS_ACCOUNTING_SCOPE_LOCK:
-                _PROCESS_ACCOUNTING_SCOPES.discard(accounting_key)
+            if registered:
+                with _PROCESS_ACCOUNTING_SCOPE_LOCK:
+                    _PROCESS_ACCOUNTING_SCOPES.discard(accounting_key)
+            lease.release_settled_for_characterization()
             raise
 
-    def __init__(self, scope, scope_identity, roots, limits, *, _factory=None):
+    def __init__(self, scope, scope_identity, roots, limits, scope_lease, *,
+                 profile_a=False, _factory=None):
         if _factory is not _FACTORY:
             _fail("host_storage_required")
         self._scope, self._scope_identity = scope, scope_identity
         self._roots, self._limits = roots, limits
+        self._scope_lease = scope_lease
+        self._profile_a_root_set = profile_a is True
         self._ledger = _CapacityLedger(limits, owner_identity=self)
         self._lock = threading.RLock()
         # A refresh owns this token only as a serialization marker. Native
@@ -906,6 +987,9 @@ class WindowsProtectedStorageAdmissionCharacterization:
         self._refresh_done = None
         self._closed = False
         self._invalid = False
+        # Retain associated lifecycles strongly so a retired runtime cannot
+        # make a late Worker uncertainty invisible to lease-release checks.
+        self._host_lifecycle_refs = []
         self._asset_writer_integrated = False
         self._promotion_writer_integrated = False
         self._journal_writer_integrated = False
@@ -1660,6 +1744,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
             self._refresh()
         except ValueError:
             pass
+        lease_status = (self._scope_lease.readiness().get("status")
+                        if self._scope_lease is not None else "unavailable")
         with self._lock:
             base = self._ledger.readiness()
             base["writer_integrated"] = self._asset_writer_integrated
@@ -1673,7 +1759,12 @@ class WindowsProtectedStorageAdmissionCharacterization:
                          else "unsafe_or_unavailable",
                          "directory_durability": "unsupported", "power_loss_guarantee": False,
                          "current_authorization": "absent", "recovery_execution_allowed": False,
-                         "project_save_allowed": False, "cleanup_allowed": False})
+                         "project_save_allowed": False, "cleanup_allowed": False,
+                         "root_set_contract": ("profile_a_four_writable_roots"
+                             if self._profile_a_root_set else "legacy_five_purpose_roots"),
+                         "scope_writer_lease": lease_status,
+                         "scope_writer_lease_cross_process": True,
+                         "project_reference": "bound_separately" if self._profile_a_root_set else "legacy_selected_purpose"})
             return base
 
     def close(self):
@@ -1682,6 +1773,80 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 return
             self._ledger.close()
             self._closed = True
+        self.release_scope_writer_lease_if_settled_for_characterization()
+
+    def _scope_lease_retention_reason(self):
+        with self._ledger._lock:
+            states = {record["state"] for record in self._ledger._operations.values()}
+            uncertain = (self._ledger._active_write is not None
+                         or bool(states & {"reserved", "writing", "retained_uncertain"}))
+        if uncertain or self._invalid:
+            return "uncertain"
+        active_host = False
+        with self._lock:
+            references = tuple(self._host_lifecycle_refs)
+        for lifecycle in references:
+            with lifecycle._lock:
+                state = lifecycle._state
+                integration = lifecycle._worker_storage_integration
+            if state != "closed":
+                active_host = True
+            if integration is not None:
+                with integration._lock:
+                    if integration._uncertain_leases:
+                        return "uncertain"
+                    if integration._state != "closed" or integration._active is not None:
+                        active_host = True
+        return "active_host" if active_host else "settled"
+
+    def _register_profile_a_lifecycle_for_characterization(self, lifecycle):
+        with self._lock:
+            if (not self._profile_a_root_set or self._closed or self._invalid
+                    or lifecycle is None):
+                _fail("profile_a_storage_unavailable")
+            references = tuple(self._host_lifecycle_refs)
+        if any(previous is lifecycle for previous in references):
+            return
+
+        retained = []
+        unsettled = False
+        for previous in references:
+            with previous._lock:
+                state = previous._state
+                integration = previous._worker_storage_integration
+            integration_active = False
+            integration_uncertain = False
+            if integration is not None:
+                with integration._lock:
+                    integration_active = (integration._state != "closed"
+                                          or integration._active is not None)
+                    integration_uncertain = bool(integration._uncertain_leases)
+            if state != "closed" or integration_active or integration_uncertain:
+                retained.append(previous)
+                unsettled = True
+
+        with self._lock:
+            if (self._closed or self._invalid or not self._profile_a_root_set
+                    or tuple(self._host_lifecycle_refs) != references):
+                _fail("profile_a_storage_unavailable")
+            if unsettled:
+                self._host_lifecycle_refs = retained
+                _fail("profile_a_storage_lifecycle_unsettled")
+            if len(retained) >= _MAX_PROFILE_A_HOST_LIFECYCLES:
+                _fail("profile_a_storage_lifecycle_limit_exceeded")
+            self._host_lifecycle_refs = [*retained, lifecycle]
+
+    def release_scope_writer_lease_if_settled_for_characterization(self):
+        if not self._closed:
+            return "owner_open"
+        if self._scope_lease is None:
+            return "unavailable"
+        retention = self._scope_lease_retention_reason()
+        if retention == "uncertain":
+            return self._scope_lease.retain_uncertain_for_characterization()
+        if retention == "active_host":
+            return "retained_for_active_host"
+        return self._scope_lease.release_settled_for_characterization()
 
     def _claim_refresh_slot(self):
         """Serialize root observations without holding a mutex during I/O."""
@@ -1758,6 +1923,9 @@ class WindowsProtectedStorageAdmissionCharacterization:
             if (len(rows) != 1 or rows[0][2] is not root._scope_handle
                     or rows[0][3] != self._scope_identity):
                 _fail("approved_scope_identity_changed")
+        if (self._scope_lease is None
+                or self._scope_lease.readiness().get("status") != "held"):
+            _fail("scope_writer_lease_unavailable")
 
     def _scan(self):
         self._check_roots()

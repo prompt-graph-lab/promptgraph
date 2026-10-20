@@ -714,13 +714,14 @@ No native I/O, network request, worker wait, or user callback is made while
 holding those locks.
 
 The readiness projection reports only bound/unavailable categories and the
-presence or mismatch of dependencies. An optional characterization seam checks
-that the supplied five purpose-root objects are the exact objects held by the
-supplied WindowsProtectedStorageAdmissionCharacterization. It does not call
-root readiness, inspect paths, revalidate ACLs or file identities, provision
-roots, create a ledger, select a writer, or infer storage authorization.
-Writer dependencies remain absent unless a later reviewed integration adds
-them. native_acl_or_identity_revalidated is always false here.
+presence or mismatch of dependencies. `OriginalHostGenerationLifecycle.observe_protected_references_for_characterization()`
+checks that the supplied five purpose-root objects are the exact objects held
+by the supplied `WindowsProtectedStorageAdmissionCharacterization`. It does
+not call root readiness, inspect paths, revalidate ACLs or file identities,
+provision roots, create a ledger, select a writer, or infer storage
+authorization. Writer dependencies remain absent unless a later reviewed
+integration adds them. `native_acl_or_identity_revalidated` is always false
+for this legacy reference-only seam.
 
 The Worker seam returns only bounded lifecycle/job/claim/manifest correlation
 scalars. Fixed-field worker observations may be retained in a bounded
@@ -837,28 +838,86 @@ user-selected path and is a read-only original-host reference, not part of the
 private storage tree. No Project move, copy, ACL repair, or production root
 provisioning is authorized by this policy.
 
-The current 17A admission seam cannot represent that layout: it requires all
-five purpose roots, including `selected_project_json`, beneath one approved
-scope with distinct owner-only native identities. The 19A/19B host association
-checks exact supplied root-owner references but does not compare the selected
-JSON root path/file identity with the live Project path. Thus it does not prove
-that the supplied Project reference is the Project being generated. This
-compatibility gap keeps production admission NO-GO until a reviewed boundary
-separates four app-owned storage roots from the exact read-only Project binding.
+At the 19C-A policy checkpoint, the 17A admission seam required all five
+purpose roots, including `selected_project_json`, beneath one approved scope.
+C2B-8D-19C-B now adds a four-writable-root characterization plus an independent
+read-only Project JSON reference, then binds its normalized path to the exact
+current original-host lifecycle. This closes that characterization gap without
+moving or re-ACLing Projects; production admission remains NO-GO.
 
-Capacity is process-local rather than a disk quota or cross-process lock. The
+Capacity accounting remains process-local rather than a disk quota. The
 256 MiB staging-plus-promotion budget and 16 entries are shared; uncertainty
-remains charged and is never automatically moved or deleted. Free-space checks
-are observations and cannot prevent later `ENOSPC`. Process restart loses
-reservation tokens and live latest-head custody; fresh inventory is uncertain
-and cannot restore a reservation whose write left no file. Until a reviewed
-scope lease and restart policy exist, no second process or restarted process
-may receive production write admission for that scope. Root close releases
-handles only; it does not delete files. The detailed policy, current bounds,
-exact incompatibilities and proposed C2B-8D-19C-B acceptance criteria are in
-the [protected-storage architecture](agent-generation-protected-storage.md#c2b-8d-19c-a-profile-a-protected-root-placement-and-capacity-policy).
+remains charged and is never automatically moved or deleted. The 19C-B
+scope-writer lease excludes a second cooperating PromptGraph admission owner
+for the same native scope, but does not prevent unrelated processes that ignore
+the lease or guarantee disk space. Free-space checks cannot prevent later
+`ENOSPC`. Process restart loses reservation tokens and live latest-head
+custody; fresh inventory is uncertain and cannot restore a reservation whose
+write left no file. Production write admission still requires a production
+scope lifecycle and a reviewed restart policy. Root close does not delete
+files. The detailed policy, bounds, 19C-B contract and next acceptance criteria
+are in the [protected-storage architecture](agent-generation-protected-storage.md#c2b-8d-19c-a-profile-a-protected-root-placement-and-capacity-policy).
 
-This is policy-only. It does not create a scope lease, change any writer,
+The 19C-A portion was policy-only. C2B-8D-19C-B adds an opt-in disposable
+scope lease and host binding characterization but does not change any writer,
 connect Journal capacity by default, enable execution, or grant Project,
 Candidate, Recovery, or cleanup authority. All production flags remain false
 and `authorship=unverified`.
+
+## C2B-8D-19C-B four-root binding and scope lease characterization
+
+The new `capture_profile_a_root_set_for_characterization()` API accepts the
+four exact writable purpose owners under one independently approved local
+NTFS scope and reuses the existing 17A capacity ledger. The legacy five-root
+capture remains available. Both forms acquire the same scope lease, preventing
+a second cooperating process from constructing a competing ledger through
+either API.
+
+`WindowsProjectJsonReferenceCharacterization` separately pins an explicitly
+selected existing Project JSON outside the protected scope. It validates a
+local fixed NTFS ordinary file, native identity, single-link and reparse
+conditions, a bounded ordinary DACL shape, and size/last-write metadata. The
+Project reference uses read-only access and does not require the protected
+root's owner-only DACL. It does not read or hash Project contents, prevent
+same-user changes, or grant save authority.
+
+`ProjectAgentSessionRuntime.bind_generation_profile_a_storage_for_characterization()`
+revalidates the native root-set and Project-reference owners outside host
+locks. It then rechecks the exact 19A lifecycle generation, Project object,
+normalized path and target epoch before publication. The lifecycle records
+only a reference binding. Project switch, Save As, epoch, pairing or claim
+invalidation and session close retire that binding; returning to the old path
+does not restore it. Storage evidence is not automatically closed by those
+Project transitions. The capacity owner retains a bounded set of exact
+lifecycle references for lease-release checks, so runtime garbage collection
+cannot hide late Worker uncertainty. A new association is refused while a
+prior lifecycle remains unsettled; the storage owner retains at most one
+lifecycle association at a time.
+
+`WindowsProtectedScopeWriterLease` uses the approved scope's native volume
+and file identity to name a zero-byte owner-only marker, created atomically
+with `CREATE_NEW`, no sharing, and native path/identity/ACL checks. Another
+process using the admission owner fails closed while the marker exists. An
+abandoned marker is not inspected, stolen, timed out or automatically removed.
+A settled explicit owner close releases only its exact marker; uncertain
+operations or a still-active associated host/Worker lifecycle retain the
+marker. Scope close does not delete roots or retained image, Journal, Project
+or other evidence files. This is cooperating-owner exclusion, not an OS quota
+or protection from a process that ignores the lease.
+
+Focused Windows tests characterize four-root capture, an ordinary Project
+outside the scope, identity/ACL/path drift, target replacement during blocked
+native readiness, cross-process exclusion, abandoned/uncertain marker refusal
+and no binding resurrection. They do not establish production provisioning,
+restart reservation recovery, power-loss durability or production write
+authorization. After restart, reservations and host authority remain
+unavailable; existing files are uncertain, and an orphaned marker blocks
+capture pending separately authorized resolution.
+
+The next bounded milestone is **C2B-8D-19C-C**: adapt 19B's existing
+original-host Worker/storage association to the four-root capacity owner and
+separate Project reference, without starting the Worker or invoking writers.
+It should verify that target invalidation clears Project/Worker binding while
+leaving globally retained storage evidence open. Production root provisioning,
+real transport, Human Start, Candidate/Project publication, restart and
+retention/Discard remain separate NO-GO gates.

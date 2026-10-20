@@ -1,6 +1,8 @@
 """C2B-8D-19A original-host lifecycle; non-executing characterization only."""
 
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 import threading
 
 import pytest
@@ -427,6 +429,45 @@ def test_protected_root_capacity_readiness_checks_exact_references_without_io():
         purpose_roots=mismatched, capacity_owner=capacity,
     )["protected_dependencies"]["root_capacity_identity"] == "mismatched"
     assert owner.readiness()["protected_dependencies"]["root_capacity_identity"] == "mismatched"
+    runtime.close()
+
+
+def test_profile_a_project_reference_binding_is_separate_and_never_resurrects():
+    from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+    from core.generation_windows_protected_storage import WindowsProjectJsonReferenceCharacterization
+
+    runtime, project = _bound_runtime(path=r"C:\PG\selected.json")
+    lifecycle = runtime._generation_original_host_lifecycle
+    capacity = object.__new__(WindowsProtectedStorageAdmissionCharacterization)
+    capacity._profile_a_root_set = True
+    capacity._roots = {purpose: object() for purpose in (
+        "private_journal", "temporary_containment", "retained_uncertain", "promoted_assets",
+    )}
+    capacity._closed = False
+    capacity._invalid = False
+    capacity._scope_lease = SimpleNamespace(_state="held")
+    reference = object.__new__(WindowsProjectJsonReferenceCharacterization)
+    reference._closed = False
+    reference._path = Path(r"C:\PG\different.json")
+    assert lifecycle.observe_profile_a_storage_binding_for_characterization(
+        capacity, reference,
+    ) == "project_reference_mismatch"
+    assert lifecycle.readiness()["profile_a_storage"] == "unbound"
+
+    reference._path = Path(r"C:\PG\selected.json")
+    assert lifecycle.observe_profile_a_storage_binding_for_characterization(
+        capacity, reference,
+    ) == "matched_reference_only"
+    assert lifecycle.readiness()["profile_a_storage"] == "bound_reference_only"
+
+    replacement = _project("replacement")
+    runtime.synchronize_target(replacement, r"C:\PG\replacement.json")
+    assert lifecycle.readiness()["lifecycle_state"] == "closed"
+    assert lifecycle.readiness()["profile_a_storage"] == "unbound"
+    runtime.synchronize_target(project, r"C:\PG\selected.json")
+    new_lifecycle = runtime._generation_original_host_lifecycle
+    assert new_lifecycle is not lifecycle
+    assert new_lifecycle.readiness()["profile_a_storage"] == "unbound"
     runtime.close()
 
 
