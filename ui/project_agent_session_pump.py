@@ -626,6 +626,282 @@ class ProjectAgentSessionRuntime:
             return "preadmission_unavailable"
         return integration.cancel_staging_preadmission_for_characterization(observation)
 
+    def observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            self, observation):
+        """Validate one exact remote-history result without authorizing a write.
+
+        This binds the existing 19D reservation to host-owned Worker evidence
+        and the existing remote-output validator. It intentionally stops
+        before `admit_write`, download, or any protected file operation.
+        """
+        import hashlib
+        import json
+
+        from core.comfy_http_submission import SubmissionResult
+        from core.comfy_output_containment import ContainmentLimits, SUPPORTED_EXTENSIONS
+        from core.comfy_remote_output_receipts import (
+            MAX_REMOTE_IMAGES, RemoteOutputReceipt, decode_remote_json,
+            valid_prompt_id, validate_remote_outputs,
+        )
+        from core.generation_storage_admission import CapacityEstimate
+        from core.comfy_prompt_request import is_owner_prepared_frozen_request
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerRemoteOutputWriterEvidence,
+            GenerationWorkerStoragePreAdmissionObservation,
+            _MAX_WRITER_IMAGES, _MAX_WRITER_IMAGE_BYTES, _MAX_WRITER_REQUEST_BYTES,
+        )
+        from ui.agent_generation_http_io_worker import HTTPIOCompletion
+        from core.comfy_http_history import HistoryResult
+
+        if type(observation) is not GenerationWorkerStoragePreAdmissionObservation:
+            return None, "invalid_preadmission"
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+                                if lifecycle_snapshot is not None else None)
+        if integration_snapshot is None or integration_snapshot._profile_a is not True:
+            return None, "profile_a_integration_unavailable"
+        captured = {}
+
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not lifecycle_snapshot):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_validation():
+                    started, status = integration_snapshot._begin_remote_output_writer_evidence_validation_locked(
+                        lifecycle, observation,
+                    )
+                    if started is not None:
+                        (attempt, marker, envelope, prepared, prompt_id, submission,
+                         history_lease, history, history_json) = started
+                        captured.update({
+                            "lifecycle": lifecycle,
+                            "integration": integration_snapshot,
+                            "capacity_owner": integration_snapshot._capacity_owner,
+                            "project_reference": integration_snapshot._project_reference,
+                            "attempt": attempt,
+                            "marker": marker,
+                            "envelope": envelope,
+                            "prepared": prepared,
+                            "prompt_id": prompt_id,
+                            "submission": submission,
+                            "history_lease": history_lease,
+                            "history": history,
+                            "history_json": history_json,
+                            "generation": lifecycle._generation,
+                            "project": lifecycle._project_ref(),
+                            "project_path": lifecycle._project_path,
+                            "target_epoch": lifecycle._target_epoch,
+                            "activation_id": lifecycle._activation_id,
+                            "pairing_generation": lifecycle._pairing_generation,
+                            "job": lifecycle._job,
+                            "job_id": lifecycle._job_id,
+                            "claim_id": lifecycle._claim_id,
+                            "manifest_identity": lifecycle._manifest_identity,
+                        })
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation, on_current=begin_validation,
+                )
+                if start_result is False:
+                    self._retire_generation_original_host_lifecycle_locked(
+                        "host_evidence_unavailable",
+                    )
+                    return None, "host_evidence_unavailable"
+                if type(start_result) is tuple:
+                    started, status = start_result
+                    if started is None:
+                        return None, status
+                else:
+                    return None, "host_evidence_unavailable"
+
+        integration = captured["integration"]
+        attempt, marker = captured["attempt"], captured["marker"]
+
+        def fail(reason, *, uncertain=False):
+            integration._fail_remote_output_writer_evidence_validation(
+                attempt, marker, "uncertain" if uncertain else "refused",
+                cancel_reservation=not uncertain,
+            )
+            return None, reason
+
+        try:
+            prepared = captured["prepared"]
+            prompt_id = captured["prompt_id"]
+            history = captured["history"]
+            history_json = captured["history_json"]
+            estimate = attempt.estimate
+            limits = ContainmentLimits()
+            if (not is_owner_prepared_frozen_request(prepared)
+                    or prepared is not attempt.prepared
+                    or not valid_prompt_id(prompt_id)
+                    or type(estimate) is not CapacityEstimate
+                    or type(estimate.byte_upper_bound) is not int
+                    or type(estimate.entry_upper_bound) is not int
+                    or not 1 <= estimate.byte_upper_bound <= min(
+                        _MAX_WRITER_REQUEST_BYTES, limits.aggregate_bytes,
+                    )
+                    or not 1 <= estimate.entry_upper_bound <= _MAX_WRITER_IMAGES):
+                return fail("writer_capacity_policy_incompatible")
+
+            submission = captured["submission"]
+            history_lease = captured["history_lease"]
+            history_completion = captured["history"]
+            if (type(submission) is not HTTPIOCompletion
+                    or submission.kind != "submission"
+                    or type(submission.outcome) is not SubmissionResult
+                    or submission.outcome.status != "accepted"
+                    or type(history_completion) is not HTTPIOCompletion
+                    or history_completion.kind != "history"
+                    or type(history_completion.outcome) is not HistoryResult
+                    or history_completion.outcome.status != "ready"):
+                return fail("worker_completion_evidence_invalid", uncertain=True)
+            submission_correlation = attempt.lease.correlation
+            history_correlation = history_lease.correlation
+            try:
+                submission_payload = decode_remote_json(submission.outcome.response_json)
+            except Exception:
+                return fail("submission_prompt_evidence_invalid", uncertain=True)
+            if (type(submission_payload) is not dict
+                    or submission_payload.get("prompt_id") != prompt_id
+                    or history_correlation.prompt_id != prompt_id
+                    or history_correlation.operation_id != submission_correlation.operation_id
+                    or history_correlation.job_id != submission_correlation.job_id
+                    or history_correlation.claim_id != submission_correlation.claim_id
+                    or history_correlation.manifest_identity != submission_correlation.manifest_identity
+                    or history_correlation.session_identity != submission_correlation.session_identity
+                    or history_correlation.process_identity != submission_correlation.process_identity
+                    or history_correlation.request_id != submission_correlation.request_id
+                    or history_correlation.request_index != submission_correlation.request_index
+                    or history_correlation.illustration_id != submission_correlation.illustration_id
+                    or history_correlation.run_index != submission_correlation.run_index
+                    or history_correlation.workflow_identity != submission_correlation.workflow_identity
+                    or type(history_completion.outcome.history_json) is not bytes
+                    or history_completion.outcome.history_json != history_json):
+                return fail("remote_output_correlation_mismatch", uncertain=True)
+
+            # The completion remains the exact Worker-issued object captured at
+            # original-host result observation. No caller-provided receipt is
+            # accepted or used as the source of truth.
+            worker_view = integration.worker_observation()
+            if (worker_view.state != "running" or not worker_view.started
+                    or worker_view.in_flight or worker_view.terminal
+                    or not integration._worker._is_issued_completion_for_prepared_request_for_characterization(
+                        history_completion, prepared,
+                    )):
+                return fail("worker_history_evidence_unavailable", uncertain=True)
+
+            try:
+                remote = validate_remote_outputs(
+                    captured["envelope"], prepared, prompt_id, history_json,
+                )
+            except Exception:
+                return fail("remote_history_validation_failed")
+            if (type(remote) is not RemoteOutputReceipt
+                    or remote.execution_succeeded is not True
+                    or remote.job_id != captured["job_id"]
+                    or remote.claim_id != captured["claim_id"]
+                    or remote.manifest_identity != captured["manifest_identity"]
+                    or remote.request_id != prepared.request_id
+                    or remote.request_index != prepared.request_index
+                    or remote.workflow_identity != prepared.workflow_identity
+                    or remote.prompt_id != prompt_id
+                    or remote._validated_history_json != history_json
+                    or type(remote.images) is not tuple
+                    or not 1 <= len(remote.images) <= min(MAX_REMOTE_IMAGES, _MAX_WRITER_IMAGES)
+                    or len({image.identity for image in remote.images}) != len(remote.images)
+                    or any(image.image_format not in SUPPORTED_EXTENSIONS for image in remote.images)):
+                return fail("remote_output_descriptor_policy_failed")
+
+            image_count = len(remote.images)
+            required_estimate = min(
+                _MAX_WRITER_REQUEST_BYTES, _MAX_WRITER_IMAGE_BYTES * image_count,
+            )
+            if (estimate.byte_upper_bound < required_estimate
+                    or estimate.byte_upper_bound > _MAX_WRITER_REQUEST_BYTES
+                    or estimate.entry_upper_bound < image_count):
+                return fail("writer_capacity_policy_incompatible")
+
+            history_identity = hashlib.sha256(history_json).hexdigest()
+            evidence_payload = [
+                "promptgraph.remote-output-writer-evidence.v1",
+                integration._operation_id, attempt.lease.nonce,
+                captured["job_id"], captured["claim_id"],
+                captured["manifest_identity"], prepared.request_id,
+                prepared.request_index, prepared.workflow_identity, prompt_id,
+                remote.identity, history_identity,
+                [image.identity for image in remote.images],
+                estimate.byte_upper_bound, estimate.entry_upper_bound,
+                _MAX_WRITER_REQUEST_BYTES, _MAX_WRITER_IMAGE_BYTES, _MAX_WRITER_IMAGES,
+            ]
+            evidence_identity = hashlib.sha256(json.dumps(
+                evidence_payload, ensure_ascii=False, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            evidence = GenerationWorkerRemoteOutputWriterEvidence(
+                identity=evidence_identity,
+                request_index=prepared.request_index,
+                descriptor_count=image_count,
+                request_byte_upper_bound=estimate.byte_upper_bound,
+                request_entry_upper_bound=estimate.entry_upper_bound,
+                history_identity=history_identity,
+                remote_output_identity=remote.identity,
+                _issuer=integration,
+                _attempt_nonce=attempt.lease.nonce,
+            )
+        except Exception:
+            return fail("remote_output_evidence_unavailable")
+
+        try:
+            # Fresh native roots/ACL/inventory and Project-reference evidence
+            # is deliberately collected outside every host/job/inbox lock.
+            capacity_view = captured["capacity_owner"].readiness()
+            project_view = captured["project_reference"].readiness()
+        except Exception:
+            return fail("storage_observation_unavailable")
+
+        host_snapshot = {
+            key: captured[key] for key in (
+                "generation", "project", "project_path", "target_epoch",
+                "activation_id", "pairing_generation", "envelope", "job",
+                "job_id", "claim_id", "manifest_identity",
+            )
+        }
+        status = "stale_host_binding"
+        result = None
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not captured["lifecycle"]):
+                pass
+            else:
+                with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                    if lifecycle is captured["lifecycle"]:
+                        result = self._generation_original_host_evidence_current_locked(
+                            lifecycle, captured["pairing_generation"],
+                            on_current=lambda: integration._publish_remote_output_writer_evidence_locked(
+                                lifecycle, attempt, marker, host_snapshot, remote, evidence,
+                                capacity_view, project_view,
+                            ),
+                        )
+                        if result is False:
+                            self._retire_generation_original_host_lifecycle_locked(
+                                "host_evidence_unavailable",
+                            )
+                            status = "host_evidence_unavailable"
+                        elif type(result) is tuple:
+                            evidence_result, status = result
+                            if evidence_result is not None:
+                                return evidence_result, status
+        integration._fail_remote_output_writer_evidence_validation(
+            attempt, marker,
+            "uncertain" if status == "worker_completion_changed" else "revoked",
+            cancel_reservation=status != "worker_completion_changed",
+        )
+        return None, status
+
     @staticmethod
     def _invalidate_uncertain_profile_a_capacity(capacity_owner):
         """Fence the existing ledger if reserve acknowledgment itself is uncertain."""

@@ -19,6 +19,9 @@ _FACTORY = object()
 _MAX_OBSERVATIONS = 16
 _MAX_HISTORY_READS_PER_REQUEST = 16
 _MAX_PREADMISSION_REQUESTS = 100
+_MAX_WRITER_REQUEST_BYTES = 128 * 1024 * 1024
+_MAX_WRITER_IMAGE_BYTES = 32 * 1024 * 1024
+_MAX_WRITER_IMAGES = 16
 _PURPOSES = (
     "private_journal", "temporary_containment", "retained_uncertain",
     "promoted_assets", "selected_project_json",
@@ -134,6 +137,37 @@ class GenerationWorkerStoragePreAdmissionObservation:
     authorship: str = "unverified"
 
 
+@dataclass(frozen=True)
+class GenerationWorkerRemoteOutputWriterEvidence:
+    """Exact remote-history evidence; never an actionable storage capability."""
+
+    identity: str
+    request_index: int
+    descriptor_count: int
+    request_byte_upper_bound: int
+    request_entry_upper_bound: int
+    history_identity: str = field(repr=False)
+    remote_output_identity: str = field(repr=False)
+    status: str = "remote_output_writer_evidence_observed_non_authoritative"
+    write_authorized: bool = False
+    writer_admission_issued: bool = False
+    remote_metadata_only: bool = True
+    image_bytes_verified: bool = False
+    image_content_verified: bool = False
+    writer_handoff_pending: bool = True
+    max_request_bytes: int = _MAX_WRITER_REQUEST_BYTES
+    max_image_bytes: int = _MAX_WRITER_IMAGE_BYTES
+    max_images: int = _MAX_WRITER_IMAGES
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+    _issuer: object = field(default=None, repr=False, compare=False)
+    _attempt_nonce: str = field(default="", repr=False, compare=False)
+
+
 @dataclass
 class _StoragePreAdmissionAttempt:
     lease: object
@@ -144,6 +178,16 @@ class _StoragePreAdmissionAttempt:
     reservation: object = None
     observation: object = None
     cancel_requested: bool = False
+    prepared: object = None
+    accepted_prompt_id: str | None = None
+    submission_completion: object = None
+    history_lease: object = None
+    history_completion: object = None
+    history_json: bytes = b""
+    remote_receipt: object = None
+    evidence_state: str = "awaiting_submission"
+    validation_marker: object = None
+    evidence: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -284,6 +328,7 @@ class OriginalHostWorkerStorageIntegration:
         self._state = "bound_non_executing"
         self._reason = None
         self._active = None
+        self._active_prepared = None
         self._uncertain_leases = {}
         self._issued = {}
         self._submitted = set()
@@ -462,6 +507,18 @@ class OriginalHostWorkerStorageIntegration:
                 or (kind == "submission" and (prompt_id is not None or correlation.prompt_id is not None))
                 or (kind == "history" and (prompt_id is None or correlation.prompt_id != prompt_id))):
             return None, "correlation_mismatch"
+        if self._profile_a:
+            if any(attempt.evidence_state in {
+                        "validating", "history_observed", "evidence_published",
+                    }
+                   for attempt in self._storage_preadmission_attempts.values()):
+                return None, "remote_output_evidence_in_progress"
+            attempt = self._storage_preadmission_attempts.get(index)
+            if attempt is not None and kind == "history":
+                if (attempt.evidence_state != "submission_accepted"
+                        or attempt.prepared is not prepared
+                        or attempt.accepted_prompt_id != prompt_id):
+                    return None, "remote_output_history_unavailable"
         if not self._worker._register_original_host_operation_for_characterization(
                 self._worker_owner_claim, kind, correlation):
             return None, "worker_unavailable"
@@ -471,6 +528,14 @@ class OriginalHostWorkerStorageIntegration:
             lifecycle._generation, uuid.uuid4().hex, kind, index, correlation,
         )
         self._active = lease
+        self._active_prepared = prepared
+        if self._profile_a and kind == "history":
+            attempt = self._storage_preadmission_attempts.get(index)
+            if attempt is not None:
+                # Retain the exact host-issued history lease before the Worker
+                # runs; a copied completion or unrelated same-prompt read
+                # cannot later be paired with the pre-admission.
+                attempt.history_lease = lease
         return lease, "admitted_non_executing"
 
     def _begin_staging_preadmission_for_characterization(self, lifecycle, lease, estimate):
@@ -514,7 +579,11 @@ class OriginalHostWorkerStorageIntegration:
                         lease=lease,
                         operation_id=f"worker-stage:{self._operation_id}:{lease.nonce}",
                         estimate=estimate,
+                        prepared=self._active_prepared,
                     )
+                    if (attempt.prepared is None
+                            or attempt.prepared.request_index != lease.request_index):
+                        return None, "prepared_request_unavailable"
                     self._storage_preadmission_attempts[lease.request_index] = attempt
         return attempt, "preparing"
 
@@ -585,6 +654,9 @@ class OriginalHostWorkerStorageIntegration:
             if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
                     or attempt.state in {"cancelled", "retained_uncertain", "refused"}):
                 return "preadmission_unavailable"
+            if attempt.evidence_state == "uncertain":
+                attempt.state = "retained_uncertain"
+                return "retained_uncertain"
             attempt.cancel_requested = True
             if attempt.reservation is None or attempt.capacity_operation is None:
                 if attempt.state == "preparing":
@@ -619,9 +691,159 @@ class OriginalHostWorkerStorageIntegration:
         with self._lock:
             attempt = self._storage_preadmission_attempts.get(observation.request_index)
             if (attempt is None or attempt.observation is not observation
-                    or attempt.state != "pre_admitted"):
+                    or attempt.state != "pre_admitted"
+                    or attempt.evidence_state in {"uncertain", "evidence_published"}):
                 return "foreign_or_settled_preadmission"
+            attempt.evidence_state = "cancelled"
+            attempt.validation_marker = None
         return self._cancel_staging_preadmission_attempt(attempt)
+
+    def _begin_remote_output_writer_evidence_validation_locked(self, lifecycle, observation):
+        """Reserve one private validation pass for the exact observed request."""
+        if not self._profile_a or type(observation) is not GenerationWorkerStoragePreAdmissionObservation:
+            return None, "profile_a_required"
+        with lifecycle._lock:
+            with self._capacity_owner._lock:
+                with self._lock:
+                    attempt = self._storage_preadmission_attempts.get(observation.request_index)
+                    if (lifecycle._worker_storage_integration is not self
+                            or lifecycle._state != "bound_non_executing"
+                            or lifecycle._generation != self._lifecycle_generation
+                            or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                            or not self._root_binding_matches()
+                            or attempt is None or attempt.observation is not observation
+                            or attempt.state != "pre_admitted" or attempt.cancel_requested
+                            or attempt.evidence_state != "history_observed"
+                            or attempt.validation_marker is not None or attempt.evidence is not None
+                            or self._active is not None
+                            or not self._capacity_owner._staging_reservation_is_live_for_characterization(
+                                attempt.capacity_operation, attempt.reservation, attempt.estimate)):
+                        return None, "remote_output_evidence_unavailable"
+                    from core.comfy_http_history import HistoryResult
+                    from core.comfy_http_submission import SubmissionResult
+                    from ui.agent_generation_http_io_worker import HTTPIOCompletion
+
+                    prepared = attempt.prepared
+                    submission = attempt.submission_completion
+                    history = attempt.history_completion
+                    history_lease = attempt.history_lease
+                    if (type(submission) is not HTTPIOCompletion
+                            or submission.kind != "submission"
+                            or submission.correlation is not attempt.lease.correlation
+                            or type(submission.outcome) is not SubmissionResult
+                            or submission.outcome.status != "accepted"
+                            or type(history) is not HTTPIOCompletion
+                            or history.kind != "history"
+                            or type(history.outcome) is not HistoryResult
+                            or history.outcome.status != "ready"
+                            or type(attempt.history_json) is not bytes
+                            or not attempt.history_json
+                            or history.outcome.history_json != attempt.history_json
+                            or type(history_lease) is not GenerationWorkerOperationLease
+                            or history_lease.kind != "history"
+                            or history_lease.request_index != attempt.lease.request_index
+                            or history_lease.lifecycle_generation != self._lifecycle_generation
+                            or history.correlation is not history_lease.correlation
+                            or history_lease.correlation.prompt_id != attempt.accepted_prompt_id
+                            or not attempt.accepted_prompt_id
+                            or prepared is None
+                            or prepared.request_index != attempt.lease.request_index):
+                        return None, "remote_output_evidence_incomplete"
+                    marker = object()
+                    attempt.validation_marker = marker
+                    attempt.evidence_state = "validating"
+                    return (attempt, marker, lifecycle._envelope, prepared,
+                            attempt.accepted_prompt_id, submission, history_lease,
+                            history, attempt.history_json), "validating"
+
+    def _fail_remote_output_writer_evidence_validation(
+            self, attempt, marker, evidence_state, *, cancel_reservation):
+        """Finish a failed validation without releasing uncertain accounting."""
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is attempt
+                    and attempt.validation_marker is marker
+                    and attempt.evidence_state == "validating"):
+                attempt.validation_marker = None
+                attempt.evidence_state = evidence_state
+        if evidence_state == "uncertain":
+            return "retained_uncertain"
+        if cancel_reservation:
+            return self._cancel_staging_preadmission_attempt(attempt)
+        return "refused"
+
+    def _publish_remote_output_writer_evidence_locked(
+            self, lifecycle, attempt, marker, host_snapshot, remote, evidence,
+            capacity_view, project_view):
+        """Publish only validated metadata while host and native references are current."""
+        from core.comfy_remote_output_receipts import RemoteOutputReceipt
+
+        if (capacity_view.get("status") != "characterization_only"
+                or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                or capacity_view.get("scope_writer_lease") != "held"
+                or project_view.get("status") != "read_only_reference_observed"):
+            return None, "storage_observation_unavailable"
+        with lifecycle._lock:
+            with self._capacity_owner._lock:
+                with self._lock:
+                    if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                            or attempt.state != "pre_admitted" or attempt.cancel_requested
+                            or attempt.evidence_state != "validating"
+                            or attempt.validation_marker is not marker
+                            or self._state != "bound_non_executing"
+                            or self._active is not None
+                            or lifecycle._worker_storage_integration is not self
+                            or lifecycle._state != "bound_non_executing"
+                            or lifecycle._generation != host_snapshot["generation"]
+                            or lifecycle._project_ref() is not host_snapshot["project"]
+                            or lifecycle._project_path != host_snapshot["project_path"]
+                            or lifecycle._target_epoch != host_snapshot["target_epoch"]
+                            or lifecycle._activation_id != host_snapshot["activation_id"]
+                            or lifecycle._pairing_generation != host_snapshot["pairing_generation"]
+                            or lifecycle._envelope is not host_snapshot["envelope"]
+                            or lifecycle._job is not host_snapshot["job"]
+                            or lifecycle._job_id != host_snapshot["job_id"]
+                            or lifecycle._claim_id != host_snapshot["claim_id"]
+                            or lifecycle._manifest_identity != host_snapshot["manifest_identity"]
+                            or not lifecycle._profile_a_job_claim_current_locked()
+                            or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                            or not self._root_binding_matches()
+                            or not self._capacity_owner._staging_reservation_is_live_for_characterization(
+                                attempt.capacity_operation, attempt.reservation, attempt.estimate)):
+                        return None, "host_or_capacity_changed"
+                    if (type(remote) is not RemoteOutputReceipt
+                            or remote.execution_succeeded is not True
+                            or remote.job_id != host_snapshot["job_id"]
+                            or remote.claim_id != host_snapshot["claim_id"]
+                            or remote.manifest_identity != host_snapshot["manifest_identity"]
+                            or remote.request_index != attempt.lease.request_index
+                            or remote.request_id != attempt.prepared.request_id
+                            or remote.workflow_identity != attempt.prepared.workflow_identity
+                            or remote.prompt_id != attempt.accepted_prompt_id
+                            or remote._validated_history_json != attempt.history_json
+                            or evidence._issuer is not self
+                            or evidence._attempt_nonce != attempt.lease.nonce
+                            or evidence.request_index != attempt.lease.request_index
+                            or evidence.request_byte_upper_bound != attempt.estimate.byte_upper_bound
+                            or evidence.request_entry_upper_bound != attempt.estimate.entry_upper_bound
+                            or evidence.descriptor_count != len(remote.images)):
+                        return None, "remote_output_evidence_changed"
+
+                    def commit():
+                        attempt.remote_receipt = remote
+                        attempt.evidence = evidence
+                        attempt.evidence_state = "evidence_published"
+                        attempt.validation_marker = None
+                        return evidence, evidence.status
+
+                    result = self._worker._run_if_issued_completion_for_prepared_request_for_characterization(
+                        attempt.history_completion, attempt.prepared,
+                        self._worker_owner_claim, commit,
+                    )
+                    if result is None:
+                        attempt.evidence_state = "uncertain"
+                        attempt.validation_marker = None
+                        return None, "worker_completion_changed"
+                    return result
 
     def _root_binding_matches(self):
         """Check exact owner references only; never touch the filesystem."""
@@ -699,7 +921,15 @@ class OriginalHostWorkerStorageIntegration:
                 # detached cannot settle the retained Worker lease.
                 self.revoke("host_evidence_unavailable")
                 return "stale_non_authoritative"
-        worker_issued = self._worker._is_issued_completion_for_characterization(completion)
+        with self._lock:
+            prepared_for_lease = (self._active_prepared
+                                  if self._active is lease else None)
+        if self._profile_a:
+            worker_issued = self._worker._is_issued_completion_for_prepared_request_for_characterization(
+                completion, prepared_for_lease,
+            )
+        else:
+            worker_issued = self._worker._is_issued_completion_for_characterization(completion)
         accepted_prompt_id = None
         if (worker_issued and type(completion) is HTTPIOCompletion
                 and completion.kind == "submission"
@@ -755,6 +985,10 @@ class OriginalHostWorkerStorageIntegration:
                                        worker_observation.state))
             if uncertain:
                 self._uncertain_leases[lease.nonce] = lease
+                if self._profile_a:
+                    attempt = self._storage_preadmission_attempts.get(lease.request_index)
+                    if attempt is not None and attempt.lease is lease:
+                        attempt.evidence_state = "uncertain"
                 if self._state == "bound_non_executing":
                     self._state = "uncertain"
                     self._reason = ("host_evidence_unavailable" if current is not True
@@ -769,12 +1003,56 @@ class OriginalHostWorkerStorageIntegration:
                     return "uncertain_non_authoritative"
                 if accepted_prompt_id in self._accepted_prompt_ids.values():
                     self._uncertain_leases[lease.nonce] = lease
+                    if self._profile_a:
+                        attempt = self._storage_preadmission_attempts.get(lease.request_index)
+                        if attempt is not None and attempt.lease is lease:
+                            attempt.evidence_state = "uncertain"
                     self._state = "uncertain"
                     self._reason = "worker_prompt_conflict"
                     return "uncertain_non_authoritative"
                 self._accepted_prompt_ids[lease.request_index] = accepted_prompt_id
+                if self._profile_a:
+                    attempt = self._storage_preadmission_attempts.get(lease.request_index)
+                    if attempt is not None:
+                        if (attempt.lease is not lease or attempt.state != "pre_admitted"
+                                or attempt.evidence_state != "awaiting_submission"
+                                or attempt.prepared is not prepared_for_lease):
+                            self._uncertain_leases[lease.nonce] = lease
+                            attempt.evidence_state = "uncertain"
+                            self._state = "uncertain"
+                            self._reason = "worker_result_unverifiable"
+                            return "uncertain_non_authoritative"
+                        attempt.accepted_prompt_id = accepted_prompt_id
+                        attempt.submission_completion = completion
+                        attempt.evidence_state = "submission_accepted"
+
+            if self._profile_a:
+                attempt = self._storage_preadmission_attempts.get(lease.request_index)
+                expected_attempt_lease = (
+                    attempt.lease if lease.kind == "submission" else
+                    attempt.history_lease if lease.kind == "history" else None
+                ) if attempt is not None else None
+                if attempt is not None and expected_attempt_lease is lease:
+                    if lease.kind == "submission" and outcome == "rejected_before_submission":
+                        attempt.evidence_state = "submission_rejected"
+                    elif lease.kind == "history":
+                        if (attempt.evidence_state != "submission_accepted"
+                                or attempt.prepared is not prepared_for_lease
+                                or attempt.accepted_prompt_id != lease.correlation.prompt_id
+                                or self._issued.get(self._correlation_key(
+                                    lease.kind, lease.correlation)) is not lease.correlation):
+                            self._uncertain_leases[lease.nonce] = lease
+                            attempt.evidence_state = "uncertain"
+                            self._state = "uncertain"
+                            self._reason = "worker_result_unverifiable"
+                            return "uncertain_non_authoritative"
+                        if outcome == "ready":
+                            attempt.history_completion = completion
+                            attempt.history_json = result.history_json
+                            attempt.evidence_state = "history_observed"
 
             self._active = None
+            self._active_prepared = None
             return status
 
     def revoke(self, reason):
@@ -805,6 +1083,9 @@ class OriginalHostWorkerStorageIntegration:
             for attempt in self._storage_preadmission_attempts.values():
                 if attempt.state in {"preparing", "reserved", "pre_admitted"}:
                     attempt.cancel_requested = True
+                    if attempt.evidence_state != "uncertain":
+                        attempt.evidence_state = "revoked"
+                        attempt.validation_marker = None
                     if attempt.reservation is not None and attempt.capacity_operation is not None:
                         attempt.state = "cancellation_requested"
                         preadmissions_to_cancel.append(attempt)

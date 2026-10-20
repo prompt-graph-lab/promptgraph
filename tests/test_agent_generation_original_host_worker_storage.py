@@ -1,5 +1,6 @@
 """C2B-8D-19B worker/storage association; offline characterization only."""
 
+import json
 import threading
 import uuid
 from dataclasses import replace
@@ -54,11 +55,13 @@ class _Response:
 
 
 class _Connection:
-    def __init__(self, *, prompt_id=None, entered=None, release=None, on_post=None):
+    def __init__(self, *, prompt_id=None, entered=None, release=None, on_post=None,
+                 history_body_ref=None):
         self.prompt_id = prompt_id
         self.entered = entered
         self.release = release
         self.on_post = on_post
+        self.history_body_ref = history_body_ref or [b"{}"]
         self.closed = False
 
     def connect(self):
@@ -73,16 +76,19 @@ class _Connection:
         return _Response((f'{{"prompt_id":"{self.prompt_id}"}}').encode("ascii"))
 
     def get_history(self, _prompt_id, _timeout):
-        return _Response(b"{}")
+        return _Response(self.history_body_ref[0])
 
     def close(self):
         self.closed = True
 
 
 def _worker(*, prompt_id=None, entered=None, release=None, on_post=None):
+    history_body_ref = [b"{}"]
+
     def factory(_origin, _timeout):
         return _Connection(
             prompt_id=prompt_id, entered=entered, release=release, on_post=on_post,
+            history_body_ref=history_body_ref,
         )
 
     submission = PromptHTTPSubmissionTransport(
@@ -91,10 +97,14 @@ def _worker(*, prompt_id=None, entered=None, release=None, on_post=None):
     history = PromptHTTPHistoryTransport(
         wire_factory=factory, characterization=True,
     )
-    return HostOwnedHTTPIOWorker(
+    worker = HostOwnedHTTPIOWorker(
         submission, history, characterization=True, wait_timeout_seconds=5,
         join_timeout_seconds=0.05,
     )
+    # Tests may install bounded offline history bytes after the host request is
+    # prepared but before the Worker performs its explicit history operation.
+    worker._test_history_body_ref = history_body_ref
+    return worker
 
 
 def _storage_refs():
@@ -183,7 +193,8 @@ def _profile_a_bound_claim(*, prompt_id=None):
     return values, runtime, route, state, lifecycle, roots, capacity, reference, worker
 
 
-def _configure_portable_profile_a_capacity(capacity, *, asset_bytes=16 * 1024):
+def _configure_portable_profile_a_capacity(
+        capacity, *, asset_bytes=16 * 1024, available_free_bytes=1024 * 1024):
     """Use the real ledger with filesystem refresh injected for portable tests."""
     ledger = _CapacityLedger(
         replace(
@@ -195,7 +206,8 @@ def _configure_portable_profile_a_capacity(capacity, *, asset_bytes=16 * 1024):
         owner_identity=capacity,
     )
     ledger.set_initial_inventory(
-        {purpose: {} for purpose in _PROFILE_A_PURPOSES}, available_free_bytes=1024 * 1024,
+        {purpose: {} for purpose in _PROFILE_A_PURPOSES},
+        available_free_bytes=available_free_bytes,
     )
     capacity._ledger = ledger
     capacity._refresh = lambda: None
@@ -245,6 +257,88 @@ def _profile_a_submission_lease(runtime, lifecycle, worker):
     assert status == "admitted_non_executing"
     assert type(lease) is GenerationWorkerOperationLease
     return lease
+
+
+def _history_json_for(prepared, prompt_id, *, descriptor_count=1, completed=True,
+                      status_str="success", include_status=True):
+    nodes = tuple(prepared.output_nodes)
+    assert nodes and descriptor_count >= len(nodes)
+    outputs = {}
+    remaining = descriptor_count
+    for node_index, (node_id, bucket) in enumerate(nodes):
+        count = (remaining - (len(nodes) - node_index - 1)
+                 if node_index == 0 else 1)
+        images = [{
+            "filename": f"remote-{node_index}-{image_index}.png",
+            "subfolder": "",
+            "type": bucket,
+        } for image_index in range(count)]
+        outputs[node_id] = {"images": images}
+        remaining -= count
+    record = {"outputs": outputs}
+    if include_status:
+        record["status"] = {"completed": completed, "status_str": status_str}
+    return json.dumps({prompt_id: record}, separators=(",", ":")).encode("utf-8")
+
+
+def _profile_a_history_observed(*, descriptor_count=1, estimate_bytes=32 * 1024 * 1024,
+                                estimate_entries=1, history_json=None,
+                                history_transport_result=None, include_status=True,
+                                completed=True):
+    prompt_id = str(uuid.uuid4())
+    (_values, runtime, _route, _state, lifecycle, roots, capacity,
+     reference, worker) = _profile_a_bound_claim(prompt_id=prompt_id)
+    ledger = _configure_portable_profile_a_capacity(
+        capacity, asset_bytes=256 * 1024 * 1024,
+        available_free_bytes=512 * 1024 * 1024,
+    )
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    assert worker.start_for_characterization().state == "running"
+    prepared = _prepared(lifecycle)
+    submission_correlation = runtime.generation_worker_http_correlation_for_characterization(
+        0, kind="submission",
+    )
+    submission_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+        "submission", prepared, None, submission_correlation,
+    )
+    assert status == "admitted_non_executing"
+    preadmission, status = runtime.pre_admit_generation_worker_staging_for_characterization(
+        submission_lease, CapacityEstimate(estimate_bytes, estimate_entries),
+    )
+    assert status == "pre_admitted_non_authoritative"
+    submission = worker.perform_for_characterization(
+        "submission", prepared, None, submission_correlation,
+    )
+    assert runtime.observe_generation_worker_http_result_for_characterization(
+        submission_lease, submission,
+    ) == "observed_non_authoritative"
+    accepted_prompt_id = prompt_id
+    if history_json is None:
+        history_json = _history_json_for(
+            prepared, prompt_id, descriptor_count=descriptor_count,
+            include_status=include_status, completed=completed,
+        )
+    worker._test_history_body_ref[0] = history_json
+    if history_transport_result is not None:
+        worker._history_transport = lambda _prepared, _prompt_id: history_transport_result
+    history_correlation = runtime.generation_worker_http_correlation_for_characterization(
+        0, kind="history", prompt_id=accepted_prompt_id,
+    )
+    history_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+        "history", prepared, accepted_prompt_id, history_correlation,
+    )
+    assert status == "admitted_non_executing"
+    history = worker.perform_for_characterization(
+        "history", prepared, accepted_prompt_id, history_correlation,
+    )
+    observed_status = runtime.observe_generation_worker_http_result_for_characterization(
+        history_lease, history,
+    )
+    return (runtime, lifecycle, roots, capacity, reference, worker, ledger,
+            prepared, submission_lease, preadmission, submission,
+            history_lease, history, observed_status, prompt_id)
 
 
 def _ready_generation_at_project_path(project_path):
@@ -458,16 +552,17 @@ def test_profile_a_worker_storage_uses_exact_four_roots_and_bound_project_refere
     # correlation remains observational; no protected writer or job event is called.
     assert runtime.synchronize_target(state["project"], state["current_project_path"])
     assert lifecycle._worker_storage_integration is integration
+    prepared = _prepared(lifecycle)
     correlation = runtime.generation_worker_http_correlation_for_characterization(
         0, kind="submission",
     )
     lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
-        "submission", _prepared(lifecycle), None, correlation,
+        "submission", prepared, None, correlation,
     )
     assert status == "admitted_non_executing"
     assert worker.start_for_characterization().state == "running"
     completion = worker.perform_for_characterization(
-        "submission", _prepared(lifecycle), None, correlation,
+        "submission", prepared, None, correlation,
     )
     assert completion.outcome.status == "accepted"
     assert runtime.observe_generation_worker_http_result_for_characterization(
@@ -483,6 +578,294 @@ def test_profile_a_worker_storage_uses_exact_four_roots_and_bound_project_refere
     runtime.close()
     assert capacity._closed is False
     assert all(root._closed is False for root in roots.values())
+
+
+def test_profile_a_exact_success_history_publishes_non_authoritative_writer_evidence_once():
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerRemoteOutputWriterEvidence,
+    )
+
+    (runtime, lifecycle, _roots, capacity, _reference, worker, _ledger,
+     _prepared_request, _submission_lease, preadmission, _submission,
+     _history_lease, _history, observed_status, _prompt_id) = _profile_a_history_observed()
+    assert observed_status == "observed_non_authoritative"
+
+    evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission,
+    )
+    assert type(evidence) is GenerationWorkerRemoteOutputWriterEvidence
+    assert status == "remote_output_writer_evidence_observed_non_authoritative"
+    integration = lifecycle._worker_storage_integration
+    attempt = integration._storage_preadmission_attempts[0]
+    assert attempt.evidence is evidence
+    assert attempt.evidence_state == "evidence_published"
+    assert attempt.remote_receipt.execution_succeeded is True
+    assert evidence.descriptor_count == 1
+    assert evidence.request_byte_upper_bound == 32 * 1024 * 1024
+    assert evidence.write_authorized is False
+    assert evidence.writer_admission_issued is False
+    assert evidence.remote_metadata_only is True
+    assert evidence.image_bytes_verified is False
+    assert evidence.image_content_verified is False
+    assert evidence.execution_available is False
+    assert evidence.protected_storage_available is False
+    assert evidence.promotion_available is False
+    assert evidence.candidate_publication_allowed is False
+    assert evidence.project_save_allowed is False
+    assert evidence.authorship == "unverified"
+    assert integration.execution_available is False
+    assert integration.protected_storage_available is False
+    assert integration.promotion_available is False
+    assert integration.candidate_publication_allowed is False
+    assert integration.project_save_allowed is False
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id)["registered_count"] == 0
+    assert worker.observation_for_characterization().state == "running"
+    completed_operations = worker.observation_for_characterization().completed_operations
+    later_history = runtime.generation_worker_http_correlation_for_characterization(
+        0, kind="history", prompt_id=_prompt_id,
+    )
+    # An evidence-published attempt cannot be superseded by another Worker
+    # completion before the later writer handoff resolves its reservation.
+    assert runtime.begin_generation_worker_http_operation_for_characterization(
+        "history", _prepared_request, _prompt_id, later_history,
+    ) == (None, "remote_output_evidence_in_progress")
+    assert worker.observation_for_characterization().completed_operations == completed_operations
+    assert runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission,
+    ) == (None, "remote_output_evidence_unavailable")
+    assert capacity._closed is False
+    runtime.close()
+
+
+def test_profile_a_statusless_history_never_publishes_writer_evidence_and_releases_safe_reservation():
+    (runtime, lifecycle, _roots, _capacity, _reference, _worker, _ledger,
+     _prepared_request, _submission_lease, _preadmission, _submission,
+     _history_lease, _history, observed_status, _prompt_id) = _profile_a_history_observed(
+        include_status=False,
+    )
+    assert observed_status == "observed_non_authoritative"
+    evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        _preadmission,
+    )
+    assert evidence is None
+    assert status == "remote_output_descriptor_policy_failed"
+    attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+    assert attempt.evidence is None
+    assert attempt.remote_receipt is None
+    assert attempt.evidence_state == "refused"
+    assert attempt.state == "cancelled"
+    runtime.close()
+
+
+def test_profile_a_unsuccessful_history_never_publishes_writer_evidence():
+    (runtime, lifecycle, _roots, _capacity, _reference, _worker, _ledger,
+     _prepared_request, _submission_lease, preadmission, _submission,
+     _history_lease, _history, observed_status, _prompt_id) = _profile_a_history_observed(
+        completed=False,
+    )
+    assert observed_status == "observed_non_authoritative"
+    evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission,
+    )
+    assert evidence is None
+    assert status == "remote_history_validation_failed"
+    attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+    assert attempt.evidence is None
+    assert attempt.remote_receipt is None
+    assert attempt.state == "cancelled"
+    runtime.close()
+
+
+def test_profile_a_writer_evidence_rejects_copied_preadmission_and_cross_owner_observation():
+    (runtime_a, lifecycle_a, _roots_a, _capacity_a, _reference_a, worker_a, _ledger_a,
+     _prepared_a, _submission_lease_a, preadmission_a, _submission_a,
+     _history_lease_a, _history_a, observed_status, _prompt_id) = _profile_a_history_observed()
+    assert observed_status == "observed_non_authoritative"
+    copied = replace(preadmission_a)
+    assert runtime_a.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        copied,
+    ) == (None, "remote_output_evidence_unavailable")
+
+    (_values_b, runtime_b, _route_b, _state_b, lifecycle_b, roots_b, capacity_b,
+     reference_b, worker_b) = _profile_a_bound_claim(prompt_id=str(uuid.uuid4()))
+    _configure_portable_profile_a_capacity(
+        capacity_b, asset_bytes=256 * 1024 * 1024,
+        available_free_bytes=512 * 1024 * 1024,
+    )
+    assert runtime_b.bind_generation_profile_a_worker_storage_for_characterization(
+        worker_b, roots_b, capacity_b, reference_b,
+    ) == "bound_non_executing"
+    assert runtime_b.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission_a,
+    ) == (None, "remote_output_evidence_unavailable")
+    attempt_a = lifecycle_a._worker_storage_integration._storage_preadmission_attempts[0]
+    assert attempt_a.evidence is None
+    assert attempt_a.evidence_state == "history_observed"
+    runtime_a.close()
+    runtime_b.close()
+
+
+def test_profile_a_writer_evidence_rejects_copied_worker_completion_and_retains_reservation():
+    (runtime, lifecycle, _roots, _capacity, _reference, _worker, ledger,
+     _prepared_request, _submission_lease, preadmission, _submission,
+     _history_lease, history, observed_status, _prompt_id) = _profile_a_history_observed()
+    assert observed_status == "observed_non_authoritative"
+    attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+    attempt.history_completion = replace(history)
+
+    evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission,
+    )
+    assert evidence is None
+    assert status == "worker_history_evidence_unavailable"
+    assert attempt.evidence is None
+    assert attempt.evidence_state == "uncertain"
+    assert ledger.readiness()["roots"][1]["reserved_bytes"] == 32 * 1024 * 1024
+    runtime.close()
+
+
+@pytest.mark.parametrize("estimate_bytes", [
+    32 * 1024 * 1024 - 1,
+    128 * 1024 * 1024 + 1,
+])
+def test_profile_a_writer_evidence_refuses_estimates_outside_image_and_request_bounds(
+        estimate_bytes):
+    (runtime, lifecycle, _roots, _capacity, _reference, _worker, _ledger,
+     _prepared_request, _submission_lease, preadmission, _submission,
+     _history_lease, _history, observed_status, _prompt_id) = _profile_a_history_observed(
+        estimate_bytes=estimate_bytes,
+    )
+    assert observed_status == "observed_non_authoritative"
+    evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission,
+    )
+    assert evidence is None
+    assert status == "writer_capacity_policy_incompatible"
+    attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+    assert attempt.evidence is None
+    assert attempt.state == "cancelled"
+    runtime.close()
+
+
+def test_profile_a_writer_evidence_requires_enough_reserved_entries_for_every_descriptor():
+    (runtime, lifecycle, _roots, _capacity, _reference, _worker, _ledger,
+     _prepared_request, _submission_lease, preadmission, _submission,
+     _history_lease, _history, observed_status, _prompt_id) = _profile_a_history_observed(
+        descriptor_count=2, estimate_bytes=64 * 1024 * 1024, estimate_entries=1,
+    )
+    assert observed_status == "observed_non_authoritative"
+    evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission,
+    )
+    assert evidence is None
+    assert status == "writer_capacity_policy_incompatible"
+    attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+    assert attempt.evidence is None
+    assert attempt.state == "cancelled"
+    runtime.close()
+
+
+def test_profile_a_writer_evidence_accepts_maximum_bounded_descriptor_batch():
+    (runtime, lifecycle, _roots, _capacity, _reference, _worker, _ledger,
+     _prepared_request, _submission_lease, preadmission, _submission,
+     _history_lease, _history, observed_status, _prompt_id) = _profile_a_history_observed(
+        descriptor_count=16, estimate_bytes=128 * 1024 * 1024, estimate_entries=16,
+    )
+    assert observed_status == "observed_non_authoritative"
+    evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission,
+    )
+    assert status == "remote_output_writer_evidence_observed_non_authoritative"
+    assert evidence.descriptor_count == evidence.max_images == 16
+    assert evidence.request_byte_upper_bound == evidence.max_request_bytes == 128 * 1024 * 1024
+    assert evidence.request_entry_upper_bound == 16
+    assert lifecycle._worker_storage_integration._storage_preadmission_attempts[0].evidence is evidence
+    runtime.close()
+
+
+def test_profile_a_writer_evidence_rejects_more_than_maximum_descriptors():
+    (runtime, lifecycle, _roots, _capacity, _reference, _worker, _ledger,
+     _prepared_request, _submission_lease, preadmission, _submission,
+     _history_lease, _history, observed_status, _prompt_id) = _profile_a_history_observed(
+        descriptor_count=17, estimate_bytes=128 * 1024 * 1024, estimate_entries=16,
+    )
+    assert observed_status == "observed_non_authoritative"
+    evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+        preadmission,
+    )
+    assert evidence is None
+    assert status == "remote_history_validation_failed"
+    attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+    assert attempt.evidence is None
+    assert attempt.state == "cancelled"
+    runtime.close()
+
+
+@pytest.mark.parametrize("invalidation", [
+    "runtime_close", "claim", "project_switch", "worker_revocation", "capacity_close",
+])
+def test_profile_a_writer_evidence_readiness_race_fences_invalidation(invalidation):
+    entered, release = threading.Event(), threading.Event()
+    invalidated = threading.Event()
+    (runtime, lifecycle, _roots, capacity, reference, _worker, _ledger,
+     _prepared_request, _submission_lease, preadmission, _submission,
+     _history_lease, _history, observed_status, _prompt_id) = _profile_a_history_observed()
+    assert observed_status == "observed_non_authoritative"
+    assert capacity._lock._is_owned() is False
+    assert lifecycle._lock.locked() is False
+    actual_capacity_readiness = capacity.readiness
+
+    def blocked_readiness():
+        assert not capacity._lock._is_owned()
+        assert not lifecycle._lock.locked()
+        entered.set()
+        assert release.wait(3)
+        return actual_capacity_readiness()
+
+    capacity.readiness = blocked_readiness
+    results = []
+    caller = threading.Thread(target=lambda: results.append(
+        runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        ),
+    ))
+    caller.start()
+    invalidator = None
+    try:
+        assert entered.wait(3)
+        # The native readiness callback must not retain host or lifecycle locks;
+        # invalidation can proceed while it is blocked on this barrier.
+        assert not lifecycle._lock.locked()
+        def invalidate():
+            if invalidation == "runtime_close":
+                runtime.close()
+            elif invalidation == "claim":
+                runtime.generation_jobs.invalidate_execution_custody()
+            elif invalidation == "project_switch":
+                project = lifecycle._project_ref()
+                runtime.synchronize_target(type(project)(project_metadata={"name": "replacement"}),
+                                           r"C:\PG\replacement.json")
+            elif invalidation == "worker_revocation":
+                lifecycle._worker_storage_integration.revoke("job_claim_replaced")
+            else:
+                capacity.close()
+            invalidated.set()
+
+        invalidator = threading.Thread(target=invalidate)
+        invalidator.start()
+        assert invalidated.wait(3)
+    finally:
+        release.set()
+        caller.join(3)
+        assert not caller.is_alive()
+        if invalidator is not None:
+            invalidator.join(3)
+            assert not invalidator.is_alive()
+    assert results and results[0][0] is None
+    attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+    assert attempt.evidence is None
+    assert attempt.evidence_state != "evidence_published"
+    runtime.close()
 
 
 def test_profile_a_worker_storage_binds_real_native_roots_and_project_reference(
@@ -510,6 +893,70 @@ def test_profile_a_worker_storage_binds_real_native_roots_and_project_reference(
         assert not integration.candidate_publication_allowed
         assert not integration.project_save_allowed
         assert integration.authorship == "unverified"
+    finally:
+        runtime.close()
+
+
+def test_profile_a_writer_evidence_rechecks_native_roots_without_writing_files(
+        native_profile_a_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _route, _state, lifecycle = _ready_generation_at_project_path(project_path)
+    prompt_id = str(uuid.uuid4())
+    worker = _worker(prompt_id=prompt_id)
+    try:
+        assert runtime.bind_generation_profile_a_storage_for_characterization(
+            capacity, reference,
+        ) == "matched_reference_only"
+        assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+            worker, roots, capacity, reference,
+        ) == "bound_non_executing"
+        assert worker.start_for_characterization().state == "running"
+
+        prepared = _prepared(lifecycle)
+        submission_correlation = runtime.generation_worker_http_correlation_for_characterization(
+            0, kind="submission",
+        )
+        submission_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+            "submission", prepared, None, submission_correlation,
+        )
+        assert status == "admitted_non_executing"
+        preadmission, status = runtime.pre_admit_generation_worker_staging_for_characterization(
+            submission_lease, CapacityEstimate(32 * 1024 * 1024, 1),
+        )
+        assert status == "pre_admitted_non_authoritative"
+        submission = worker.perform_for_characterization(
+            "submission", prepared, None, submission_correlation,
+        )
+        assert runtime.observe_generation_worker_http_result_for_characterization(
+            submission_lease, submission,
+        ) == "observed_non_authoritative"
+
+        history_json = _history_json_for(prepared, prompt_id)
+        worker._test_history_body_ref[0] = history_json
+        history_correlation = runtime.generation_worker_http_correlation_for_characterization(
+            0, kind="history", prompt_id=prompt_id,
+        )
+        history_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+            "history", prepared, prompt_id, history_correlation,
+        )
+        assert status == "admitted_non_executing"
+        history = worker.perform_for_characterization(
+            "history", prepared, prompt_id, history_correlation,
+        )
+        assert runtime.observe_generation_worker_http_result_for_characterization(
+            history_lease, history,
+        ) == "observed_non_authoritative"
+
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+        assert evidence is not None and evidence.descriptor_count == 1
+        assert evidence.write_authorized is False
+        assert capacity.readiness()["native_root_identity"] == "observed_unchanged"
+        assert reference.readiness()["status"] == "read_only_reference_observed"
+        assert all(not any(root._path.iterdir()) for root in roots.values())
+        assert project_path.read_text(encoding="utf-8") == '{"disposable":true}'
     finally:
         runtime.close()
 

@@ -168,6 +168,11 @@ class HostOwnedHTTPIOWorker:
         # synthetic completions remain distinguishable from worker results.
         self._completion_witness = object()
         self._last_completion = None
+        # Retain the exact frozen request that produced the latest issued
+        # completion. Original-host evidence owners may bind a completion to
+        # the same request object without trusting caller-supplied result
+        # summaries. This is bounded to one completion and is not authority.
+        self._last_completion_prepared = None
         # One-shot original-host custody. The claim is never transferred or
         # released, including after close or an uncertain outcome.
         self._characterization_owner_claim = None
@@ -321,6 +326,7 @@ class HostOwnedHTTPIOWorker:
                         task.task_id, kind, correlation, outcome, self._completion_witness,
                     )
                     self._last_completion = completion
+                    self._last_completion_prepared = task.prepared
                     return completion
                 if (task.abandoned or self._state in {"closing", "closed", "uncertain"}
                         or self._active_task is not task or task.state != "completed"):
@@ -337,6 +343,7 @@ class HostOwnedHTTPIOWorker:
                     task.task_id, kind, correlation, task.outcome, self._completion_witness,
                 )
                 self._last_completion = completion
+                self._last_completion_prepared = task.prepared
                 self._clear_task_locked(task)
                 self._completed_operations += 1
                 if (kind == "submission" and type(task.outcome) is SubmissionResult
@@ -418,6 +425,32 @@ class HostOwnedHTTPIOWorker:
             return (type(completion) is HTTPIOCompletion
                     and completion is self._last_completion
                     and completion._worker_witness is self._completion_witness)
+
+    def _is_issued_completion_for_prepared_request_for_characterization(
+            self, completion, prepared):
+        """Bind the exact latest Worker result to its exact submitted request."""
+        with self._lock:
+            return (type(completion) is HTTPIOCompletion
+                    and completion is self._last_completion
+                    and completion._worker_witness is self._completion_witness
+                    and prepared is self._last_completion_prepared)
+
+    def _run_if_issued_completion_for_prepared_request_for_characterization(
+            self, completion, prepared, owner_claim, callback):
+        """Linearize a bounded host evidence commit against Worker close/results."""
+        if not callable(callback):
+            return None
+        with self._lock:
+            if (type(completion) is not HTTPIOCompletion
+                    or completion is not self._last_completion
+                    or completion._worker_witness is not self._completion_witness
+                    or prepared is not self._last_completion_prepared
+                    or owner_claim is None
+                    or self._characterization_owner_claim is not owner_claim
+                    or self._state != "running"
+                    or self._active_task is not None):
+                return None
+            return callback()
 
     def _observation_locked(self):
         thread = self._thread

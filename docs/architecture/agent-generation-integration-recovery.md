@@ -1022,12 +1022,68 @@ space guarantee, or a promise that a later write will succeed. It accounts for
 the existing shared staging/promoted cap but does not reserve external worker,
 network, Journal-replacement, or unrelated filesystem capacity.
 
-The next writer-authorization milestone must separately bind exact remote
-receipt and descriptor evidence, the immutable request/manifest and prompt
-correlation, a current original-host Claim, and fresh protected-root identity,
-ACL, inventory, and capacity observations before issuing the existing
-`admit_write` token to the protected stream owner. It must preserve the current
-one-shot send and uncertain-output rules and prove cancellation/close races.
-Until that boundary and later production transport/root/Start/publication
-gates are reviewed, all production capability flags remain false and
-`authorship=unverified`.
+C2B-8D-19E-A below now binds exact accepted/history Worker evidence to this
+reservation and stops before writer authorization. The next writer boundary,
+19E-B, must consume this exact evidence and reservation, revalidate host/root
+state and the actual stream limits, then issue the existing `admit_write`
+token to the protected stream owner. It must preserve one-shot send and
+uncertain-output rules and prove cancellation/close races. Until that boundary
+and later production transport/root/Start/publication gates are reviewed, all
+production capability flags remain false and `authorship=unverified`.
+
+## C2B-8D-19E-A Profile A remote-output writer-authorization evidence
+
+`ProjectAgentSessionRuntime.observe_generation_worker_remote_output_writer_evidence_for_characterization()`
+is the first half of that writer boundary. It consumes the exact 19D
+pre-admission observation retained by the same original-host Worker/storage
+integration. The attempt privately binds the one submission lease, its
+host-prepared frozen request, the Worker's accepted submission completion and
+prompt UUID, the exact later history lease/completion, and the bounded history
+JSON returned by that Worker operation. The Worker retains the prepared
+request alongside only its latest issued completion; a copied completion,
+completion for another prepared request, later replacement, or non-running
+Worker cannot be used as equivalent evidence.
+
+The owner passes those original history bytes to the existing
+`validate_remote_outputs()` implementation. It requires complete output-node
+coverage, unique supported descriptors, exact job/Claim/manifest/request/
+workflow/prompt correlation, and an explicit successful history status.
+Status-less history is not execution-success evidence. History metadata stays
+untrusted remote metadata; filenames and output presence do not prove image
+bytes, decoded content, authorship, or local-file identity.
+
+This evidence phase applies a stricter reservation policy without changing the
+19D reservation contract: at most 16 images, no more than 32 MiB reserved per
+image, and no more than 128 MiB for the request. The existing reservation's
+byte estimate must cover the policy bound implied by its descriptor count and
+its entry estimate must cover every descriptor. These are host-supplied upper
+bounds only; this phase cannot verify actual image sizes because it performs
+no download or stream. An immutable
+`GenerationWorkerRemoteOutputWriterEvidence` is published only after fresh
+capacity/root and read-only Project-reference readiness observations, then a
+final original-host Claim/Project/lifecycle check and an exact latest Worker
+completion fence. Native readiness runs outside host, Job, Inbox and lifecycle
+locks. The final in-memory publication is serialized with lifecycle, capacity,
+integration and Worker close/invalidation.
+
+The returned evidence explicitly reports `write_authorized=false`,
+`writer_admission_issued=false`, unverified image bytes/content,
+`execution_available=false`, `protected_storage_available=false`,
+`promotion_available=false`, and `authorship=unverified`. It is retained by
+the issuing integration with its exact validated remote receipt. The API does
+not call `admit_write`, issue a writer token, make another HTTP request, create
+a file, append Journal data, promote an image, or mutate a Candidate or
+Project. A safe pre-write refusal may cancel only its exact still
+reserved estimate; worker/host uncertainty or failed settlement retains
+capacity rather than authorizing replay.
+
+C2B-8D-19E-B remains the next boundary: it must accept only this exact
+owner-held evidence and consume the existing 19D reservation once, then
+revalidate the original host and four protected roots immediately before the
+existing protected stream writer's `CREATE_NEW`. It must enforce actual
+per-image/request byte limits while streaming, verify decoded image content,
+retain partial-write uncertainty, and avoid creating a second reservation or
+operation. Production root provisioning, production Worker/transport
+registration, real ComfyUI interoperability, Human Start/UI activation,
+Candidate/Project publication, restart authority, Recovery, retention and
+Discard remain separate NO-GO gates.

@@ -1691,12 +1691,63 @@ it is not silently released. Native state drift prevents observation
 publication. This remains a process-local admission estimate, not a disk
 quota, successful-write guarantee or restart-persistent reservation.
 
-The next distinct authorization boundary must bind successful remote history,
-the exact validated output receipt/descriptors, frozen request and prompt
-correlation, active original-host Claim, and fresh native root/ACL/inventory
-observations before it can issue the existing `admit_write` token to the
-protected stream owner. That follow-up must preserve one-shot send, output
-uncertainty, cancellation and close behavior. Production root provisioning,
-real transport/ComfyUI interoperability, Human Start, Candidate/Project
-publication, restart/recovery, retention and discard remain NO-GO; all
-production flags remain false and `authorship=unverified`.
+C2B-8D-19E-A below adds the metadata-evidence half of this boundary while
+stopping before writer admission. The next 19E-B slice must consume the exact
+owner-held evidence and same 19D reservation, enforce actual stream byte limits
+and verify native destination state through the protected stream writer. It must
+preserve one-shot send, output uncertainty, cancellation and close behavior.
+Production root provisioning, real transport/ComfyUI interoperability, Human
+Start, Candidate/Project publication, restart/recovery, retention and discard
+remain NO-GO; all production flags remain false and `authorship=unverified`.
+
+## C2B-8D-19E-A remote-output writer-authorization evidence
+
+The 19E-A characterization adds the metadata-evidence half of the Profile A
+Worker-to-writer boundary. The original host storage integration retains the
+exact 19D pre-admission observation and reservation together with its frozen
+request, accepted submission completion/prompt ID, and one later Worker-issued
+history completion and original bounded JSON bytes. The Worker completion is
+bound to the exact prepared request object and its latest-result witness;
+copying or replacing the completion, substituting another request, or allowing
+another Worker result to supersede it prevents publication.
+
+The host validates those history bytes only through the authoritative
+`validate_remote_outputs()` owner. Successful output evidence requires the
+exact accepted prompt and manifest/request correlation, complete expected
+output-node coverage, unique supported descriptors, and an explicit
+successful execution status. Status-less or unresolved history cannot become
+writer evidence. The new frozen
+`GenerationWorkerRemoteOutputWriterEvidence` is separately owned and retained
+with the exact `RemoteOutputReceipt`. It records descriptor count, a SHA-256
+identity for history/receipt correlation and the already held reservation
+bounds, but it grants no write or publication capability.
+
+For this boundary the allowed estimate policy is stricter than the existing
+19D reservation limit: 32 MiB per image, at most 128 MiB for one request, and
+at most 16 image descriptors. The reservation must have enough entries for
+all validated descriptors and enough bytes for the bound implied by image
+count. A host-supplied estimate is not a measurement: the history endpoint
+contains no image byte count that this stage trusts, and this stage performs
+no `/view` request, download, stream or decode. Therefore actual per-image and
+aggregate bytes, content format, native file identity and stored bytes remain
+unverified until the later writer owns them.
+
+Capacity/root readiness and the separate read-only Project-reference check
+are performed before final host publication and outside runtime, Job, Inbox,
+lifecycle, integration and Worker locks. The final in-memory commit rechecks
+the exact active Claim, Project/path, target epoch, activation, pairing,
+four-root references, scope-writer lease, reservation, and Worker-issued
+latest history completion. Close, invalidation, stale host state or completion
+replacement prevents evidence publication. A provably unused reservation may
+be canceled on a definite refusal; uncertain evidence remains retained.
+
+19E-A never calls `admit_write`, issues a writer token, downloads or writes an
+image, changes Journal state, promotes assets, registers Candidates, saves a
+Project, or reconstructs authority after restart. The legacy five-purpose
+binding and its owners remain unchanged. The next 19E-B boundary must accept
+only this exact evidence from its issuing integration, reuse its same live
+19D reservation rather than reserve twice, recheck host/root identity and ACL
+immediately before `CREATE_NEW`, enforce actual streamed byte limits, verify
+decoded image content, and retain any partial/uncertain file evidence without
+retry or cleanup. All production capability flags remain false and
+`authorship=unverified`.
