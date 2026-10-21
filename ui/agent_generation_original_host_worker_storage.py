@@ -210,7 +210,9 @@ class _StoragePreAdmissionAttempt:
     writer_owner: object = None
     writer_admission: object = None
     writer_create_boundary_crossed: bool = False
+    writer_create_attempt_count: int = 0
     writer_image_observation: object = None
+    writer_image_observations: tuple = ()
 
 
 def unavailable_observation(status="unavailable"):
@@ -881,7 +883,7 @@ class OriginalHostWorkerStorageIntegration:
                     return result
 
     def _begin_single_image_writer_handoff_locked(
-            self, lifecycle, evidence, writer_owner):
+            self, lifecycle, evidence, writer_owner, *, allow_batch=False):
         """Claim one exact 19E-A evidence/reservation handoff before native work."""
         from core import generation_windows_protected_assets as assets
 
@@ -909,6 +911,7 @@ class OriginalHostWorkerStorageIntegration:
                             or attempt.writer_handoff_marker is not None
                             or attempt.writer_owner is not None
                             or attempt.writer_image_observation is not None
+                            or attempt.writer_image_observations
                             or self._active is not None):
                         return None, "writer_handoff_evidence_unavailable"
                     if (self._profile_a_writer_owner is not None
@@ -918,25 +921,38 @@ class OriginalHostWorkerStorageIntegration:
                             self._capacity_owner, self._purpose_roots, integration=self):
                         return None, "writer_handoff_root_mismatch"
                     self._profile_a_writer_owner = writer_owner
-                    if (evidence.descriptor_count != 1
+                    expected_count = evidence.descriptor_count
+                    valid_count = ((2 <= expected_count <= _MAX_WRITER_IMAGES) if allow_batch
+                                   else expected_count == 1)
+                    if (not valid_count
                             or type(attempt.remote_receipt.images) is not tuple
-                            or len(attempt.remote_receipt.images) != 1
+                            or len(attempt.remote_receipt.images) != expected_count
                             or evidence.descriptor_count != len(attempt.remote_receipt.images)):
                         attempt.writer_handoff_state = "refused"
                         return (attempt, None, lifecycle._envelope, attempt.prepared,
                                 attempt.remote_receipt, attempt.capacity_operation,
-                                attempt.reservation), "single_image_output_required"
+                                attempt.reservation), (
+                                    "multi_image_output_required" if allow_batch
+                                    else "single_image_output_required"
+                                )
+                    upper_bound = min(_MAX_WRITER_IMAGE_BYTES * expected_count,
+                                      _MAX_WRITER_REQUEST_BYTES)
                     if not self._capacity_owner._staging_reservation_covers_for_characterization(
                             attempt.capacity_operation, attempt.reservation,
-                            "temporary_containment", _MAX_WRITER_IMAGE_BYTES, 1):
+                            "temporary_containment", upper_bound, expected_count):
                         return None, "writer_handoff_reservation_unavailable"
-                    descriptor = attempt.remote_receipt.images[0]
+                    descriptors = tuple(attempt.remote_receipt.images)
+                    if len({item.identity for item in descriptors}) != len(descriptors):
+                        attempt.writer_handoff_state = "refused"
+                        return (attempt, None, lifecycle._envelope, attempt.prepared,
+                                attempt.remote_receipt, attempt.capacity_operation,
+                                attempt.reservation), "writer_handoff_descriptor_ambiguous"
                     marker = object()
                     attempt.writer_handoff_state = "in_progress"
                     attempt.writer_handoff_marker = marker
                     attempt.writer_owner = writer_owner
                     return (attempt, marker, lifecycle._envelope, attempt.prepared,
-                            attempt.remote_receipt, descriptor,
+                            attempt.remote_receipt, descriptors,
                             attempt.capacity_operation, attempt.reservation), "handoff_claimed"
 
     def _writer_handoff_matches_locked(
@@ -992,19 +1008,25 @@ class OriginalHostWorkerStorageIntegration:
             self, lifecycle, attempt, marker, evidence, writer_owner):
         if not self._writer_handoff_matches_locked(
                 lifecycle, attempt, marker, evidence, writer_owner,
-                states={"write_admitted"}):
+                states={"write_admitted", "create_boundary_crossed"}):
             return False
         if not self._capacity_owner._staging_write_is_live_before_create_for_characterization(
                 attempt.capacity_operation, attempt.reservation, attempt.writer_admission):
             return False
         with self._lock:
+            expected_count = evidence.descriptor_count
+            batch = expected_count > 1
             if (attempt.writer_handoff_marker is not marker
-                    or attempt.writer_handoff_state != "write_admitted"
-                    or attempt.writer_create_boundary_crossed):
+                    or (attempt.writer_handoff_state == "write_admitted"
+                        and attempt.writer_create_attempt_count != 0)
+                    or (attempt.writer_handoff_state == "create_boundary_crossed"
+                        and (not batch or attempt.writer_create_attempt_count >= expected_count))
+                    or attempt.writer_handoff_state not in {"write_admitted", "create_boundary_crossed"}):
                 return False
             # This short in-memory transition is the one-shot authorization
             # boundary. Native CREATE_NEW follows after all host locks release.
             attempt.writer_create_boundary_crossed = True
+            attempt.writer_create_attempt_count += 1
             attempt.writer_handoff_state = "create_boundary_crossed"
             return True
 
@@ -1053,13 +1075,68 @@ class OriginalHostWorkerStorageIntegration:
                 capacity_accounted=True,
             ), "protected_image_staged_non_authoritative"
 
+    def _publish_multi_image_writer_observation_locked(
+            self, lifecycle, attempt, marker, evidence, writer_owner, observations,
+            capacity_view, project_view, writer_view):
+        """Publish one count-only result after exact aggregate batch accounting."""
+        if (capacity_view.get("status") != "characterization_only"
+                or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                or capacity_view.get("scope_writer_lease") != "held"
+                or project_view.get("status") != "read_only_reference_observed"
+                or writer_view.get("asset_observation") != "observed"):
+            return None, "writer_handoff_storage_observation_unavailable"
+        from core.generation_windows_protected_assets import VerifiedProtectedImageObservation
+
+        descriptors = tuple(attempt.remote_receipt.images)
+        if (type(observations) is not tuple or not 2 <= len(observations) <= _MAX_WRITER_IMAGES
+                or len(observations) != evidence.descriptor_count
+                or len(descriptors) != len(observations)
+                or len({item.identity for item in descriptors}) != len(descriptors)):
+            return None, "writer_handoff_batch_incomplete"
+        for descriptor, image in zip(descriptors, observations):
+            if (type(image) is not VerifiedProtectedImageObservation
+                    or image.job_id != lifecycle._job_id
+                    or image.claim_id != lifecycle._claim_id
+                    or image.manifest_identity != lifecycle._manifest_identity
+                    or image.request_id != attempt.prepared.request_id
+                    or image.request_index != attempt.lease.request_index
+                    or image.workflow_identity != attempt.prepared.workflow_identity
+                    or image.prompt_id != attempt.accepted_prompt_id
+                    or image.remote_receipt_identity != attempt.remote_receipt.identity
+                    or image.descriptor_identity != descriptor.identity):
+                return None, "writer_handoff_image_mismatch"
+        if not self._capacity_owner._asset_stream_image_batch_write_completed_for_characterization(
+                attempt.capacity_operation, attempt.writer_admission, writer_owner, observations):
+            return None, "writer_handoff_accounting_unavailable"
+        if not self._writer_handoff_matches_locked(
+                lifecycle, attempt, marker, evidence, writer_owner,
+                states={"create_boundary_crossed"}):
+            return None, "host_or_writer_changed"
+        with self._lock:
+            if (attempt.writer_image_observation is not None
+                    or attempt.writer_image_observations
+                    or attempt.writer_handoff_state != "create_boundary_crossed"
+                    or not attempt.writer_create_boundary_crossed
+                    or attempt.writer_create_attempt_count != len(observations)):
+                return None, "writer_handoff_already_settled"
+            attempt.writer_image_observations = observations
+            attempt.writer_handoff_state = "staged_non_authoritative"
+            return GenerationWorkerProtectedWriterObservation(
+                status="protected_image_batch_staged_non_authoritative",
+                request_index=attempt.lease.request_index,
+                verified_image_count=len(observations),
+                capacity_accounted=True,
+            ), "protected_image_batch_staged_non_authoritative"
+
     def _fail_single_image_writer_handoff(self, attempt, marker, *, uncertain):
         with self._lock:
             if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
                     or attempt.writer_handoff_marker is not marker):
                 return "writer_handoff_stale"
             if attempt.writer_handoff_state == "staged_non_authoritative":
-                return "protected_image_staged_non_authoritative"
+                return ("protected_image_batch_staged_non_authoritative"
+                        if attempt.writer_image_observations
+                        else "protected_image_staged_non_authoritative")
             attempt.writer_handoff_state = "retained_uncertain" if uncertain else "refused"
             if uncertain:
                 attempt.evidence_state = "uncertain"
