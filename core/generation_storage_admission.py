@@ -1633,7 +1633,9 @@ class WindowsProtectedStorageAdmissionCharacterization:
                                    else record.get("uncertain_completed_delta")
                                    if record is not None else None)
                     if (record is None or record.get("operation") is not operation
-                            or record.get("state") not in {"completed", "retained_uncertain"}
+                            or record.get("state") not in {
+                                "completed", "uncertain", "retained_uncertain",
+                            }
                             or type(binding) is not tuple or len(binding) != 3
                             or binding[0] is not asset_owner or binding[1] != attempts
                             or binding[2] is not observations

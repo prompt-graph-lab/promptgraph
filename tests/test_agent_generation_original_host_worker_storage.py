@@ -2666,6 +2666,135 @@ def test_profile_a_multi_image_writer_batch_uses_one_reservation_and_publishes_c
     assert not capacity._scope_lease._path.exists()
 
 
+def test_profile_a_multi_image_capacity_compensation_is_exactly_idempotent(
+        native_profile_a_worker_storage):
+    from core import generation_windows_protected_storage as windows
+    from test_comfy_output_containment import image_bytes
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _lifecycle, _worker, _prepared, _preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(
+            roots, capacity, reference, project_path, descriptor_count=2,
+        )
+    )
+    data = image_bytes()
+    provider = _WriterDownloadBatchProvider(data)
+
+    def capacity_row():
+        return next(item for item in capacity._ledger.readiness()["roots"]
+                    if item["purpose"] == "temporary_containment")
+
+    def retained_file_evidence(*, reopen=False):
+        observed = {}
+        root = roots["temporary_containment"]
+        for key, (path, handle, identity, _acl) in writer._files.items():
+            checked_handle = windows._open(path, False, root._api) if reopen else handle
+            try:
+                observed[key] = (
+                    path, path.read_bytes(), identity, windows._identity(checked_handle),
+                    windows._ordinary(path, directory=False),
+                    windows._acl(checked_handle, root._api, root._user),
+                )
+            finally:
+                if reopen:
+                    checked_handle.Close()
+        return observed
+
+    try:
+        observation, status = runtime.stage_generation_worker_remote_output_batch_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        )
+        assert observation is not None
+        assert status == "protected_image_batch_staged_non_authoritative"
+        observations = attempt.writer_image_observations
+        assert len(observations) == 2
+        assert observations is writer._profile_a_stream_batches[
+            (attempt.prepared.request_id, attempt.remote_receipt.identity)
+        ]
+        assert all(item.image.purpose == "temporary_containment"
+                   for item in observations)
+
+        files_before = retained_file_evidence()
+        assert len(files_before) == 2
+        assert all(row[1] == data and row[2] == row[3] == row[4]
+                   for row in files_before.values())
+        lease_path = capacity._scope_lease._path
+        assert capacity._scope_lease._state == "held" and lease_path.exists()
+        lease_identity_before = capacity._scope_lease._identity_value()
+        lease_acl_before = capacity._scope_lease._acl
+        assert lease_identity_before == capacity._scope_lease._identity
+        assert capacity._scope_lease._api[2].GetFileSize(
+            capacity._scope_lease._handle,
+        ) == 0
+
+        capacity.retain_completed_asset_stream_batch_uncertain_for_characterization(
+            attempt.capacity_operation, attempt.writer_admission, writer, observations,
+        )
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "uncertain"
+        assert capacity._ledger._operations[attempt.capacity_operation]["state"] == "uncertain"
+        first_row = capacity_row()
+        first_counters = (
+            first_row["reserved_bytes"], first_row["reserved_entries"],
+            first_row["observed_used_bytes"], first_row["observed_used_entries"],
+            first_row["retained_uncertain_bytes"], first_row["retained_uncertain_entries"],
+            tuple(capacity._ledger._observed["temporary_containment"]),
+            tuple(capacity._ledger._uncertain["temporary_containment"]),
+        )
+        assert first_counters == (
+            0, 0, 0, 0, 64 * 1024 * 1024, 2, (0, 0), (64 * 1024 * 1024, 2),
+        )
+
+        # Repeating only the exact owner/token/ordered-observation tuple is a
+        # no-op after the ledger's real terminal state became `uncertain`.
+        capacity.retain_completed_asset_stream_batch_uncertain_for_characterization(
+            attempt.capacity_operation, attempt.writer_admission, writer, observations,
+        )
+        second_row = capacity_row()
+        second_counters = (
+            second_row["reserved_bytes"], second_row["reserved_entries"],
+            second_row["observed_used_bytes"], second_row["observed_used_entries"],
+            second_row["retained_uncertain_bytes"], second_row["retained_uncertain_entries"],
+            tuple(capacity._ledger._observed["temporary_containment"]),
+            tuple(capacity._ledger._uncertain["temporary_containment"]),
+        )
+        assert second_counters == first_counters
+        assert capacity._scope_lease._state == "held"
+        assert (lease_path.exists()
+                and capacity._scope_lease._identity_value() == lease_identity_before
+                and capacity._scope_lease._acl == lease_acl_before
+                and capacity._scope_lease._api[2].GetFileSize(
+                    capacity._scope_lease._handle,
+                ) == 0)
+        assert retained_file_evidence() == files_before
+
+        with pytest.raises(ValueError, match="write_admission_unavailable"):
+            capacity.retain_completed_asset_stream_batch_uncertain_for_characterization(
+                attempt.capacity_operation, object(), writer, observations,
+            )
+        with pytest.raises(ValueError, match="write_admission_unavailable"):
+            capacity.retain_completed_asset_stream_batch_uncertain_for_characterization(
+                attempt.capacity_operation, attempt.writer_admission, writer,
+                tuple(reversed(observations)),
+            )
+        assert (
+            tuple(capacity._ledger._observed["temporary_containment"]),
+            tuple(capacity._ledger._uncertain["temporary_containment"]),
+        ) == ((0, 0), (64 * 1024 * 1024, 2))
+        assert retained_file_evidence() == files_before
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+
+    assert capacity._scope_lease._state == "retained_uncertain"
+    assert capacity._scope_lease._path.exists()
+    assert capacity._scope_lease._identity == lease_identity_before
+    assert capacity._scope_lease._acl == lease_acl_before
+    assert retained_file_evidence(reopen=True) == files_before
+
+
 def test_profile_a_multi_image_writer_failure_after_first_create_retains_whole_reservation(
         native_profile_a_worker_storage):
     from test_comfy_output_containment import image_bytes
