@@ -27,6 +27,7 @@ _MAX_OPERATION_BYTES = journal.MAX_OPERATION_BYTES + _JOURNAL_BYTES
 _MAX_INVENTORY_ENTRIES = 256
 _MAX_OPERATION_ENTRIES = 400
 _MAX_ASSET_ENTRIES = 16
+_PROFILE_A_DUAL_CUSTODY_ENTRIES = 32
 _MAX_JOURNAL_ENTRIES = 300
 _MAX_ROOT_FILE_BYTES = _MAX_OPERATION_BYTES
 _MAX_PROCESS_ACCOUNTING_SCOPES = 128
@@ -83,6 +84,29 @@ class CapacityEstimate:
     """Host-supplied upper bound; it is not an observed file measurement."""
     byte_upper_bound: int
     entry_upper_bound: int
+
+
+@dataclass(frozen=True)
+class _ProfileADualCustodyCapacityPolicy:
+    """Fixed Profile A-only staging-plus-promoted capacity profile."""
+    identity: str = "profile_a_dual_custody_16x16_v1"
+    temporary_entries: int = _MAX_ASSET_ENTRIES
+    promoted_entries: int = _MAX_ASSET_ENTRIES
+    combined_entries: int = _PROFILE_A_DUAL_CUSTODY_ENTRIES
+    shared_bytes: int = _ASSET_BYTES
+
+    def validate(self):
+        if (self.identity != "profile_a_dual_custody_16x16_v1"
+                or self.temporary_entries != _MAX_ASSET_ENTRIES
+                or self.promoted_entries != _MAX_ASSET_ENTRIES
+                or self.combined_entries != _PROFILE_A_DUAL_CUSTODY_ENTRIES
+                or self.shared_bytes != _ASSET_BYTES):
+            _fail("invalid_profile_a_dual_custody_policy")
+
+
+# Explicit identity token. Generic/legacy capture cannot receive this policy,
+# and the Profile A capture accepts only this exact immutable instance.
+PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY = _ProfileADualCustodyCapacityPolicy()
 
 
 @dataclass(frozen=True)
@@ -173,11 +197,21 @@ def _fits(current, amount, limit):
 class _CapacityLedger:
     """Portable accounting kernel. Tokens are exact object identities."""
 
-    def __init__(self, limits, *, owner_identity=None):
+    def __init__(self, limits, *, owner_identity=None, profile_a_asset_capacity_policy=None):
         if type(limits) is not ProtectedStorageCapacityLimits:
             _fail("invalid_capacity_limits")
         limits.validate()
+        if (profile_a_asset_capacity_policy is not None
+                and (profile_a_asset_capacity_policy is not PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+                     or getattr(owner_identity, "_profile_a_root_set", False) is not True
+                     or limits.shared_temporary_and_promoted_bytes
+                        != PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY.shared_bytes
+                     or limits.shared_temporary_and_promoted_entries != _MAX_ASSET_ENTRIES)):
+            _fail("profile_a_capacity_policy_mismatch")
+        if profile_a_asset_capacity_policy is not None:
+            profile_a_asset_capacity_policy.validate()
         self._limits = limits
+        self._profile_a_asset_capacity_policy = profile_a_asset_capacity_policy
         self._owner_identity = owner_identity
         self._lock = threading.RLock()
         self._closed = False
@@ -206,7 +240,7 @@ class _CapacityLedger:
                 if (len(entries) > _MAX_INVENTORY_ENTRIES
                         or total > _MAX_ROOT_FILE_BYTES
                         or not _fits(0, total, _limit_for(purpose, self._limits))
-                        or not _fits(0, len(entries), _limit_for(purpose, self._limits, entries=True))):
+                        or not _fits(0, len(entries), self._entry_limit_for(purpose))):
                     _fail("retained_inventory_over_capacity")
                 self._uncertain[purpose] = [total, len(entries)]
             shared_asset_bytes = sum(self._uncertain[p][0]
@@ -214,7 +248,7 @@ class _CapacityLedger:
             shared_asset_entries = sum(self._uncertain[p][1]
                                        for p in ("temporary_containment", "promoted_assets"))
             if (shared_asset_bytes > self._limits.shared_temporary_and_promoted_bytes
-                    or shared_asset_entries > self._limits.shared_temporary_and_promoted_entries):
+                    or shared_asset_entries > self._shared_asset_entry_limit()):
                 _fail("retained_inventory_over_capacity")
             self._available_free_bytes = self._validate_free_bytes(
                 available_free_bytes if available_free_bytes is not None else
@@ -249,7 +283,7 @@ class _CapacityLedger:
                 if not _fits(projected[purpose], byte_count, _limit_for(purpose, self._limits)):
                     _fail("storage_capacity_exceeded")
                 if not _fits(projected_entries[purpose], entry_count,
-                             _limit_for(purpose, self._limits, entries=True)):
+                             self._entry_limit_for(purpose)):
                     _fail("storage_entry_capacity_exceeded")
                 projected[purpose] += byte_count
                 projected_entries[purpose] += entry_count
@@ -266,7 +300,7 @@ class _CapacityLedger:
             asset_current_entries = sum(projected_entries[p]
                                         for p in ("temporary_containment", "promoted_assets"))
             if (asset_current > self._limits.shared_temporary_and_promoted_bytes
-                    or asset_current_entries > self._limits.shared_temporary_and_promoted_entries):
+                    or asset_current_entries > self._shared_asset_entry_limit()):
                 _fail("shared_asset_capacity_exceeded")
             token = _Opaque(_FACTORY)
             reservation = {"operation": operation, "estimates": normalized, "state": "reserved"}
@@ -758,6 +792,12 @@ class _CapacityLedger:
     def _require_live(self):
         if self._closed or self._invalid or self._inventory is None:
             _fail("storage_owner_unavailable")
+        policy = self._profile_a_asset_capacity_policy
+        if (policy is not None
+                and (policy is not PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+                     or self._limits.shared_temporary_and_promoted_bytes != policy.shared_bytes
+                     or self._limits.shared_temporary_and_promoted_entries != _MAX_ASSET_ENTRIES)):
+            _fail("profile_a_capacity_policy_mismatch")
 
     def _find_active_write(self, operation, write):
         record = next((item for item in self._reservations.values()
@@ -784,8 +824,7 @@ class _CapacityLedger:
         if self._active_write is record.get("write"):
             self._active_write = None
 
-    @staticmethod
-    def _inventory_delta(before, after):
+    def _inventory_delta(self, before, after):
         if type(before) is not dict or type(after) is not dict or set(before) != set(_WRITABLE) or set(after) != set(_WRITABLE):
             return None
         delta = {p: [0, 0] for p in _WRITABLE}
@@ -797,7 +836,8 @@ class _CapacityLedger:
                 if name not in new or new[name] != row:
                     return None
             additions = set(new) - set(old)
-            if len(new) > _MAX_INVENTORY_ENTRIES:
+            if (len(new) > _MAX_INVENTORY_ENTRIES
+                    or len(new) > self._entry_limit_for(purpose)):
                 return None
             for name in additions:
                 row = new[name]
@@ -806,6 +846,9 @@ class _CapacityLedger:
                     return None
                 delta[purpose][0] += row[1]
                 delta[purpose][1] += 1
+        if sum(len(after[purpose]) for purpose in ("temporary_containment", "promoted_assets")) \
+                > self._shared_asset_entry_limit():
+            return None
         return {p: tuple(value) for p, value in delta.items()}
 
     def _invalidate_locked(self):
@@ -821,12 +864,12 @@ class _CapacityLedger:
         shared_asset_entries = sum(self._reserved[p][1] + self._observed[p][1] + self._uncertain[p][1]
                                    for p in ("temporary_containment", "promoted_assets"))
         shared_asset_remaining = max(0, self._limits.shared_temporary_and_promoted_bytes - shared_asset_used)
-        shared_entry_remaining = max(0, self._limits.shared_temporary_and_promoted_entries - shared_asset_entries)
+        shared_entry_remaining = max(0, self._shared_asset_entry_limit() - shared_asset_entries)
         for purpose in _WRITABLE:
             reserved, observed, uncertain = (self._reserved[purpose], self._observed[purpose],
                                              self._uncertain[purpose])
             limit = _limit_for(purpose, self._limits)
-            entry_limit = _limit_for(purpose, self._limits, entries=True)
+            entry_limit = self._entry_limit_for(purpose)
             rows.append({"purpose": purpose,
                          "reserved_bytes": reserved[0], "reserved_entries": reserved[1],
                          "observed_used_bytes": observed[0], "observed_used_entries": observed[1],
@@ -844,8 +887,31 @@ class _CapacityLedger:
                 "promotion_available": False, "candidate_publication_allowed": False,
                 "authorship": "unverified", "disk_space_guaranteed": False,
                 "observed_free_bytes": self._available_free_bytes,
+                "asset_capacity_policy": self._asset_capacity_policy_identity(),
+                "shared_asset_entry_limit": self._shared_asset_entry_limit(),
+                "shared_asset_byte_limit": self._limits.shared_temporary_and_promoted_bytes,
                 "writer_integrated": False, "cross_process_quota": False,
                 "roots": rows}
+
+    def _entry_limit_for(self, purpose):
+        policy = self._profile_a_asset_capacity_policy
+        if policy is PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY:
+            if purpose == "temporary_containment":
+                return policy.temporary_entries
+            if purpose == "promoted_assets":
+                return policy.promoted_entries
+        return _limit_for(purpose, self._limits, entries=True)
+
+    def _shared_asset_entry_limit(self):
+        policy = self._profile_a_asset_capacity_policy
+        if policy is PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY:
+            return policy.combined_entries
+        return self._limits.shared_temporary_and_promoted_entries
+
+    def _asset_capacity_policy_identity(self):
+        policy = self._profile_a_asset_capacity_policy
+        return (policy.identity if policy is PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+                else "shared_temporary_promoted_16_v1")
 
 
 class WindowsProtectedStorageAdmissionCharacterization:
@@ -869,7 +935,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
     def capture_profile_a_root_set_for_characterization(
             cls, approved_scope, purpose_roots, *,
             characterization=False, disposable_opt_in=False,
-            limits=ProtectedStorageCapacityLimits()):
+            limits=ProtectedStorageCapacityLimits(), asset_capacity_policy=None):
         """Capture the four writable Profile A roots under the shared 17A ledger.
 
         The independently selected Project JSON is bound later by the
@@ -879,17 +945,27 @@ class WindowsProtectedStorageAdmissionCharacterization:
             approved_scope, purpose_roots, expected_purposes=_WRITABLE,
             characterization=characterization, disposable_opt_in=disposable_opt_in,
             limits=limits, profile_a=True,
+            asset_capacity_policy=asset_capacity_policy,
         )
 
     @classmethod
     def _capture_for_characterization(cls, approved_scope, purpose_roots, *,
                                       expected_purposes, characterization,
-                                      disposable_opt_in, limits, profile_a):
+                                      disposable_opt_in, limits, profile_a,
+                                      asset_capacity_policy=None):
         if characterization is not True or disposable_opt_in is not True:
             _fail("execution_unavailable")
         if type(limits) is not ProtectedStorageCapacityLimits:
             _fail("invalid_capacity_limits")
         limits.validate()
+        if asset_capacity_policy is not None:
+            if (not profile_a
+                    or asset_capacity_policy is not PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+                    or limits.shared_temporary_and_promoted_bytes
+                        != PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY.shared_bytes
+                    or limits.shared_temporary_and_promoted_entries != _MAX_ASSET_ENTRIES):
+                _fail("profile_a_capacity_policy_mismatch")
+            asset_capacity_policy.validate()
         scope = windows._path(approved_scope)
         if profile_a:
             roots = _validate_profile_a_root_set_shape(purpose_roots)
@@ -967,7 +1043,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 _PROCESS_ACCOUNTING_SCOPES.add(accounting_key)
                 registered = True
             owner = cls(scope, scope_identity, roots, limits, lease,
-                        profile_a=profile_a, _factory=_FACTORY)
+                        profile_a=profile_a, asset_capacity_policy=asset_capacity_policy,
+                        _factory=_FACTORY)
             inventory = owner._scan()
             free_bytes = owner._free_bytes()
             owner._ledger.set_initial_inventory(inventory, free_bytes)
@@ -987,14 +1064,18 @@ class WindowsProtectedStorageAdmissionCharacterization:
             raise
 
     def __init__(self, scope, scope_identity, roots, limits, scope_lease, *,
-                 profile_a=False, _factory=None):
+                 profile_a=False, asset_capacity_policy=None, _factory=None):
         if _factory is not _FACTORY:
             _fail("host_storage_required")
         self._scope, self._scope_identity = scope, scope_identity
         self._roots, self._limits = roots, limits
         self._scope_lease = scope_lease
         self._profile_a_root_set = profile_a is True
-        self._ledger = _CapacityLedger(limits, owner_identity=self)
+        self._asset_capacity_policy = asset_capacity_policy
+        self._ledger = _CapacityLedger(
+            limits, owner_identity=self,
+            profile_a_asset_capacity_policy=asset_capacity_policy,
+        )
         self._lock = threading.RLock()
         # A refresh owns this token only as a serialization marker. Native
         # filesystem observation runs after the mutex is released.
@@ -1009,6 +1090,18 @@ class WindowsProtectedStorageAdmissionCharacterization:
         self._asset_writer_integrated = False
         self._promotion_writer_integrated = False
         self._journal_writer_integrated = False
+
+    def _capacity_policy_binding_matches(self):
+        policy = getattr(self, "_asset_capacity_policy", None)
+        return bool(
+            getattr(self._ledger, "_profile_a_asset_capacity_policy", None) is policy
+            and (policy is None
+                 or (self._profile_a_root_set is True
+                     and policy is PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+                     and self._limits.shared_temporary_and_promoted_bytes
+                        == policy.shared_bytes
+                     and self._limits.shared_temporary_and_promoted_entries == _MAX_ASSET_ENTRIES))
+        )
 
     def begin_operation_for_characterization(self, operation_id):
         self._refresh()
@@ -2364,6 +2457,9 @@ class WindowsProtectedStorageAdmissionCharacterization:
                          "project_save_allowed": False, "cleanup_allowed": False,
                          "root_set_contract": ("profile_a_four_writable_roots"
                              if self._profile_a_root_set else "legacy_five_purpose_roots"),
+                         "asset_capacity_policy": self._ledger._asset_capacity_policy_identity(),
+                         "asset_capacity_policy_opted_in": self._asset_capacity_policy is
+                             PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY,
                          "scope_writer_lease": lease_status,
                          "scope_writer_lease_cross_process": True,
                          "project_reference": "bound_separately" if self._profile_a_root_set else "legacy_selected_purpose"})
@@ -2591,7 +2687,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
                     selected = list(entries)
             except OSError:
                 _fail("root_inventory_unavailable")
-            if len(selected) > _MAX_INVENTORY_ENTRIES:
+            if (len(selected) > _MAX_INVENTORY_ENTRIES
+                    or len(selected) > self._ledger._entry_limit_for(purpose)):
                 _fail("root_inventory_limit_exceeded")
             for entry in selected:
                 path = Path(entry.path)
@@ -2612,6 +2709,10 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         handle.Close()
                 except (OSError, ValueError):
                     _fail("root_inventory_unsafe")
+        if (sum(len(inventory[purpose]) for purpose in
+                ("temporary_containment", "promoted_assets"))
+                > self._ledger._shared_asset_entry_limit()):
+            _fail("root_inventory_limit_exceeded")
         self._check_roots()
         return inventory
 
@@ -2625,6 +2726,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
     def _require_live(self):
         if self._closed or self._invalid:
             _fail("storage_owner_unavailable")
+        if not self._capacity_policy_binding_matches():
+            _fail("profile_a_capacity_policy_mismatch")
 
     def _invalidate(self):
         self._ledger.close()

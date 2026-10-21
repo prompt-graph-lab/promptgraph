@@ -31,6 +31,132 @@ def _ready_ledger(limits=None, inventory=None):
     return result
 
 
+def _dual_custody_ledger(*, inventory=None, available_free_bytes=1024 * 1024 * 1024):
+    owner = SimpleNamespace(_profile_a_root_set=True)
+    ledger = admission._CapacityLedger(
+        admission.ProtectedStorageCapacityLimits(), owner_identity=owner,
+        profile_a_asset_capacity_policy=admission.PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY,
+    )
+    ledger.set_initial_inventory(inventory or _empty_inventory(), available_free_bytes)
+    return ledger
+
+
+def test_profile_a_dual_custody_ledger_reserves_sixteen_per_purpose_and_thirty_two_total():
+    ledger = _dual_custody_ledger()
+    staging_first = ledger.begin_operation("staging-first-eight")
+    staging_second = ledger.begin_operation("staging-second-eight")
+    promoted_first = ledger.begin_operation("promotion-first-eight")
+    promoted_second = ledger.begin_operation("promotion-second-eight")
+    ledger.reserve(staging_first, {"temporary_containment": admission.CapacityEstimate(8, 8)})
+    ledger.reserve(staging_second, {"temporary_containment": admission.CapacityEstimate(8, 8)})
+    ledger.reserve(promoted_first, {"promoted_assets": admission.CapacityEstimate(8, 8)})
+    ledger.reserve(promoted_second, {"promoted_assets": admission.CapacityEstimate(8, 8)})
+
+    summary = ledger.readiness()
+    by_purpose = {row["purpose"]: row for row in summary["roots"]}
+    assert summary["asset_capacity_policy"] == "profile_a_dual_custody_16x16_v1"
+    assert summary["shared_asset_entry_limit"] == 32
+    assert summary["shared_asset_byte_limit"] == 256 * 1024 * 1024
+    assert by_purpose["temporary_containment"]["reserved_entries"] == 16
+    assert by_purpose["promoted_assets"]["reserved_entries"] == 16
+    assert sum(by_purpose[p]["reserved_entries"] for p in (
+        "temporary_containment", "promoted_assets",
+    )) == 32
+
+    extra = ledger.begin_operation("staging-seventeenth")
+    with pytest.raises(ValueError, match="storage_entry_capacity_exceeded"):
+        ledger.reserve(extra, {"temporary_containment": admission.CapacityEstimate(1, 1)})
+    extra_promoted = ledger.begin_operation("promotion-seventeenth")
+    with pytest.raises(ValueError, match="storage_entry_capacity_exceeded"):
+        ledger.reserve(extra_promoted, {"promoted_assets": admission.CapacityEstimate(1, 1)})
+
+
+def test_profile_a_dual_custody_preserves_default_sixteen_combined_ledger_ceiling():
+    ledger = _ready_ledger(admission.ProtectedStorageCapacityLimits())
+    staging = ledger.begin_operation("legacy-staging-sixteen")
+    promoted = ledger.begin_operation("legacy-promotion-one")
+    ledger.reserve(staging, {"temporary_containment": admission.CapacityEstimate(16, 16)})
+    with pytest.raises(ValueError, match="shared_asset_capacity_exceeded"):
+        ledger.reserve(promoted, {"promoted_assets": admission.CapacityEstimate(1, 1)})
+
+
+def test_profile_a_dual_custody_refuses_aggregate_bytes_above_256_mib():
+    exact = _dual_custody_ledger(available_free_bytes=1024 * 1024 * 1024)
+    exact_staging = exact.begin_operation("staging-exact-128mib")
+    exact_promoted = exact.begin_operation("promotion-exact-128mib")
+    exact.reserve(exact_staging, {"temporary_containment": admission.CapacityEstimate(
+        128 * 1024 * 1024, 1,
+    )})
+    exact.reserve(exact_promoted, {"promoted_assets": admission.CapacityEstimate(
+        128 * 1024 * 1024, 1,
+    )})
+    assert exact.readiness()["shared_asset_byte_limit"] == 256 * 1024 * 1024
+
+    ledger = _dual_custody_ledger(available_free_bytes=1024 * 1024 * 1024)
+    staging = ledger.begin_operation("staging-128mib")
+    promoted = ledger.begin_operation("promotion-over-128mib")
+    ledger.reserve(staging, {"temporary_containment": admission.CapacityEstimate(
+        128 * 1024 * 1024, 1,
+    )})
+    with pytest.raises(ValueError, match="shared_asset_capacity_exceeded"):
+        ledger.reserve(promoted, {"promoted_assets": admission.CapacityEstimate(
+            128 * 1024 * 1024 + 1, 1,
+        )})
+
+
+def test_profile_a_dual_custody_refuses_reservation_beyond_observed_free_bytes():
+    ledger = _dual_custody_ledger(available_free_bytes=256 * 1024 * 1024 - 1)
+    staging = ledger.begin_operation("staging-observed-free-half")
+    promoted = ledger.begin_operation("promotion-observed-free-over")
+    ledger.reserve(staging, {"temporary_containment": admission.CapacityEstimate(
+        128 * 1024 * 1024, 1,
+    )})
+    with pytest.raises(ValueError, match="observed_free_capacity_insufficient"):
+        ledger.reserve(promoted, {"promoted_assets": admission.CapacityEstimate(
+            128 * 1024 * 1024, 1,
+        )})
+
+
+def test_profile_a_dual_custody_counts_initial_unknown_entries_as_uncertain():
+    inventory = _empty_inventory()
+    for purpose in ("temporary_containment", "promoted_assets"):
+        inventory[purpose] = {
+            f"{index:032x}.png": ((1, index + 1), 1, ("protected-acl",))
+            for index in range(16)
+        }
+    ledger = _dual_custody_ledger(inventory=inventory)
+    rows = {row["purpose"]: row for row in ledger.readiness()["roots"]}
+    assert rows["temporary_containment"]["retained_uncertain_entries"] == 16
+    assert rows["promoted_assets"]["retained_uncertain_entries"] == 16
+    assert ledger.readiness()["shared_asset_entry_limit"] == 32
+
+    inventory["temporary_containment"]["00000000000000000000000000000010.png"] = (
+        (1, 99), 1, ("protected-acl",),
+    )
+    with pytest.raises(ValueError, match="retained_inventory_over_capacity"):
+        _dual_custody_ledger(inventory=inventory)
+
+
+def test_profile_a_dual_custody_native_inventory_delta_enforces_each_root_and_combined_caps():
+    ledger = _dual_custody_ledger()
+    inventory = _empty_inventory()
+    for purpose in ("temporary_containment", "promoted_assets"):
+        inventory[purpose] = {
+            f"{index:032x}.png": ((1, index + (1 if purpose == "promoted_assets" else 0)), 1,
+                                   ("protected-acl",))
+            for index in range(16)
+        }
+    delta = ledger._inventory_delta(_empty_inventory(), inventory)
+    assert delta["temporary_containment"] == (16, 16)
+    assert delta["promoted_assets"] == (16, 16)
+
+    over_temporary = {purpose: dict(rows) for purpose, rows in inventory.items()}
+    over_temporary["temporary_containment"]["ffffffffffffffffffffffffffffffff.png"] = (
+        (1, 100), 1, ("protected-acl",),
+    )
+    assert ledger._inventory_delta(_empty_inventory(), over_temporary) is None
+
+
 def _journal_replacement_rig(*, limits=None, inventory=None, operation_id="journal-operation"):
     limits = limits or admission.ProtectedStorageCapacityLimits(
         journal_bytes=admission._JOURNAL_BYTES,

@@ -14,7 +14,8 @@ from core.comfy_http_history import PromptHTTPHistoryTransport
 from core.comfy_http_submission import PromptHTTPSubmissionTransport
 from core.comfy_prompt_request import prepare_frozen_prompt_request
 from core.generation_storage_admission import (
-    CapacityEstimate, ProtectedStorageCapacityLimits,
+    CapacityEstimate, PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY,
+    ProtectedStorageCapacityLimits,
     WindowsProtectedStorageAdmissionCharacterization, _CapacityLedger,
 )
 from core.generation_windows_protected_storage import (
@@ -433,6 +434,48 @@ def native_profile_a_worker_storage(tmp_path):
         )
         owner = WindowsProtectedStorageAdmissionCharacterization.capture_profile_a_root_set_for_characterization(
             str(scope), roots, characterization=True, disposable_opt_in=True,
+        )
+        yield roots, owner, reference, project_path
+    finally:
+        if owner is not None:
+            owner.close()
+        if reference is not None:
+            reference.close()
+        for root in roots.values():
+            root.close()
+
+
+@pytest.fixture
+def native_profile_a_dual_custody_worker_storage(tmp_path):
+    import sys
+
+    from core import generation_windows_protected_storage as windows
+
+    if sys.platform != "win32":
+        pytest.skip("Windows native characterization only")
+    pytest.importorskip("win32security")
+    api = windows._api()
+    user = windows._current_user(api)
+    scope = tmp_path / "worker-profile-a-dual-custody-scope"
+    api[2].CreateDirectory(str(scope), windows._security_attributes(api, user))
+    roots = {}
+    owner = reference = None
+    try:
+        for purpose in _PROFILE_A_PURPOSES:
+            path = scope / purpose
+            api[2].CreateDirectory(str(path), windows._security_attributes(api, user))
+            roots[purpose] = windows.WindowsProtectedRootCharacterization.capture_for_characterization(
+                str(scope), str(path), purpose,
+                characterization=True, disposable_opt_in=True,
+            )
+        project_path = tmp_path / "ordinary-selected-project-dual-custody.json"
+        project_path.write_text('{"disposable":true}', encoding="utf-8")
+        reference = windows.WindowsProjectJsonReferenceCharacterization.capture_for_characterization(
+            str(project_path), characterization=True, disposable_opt_in=True,
+        )
+        owner = WindowsProtectedStorageAdmissionCharacterization.capture_profile_a_root_set_for_characterization(
+            str(scope), roots, characterization=True, disposable_opt_in=True,
+            asset_capacity_policy=PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY,
         )
         yield roots, owner, reference, project_path
     finally:
@@ -2373,6 +2416,98 @@ def test_profile_a_promotion_preflight_refuses_full_batch_entry_capacity(
     writer.close()
     runtime.close()
     runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_dual_custody_preflights_exact_sixteen_image_batch_without_promotion_write(
+        native_profile_a_dual_custody_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=16,
+    )
+    accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    assert len(writer._files) == 16
+    with pytest.raises(ValueError, match="profile_a_writer_handoff_required"):
+        writer.create_image_for_characterization("promoted_assets", data)
+    with pytest.raises(ValueError, match="profile_a_writer_handoff_required"):
+        writer.create_image_with_admission_for_characterization(
+            capacity, "unissued-promotion-operation", "promoted_assets", data,
+            characterization=True, disposable_opt_in=True,
+        )
+    before_files = dict(writer._files)
+    before_stream_attempts = tuple(writer._stream_attempts)
+    before_provider_lookups = tuple(provider.lookups)
+    before_provider_streams = tuple(provider.streams)
+    before_promotions = dict(writer._stream_promotions)
+    before_promotion_entries = set(path.name for path in roots["promoted_assets"]._path.iterdir())
+
+    result, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    )
+
+    assert status == "protected_promotion_preflight_non_authoritative"
+    assert result is not None and result.reserved_image_count == 16
+    assert result.execution_available is False
+    assert result.protected_storage_available is False
+    assert result.promotion_available is False
+    assert result.candidate_publication_allowed is False
+    assert result.project_save_allowed is False
+    assert result.authorship == "unverified"
+    assert tuple(provider.lookups) == before_provider_lookups
+    assert tuple(provider.streams) == before_provider_streams
+    assert tuple(writer._stream_attempts) == before_stream_attempts
+    assert writer._files == before_files
+    assert writer._stream_promotions == before_promotions
+    assert set(path.name for path in roots["promoted_assets"]._path.iterdir()) == before_promotion_entries == set()
+
+    capacity_view = capacity.readiness()
+    assert capacity_view["asset_capacity_policy"] == "profile_a_dual_custody_16x16_v1"
+    assert capacity_view["shared_asset_entry_limit"] == 32
+    assert capacity_view["shared_asset_byte_limit"] == 256 * 1024 * 1024
+    rows = {row["purpose"]: row for row in capacity_view["roots"]}
+    assert rows["temporary_containment"]["observed_used_entries"] == 16
+    assert rows["temporary_containment"]["observed_used_bytes"] == len(data) * 16
+    assert rows["promoted_assets"]["reserved_entries"] == 16
+    assert rows["promoted_assets"]["reserved_bytes"] == len(data) * 16
+    assert (rows["temporary_containment"]["observed_used_entries"]
+            + rows["promoted_assets"]["reserved_entries"]) == 32
+    assert (rows["temporary_containment"]["observed_used_bytes"]
+            + rows["promoted_assets"]["reserved_bytes"]) == len(data) * 32
+
+    writer_view = writer.readiness()
+    assert writer_view["asset_capacity_policy"] == "profile_a_dual_custody_16x16_v1"
+    assert writer_view["inventory_entry_limit"] == 32
+    assert writer_view["purpose_entry_limits"] == {
+        "temporary_containment": 16, "promoted_assets": 16,
+    }
+    assert writer_view["retained_file_count"] == 16
+    assert len(writer._inventory()) == 16
+    assert {purpose for purpose, _root, _path in writer._inventory()} == {"temporary_containment"}
+
+    runtime.close()
+    assert attempt.promotion_preflight_state == "cancelled"
+    assert capacity._ledger._reservations[attempt.promotion_capacity_reservation]["state"] == "cancelled"
+    assert writer._files == before_files
+    assert writer._stream_promotions == before_promotions
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_dual_custody_writer_rejects_ad_hoc_containment_limits_before_borrow(
+        native_profile_a_dual_custody_worker_storage):
+    from core.comfy_output_containment import ContainmentLimits
+    from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+
+    roots, capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    with pytest.raises(ValueError, match="profile_a_capacity_policy_mismatch"):
+        WindowsProtectedAssetsCharacterization.borrow_profile_a_writer_for_characterization(
+            capacity,
+            limits=replace(ContainmentLimits(), images=15),
+            characterization=True, disposable_opt_in=True,
+        )
 
 
 def test_profile_a_promotion_preflight_close_cancels_only_destination_reservation(
