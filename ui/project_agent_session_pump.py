@@ -8,6 +8,7 @@ service point; neither the mailbox nor the fragment can capture a Project.
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import threading
+import uuid
 
 import streamlit as st
 from ui.agent_generation_review_custody import AgentGenerationReviewCustodian
@@ -1108,6 +1109,274 @@ class ProjectAgentSessionRuntime:
         except Exception:
             integration._retain_profile_a_acceptance_uncertain(attempt, marker)
             return None, "protected_acceptance_failed"
+
+    def preflight_generation_worker_accepted_output_promotion_for_characterization(
+            self, acceptance_observation, *, characterization=False,
+            disposable_opt_in=False):
+        """Reserve destination capacity for an exact settled Profile A batch.
+
+        This is a bounded preflight only. It performs no CREATE_NEW, image
+        copy, Promotion receipt publication, Candidate action or Project save.
+        The opaque reservation remains private to the original Host/storage
+        integration and is never a writer token.
+        """
+        from core.comfy_output_containment import AcceptedProtectedOutputBatch
+        from core.generation_storage_admission import (
+            CapacityEstimate, WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.generation_windows_protected_assets import (
+            VerifiedProtectedImageObservation, WindowsProtectedAssetsCharacterization,
+        )
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedAcceptanceObservation,
+            GenerationWorkerProtectedPromotionPreflightObservation,
+            OriginalHostWorkerStorageIntegration,
+            _MAX_WRITER_IMAGE_BYTES, _MAX_WRITER_REQUEST_BYTES,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if type(acceptance_observation) is not GenerationWorkerProtectedAcceptanceObservation:
+            return None, "protected_promotion_preflight_observation_invalid"
+
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+                                if lifecycle_snapshot is not None else None)
+        if (type(integration_snapshot) is not OriginalHostWorkerStorageIntegration
+                or integration_snapshot._profile_a is not True
+                or type(integration_snapshot._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "profile_a_promotion_preflight_unavailable"
+
+        captured = {}
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not lifecycle_snapshot):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_preflight():
+                    started, status = integration_snapshot._begin_profile_a_promotion_preflight_locked(
+                        lifecycle, acceptance_observation,
+                    )
+                    if started is not None:
+                        (attempt, marker, evidence, writer_observation, accepted_observation,
+                         writer, capacity, envelope, prepared, remote, acceptance_owner,
+                         accepted, observations) = started
+                        captured.update({
+                            "lifecycle": lifecycle, "integration": integration_snapshot,
+                            "attempt": attempt, "marker": marker, "evidence": evidence,
+                            "writer_observation": writer_observation,
+                            "acceptance_observation": accepted_observation,
+                            "writer": writer, "capacity": capacity,
+                            "envelope": envelope, "prepared": prepared, "remote": remote,
+                            "acceptance_owner": acceptance_owner, "accepted": accepted,
+                            "observations": observations,
+                            "project_reference": integration_snapshot._project_reference,
+                            "purpose_roots": integration_snapshot._purpose_roots,
+                            "pairing_generation": lifecycle._pairing_generation,
+                        })
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation, on_current=begin_preflight,
+                )
+                if not type(start_result) is tuple or start_result is False:
+                    return None, "host_evidence_unavailable"
+                started, status = start_result
+                if started is None:
+                    return None, status
+
+        integration = captured["integration"]
+        attempt, marker = captured["attempt"], captured["marker"]
+        writer, capacity = captured["writer"], captured["capacity"]
+        acceptance_owner, accepted = captured["acceptance_owner"], captured["accepted"]
+        reservation = operation = estimate = None
+
+        def with_current_host(on_current):
+            with self._publication_gate:
+                if (self._closed
+                        or self._generation_original_host_lifecycle is not captured["lifecycle"]):
+                    return False
+                with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                    if lifecycle is not captured["lifecycle"]:
+                        return False
+                    result = self._generation_original_host_evidence_current_locked(
+                        lifecycle, captured["pairing_generation"], on_current=on_current,
+                    )
+                    return result is True
+
+        def promotion_host_freshness(envelope, remote):
+            if (envelope is not captured["envelope"]
+                    or remote is not captured["remote"]):
+                return False
+            return with_current_host(lambda: integration._profile_a_promotion_preflight_matches_locked(
+                captured["lifecycle"], attempt, marker, captured["evidence"],
+                captured["writer_observation"], captured["acceptance_observation"],
+                writer,
+                operation=operation, reservation=reservation, estimate=estimate,
+            ))
+
+        def cancel_reservation():
+            if operation is None or reservation is None:
+                with integration._lock:
+                    if (integration._storage_preadmission_attempts.get(
+                            attempt.lease.request_index) is attempt
+                            and attempt.promotion_preflight_state in {
+                                "in_progress", "cancellation_requested",
+                            }):
+                        attempt.promotion_preflight_state = "refused"
+                        attempt.promotion_preflight_marker = None
+                return "no_reservation"
+            try:
+                capacity.cancel_before_write_for_characterization(operation, reservation)
+            except Exception:
+                with integration._lock:
+                    if integration._storage_preadmission_attempts.get(
+                            attempt.lease.request_index) is attempt:
+                        attempt.promotion_preflight_state = "retained_uncertain"
+                        attempt.promotion_preflight_marker = None
+                return "retained_uncertain"
+            with integration._lock:
+                if integration._storage_preadmission_attempts.get(
+                        attempt.lease.request_index) is attempt:
+                    attempt.promotion_preflight_state = (
+                        "cancelled" if attempt.promotion_preflight_state == "cancellation_requested"
+                        else "refused"
+                    )
+                    attempt.promotion_preflight_marker = None
+            return "cancelled_before_write"
+
+        try:
+            # The Acceptance owner verifies all staging bytes and calls this
+            # settled-state Host gate outside its own/native locks.
+            acceptance_owner._inspect_for_promotion_preflight_for_characterization(
+                accepted, promotion_host_freshness,
+            )
+            descriptors = tuple(captured["remote"].images)
+            observations = captured["observations"]
+            if (not 1 <= len(descriptors) <= 16
+                    or len(observations) != len(descriptors)
+                    or tuple(item.descriptor_identity for item in observations)
+                        != tuple(item.identity for item in descriptors)
+                    or any(type(item) is not VerifiedProtectedImageObservation
+                           or item.image.purpose != "temporary_containment"
+                           for item in observations)):
+                raise ValueError("protected_promotion_preflight_incomplete")
+            total_bytes = 0
+            maximum_request = min(
+                _MAX_WRITER_REQUEST_BYTES,
+                capacity._limits.shared_temporary_and_promoted_bytes,
+            )
+            for item in observations:
+                amount = item.image.byte_count
+                if (type(amount) is not int or amount <= 0
+                        or amount > min(_MAX_WRITER_IMAGE_BYTES,
+                                        capacity._limits.shared_temporary_and_promoted_bytes)
+                        or total_bytes > maximum_request - amount):
+                    raise ValueError("storage_capacity_exceeded")
+                total_bytes += amount
+            estimate = CapacityEstimate(total_bytes, len(observations))
+
+            capacity_view = capacity.readiness()
+            project_view = captured["project_reference"].readiness()
+            writer_view = writer.readiness()
+            if (capacity_view.get("status") != "characterization_only"
+                    or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                    or capacity_view.get("scope_writer_lease") != "held"
+                    or project_view.get("status") != "read_only_reference_observed"
+                    or writer_view.get("asset_observation") != "observed"
+                    or not writer._is_fresh_profile_a_writer_for_handoff(
+                        capacity, captured["purpose_roots"], integration=integration)):
+                raise ValueError("protected_promotion_preflight_storage_unavailable")
+
+            operation_id = f"{integration._operation_id}:promotion:{uuid.uuid4().hex}"
+            operation = capacity.begin_operation_for_characterization(operation_id)
+            reservation = capacity.reserve_for_characterization(operation, {
+                "promoted_assets": estimate,
+            })
+            if not capacity._profile_a_promotion_reservation_is_live_for_characterization(
+                    operation, reservation, writer, estimate):
+                raise ValueError("protected_promotion_preflight_reservation_unavailable")
+
+            # Revalidate the accepted staging batch and all native roots after
+            # reservation. This seam still cannot turn that reservation into
+            # an actionable Writer token.
+            acceptance_owner._inspect_for_promotion_preflight_for_characterization(
+                accepted, promotion_host_freshness,
+            )
+            capacity_view = capacity.readiness()
+            project_view = captured["project_reference"].readiness()
+            writer_view = writer.readiness()
+            if (capacity_view.get("status") != "characterization_only"
+                    or capacity_view.get("scope_writer_lease") != "held"
+                    or project_view.get("status") != "read_only_reference_observed"
+                    or writer_view.get("asset_observation") != "observed"
+                    or not writer._is_fresh_profile_a_writer_for_handoff(
+                        capacity, captured["purpose_roots"], integration=integration)):
+                raise ValueError("protected_promotion_preflight_storage_changed")
+
+            with self._publication_gate:
+                if (self._closed
+                        or self._generation_original_host_lifecycle is not captured["lifecycle"]):
+                    final = None
+                else:
+                    with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                        if lifecycle is captured["lifecycle"]:
+                            final = self._generation_original_host_evidence_current_locked(
+                                lifecycle, captured["pairing_generation"],
+                                on_current=lambda: integration._publish_profile_a_promotion_preflight_locked(
+                                    lifecycle, attempt, marker, captured["evidence"],
+                                    captured["writer_observation"],
+                                    captured["acceptance_observation"], writer, capacity,
+                                    operation, reservation, estimate,
+                                ),
+                            )
+                        else:
+                            final = None
+            if (type(final) is tuple and len(final) == 2
+                    and type(final[0]) is GenerationWorkerProtectedPromotionPreflightObservation):
+                return final
+            cancel_reservation()
+            if type(final) is tuple and len(final) > 1 and type(final[1]) is str:
+                return None, final[1]
+            return None, "protected_promotion_preflight_host_changed"
+        except Exception as error:
+            cancel_reservation()
+            safe = {
+                "storage_capacity_exceeded", "storage_entry_capacity_exceeded",
+                "shared_asset_capacity_exceeded", "observed_free_capacity_insufficient",
+                "operation_capacity_exceeded", "operation_entry_capacity_exceeded",
+                "protected_promotion_preflight_incomplete",
+            }
+            code = str(error)
+            return None, code if code in safe else "protected_promotion_preflight_refused"
+
+    def cancel_generation_worker_promotion_preflight_for_characterization(self, observation):
+        """Release only this Host's exact pre-CREATE_NEW Promotion reservation."""
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedPromotionPreflightObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        if type(observation) is not GenerationWorkerProtectedPromotionPreflightObservation:
+            return "invalid_promotion_preflight"
+        lifecycle = self._generation_original_host_lifecycle
+        integration = getattr(lifecycle, "_worker_storage_integration", None) if lifecycle else None
+        if (type(integration) is not OriginalHostWorkerStorageIntegration
+                or integration._profile_a is not True
+                or observation._issuer is not integration):
+            return "foreign_promotion_preflight"
+        with integration._lock:
+            attempt = integration._storage_preadmission_attempts.get(observation.request_index)
+            if (attempt is None or attempt.promotion_preflight_observation is not observation
+                    or observation._attempt_nonce != attempt.lease.nonce):
+                return "foreign_promotion_preflight"
+        return integration._cancel_profile_a_promotion_preflight_reservation(
+            attempt, observation,
+        )
 
     def stage_generation_worker_remote_output_with_protected_writer_for_characterization(
             self, evidence, writer_owner, *, stream_provider,

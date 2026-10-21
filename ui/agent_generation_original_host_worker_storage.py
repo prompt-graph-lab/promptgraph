@@ -170,6 +170,23 @@ class GenerationWorkerProtectedAcceptanceObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerProtectedPromotionPreflightObservation:
+    """Count-only reservation result; it authorizes no protected write."""
+
+    status: str
+    request_index: int
+    reserved_image_count: int
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+    _issuer: object = field(default=None, repr=False, compare=False)
+    _attempt_nonce: str = field(default="", repr=False, compare=False)
+
+
+@dataclass(frozen=True)
 class GenerationWorkerRemoteOutputWriterEvidence:
     """Exact remote-history evidence; never an actionable storage capability."""
 
@@ -235,6 +252,13 @@ class _StoragePreAdmissionAttempt:
     acceptance_host_freshness: object = None
     acceptance_owner: object = None
     accepted_batch: object = None
+    acceptance_observation: object = None
+    promotion_preflight_state: str = "not_started"
+    promotion_preflight_marker: object = None
+    promotion_preflight_observation: object = None
+    promotion_capacity_operation: object = None
+    promotion_capacity_reservation: object = None
+    promotion_capacity_estimate: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -1223,6 +1247,99 @@ class OriginalHostWorkerStorageIntegration:
                             attempt.capacity_operation, attempt.reservation,
                             attempt.writer_admission, observations), "acceptance_claimed"
 
+    def _begin_profile_a_promotion_preflight_locked(self, lifecycle, observation):
+        """Claim a private capacity-only preflight for one exact settled Acceptance."""
+        from core.comfy_output_containment import AcceptedProtectedOutputBatch
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+        from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+
+        if (not self._profile_a
+                or type(observation) is not GenerationWorkerProtectedAcceptanceObservation
+                or observation.status != "protected_image_batch_accepted_non_authoritative"):
+            return None, "protected_promotion_preflight_unavailable"
+        with lifecycle._lock:
+            writer = self._profile_a_writer_owner
+            capacity = self._capacity_owner
+            if (type(writer) is not WindowsProtectedAssetsCharacterization
+                    or type(capacity) is not WindowsProtectedStorageAdmissionCharacterization):
+                return None, "protected_promotion_preflight_unavailable"
+            with writer._lock:
+                with capacity._lock:
+                    with self._lock:
+                        attempt = self._storage_preadmission_attempts.get(observation.request_index)
+                        if (lifecycle._worker_storage_integration is not self
+                                or lifecycle._state != "bound_non_executing"
+                                or lifecycle._generation != self._lifecycle_generation
+                                or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                                or not self._root_binding_matches()
+                                or self._state != "bound_non_executing"
+                                or attempt is None or attempt.state != "pre_admitted"
+                                or attempt.cancel_requested
+                                or attempt.evidence_state != "evidence_published"
+                                or attempt.writer_handoff_state != "staged_non_authoritative"
+                                or attempt.acceptance_state != "accepted_non_authoritative"
+                                or attempt.acceptance_observation is not observation
+                                or attempt.writer_observation is None
+                                or attempt.writer_owner is not writer
+                                or attempt.acceptance_owner is None
+                                or attempt.accepted_batch is None
+                                or attempt.promotion_preflight_state != "not_started"
+                                or attempt.promotion_capacity_operation is not None
+                                or attempt.promotion_capacity_reservation is not None):
+                            return None, "protected_promotion_preflight_evidence_unavailable"
+                        from core.comfy_output_containment import ProtectedOutputAcceptanceCharacterization
+                        accepted = attempt.accepted_batch
+                        acceptance_owner = attempt.acceptance_owner
+                        remote, prepared = attempt.remote_receipt, attempt.prepared
+                        observations = attempt.acceptance_observations
+                        if (type(acceptance_owner) is not ProtectedOutputAcceptanceCharacterization
+                                or type(accepted) is not AcceptedProtectedOutputBatch
+                                or acceptance_owner._protected_owner is not writer
+                                or acceptance_owner._receipt is not accepted
+                                or accepted._protected_owner is not writer
+                                or accepted._envelope is not lifecycle._envelope
+                                or accepted._prepared is not prepared
+                                or accepted._remote is not remote
+                                or accepted._batch_receipt.observations is not observations
+                                or accepted.image_count != observation.accepted_image_count
+                                or not 1 <= observation.accepted_image_count <= _MAX_WRITER_IMAGES
+                                or type(observations) is not tuple
+                                or len(observations) != observation.accepted_image_count
+                                or tuple(item.descriptor_identity for item in observations)
+                                    != tuple(item.identity for item in remote.images)):
+                            return None, "protected_promotion_preflight_evidence_unavailable"
+                        key = (prepared.request_id, remote.identity)
+                        binding = writer._profile_a_stream_batch_receipt_bindings.get(key)
+                        if (writer._closed or writer._revoking or writer._invalid or writer._uncertain
+                                or writer._stream_batch_acceptances.get(key) is not accepted
+                                or type(binding) is not tuple or len(binding) != 10
+                                or binding[0] is not self or binding[1] is not attempt
+                                or binding[2] is not attempt.acceptance_marker
+                                or binding[3] is not attempt.evidence
+                                or binding[4] is not capacity
+                                or binding[5] is not attempt.capacity_operation
+                                or binding[6] is not attempt.reservation
+                                or binding[7] is not attempt.writer_admission
+                                or binding[8] is not observations
+                                or binding[9] is not attempt.acceptance_host_freshness
+                                or capacity._closed or capacity._invalid
+                                or capacity._scope_lease is None
+                                or capacity._scope_lease._state != "held"):
+                            return None, "protected_promotion_preflight_evidence_unavailable"
+                        with acceptance_owner._lock:
+                            if (acceptance_owner._closed or acceptance_owner._revoking
+                                    or acceptance_owner._invalid or acceptance_owner._uncertain
+                                    or acceptance_owner._busy or acceptance_owner._receipt is not accepted):
+                                return None, "protected_promotion_preflight_acceptance_unavailable"
+                        marker = object()
+                        attempt.promotion_preflight_state = "in_progress"
+                        attempt.promotion_preflight_marker = marker
+                        return (attempt, marker, attempt.evidence, attempt.writer_observation,
+                                observation, writer, capacity, lifecycle._envelope,
+                                prepared, remote, acceptance_owner, accepted, observations), (
+                                    "promotion_preflight_claimed"
+                                )
+
     def _bind_profile_a_acceptance_freshness(self, attempt, marker, callback):
         if not callable(callback):
             return False
@@ -1260,6 +1377,203 @@ class OriginalHostWorkerStorageIntegration:
             ) is True
         except Exception:
             return False
+
+    def _profile_a_promotion_preflight_matches_locked(
+            self, lifecycle, attempt, marker, evidence, writer_observation,
+            acceptance_observation, writer_owner, *, operation=None, reservation=None,
+            estimate=None):
+        """Freshness gate for the already-settled Acceptance-to-Promotion preflight.
+
+        This deliberately does not reuse the in-progress Acceptance predicate.
+        It accepts only the exact settled count observation and privately
+        retained AcceptedProtectedOutputBatch while the same Host, Claim,
+        Project, Worker completion, roots, Writer and completed staging record
+        remain current.
+        """
+        from core.comfy_output_containment import AcceptedProtectedOutputBatch
+        from core.generation_storage_admission import CapacityEstimate
+        from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+
+        if (attempt.promotion_preflight_state != "in_progress"
+                or attempt.promotion_preflight_marker is not marker
+                or attempt.acceptance_state != "accepted_non_authoritative"
+                or attempt.acceptance_observation is not acceptance_observation
+                or attempt.writer_observation is not writer_observation
+                or attempt.writer_owner is not writer_owner
+                or not self._writer_handoff_matches_locked(
+                    lifecycle, attempt, attempt.writer_handoff_marker,
+                    evidence, writer_owner, states={"staged_non_authoritative"})):
+            return False
+        history, remote, prepared = (
+            attempt.history_completion, attempt.remote_receipt, attempt.prepared,
+        )
+        if (history is None or remote is None or prepared is None
+                or getattr(history, "kind", None) != "history"
+                or getattr(getattr(history, "outcome", None), "status", None) != "ready"
+                or getattr(getattr(history, "outcome", None), "history_json", None)
+                    != attempt.history_json
+                or attempt.history_json != remote._validated_history_json
+                or attempt.accepted_prompt_id != remote.prompt_id
+                or remote.execution_succeeded is not True):
+            return False
+        accepted, acceptance_owner = attempt.accepted_batch, attempt.acceptance_owner
+        if (type(accepted) is not AcceptedProtectedOutputBatch
+                or acceptance_owner is None
+                or accepted._protected_owner is not writer_owner
+                or accepted._prepared is not prepared
+                or accepted._remote is not remote
+                or accepted._batch_receipt.observations is not attempt.acceptance_observations
+                or accepted.image_count != acceptance_observation.accepted_image_count):
+            return False
+        try:
+            with acceptance_owner._lock:
+                if (acceptance_owner._closed or acceptance_owner._revoking
+                        or acceptance_owner._invalid or acceptance_owner._uncertain
+                        or acceptance_owner._busy or acceptance_owner._receipt is not accepted
+                        or accepted._host_freshness is not attempt.acceptance_host_freshness):
+                    return False
+        except Exception:
+            return False
+        try:
+            if self._worker._run_if_issued_completion_for_prepared_request_for_characterization(
+                    history, prepared, self._worker_owner_claim, lambda: True) is not True:
+                return False
+        except Exception:
+            return False
+
+        # The original staging reservation stays completed and is checked
+        # against the exact same ordered image observations; this preflight
+        # reserves destination capacity only and never consumes another 19D write.
+        try:
+            capacity = self._capacity_owner
+            if (type(writer_owner) is not WindowsProtectedAssetsCharacterization
+                    or capacity is None):
+                return False
+            if len(attempt.acceptance_observations) == 1:
+                staging_matches = capacity._asset_stream_write_completed_for_characterization(
+                    attempt.capacity_operation, attempt.writer_admission, writer_owner,
+                    (prepared.request_id, remote.images[0].identity),
+                    attempt.acceptance_observations[0],
+                )
+            else:
+                staging_matches = capacity._asset_stream_image_batch_write_completed_for_characterization(
+                    attempt.capacity_operation, attempt.writer_admission, writer_owner,
+                    attempt.acceptance_observations,
+                )
+            if staging_matches is not True:
+                return False
+            if operation is not None or reservation is not None or estimate is not None:
+                if (operation is None or reservation is None or type(estimate) is not CapacityEstimate
+                        or not capacity._profile_a_promotion_reservation_is_live_for_characterization(
+                            operation, reservation, writer_owner, estimate)):
+                    return False
+        except Exception:
+            return False
+        return True
+
+    def _publish_profile_a_promotion_preflight_locked(
+            self, lifecycle, attempt, marker, evidence, writer_observation,
+            acceptance_observation, writer_owner, capacity_owner, operation,
+            reservation, estimate):
+        """Publish only a count-only reservation observation under the host gate."""
+        if (type(capacity_owner) is not type(self._capacity_owner)
+                or self._capacity_owner is not capacity_owner
+                or self._profile_a_promotion_preflight_matches_locked(
+                    lifecycle, attempt, marker, evidence, writer_observation,
+                    acceptance_observation, writer_owner, operation=operation,
+                    reservation=reservation, estimate=estimate) is not True):
+            return None, "protected_promotion_preflight_host_changed"
+        if (attempt.promotion_capacity_operation is not None
+                or attempt.promotion_capacity_reservation is not None
+                or attempt.promotion_preflight_observation is not None):
+            return None, "protected_promotion_preflight_already_settled"
+        accepted_count = acceptance_observation.accepted_image_count
+        if type(accepted_count) is not int or not 1 <= accepted_count <= _MAX_WRITER_IMAGES:
+            return None, "protected_promotion_preflight_incomplete"
+        with lifecycle._lock:
+            with writer_owner._lock:
+                with capacity_owner._lock:
+                    with self._lock:
+                        if (self._storage_preadmission_attempts.get(
+                                attempt.lease.request_index) is not attempt
+                                or attempt.promotion_preflight_state != "in_progress"
+                                or attempt.promotion_preflight_marker is not marker
+                                or attempt.acceptance_observation is not acceptance_observation
+                                or attempt.acceptance_state != "accepted_non_authoritative"
+                                or attempt.cancel_requested
+                                or attempt.promotion_capacity_operation is not None
+                                or attempt.promotion_capacity_reservation is not None
+                                or self._capacity_owner is not capacity_owner
+                                or writer_owner._profile_a_capacity_owner is not capacity_owner
+                                or not capacity_owner._profile_a_promotion_reservation_is_live_for_characterization(
+                                    operation, reservation, writer_owner, estimate)):
+                            return None, "protected_promotion_preflight_host_changed"
+                        with attempt.acceptance_owner._lock:
+                            accepted = attempt.accepted_batch
+                            if (attempt.acceptance_owner._closed
+                                    or attempt.acceptance_owner._revoking
+                                    or attempt.acceptance_owner._invalid
+                                    or attempt.acceptance_owner._uncertain
+                                    or attempt.acceptance_owner._busy
+                                    or attempt.acceptance_owner._receipt is not accepted):
+                                return None, "protected_promotion_preflight_acceptance_changed"
+                            observation = GenerationWorkerProtectedPromotionPreflightObservation(
+                                status="protected_promotion_preflight_non_authoritative",
+                                request_index=attempt.lease.request_index,
+                                reserved_image_count=accepted_count,
+                                _issuer=self,
+                                _attempt_nonce=attempt.lease.nonce,
+                            )
+                            attempt.promotion_capacity_operation = operation
+                            attempt.promotion_capacity_reservation = reservation
+                            attempt.promotion_capacity_estimate = estimate
+                            attempt.promotion_preflight_observation = observation
+                            attempt.promotion_preflight_state = "reserved_non_authoritative"
+                            return observation, "protected_promotion_preflight_non_authoritative"
+
+    def _cancel_profile_a_promotion_preflight_reservation(self, attempt, observation=None):
+        """Cancel only the exact still-reserved destination estimate; no file exists."""
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or (observation is not None
+                        and attempt.promotion_preflight_observation is not observation)
+                    or attempt.promotion_preflight_state not in {
+                        "reserved_non_authoritative", "cancellation_requested",
+                    }):
+                return "promotion_preflight_unavailable"
+            operation = attempt.promotion_capacity_operation
+            reservation = attempt.promotion_capacity_reservation
+            if operation is None or reservation is None:
+                attempt.promotion_preflight_state = "refused"
+                return "promotion_preflight_unavailable"
+            attempt.promotion_preflight_state = "cancellation_in_progress"
+            attempt.promotion_preflight_marker = None
+
+        try:
+            if type(self._capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization:
+                raise ValueError("capacity_owner_unavailable")
+            terminal = self._capacity_owner._reservation_terminal_state_for_characterization(
+                operation, reservation,
+            )
+            if terminal == "cancelled":
+                pass
+            elif terminal == "reserved":
+                self._capacity_owner.cancel_before_write_for_characterization(operation, reservation)
+            else:
+                raise ValueError("promotion_reservation_not_cancellable")
+        except Exception:
+            with self._lock:
+                if self._storage_preadmission_attempts.get(
+                        attempt.lease.request_index) is attempt:
+                    attempt.promotion_preflight_state = "retained_uncertain"
+            return "retained_uncertain"
+        with self._lock:
+            if self._storage_preadmission_attempts.get(
+                    attempt.lease.request_index) is attempt:
+                attempt.promotion_preflight_state = "cancelled"
+        return "cancelled_before_write"
 
     def _publish_profile_a_acceptance_locked(
             self, lifecycle, attempt, marker, evidence, writer_owner,
@@ -1341,11 +1655,13 @@ class OriginalHostWorkerStorageIntegration:
                                 or acceptance_owner._host_freshness is not attempt.acceptance_host_freshness):
                             return None, "protected_acceptance_owner_changed"
                         attempt.acceptance_state = "accepted_non_authoritative"
-                        return GenerationWorkerProtectedAcceptanceObservation(
+                        accepted_observation = GenerationWorkerProtectedAcceptanceObservation(
                             status="protected_image_batch_accepted_non_authoritative",
                             request_index=attempt.lease.request_index,
                             accepted_image_count=accepted.image_count,
-                        ), "protected_image_batch_accepted_non_authoritative"
+                        )
+                        attempt.acceptance_observation = accepted_observation
+                        return accepted_observation, "protected_image_batch_accepted_non_authoritative"
 
     def _retain_profile_a_acceptance_uncertain(self, attempt, marker):
         """Keep completed staging capacity uncertain after a failed Acceptance boundary."""
@@ -1630,6 +1946,7 @@ class OriginalHostWorkerStorageIntegration:
                           "job_claim_replaced", "host_evidence_unavailable", "session_closed"}:
             reason = "host_evidence_unavailable"
         preadmissions_to_cancel = []
+        promotion_reservations_to_cancel = []
         with self._lock:
             if self._state == "closed":
                 worker = None
@@ -1652,6 +1969,19 @@ class OriginalHostWorkerStorageIntegration:
             for attempt in self._storage_preadmission_attempts.values():
                 if attempt.state in {"preparing", "reserved", "pre_admitted"}:
                     attempt.cancel_requested = True
+                    if attempt.acceptance_state == "accepted_non_authoritative":
+                        # A settled Acceptance owns completed staging evidence.
+                        # Host retirement must not reinterpret its completed
+                        # 19D write as a cancellable staging pre-admission.
+                        if attempt.promotion_preflight_state == "in_progress":
+                            attempt.promotion_preflight_marker = None
+                            attempt.promotion_preflight_state = "cancellation_requested"
+                        elif attempt.promotion_preflight_state == "reserved_non_authoritative":
+                            attempt.promotion_preflight_state = "cancellation_requested"
+                            promotion_reservations_to_cancel.append(
+                                (attempt, attempt.promotion_preflight_observation),
+                            )
+                        continue
                     if attempt.evidence_state != "uncertain":
                         attempt.evidence_state = "revoked"
                         attempt.validation_marker = None
@@ -1672,6 +2002,10 @@ class OriginalHostWorkerStorageIntegration:
             # The reservation cancellation is in-memory only; no readiness,
             # inventory, filesystem or Worker callback runs under this lock.
             self._cancel_staging_preadmission_attempt(attempt)
+        for attempt, observation in promotion_reservations_to_cancel:
+            # This exact destination reservation cannot have crossed CREATE_NEW:
+            # the fallback preflight never issues a Writer admission.
+            self._cancel_profile_a_promotion_preflight_reservation(attempt, observation)
         return self._safe_state()
 
     def finish_close_for_characterization(self):

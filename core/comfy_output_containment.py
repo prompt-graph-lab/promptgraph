@@ -238,6 +238,12 @@ class ProtectedOutputAcceptanceCharacterization:
             raise ValueError("acceptance_host_freshness_unavailable")
         return self._inspect_for_characterization(accepted, host_freshness)
 
+    def _inspect_for_promotion_preflight_for_characterization(self, accepted, host_freshness):
+        """Revalidate exact accepted bytes through a settled Host freshness gate."""
+        if not callable(host_freshness):
+            raise ValueError("acceptance_host_freshness_unavailable")
+        return self._inspect_for_characterization(accepted, host_freshness)
+
     def _inspect_for_characterization(self, accepted, freshness_check):
         with self._lock:
             if self._closed or self._revoking:

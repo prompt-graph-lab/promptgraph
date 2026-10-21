@@ -1933,3 +1933,51 @@ protected-root provisioning, Worker/HTTP registration, Promotion, Candidate
 publication, Project save, Journal/restart recovery, retention/discard,
 cross-process quota enforcement or crash durability. No production capability
 flag changes and `authorship=unverified` remains unchanged.
+
+## C2B-8D-19F-B Profile A accepted-batch Promotion capacity preflight
+
+`ProjectAgentSessionRuntime.preflight_generation_worker_accepted_output_promotion_for_characterization()`
+is the scope-reduced Profile A boundary. It accepts only the exact
+count-only Acceptance observation retained by the same original Host/Worker
+storage integration, and revalidates the privately held
+`AcceptedProtectedOutputBatch`, successful history/remote receipt, frozen
+request, ordered source observations, existing completed staging delta,
+Acceptance owner, protected-assets owner, four-root capacity owner, scope
+writer lease and read-only Project reference. The settled-state Host check is
+separate from the in-progress Acceptance check: it binds the same live
+Project/path, activation/epoch/pairing, Job/Claim, lifecycle and Worker
+completion before native inspection and again at Host publication.
+
+After native source verification and readiness observations outside Host,
+Job, Inbox, lifecycle and owner locks, the existing capacity ledger reserves
+only the exact source byte total and entry count under `promoted_assets`.
+The completed `temporary_containment` source remains observed in that same
+ledger, so it is not reserved a second time. A final in-memory Host/owner gate
+binds that exact still-reserved destination estimate to one immutable
+`GenerationWorkerProtectedPromotionPreflightObservation`. The result exposes
+only request index and image count. It contains no paths, images, operation,
+reservation, write token or Promotion receipt; capability flags remain false
+and `authorship=unverified`.
+
+This boundary deliberately stops before Promotion. It does not issue a
+writer token, call CREATE_NEW, copy a file, mutate a promotion inventory,
+publish `VerifiedProtectedPromotionReceipt`, or enable the generic Profile A
+Promotion constructor. That constructor remains fail-closed with
+`profile_a_promotion_host_bridge_required`; the existing legacy Promotion
+owner and behavior are unchanged. The exact preflight observation can cancel
+only its own still-reserved destination estimate while no write has been
+authorized. Close, invalidation, drift or uncertain cancellation does not
+release evidence or capacity unsafely.
+
+The current 16-entry shared temporary/promoted policy also means a full
+16-image accepted staging batch already occupies every shared asset entry;
+reserving a second 16-entry promoted copy is correctly refused with
+`shared_asset_capacity_exceeded`. This PR does not raise that policy or claim
+that retained source plus destination can always fit. The next Promotion
+milestone must separately define bounded retained-source/destination capacity,
+then add a narrow Host-issued Profile A CREATE_NEW writer path that copies and
+reverifies every image, commits one exact aggregate ledger delta and private
+receipt, and serializes final publication with Host/owner close and
+invalidation. Any failure after a possible destination create must retain
+partial evidence and capacity; it must not overwrite, retry, delete or clean
+up. No production capability flag changes.

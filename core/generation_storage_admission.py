@@ -1060,6 +1060,47 @@ class WindowsProtectedStorageAdmissionCharacterization:
                     and operation_record.get("state") == "reserved"
                 )
 
+    def _profile_a_promotion_reservation_is_live_for_characterization(
+            self, operation, reservation, asset_owner, estimate):
+        """Check one private destination-only Profile A preflight reservation.
+
+        This proves only that an exact promoted-assets upper bound is still
+        reserved in this owner. It does not issue a write token or authorize
+        CREATE_NEW.
+        """
+        from core import generation_windows_protected_assets as assets
+
+        if (self._profile_a_root_set is not True
+                or type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(estimate) is not CapacityEstimate
+                or type(reservation) is not _Opaque
+                or type(operation) is not _Opaque
+                or self._roots.get("temporary_containment") is not
+                    asset_owner._roots.get("temporary_containment")
+                or self._roots.get("promoted_assets") is not
+                    asset_owner._roots.get("promoted_assets")):
+            return False
+        try:
+            normalized = self._ledger._validate_estimates({"promoted_assets": estimate})
+        except ValueError:
+            return False
+        with self._lock:
+            if (self._closed or self._invalid or self._scope_lease is None
+                    or self._scope_lease._state != "held"):
+                return False
+            with self._ledger._lock:
+                record = self._ledger._reservations.get(reservation)
+                operation_record = self._ledger._operations.get(operation)
+                return bool(
+                    record is not None
+                    and record.get("operation") is operation
+                    and record.get("state") == "reserved"
+                    and record.get("write") is None
+                    and record.get("estimates") == normalized
+                    and operation_record is not None
+                    and operation_record.get("state") == "reserved"
+                )
+
     def _staging_reservation_covers_for_characterization(
             self, operation, reservation, purpose, minimum_bytes, minimum_entries):
         """Check a live, exact single-purpose staging reservation by identity.

@@ -126,6 +126,11 @@ class ProtectedDurablePromotionCharacterization:
                 or type(acceptance_owner) is not ProtectedOutputAcceptanceCharacterization
                 or type(accepted) is not AcceptedProtectedOutputBatch):
             w._fail("protected_promotion_binding_invalid")
+        if getattr(protected_owner, "_profile_a_capacity_owner", None) is not None:
+            # Profile A Promotion must be issued only by its original Host
+            # bridge. The generic legacy owner deliberately has no path that
+            # can turn a settled count-only Acceptance into CREATE_NEW.
+            w._fail("profile_a_promotion_host_bridge_required")
         batch = accepted._batch_receipt
         prepared, remote = accepted._prepared, accepted._remote
         try:

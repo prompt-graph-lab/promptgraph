@@ -2205,6 +2205,369 @@ def test_profile_a_staged_images_accept_as_exact_private_batch_without_new_write
         assert capacity._scope_lease._state == "released"
 
 
+@pytest.mark.parametrize("descriptor_count", [1, 2])
+def test_profile_a_accepted_batch_reserves_exact_destination_capacity_without_promotion(
+        native_profile_a_worker_storage, descriptor_count):
+    from core.generation_windows_protected_promotion import (
+        ProtectedDurablePromotionCharacterization,
+    )
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedPromotionPreflightObservation,
+    )
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=descriptor_count,
+    )
+    accepted_observation, accepted_status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert accepted_status == "protected_image_batch_accepted_non_authoritative"
+    assert attempt.acceptance_observation is accepted_observation
+    accepted = attempt.accepted_batch
+    before_files = dict(writer._files)
+    before_promotions = dict(writer._stream_promotions)
+    before_operations = set(capacity._ledger._operations)
+    before_reservations = set(capacity._ledger._reservations)
+    source_operation = capacity._ledger._reservations[attempt.reservation]
+    assert source_operation["state"] == "completed"
+
+    copied = replace(accepted_observation)
+    assert copied == accepted_observation and copied is not accepted_observation
+    assert runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        copied, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_promotion_preflight_evidence_unavailable")
+
+    result, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    )
+    assert type(result) is GenerationWorkerProtectedPromotionPreflightObservation
+    assert status == "protected_promotion_preflight_non_authoritative"
+    assert (result.status, result.request_index, result.reserved_image_count) == (
+        "protected_promotion_preflight_non_authoritative", 0, descriptor_count,
+    )
+    assert result.execution_available is False
+    assert result.protected_storage_available is False
+    assert result.promotion_available is False
+    assert result.candidate_publication_allowed is False
+    assert result.project_save_allowed is False
+    assert result.authorship == "unverified"
+    assert not ({"operation", "reservation", "write_admission", "paths", "images", "receipt"}
+                & set(result.__dataclass_fields__))
+
+    assert attempt.promotion_preflight_observation is result
+    assert attempt.promotion_preflight_state == "reserved_non_authoritative"
+    assert set(capacity._ledger._operations) == before_operations | {
+        attempt.promotion_capacity_operation,
+    }
+    assert set(capacity._ledger._reservations) == before_reservations | {
+        attempt.promotion_capacity_reservation,
+    }
+    destination_record = capacity._ledger._reservations[attempt.promotion_capacity_reservation]
+    assert destination_record["state"] == "reserved"
+    assert destination_record.get("write") is None
+    assert destination_record["estimates"] == {
+        "promoted_assets": (len(data) * descriptor_count, descriptor_count),
+    }
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+    assert capacity._ledger._reserved["promoted_assets"] == [len(data) * descriptor_count,
+                                                               descriptor_count]
+    assert writer._files == before_files
+    assert writer._stream_promotions == before_promotions == {}
+    assert accepted._protected_owner is writer
+    assert not attempt.promotion_preflight_observation.promotion_available
+    with pytest.raises(ValueError, match="profile_a_promotion_host_bridge_required"):
+        ProtectedDurablePromotionCharacterization.create_for_characterization(
+            writer, attempt.acceptance_owner, accepted,
+            characterization=True, disposable_opt_in=True,
+        )
+    assert runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_promotion_preflight_evidence_unavailable")
+
+    try:
+        assert runtime.cancel_generation_worker_promotion_preflight_for_characterization(
+            result,
+        ) == "cancelled_before_write"
+        assert destination_record["state"] == "cancelled"
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+        assert writer._files == before_files
+        assert writer._stream_promotions == {}
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_promotion_preflight_refuses_shared_capacity_before_destination_write(
+        native_profile_a_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=2,
+    )
+    accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    source_bytes = len(data) * 2
+    # Keep enough room for the observed staging source, but not for its full
+    # promoted copy. The real ledger must reject before any destination file.
+    capacity._ledger._limits = replace(
+        capacity._ledger._limits,
+        shared_temporary_and_promoted_bytes=source_bytes * 2 - 1,
+    )
+    before_files = dict(writer._files)
+    before_reservations = set(capacity._ledger._reservations)
+    result, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    )
+    assert result is None
+    assert status == "shared_asset_capacity_exceeded"
+    assert attempt.promotion_preflight_state == "refused"
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+    assert capacity._ledger._reserved["promoted_assets"] == [0, 0]
+    assert writer._files == before_files
+    assert set(capacity._ledger._reservations) == before_reservations
+    assert not writer._stream_promotions
+    writer.close()
+    runtime.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_promotion_preflight_refuses_full_batch_entry_capacity(
+        native_profile_a_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=16,
+    )
+    accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    before_files = dict(writer._files)
+    before_reservations = set(capacity._ledger._reservations)
+    before_promoted_reserved = list(capacity._ledger._reserved["promoted_assets"])
+
+    result, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    )
+
+    # The existing shared entry ceiling is 16. Retaining the 16 staging
+    # images means there is no room to reserve a second 16-file destination.
+    # Refusal is the safe result until a separately reviewed capacity policy
+    # can account for the retained source and destination together.
+    assert result is None
+    assert status == "shared_asset_capacity_exceeded"
+    assert attempt.promotion_preflight_state == "refused"
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+    assert capacity._ledger._reservations[attempt.reservation]["completed_observed_delta"][
+        "temporary_containment"
+    ] == (len(data) * 16, 16)
+    assert capacity._ledger._reserved["promoted_assets"] == before_promoted_reserved == [0, 0]
+    assert writer._files == before_files
+    assert set(capacity._ledger._reservations) == before_reservations
+    assert not writer._stream_promotions
+    writer.close()
+    runtime.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_promotion_preflight_close_cancels_only_destination_reservation(
+        native_profile_a_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    before_files = dict(writer._files)
+    result, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    destination_record = capacity._ledger._reservations[attempt.promotion_capacity_reservation]
+    assert destination_record["estimates"]["promoted_assets"] == (len(data), 1)
+
+    runtime.close()
+    assert attempt.promotion_preflight_state == "cancelled"
+    assert destination_record["state"] == "cancelled"
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+    assert writer._files == before_files
+    assert not writer._stream_promotions
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_promotion_preflight_host_drift_after_reservation_cancels_before_write(
+        native_profile_a_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    before_files = dict(writer._files)
+    original_reserve = capacity.reserve_for_characterization
+
+    def reserve_then_change_target(operation, estimates):
+        reservation = original_reserve(operation, estimates)
+        runtime.synchronize_target(
+            lifecycle._project_ref(), str(project_path.with_name("changed-selected-project.json")),
+        )
+        return reservation
+
+    monkeypatch.setattr(capacity, "reserve_for_characterization", reserve_then_change_target)
+    result, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    )
+    assert result is None
+    assert status == "protected_promotion_preflight_refused"
+    assert attempt.promotion_preflight_state == "cancelled"
+    promotion_reservation = next(
+        record for token, record in capacity._ledger._reservations.items()
+        if record["estimates"].get("promoted_assets") is not None
+    )
+    assert promotion_reservation["state"] == "cancelled"
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+    assert writer._files == before_files
+    assert not writer._stream_promotions
+    writer.close()
+    runtime.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_promotion_preflight_capacity_close_during_revalidation_retains_reservation(
+        native_profile_a_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    entered, release = threading.Event(), threading.Event()
+    original = attempt.acceptance_owner._inspect_for_promotion_preflight_for_characterization
+    inspections = 0
+
+    def block_second_inspection(accepted, freshness):
+        nonlocal inspections
+        inspections += 1
+        if inspections == 2:
+            entered.set()
+            assert release.wait(10)
+        return original(accepted, freshness)
+
+    monkeypatch.setattr(
+        attempt.acceptance_owner,
+        "_inspect_for_promotion_preflight_for_characterization",
+        block_second_inspection,
+    )
+    results, errors = [], []
+
+    def run_preflight():
+        try:
+            results.append(runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+                accepted_observation, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=run_preflight)
+    thread.start()
+    try:
+        assert entered.wait(10)
+        destination_record = next(
+            record for record in capacity._ledger._reservations.values()
+            if record["estimates"].get("promoted_assets") is not None
+        )
+        assert destination_record["state"] == "reserved"
+        capacity.close()
+    finally:
+        release.set()
+        thread.join(10)
+
+    assert not thread.is_alive()
+    assert not errors
+    assert results and results[0][0] is None
+    assert results[0][1] == "protected_promotion_preflight_refused"
+    assert attempt.promotion_preflight_observation is None
+    assert attempt.promotion_preflight_state == "retained_uncertain"
+    assert destination_record["state"] == "retained_uncertain"
+    assert capacity._ledger._uncertain["promoted_assets"][1] == 1
+    assert not writer._stream_promotions
+    writer.close()
+    runtime.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_promotion_preflight_competing_call_is_one_shot_and_cannot_publish_twice(
+        native_profile_a_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    entered, release = threading.Event(), threading.Event()
+    original = attempt.acceptance_owner._inspect_for_promotion_preflight_for_characterization
+
+    def blocked_inspection(accepted, freshness):
+        entered.set()
+        assert release.wait(3)
+        return original(accepted, freshness)
+
+    monkeypatch.setattr(attempt.acceptance_owner,
+                        "_inspect_for_promotion_preflight_for_characterization",
+                        blocked_inspection)
+    results = []
+    errors = []
+
+    def run_preflight():
+        try:
+            results.append(runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+                accepted_observation, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=run_preflight)
+    thread.start()
+    assert entered.wait(3)
+    second = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    )
+    assert second == (None, "protected_promotion_preflight_evidence_unavailable")
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert not errors
+    assert len(results) == 1
+    result, status = results[0]
+    assert status == "protected_promotion_preflight_non_authoritative"
+    assert attempt.promotion_preflight_observation is result
+    assert len(capacity._ledger._reservations) == 2
+    assert writer._stream_promotions == {}
+    runtime.close()
+    assert capacity._ledger._reservations[attempt.promotion_capacity_reservation]["state"] == "cancelled"
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
 def test_profile_a_staged_acceptance_rejects_copied_observation_and_native_drift(
         native_profile_a_worker_storage):
     roots, capacity, reference, project_path = native_profile_a_worker_storage

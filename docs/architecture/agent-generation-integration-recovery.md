@@ -284,7 +284,7 @@ production Start, or background worker was exercised.
 | Accepted handoff -> `POST /prompt` and prompt identity | Handoff/inbox/job owners, `ui/agent_generation_comfy_executor.py`, `core/comfy_prompt_request.py`, `core/comfy_http_submission.py`; exact frozen request and returned prompt UUID | Handoff/executor fake-provider tests plus isolated injected/monkeypatched HTTP wire tests; one attempt, sequential order, possible-send uncertainty, no automatic retry | HTTP submission is not the executor's production default and no live ComfyUI request is made. No production Worker registration or production durable-intent call site; C2B-8D-14/15B/16A characterize the Journal-gated pre-send contract offline. Production deadline policy and original-host event-loop delivery remain absent. |
 | Accepted prompt -> history observation | `core/comfy_http_history.py`, `core/comfy_remote_output_receipts.py`, executor result gate; exact accepted UUID and frozen origin | Bounded pending/ready/unknown transport contract, strict metadata parsing and correlation tests; explicit later read does not resubmit | No polling scheduler, live history interoperability evidence, or durable restart association. Missing/timeout history is unknown, never proof of execution failure. |
 | Successful history -> `/view` stream -> protected staging | `core/comfy_http_view.py`, `core/comfy_output_containment.py`, `core/generation_windows_protected_assets.py`; exact remote descriptor, prompt/request binding, original-host freshness | Injected HTTP stream composed with real Windows disposable roots/files, incremental stream, native identity/DACL, decode/size/hash and retention checks | No production transport registration. No remote cancellation or cleanup, and no claim of constant-memory decode or hard end-to-end deadline. |
-| Complete protected staging batch -> acceptance -> promotion | `WindowsProtectedAssetsCharacterization`, protected acceptance owner, `ProtectedDurablePromotionCharacterization`; exact issued receipts/owners, envelope/request/remote identity, descriptor order, host freshness | Windows-native disposable tests verify batch completeness, source/destination identity/ACL/bytes, one-shot promotion, capacity and close/invalidation commit races | Only characterization opt-in on approved disposable scopes. No production root provisioning or long-lived production handle lifecycle. |
+| Complete protected staging batch -> acceptance -> promotion | Legacy path: `WindowsProtectedAssetsCharacterization`, protected acceptance owner and `ProtectedDurablePromotionCharacterization`; Profile A currently stops at the 19F-B destination-capacity preflight | Windows-native disposable tests cover the legacy source/destination copy path; Profile A tests cover exact accepted-batch revalidation and destination-only reservation for batches that fit the shared ledger | Profile A has no CREATE_NEW Promotion writer, copied destination, aggregate Promotion receipt or production authority. With the current shared 16-entry cap, a retained 16-image source batch cannot reserve a second 16-entry destination. No production root lifecycle. |
 | Promotion -> `outputs_ready` -> Candidate admission | executor adapter and `GenerationProtectedCandidateAdmission`; opaque event ID is correlation only, promotion receipt remains owner-held | Composed fake executor tests emit one count-only event; admission tests verify exact original Project/path/snapshot, activation/epoch/pairing, job/claim/request and event evidence | Event delivery is not wired to a production worker. Admission is eligibility evidence, not human approval or a reusable capability. All publication gates remain disabled. |
 | Admission -> Candidate append through existing Gallery writer | `GenerationCandidatePublication.publish_protected_for_characterization`, existing Gallery candidate factory/appender and Undo snapshot | Windows-native disposable composition mutates only the exact in-memory fixture Project, records actual Candidate delta, checks path/provenance and one-shot settlement; partial append remains uncertain and is not replayed | No production entry point or enabled publication authority. No second writer or conversion to legacy receipt custody was introduced. |
 | Settled Candidate registration -> Project JSON save | Same publication owner and existing app save callback -> `core.io.save_project_to_json`; exact Project object/path and protected provenance | Disposable integration writes then reopens JSON with the normal loader; verifies Candidate lineage, prompt/seed/provenance, one-shot save and distinct save outcome | Does not establish crash/power-loss durability, cross-file atomicity, or permission to recover after restart. Save uncertainty is retained; no retry/rollback/cleanup. |
@@ -647,7 +647,7 @@ model.
 | Order | Milestone | Remaining implementation gap and risk | Evidence required to close the gate |
 | --- | --- | --- | --- |
 | 1 | Original-host integration and production lifecycle | No production owner registers the Worker/transports, survives Streamlit reruns, fences close/replacement or delivers results to the same Project/session. | A separately reviewed production lifecycle with exact Project/path/session/process/activation/pairing and claim binding, bounded shutdown, one-shot intent-before-send and original-host event delivery; failure/close races remain unknown and non-retriable. |
-| 2 | Protected root provisioning and capacity policy | Current roots are host-supplied native observations for disposable fixtures. Reservations are process-local, not an OS quota; 17B/C/D and 17E-B methods require explicit opt-in, and Journal capacity is not the default Executor append path. | Define a local Profile A root lifecycle that never repairs/adopts existing user directories; integrate the exact selected capacity methods at production writers; document concurrent app/process and restart accounting policy, evidence retention and capacity ceilings. No disk-space guarantee should be claimed. |
+| 2 | Protected root provisioning and capacity policy | Current roots are host-supplied native observations for disposable fixtures. Reservations are process-local, not an OS quota; 17B/C/D and 17E-B methods require explicit opt-in, and Journal capacity is not the default Executor append path. Profile A Promotion currently has destination-capacity preflight only; retained source plus destination may exceed the shared 16-entry/256 MiB policy. | Define a local Profile A root lifecycle that never repairs/adopts existing user directories; integrate the exact selected capacity methods at production writers; document concurrent app/process and restart accounting policy, evidence retention and capacity ceilings. Resolve bounded retained-source/destination accounting before the Profile A Promotion writer. No disk-space guarantee should be claimed. |
 | 3 | Real ComfyUI/HTTP interoperability | All transport tests use injected/offline wires; endpoint, version, history status, `/view` descriptors, response framing and remote uncertainty have not been observed against a real server. | After explicit human authorization and disposable endpoint selection, verify exact POST/history/view behavior, supported workflow compatibility, bounded outcomes and no-resubmit semantics. Record the server/runtime version and uncertain cases. |
 | 4 | Explicit Human Start and UI activation | Review/confirmation and a Start characterization seam exist, but no production UI action dispatches it. | Add a distinct explicit human Start control and visible pending/unknown/unsaved state. Revalidate review, Project and host identity immediately before a one-shot production claim; confirmation alone must not execute. |
 | 5 | Candidate publication and Project JSON save | Existing Candidate/Undo/save owners have protected offline composition but no production call path for these receipts. | Connect only through the existing Gallery writer and exact-object/path save owner; prove idempotent provenance, Undo ordering, partial-append uncertainty, one-shot save and reload integrity in the supported host lifecycle. |
@@ -1148,3 +1148,45 @@ inspection, protected promotion, Candidate publication and Project save,
 Recovery, retention and Discard. Execution, protected storage, promotion,
 Candidate publication and Project-save flags remain false; `authorship` stays
 unverified.
+
+## C2B-8D-19F-B Profile A accepted-batch Promotion capacity preflight
+
+The scope-reduced 19F-B boundary
+`ProjectAgentSessionRuntime.preflight_generation_worker_accepted_output_promotion_for_characterization()`
+starts from the exact original-Host Acceptance observation, not the legacy
+Promotion owner. It revalidates the privately retained accepted batch, its
+issuing Acceptance/protected-assets owners, successful Worker history and
+remote receipt, frozen request, ordered verified staging observations,
+completed staging ledger delta, four-root capacity owner, scope-writer lease,
+read-only selected-Project reference and current original Host/Claim/Project
+binding. This uses a settled-Acceptance freshness gate rather than treating
+the older in-progress Acceptance callback as proof of current Promotion
+eligibility.
+
+Native source verification and readiness checks run outside Host, Job, Inbox,
+lifecycle and protected-owner locks. The shared capacity ledger then reserves
+only the accepted source byte total and descriptor count for `promoted_assets`;
+the completed `temporary_containment` source remains observed and is not
+double-reserved. A final current-Host gate binds the exact reservation to a
+private one-shot attempt and returns only a count-only immutable
+`GenerationWorkerProtectedPromotionPreflightObservation`. It does not issue a
+writer capability or CREATE_NEW authority, copy image bytes, publish a
+Promotion receipt, advance executor output readiness, or create Candidate or
+Project-save authority. The exact observation may cancel its still-reserved
+destination estimate before any write is authorized. No source evidence is
+deleted or automatically cleaned up.
+
+The preflight is a capacity decision, not a complete Promotion bridge. Under
+the current 16-entry shared temporary/promoted ceiling, a 16-image staging
+batch occupies all entries, so a second 16-entry destination reservation is
+refused before destination creation. Retaining the source while copying also
+means byte capacity must cover both observed source and reserved destination.
+The next bounded Promotion step must define the retained-source/destination
+capacity policy and add a narrow Host-issued Profile A writer path that uses
+this exact reservation, CREATE_NEW owner-only files, per-image native/content
+verification, one aggregate ledger/receipt commit and a final publication
+gate serialized with close/invalidation. Partial or uncertain copies must be
+retained with no retry, overwrite, deletion or cleanup. The generic Profile A
+Promotion factory remains fail-closed until that owner is implemented and
+reviewed. Every production capability flag remains false and
+`authorship=unverified`.
