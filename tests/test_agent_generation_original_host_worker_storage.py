@@ -2105,6 +2105,600 @@ class _WriterDownloadBatchProvider:
         return stream(lookup)
 
 
+def _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, *, descriptor_count=1):
+    from test_comfy_output_containment import image_bytes
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedWriterObservation,
+    )
+
+    runtime, lifecycle, worker, prepared, preadmission, evidence, attempt, writer = (
+        _native_profile_a_writer_handoff(
+            roots, capacity, reference, project_path, descriptor_count=descriptor_count,
+        )
+    )
+    data = image_bytes()
+    provider = (_WriterDownloadStream(data) if descriptor_count == 1
+                else _WriterDownloadBatchProvider(data))
+    stage = (runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization
+             if descriptor_count == 1 else
+             runtime.stage_generation_worker_remote_output_batch_with_protected_writer_for_characterization)
+    observation, status = stage(
+        evidence, writer, stream_provider=provider,
+        characterization=True, disposable_opt_in=True,
+    )
+    assert type(observation) is GenerationWorkerProtectedWriterObservation, status
+    assert observation.verified_image_count == descriptor_count
+    return (runtime, lifecycle, worker, prepared, preadmission, evidence,
+            attempt, writer, observation, provider, data)
+
+
+@pytest.mark.parametrize("descriptor_count", [1, 2, 16])
+def test_profile_a_staged_images_accept_as_exact_private_batch_without_new_write(
+        native_profile_a_worker_storage, descriptor_count):
+    from core import generation_windows_protected_assets as assets
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedAcceptanceObservation,
+    )
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, prepared, _preadmission, _evidence,
+     attempt, writer, staged, provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=descriptor_count,
+    )
+    operation_keys = set(capacity._ledger._operations)
+    reservation_keys = set(capacity._ledger._reservations)
+    file_keys = set(writer._files)
+    write_count = len(writer._stream_attempts)
+    expected_ids = tuple(item.identity for item in attempt.remote_receipt.images)
+    try:
+        accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        )
+        assert type(accepted_observation) is GenerationWorkerProtectedAcceptanceObservation, status
+        assert status == "protected_image_batch_accepted_non_authoritative"
+        assert (accepted_observation.request_index,
+                accepted_observation.accepted_image_count) == (0, descriptor_count)
+        assert accepted_observation.execution_available is False
+        assert accepted_observation.protected_storage_available is False
+        assert accepted_observation.promotion_available is False
+        assert accepted_observation.candidate_publication_allowed is False
+        assert accepted_observation.project_save_allowed is False
+        assert accepted_observation.authorship == "unverified"
+        assert not ({"batch_receipt", "accepted", "acceptance_owner", "images", "paths",
+                     "native_handle", "write_admission"}
+                    & set(accepted_observation.__dataclass_fields__))
+
+        key = (prepared.request_id, attempt.remote_receipt.identity)
+        batch = writer._stream_batches[key]
+        accepted = writer._stream_batch_acceptances[key]
+        assert type(batch) is assets.VerifiedProtectedImageBatchReceipt
+        assert batch.observations is attempt.acceptance_observations
+        assert tuple(item.descriptor_identity for item in batch.observations) == expected_ids
+        assert type(accepted).__name__ == "AcceptedProtectedOutputBatch"
+        assert attempt.acceptance_owner._receipt is accepted
+        assert attempt.acceptance_state == "accepted_non_authoritative"
+        assert set(capacity._ledger._operations) == operation_keys
+        assert set(capacity._ledger._reservations) == reservation_keys
+        assert set(writer._files) == file_keys
+        assert len(writer._stream_attempts) == write_count == descriptor_count
+        assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+        assert capacity._ledger._reservations[attempt.reservation]["write"] is attempt.writer_admission
+        assert capacity._ledger._reservations[attempt.reservation]["completed_observed_delta"][
+            "temporary_containment"
+        ] == (len(data) * descriptor_count, descriptor_count)
+
+        with pytest.raises(ValueError, match="profile_a_writer_handoff_required"):
+            writer.commit_verified_remote_image_batch_for_characterization(
+                runtime._generation_original_host_lifecycle._envelope,
+                prepared, attempt.remote_receipt, attempt.acceptance_observations,
+                host_freshness=lambda *_args: True,
+            )
+        assert runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_acceptance_evidence_unavailable")
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+        assert capacity._scope_lease._state == "released"
+
+
+def test_profile_a_staged_acceptance_rejects_copied_observation_and_native_drift(
+        native_profile_a_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    try:
+        copied = replace(staged)
+        assert copied == staged and copied is not staged
+        assert runtime.accept_generation_worker_staged_output_for_characterization(
+            copied, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_acceptance_evidence_unavailable")
+        image = attempt.writer_image_observation.image
+        path = writer._files[(image.purpose, image.storage_identity)][0]
+        with path.open("ab") as output:
+            output.write(b"tamper")
+        assert runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_acceptance_failed")
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert attempt.writer_handoff_state == "retained_uncertain"
+        assert writer._stream_batches == {}
+        assert writer._stream_batch_acceptances == {}
+        assert capacity._ledger._reservations[attempt.reservation]["state"] in {
+            "uncertain", "retained_uncertain",
+        }
+        assert path.exists()
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+@pytest.mark.parametrize("mutation", ["completed_delta", "stream_attempt_identity"])
+def test_profile_a_single_image_acceptance_requires_exact_completed_write_binding(
+        native_profile_a_worker_storage, mutation):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    record = capacity._ledger._reservations[attempt.reservation]
+    if mutation == "completed_delta":
+        delta = record["completed_observed_delta"]
+        delta["temporary_containment"] = (
+            delta["temporary_containment"][0] + 1,
+            delta["temporary_containment"][1],
+        )
+    else:
+        binding = record["asset_stream_completion"]
+        copied_attempt = tuple(list(binding[2]))
+        assert copied_attempt == binding[2] and copied_attempt is not binding[2]
+        record["asset_stream_completion"] = (
+            binding[0], binding[1], copied_attempt, binding[3],
+        )
+
+    # The aggregate inventory remains sufficient in both cases; acceptance
+    # must rely on this reservation's exact completion evidence instead.
+    observed_staging = capacity._ledger._observed["temporary_containment"]
+    assert observed_staging[0] >= len(data) and observed_staging[1] >= 1
+    try:
+        result, status = runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        )
+        assert result is None
+        assert status == "protected_acceptance_failed"
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert attempt.acceptance_owner is None
+        assert attempt.accepted_batch is None
+        assert writer._stream_batches == {}
+        assert writer._stream_batch_acceptances == {}
+        assert record["state"] in {"completed", "uncertain", "retained_uncertain"}
+        assert capacity._invalid is True
+        capacity.close()
+        assert capacity._scope_lease._state == "retained_uncertain"
+        assert capacity._scope_lease._path.exists()
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+
+
+@pytest.mark.parametrize("mutation", ["missing", "reordered", "duplicate", "substituted"])
+def test_profile_a_acceptance_requires_complete_ordered_exact_descriptor_observations(
+        native_profile_a_worker_storage, mutation):
+    from dataclasses import replace as copy_dataclass
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=2,
+    )
+    original = attempt.acceptance_observations
+    if mutation == "missing":
+        changed = original[:-1]
+    elif mutation == "reordered":
+        changed = tuple(reversed(original))
+    elif mutation == "duplicate":
+        changed = (original[0], original[0])
+    else:
+        changed = (copy_dataclass(original[0]), original[1])
+    attempt.writer_image_observations = changed
+    attempt.acceptance_observations = changed
+    try:
+        result, status = runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        )
+        assert result is None
+        if mutation == "missing":
+            assert status == "protected_acceptance_batch_incomplete"
+            assert attempt.acceptance_state == "not_started"
+        else:
+            assert status == "protected_acceptance_failed"
+            assert attempt.acceptance_state == "retained_uncertain"
+        assert not writer._stream_batches
+        assert not writer._stream_batch_acceptances
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+
+
+def test_profile_a_staged_acceptance_rechecks_real_native_acl_and_retains_evidence(
+        native_profile_a_worker_storage):
+    from test_generation_windows_protected_storage import mutate_disposable_acl
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    image = attempt.writer_image_observation.image
+    path = writer._files[(image.purpose, image.storage_identity)][0]
+    try:
+        mutate_disposable_acl(path, roots["temporary_containment"]._api, "writable_principal")
+        assert runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_acceptance_failed")
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert writer._stream_batches == {}
+        assert writer._stream_batch_acceptances == {}
+        assert path.exists()
+        assert capacity._ledger._reservations[attempt.reservation]["state"] in {
+            "uncertain", "retained_uncertain",
+        }
+        capacity.close()
+        assert capacity._scope_lease._state == "retained_uncertain"
+        assert capacity._scope_lease._path.exists()
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_staged_acceptance_rejects_changed_completed_ledger_delta(
+        native_profile_a_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=2,
+    )
+    delta = capacity._ledger._reservations[attempt.reservation]["completed_observed_delta"]
+    delta["temporary_containment"] = (
+        delta["temporary_containment"][0] + 1,
+        delta["temporary_containment"][1],
+    )
+    try:
+        assert runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_acceptance_failed")
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert writer._stream_batches == {}
+        assert writer._stream_batch_acceptances == {}
+        assert capacity._invalid is True
+        capacity.close()
+        assert capacity._scope_lease._state == "retained_uncertain"
+        assert capacity._scope_lease._path.exists()
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_staged_acceptance_is_one_shot_under_concurrent_calls(
+        native_profile_a_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    original_inspect = writer.inspect_verified_remote_image_for_characterization
+    inspect_entered, allow_inspect = threading.Event(), threading.Event()
+    first_result, first_errors = [], []
+
+    def blocked_inspect(observation):
+        for lock in (runtime._publication_gate, lifecycle._lock,
+                     runtime.generation_jobs._lock,
+                     runtime._generation_executor_inbox._lock,
+                     capacity._lock, capacity._ledger._lock):
+            acquired = lock.acquire(blocking=False)
+            assert acquired
+            if acquired:
+                lock.release()
+        inspect_entered.set()
+        assert allow_inspect.wait(5)
+        return original_inspect(observation)
+
+    monkeypatch.setattr(writer, "inspect_verified_remote_image_for_characterization",
+                        blocked_inspect)
+
+    def accept_first():
+        try:
+            first_result.append(runtime.accept_generation_worker_staged_output_for_characterization(
+                staged, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as exc:
+            first_errors.append(exc)
+
+    thread = threading.Thread(target=accept_first)
+    try:
+        thread.start()
+        assert inspect_entered.wait(5), (first_result, first_errors)
+        second = runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        )
+        assert second == (None, "protected_acceptance_evidence_unavailable")
+        allow_inspect.set()
+        thread.join(10)
+        assert not thread.is_alive() and not first_errors
+        assert len(first_result) == 1
+        assert first_result[0][1] == "protected_image_batch_accepted_non_authoritative"
+        assert len(writer._stream_batch_acceptances) == 1
+        assert attempt.acceptance_state == "accepted_non_authoritative"
+    finally:
+        allow_inspect.set()
+        thread.join(5)
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+@pytest.mark.parametrize("close_owner", ["writer", "capacity"])
+def test_profile_a_acceptance_close_race_with_native_revalidation_retains_scope_evidence(
+        native_profile_a_worker_storage, monkeypatch, close_owner):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    original_inspect = writer.inspect_verified_remote_image_for_characterization
+    inspect_entered, allow_inspect = threading.Event(), threading.Event()
+    result, errors = [], []
+
+    def blocked_inspect(observation):
+        for lock in (runtime._publication_gate, lifecycle._lock,
+                     runtime.generation_jobs._lock,
+                     runtime._generation_executor_inbox._lock,
+                     capacity._lock, capacity._ledger._lock):
+            acquired = lock.acquire(blocking=False)
+            assert acquired
+            if acquired:
+                lock.release()
+        inspect_entered.set()
+        assert allow_inspect.wait(5)
+        return original_inspect(observation)
+
+    monkeypatch.setattr(writer, "inspect_verified_remote_image_for_characterization",
+                        blocked_inspect)
+
+    def accept():
+        try:
+            result.append(runtime.accept_generation_worker_staged_output_for_characterization(
+                staged, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=accept)
+    try:
+        thread.start()
+        assert inspect_entered.wait(5)
+        if close_owner == "writer":
+            writer.close()
+        else:
+            capacity.close()
+        assert capacity._scope_lease._path.exists()
+        allow_inspect.set()
+        thread.join(10)
+        assert not thread.is_alive() and not errors
+        assert result == [(None, "protected_acceptance_failed")]
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert writer._stream_batch_acceptances == {}
+        assert capacity._ledger._reservations[attempt.reservation]["state"] in {
+            "uncertain", "retained_uncertain",
+        }
+        if close_owner == "writer":
+            capacity.close()
+        assert capacity._scope_lease._state == "retained_uncertain"
+        assert capacity._scope_lease._path.exists()
+    finally:
+        allow_inspect.set()
+        thread.join(5)
+        if not writer._closed:
+            writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+
+
+def test_profile_a_acceptance_double_call_and_post_commit_host_loss_are_fenced(
+        native_profile_a_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    integration = lifecycle._worker_storage_integration
+    original_publish = integration._publish_profile_a_acceptance_locked
+
+    def lose_host_before_publication(*args, **kwargs):
+        integration._state = "uncertain"
+        return original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(integration, "_publish_profile_a_acceptance_locked",
+                        lose_host_before_publication)
+    try:
+        assert runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_acceptance_host_changed")
+        assert attempt.accepted_batch is not None
+        assert writer._stream_batch_acceptances[
+            (attempt.prepared.request_id, attempt.remote_receipt.identity)
+        ] is attempt.accepted_batch
+        assert attempt.acceptance_owner._invalid is True
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert capacity._ledger._reservations[attempt.reservation]["state"] in {
+            "uncertain", "retained_uncertain",
+        }
+        assert runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_acceptance_evidence_unavailable")
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_acceptance_capacity_close_after_last_readiness_fails_commit(
+        native_profile_a_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    original_readiness = capacity.readiness
+    integration = lifecycle._worker_storage_integration
+    original_matches = integration._profile_a_acceptance_matches_locked
+    readiness_calls = []
+    close_at_final_match = [False]
+
+    def close_after_second_readiness():
+        result = original_readiness()
+        readiness_calls.append(result)
+        if len(readiness_calls) == 2:
+            close_at_final_match[0] = True
+        return result
+
+    def close_after_final_match(*args, **kwargs):
+        result = original_matches(*args, **kwargs)
+        if close_at_final_match[0] and result:
+            close_at_final_match[0] = False
+            capacity.close()
+        return result
+
+    monkeypatch.setattr(capacity, "readiness", close_after_second_readiness)
+    monkeypatch.setattr(integration, "_profile_a_acceptance_matches_locked",
+                        close_after_final_match)
+    try:
+        result = runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        )
+        assert result == (None, "protected_acceptance_capacity_changed")
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert writer._stream_batch_acceptances
+        assert attempt.acceptance_owner._invalid is True
+        assert capacity._scope_lease._state == "retained_uncertain"
+        assert capacity._scope_lease._path.exists()
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+
+
+def test_profile_a_acceptance_close_after_private_acceptance_fails_host_publication(
+        native_profile_a_worker_storage, monkeypatch):
+    from core.comfy_output_containment import ProtectedOutputAcceptanceCharacterization
+
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    original_inspect = ProtectedOutputAcceptanceCharacterization.inspect_for_characterization
+    inspect_entered, allow_publish = threading.Event(), threading.Event()
+    owners, result, errors = [], [], []
+
+    def inspect_then_pause(owner, accepted=None):
+        receipt = original_inspect(owner, accepted)
+        if owner._protected_owner is writer:
+            owners.append(owner)
+            inspect_entered.set()
+            assert allow_publish.wait(5)
+        return receipt
+
+    monkeypatch.setattr(ProtectedOutputAcceptanceCharacterization,
+                        "inspect_for_characterization", inspect_then_pause)
+
+    def accept():
+        try:
+            result.append(runtime.accept_generation_worker_staged_output_for_characterization(
+                staged, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=accept)
+    try:
+        thread.start()
+        assert inspect_entered.wait(5), (result, errors)
+        assert len(owners) == 1
+        owners[0].close()
+        allow_publish.set()
+        thread.join(10)
+        assert not thread.is_alive() and not errors
+        assert result == [(None, "protected_acceptance_owner_changed")]
+        assert owners[0]._closed is True
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert writer._stream_batch_acceptances
+        assert capacity._ledger._reservations[attempt.reservation]["state"] in {
+            "uncertain", "retained_uncertain",
+        }
+    finally:
+        allow_publish.set()
+        thread.join(5)
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+
+
+@pytest.mark.parametrize("drift", ["claim", "project_path"])
+def test_profile_a_acceptance_host_claim_or_project_drift_during_native_read_retains(
+        native_profile_a_worker_storage, monkeypatch, drift):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    original_inspect = writer.inspect_verified_remote_image_for_characterization
+    original_claim = lifecycle._claim_id
+    original_path = runtime.target_tracker._project_path
+
+    def drift_then_inspect(observation):
+        if drift == "claim":
+            lifecycle._claim_id = "changed-claim"
+        else:
+            runtime.target_tracker._project_path = "changed-project.json"
+        return original_inspect(observation)
+
+    monkeypatch.setattr(writer, "inspect_verified_remote_image_for_characterization",
+                        drift_then_inspect)
+    try:
+        assert runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_acceptance_failed")
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert not writer._stream_batches
+        assert not writer._stream_batch_acceptances
+        assert capacity._ledger._reservations[attempt.reservation]["state"] in {
+            "uncertain", "retained_uncertain",
+        }
+    finally:
+        lifecycle._claim_id = original_claim
+        runtime.target_tracker._project_path = original_path
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+
+
 def test_profile_a_single_image_writer_handoff_reuses_exact_reservation_and_is_non_authoritative(
         native_profile_a_worker_storage, monkeypatch):
     import hashlib
