@@ -102,6 +102,28 @@ class VerifiedProtectedPromotionReceipt:
     _accepted: AcceptedProtectedOutputBatch = field(repr=False, compare=False)
 
 
+@dataclass(frozen=True)
+class _ProfileAHostPromotionBinding:
+    """Private one-shot binding issued only by the exact original Host."""
+    integration: object = field(repr=False, compare=False)
+    attempt: object = field(repr=False, compare=False)
+    envelope: object = field(repr=False, compare=False)
+    writer_marker: object = field(repr=False, compare=False)
+    preflight_marker: object = field(repr=False, compare=False)
+    preflight_observation: object = field(repr=False, compare=False)
+    evidence: object = field(repr=False, compare=False)
+    writer_observation: object = field(repr=False, compare=False)
+    acceptance_observation: object = field(repr=False, compare=False)
+    writer_owner: object = field(repr=False, compare=False)
+    capacity_owner: object = field(repr=False, compare=False)
+    operation: object = field(repr=False, compare=False)
+    reservation: object = field(repr=False, compare=False)
+    estimate: object = field(repr=False, compare=False)
+    write_admission: object = field(repr=False, compare=False)
+    host_freshness: object = field(repr=False, compare=False)
+    before_create: object = field(repr=False, compare=False)
+
+
 class ProtectedDurablePromotionCharacterization:
     """One-shot copy from an accepted batch into its original protected root.
 
@@ -206,6 +228,7 @@ class ProtectedDurablePromotionCharacterization:
         self._attempted = self._busy = self._closed = self._uncertain = self._revoking = False
         self._receipt = None
         self._pending_receipt = None
+        self._profile_a_host_binding = None
         self._executor_event_boundary = _PromotionEventBoundary()
         # Candidate append is a separate commit from the executor's count-only
         # event. Keep its revocation lease independent and one-shot as well.
@@ -214,6 +237,96 @@ class ProtectedDurablePromotionCharacterization:
         # Its lease keeps the original native custody alive across the
         # established host save callback without holding native locks there.
         self._project_save_boundary = _PromotionEventBoundary()
+
+    @classmethod
+    def _create_for_profile_a_original_host_for_characterization(
+            cls, binding, *, characterization=False, disposable_opt_in=False):
+        """Create the otherwise-forbidden Profile A owner for one Host claim."""
+        from core.generation_storage_admission import (
+            CapacityEstimate, WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedPromotionPreflightObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            w._fail("execution_unavailable")
+        if (type(binding) is not _ProfileAHostPromotionBinding
+                or type(binding.integration) is not OriginalHostWorkerStorageIntegration
+                or binding.integration._profile_a is not True
+                or type(binding.preflight_observation)
+                    is not GenerationWorkerProtectedPromotionPreflightObservation
+                or type(binding.capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization
+                or type(binding.writer_owner) is not WindowsProtectedAssetsCharacterization
+                or type(binding.estimate) is not CapacityEstimate):
+            w._fail("profile_a_promotion_host_bridge_required")
+        protected_owner = binding.writer_owner
+        accepted = binding.attempt.accepted_batch
+        acceptance_owner = binding.attempt.acceptance_owner
+        if (type(protected_owner) is not WindowsProtectedAssetsCharacterization
+                or type(acceptance_owner) is not ProtectedOutputAcceptanceCharacterization
+                or type(accepted) is not AcceptedProtectedOutputBatch
+                or binding.integration._storage_preadmission_attempts.get(
+                    binding.attempt.lease.request_index) is not binding.attempt
+                or binding.integration._lifecycle_ref() is None
+                or binding.attempt.evidence is not binding.evidence
+                or binding.evidence._issuer is not binding.integration
+                or binding.evidence._attempt_nonce != binding.attempt.lease.nonce
+                or binding.integration._lifecycle_ref()._envelope is not binding.envelope
+                or binding.attempt.prepared is None
+                or binding.attempt.promotion_preflight_observation is not binding.preflight_observation
+                or binding.attempt.promotion_writer_marker is not binding.writer_marker
+                or binding.attempt.promotion_preflight_marker is not binding.preflight_marker
+                or binding.attempt.promotion_preflight_state != "promotion_admitting"
+                or binding.attempt.cancel_requested
+                or binding.attempt.acceptance_state != "accepted_non_authoritative"
+                or binding.attempt.writer_owner is not protected_owner
+                or binding.capacity_owner is not binding.integration._capacity_owner
+                or binding.operation is not binding.attempt.promotion_capacity_operation
+                or binding.reservation is not binding.attempt.promotion_capacity_reservation
+                or binding.estimate is not binding.attempt.promotion_capacity_estimate
+                or binding.attempt.promotion_owner is not None
+                or binding.attempt.promotion_receipt is not None
+                or not callable(binding.host_freshness)
+                or not callable(binding.before_create)
+                or not binding.capacity_owner._profile_a_promotion_write_is_live_for_characterization(
+                    binding.operation, binding.reservation, binding.write_admission,
+                    protected_owner, binding.estimate)):
+            w._fail("profile_a_promotion_host_bridge_required")
+        try:
+            if (accepted._protected_owner is not protected_owner
+                    or acceptance_owner._protected_owner is not protected_owner
+                    or acceptance_owner._envelope is not accepted._envelope
+                    or acceptance_owner._prepared is not accepted._prepared
+                    or acceptance_owner._remote is not accepted._remote
+                    or acceptance_owner._batch_receipt is not accepted._batch_receipt
+                    or acceptance_owner._host_freshness is not accepted._host_freshness
+                    or not is_owner_prepared_frozen_request(accepted._prepared)
+                    or accepted._remote.execution_succeeded is not True
+                    or accepted._remote is not binding.attempt.remote_receipt
+                    or accepted._prepared is not binding.attempt.prepared
+                    or accepted._envelope is not binding.envelope):
+                raise ValueError()
+            _validate_binding(accepted._envelope, accepted._prepared, accepted._remote)
+        except Exception:
+            w._fail("profile_a_promotion_host_bridge_required")
+        owner = cls(protected_owner, acceptance_owner, accepted, _factory=_FACTORY)
+        owner._profile_a_host_binding = binding
+        with binding.integration._lock:
+            attempt = binding.attempt
+            if (binding.integration._storage_preadmission_attempts.get(
+                    attempt.lease.request_index) is not attempt
+                    or attempt.promotion_preflight_state != "promotion_admitting"
+                    or attempt.cancel_requested
+                    or attempt.promotion_writer_marker is not binding.writer_marker
+                    or attempt.promotion_owner is not None):
+                w._fail("protected_promotion_invalidated")
+            attempt.promotion_write_admission = binding.write_admission
+            attempt.promotion_owner = owner
+            attempt.promotion_host_binding = binding
+            attempt.promotion_preflight_state = "promotion_admitted"
+        return owner
 
     def _build_receipt(self, images):
         accepted = self._accepted
@@ -290,7 +403,17 @@ class ProtectedDurablePromotionCharacterization:
             w._fail("storage_root_owner_mismatch")
         return self._promote_for_characterization((admission_owner, operation_id))
 
-    def _promote_for_characterization(self, capacity=None):
+    def _promote_from_profile_a_original_host_for_characterization(self, binding):
+        if (type(binding) is not _ProfileAHostPromotionBinding
+                or self._profile_a_host_binding is not binding
+                or binding.attempt.promotion_host_binding is not binding
+                or binding.attempt.promotion_owner is not self):
+            w._fail("profile_a_promotion_host_bridge_required")
+        return self._promote_for_characterization(profile_a_binding=binding)
+
+    def _promote_for_characterization(self, capacity=None, *, profile_a_binding=None):
+        if capacity is not None and profile_a_binding is not None:
+            w._fail("protected_promotion_capacity_mismatch")
         with self._lock:
             if self._closed or self._revoking:
                 w._fail("promotion_closed")
@@ -308,15 +431,30 @@ class ProtectedDurablePromotionCharacterization:
         capacity_lease = None
         writer_started = False
         receipt = None
+        if profile_a_binding is not None:
+            if (type(profile_a_binding) is not _ProfileAHostPromotionBinding
+                    or profile_a_binding is not self._profile_a_host_binding
+                    or profile_a_binding.writer_owner is not protected
+                    or profile_a_binding.attempt.promotion_owner is not self):
+                w._fail("profile_a_promotion_host_bridge_required")
+            admission_owner = profile_a_binding.capacity_owner
+            operation = profile_a_binding.operation
+            reservation = profile_a_binding.reservation
+            write_admission = profile_a_binding.write_admission
+        elif capacity is not None:
+            admission_owner, operation_id = capacity
         try:
             protected._claim_protected_promotion_for_characterization(self, acceptance, accepted, key)
             claimed = True
-            if capacity is not None:
-                admission_owner, operation_id = capacity
+            if capacity is not None or profile_a_binding is not None:
                 capacity_lease = protected._begin_promotion_capacity_lease_for_characterization(self)
             # Acceptance inspection performs exact original-host freshness and
             # complete source native/content verification outside owner locks.
-            acceptance.inspect_for_characterization(accepted)
+            if profile_a_binding is not None:
+                acceptance._inspect_for_promotion_preflight_for_characterization(
+                    accepted, profile_a_binding.host_freshness)
+            else:
+                acceptance.inspect_for_characterization(accepted)
             batch = accepted._batch_receipt
             descriptors = tuple(remote.images)
             sources = tuple(batch.observations)
@@ -325,7 +463,7 @@ class ProtectedDurablePromotionCharacterization:
                     != tuple(item.identity for item in descriptors)):
                 w._fail("protected_promotion_incomplete")
             expected_bytes = 0
-            if capacity is not None:
+            if capacity is not None or profile_a_binding is not None:
                 from core import generation_storage_admission as admission
 
                 maximum = admission_owner._limits.shared_temporary_and_promoted_bytes
@@ -339,13 +477,18 @@ class ProtectedDurablePromotionCharacterization:
                 expected_bytes = sum(item.image.byte_count for item in sources)
             protected._check()
             with protected._lock:
-                if (len(protected._files) + len(protected._unobserved_files) + len(sources)
-                        > protected._limits.images
-                        or protected._used_bytes + expected_bytes > protected._limits.aggregate_bytes
+                if (protected._used_bytes + expected_bytes > protected._limits.aggregate_bytes
                         or any(item.image.byte_count <= 0
                                or item.image.byte_count > min(protected._limits.image_bytes,
                                                               protected._limits.request_bytes)
                                for item in sources)):
+                    w._fail("storage_capacity")
+                if profile_a_binding is not None:
+                    if (not protected._can_add_inventory_entries("promoted_assets", len(sources))
+                            or protected._profile_a_capacity_owner is not admission_owner):
+                        w._fail("storage_capacity")
+                elif (len(protected._files) + len(protected._unobserved_files) + len(sources)
+                        > protected._limits.images):
                     w._fail("storage_capacity")
 
             if capacity is not None:
@@ -356,26 +499,52 @@ class ProtectedDurablePromotionCharacterization:
                     "promoted_assets": admission.CapacityEstimate(expected_bytes, len(sources))})
                 write_admission = admission_owner.admit_write_for_characterization(operation, reservation)
                 admission_owner.assert_write_admission_for_characterization(operation, write_admission)
+            elif profile_a_binding is not None:
+                admission_owner.assert_write_admission_for_characterization(operation, write_admission)
+                if not admission_owner._profile_a_promotion_write_is_live_for_characterization(
+                        operation, reservation, write_admission, protected,
+                        profile_a_binding.estimate):
+                    w._fail("protected_promotion_capacity_mismatch")
 
             promoted = []
-            for descriptor, source in zip(descriptors, sources):
+            for request_order, (descriptor, source) in enumerate(zip(descriptors, sources)):
                 if source.image.purpose != "temporary_containment":
                     w._fail("protected_promotion_source_mismatch")
                 if admission_owner is not None:
                     admission_owner.assert_write_admission_for_characterization(operation, write_admission)
+                if profile_a_binding is not None:
+                    acceptance._inspect_for_promotion_preflight_for_characterization(
+                        accepted, profile_a_binding.host_freshness)
                 data, extension = self._read_source_bytes(descriptor, source)
-                if admission_owner is not None and not promoted:
+                if profile_a_binding is not None:
+                    if profile_a_binding.before_create(descriptor, request_order) is not True:
+                        w._fail("protected_promotion_invalidated")
+                    writer_started = True
+                    destination = protected._create_profile_a_promoted_image_for_original_host_for_characterization(
+                        self, data, extension,
+                        integration=profile_a_binding.integration,
+                        attempt=profile_a_binding.attempt,
+                        writer_marker=profile_a_binding.writer_marker,
+                        preflight_observation=profile_a_binding.preflight_observation,
+                        capacity_owner=admission_owner, operation=operation,
+                        reservation=reservation, estimate=profile_a_binding.estimate,
+                        write_admission=write_admission, capacity_lease=capacity_lease,
+                        descriptor=descriptor, source_observation=source,
+                        request_order=request_order,
+                    )
+                else:
+                    if admission_owner is not None and not promoted:
                     # The first CREATE_NEW is downstream of both the complete
                     # reservation and a fresh original-host/source recheck.
-                    acceptance.inspect_for_characterization(accepted)
-                    admission_owner.assert_write_admission_for_characterization(
-                        operation, write_admission)
-                writer_started = True
-                destination = protected.create_image_for_characterization(
-                    "promoted_assets", data, extension=extension, _promotion_owner=self,
-                    _admission_lease=capacity_lease,
-                    _admission_context=((admission_owner, operation, write_admission)
-                                        if admission_owner is not None else None))
+                        acceptance.inspect_for_characterization(accepted)
+                        admission_owner.assert_write_admission_for_characterization(
+                            operation, write_admission)
+                    writer_started = True
+                    destination = protected.create_image_for_characterization(
+                        "promoted_assets", data, extension=extension, _promotion_owner=self,
+                        _admission_lease=capacity_lease,
+                        _admission_context=((admission_owner, operation, write_admission)
+                                            if admission_owner is not None else None))
                 if (destination.purpose != "promoted_assets"
                         or destination.byte_count != source.image.byte_count
                         or destination.content_sha256 != source.image.content_sha256
@@ -388,14 +557,22 @@ class ProtectedDurablePromotionCharacterization:
                 promoted.append(ProtectedPromotedImage(descriptor.identity, source, destination))
 
             # Recheck both sides after the last native destination verification.
-            acceptance.inspect_for_characterization(accepted)
+            if profile_a_binding is not None:
+                acceptance._inspect_for_promotion_preflight_for_characterization(
+                    accepted, profile_a_binding.host_freshness)
+            else:
+                acceptance.inspect_for_characterization(accepted)
             if admission_owner is None:
                 for row in promoted:
                     protected.inspect_image_for_characterization(row.promoted_image)
             receipt = self._build_receipt(promoted)
             # Destination verification may be slow. Recheck the exact original
             # host binding after it, immediately before joint publication.
-            acceptance.inspect_for_characterization(accepted)
+            if profile_a_binding is not None:
+                acceptance._inspect_for_promotion_preflight_for_characterization(
+                    accepted, profile_a_binding.host_freshness)
+            else:
+                acceptance.inspect_for_characterization(accepted)
 
             # Serialize publication against protected close and acceptance
             # close/invalidation. Preserve protected -> acceptance lock order;
@@ -410,7 +587,12 @@ class ProtectedDurablePromotionCharacterization:
                 admission_owner.complete_protected_promotion_batch_for_characterization(
                     operation, write_admission, protected, self, acceptance, accepted, receipt,
                     capacity_lease,
-                    final_revalidate=lambda: acceptance.inspect_for_characterization(accepted))
+                    final_revalidate=(
+                        (lambda: acceptance._inspect_for_promotion_preflight_for_characterization(
+                            accepted, profile_a_binding.host_freshness))
+                        if profile_a_binding is not None else
+                        (lambda: acceptance.inspect_for_characterization(accepted))),
+                    profile_a_host_binding=profile_a_binding)
                 return receipt
 
             # The legacy path keeps its existing receipt contract. Move the

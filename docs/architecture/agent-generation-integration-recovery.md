@@ -284,7 +284,7 @@ production Start, or background worker was exercised.
 | Accepted handoff -> `POST /prompt` and prompt identity | Handoff/inbox/job owners, `ui/agent_generation_comfy_executor.py`, `core/comfy_prompt_request.py`, `core/comfy_http_submission.py`; exact frozen request and returned prompt UUID | Handoff/executor fake-provider tests plus isolated injected/monkeypatched HTTP wire tests; one attempt, sequential order, possible-send uncertainty, no automatic retry | HTTP submission is not the executor's production default and no live ComfyUI request is made. No production Worker registration or production durable-intent call site; C2B-8D-14/15B/16A characterize the Journal-gated pre-send contract offline. Production deadline policy and original-host event-loop delivery remain absent. |
 | Accepted prompt -> history observation | `core/comfy_http_history.py`, `core/comfy_remote_output_receipts.py`, executor result gate; exact accepted UUID and frozen origin | Bounded pending/ready/unknown transport contract, strict metadata parsing and correlation tests; explicit later read does not resubmit | No polling scheduler, live history interoperability evidence, or durable restart association. Missing/timeout history is unknown, never proof of execution failure. |
 | Successful history -> `/view` stream -> protected staging | `core/comfy_http_view.py`, `core/comfy_output_containment.py`, `core/generation_windows_protected_assets.py`; exact remote descriptor, prompt/request binding, original-host freshness | Injected HTTP stream composed with real Windows disposable roots/files, incremental stream, native identity/DACL, decode/size/hash and retention checks | No production transport registration. No remote cancellation or cleanup, and no claim of constant-memory decode or hard end-to-end deadline. |
-| Complete protected staging batch -> acceptance -> promotion | Legacy path: `WindowsProtectedAssetsCharacterization`, protected acceptance owner and `ProtectedDurablePromotionCharacterization`; Profile A currently stops at the 19F-B destination-capacity preflight | Windows-native disposable tests cover the legacy source/destination copy path; Profile A tests cover exact accepted-batch revalidation and destination-only reservation for batches that fit the shared ledger | Profile A has no CREATE_NEW Promotion writer, copied destination, aggregate Promotion receipt or production authority. With the current shared 16-entry cap, a retained 16-image source batch cannot reserve a second 16-entry destination. No production root lifecycle. |
+| Complete protected staging batch -> acceptance -> promotion | Legacy path: `WindowsProtectedAssetsCharacterization`, protected acceptance owner and `ProtectedDurablePromotionCharacterization`; Profile A uses the exact 19F-B reservation through the 19F-D original-Host Writer | Windows-native disposable tests cover legacy and Profile A source/destination copying, native identity/ACL, exact batch inventory, one aggregate destination ledger commit, private receipt, and 1/2/16-image policy limits | Profile A final Host count-only success remains deferred to 19F-E. No production root lifecycle, live transport or Candidate/Project authority is implied by the private receipt. |
 | Promotion -> `outputs_ready` -> Candidate admission | executor adapter and `GenerationProtectedCandidateAdmission`; opaque event ID is correlation only, promotion receipt remains owner-held | Composed fake executor tests emit one count-only event; admission tests verify exact original Project/path/snapshot, activation/epoch/pairing, job/claim/request and event evidence | Event delivery is not wired to a production worker. Admission is eligibility evidence, not human approval or a reusable capability. All publication gates remain disabled. |
 | Admission -> Candidate append through existing Gallery writer | `GenerationCandidatePublication.publish_protected_for_characterization`, existing Gallery candidate factory/appender and Undo snapshot | Windows-native disposable composition mutates only the exact in-memory fixture Project, records actual Candidate delta, checks path/provenance and one-shot settlement; partial append remains uncertain and is not replayed | No production entry point or enabled publication authority. No second writer or conversion to legacy receipt custody was introduced. |
 | Settled Candidate registration -> Project JSON save | Same publication owner and existing app save callback -> `core.io.save_project_to_json`; exact Project object/path and protected provenance | Disposable integration writes then reopens JSON with the normal loader; verifies Candidate lineage, prompt/seed/provenance, one-shot save and distinct save outcome | Does not establish crash/power-loss durability, cross-file atomicity, or permission to recover after restart. Save uncertainty is retained; no retry/rollback/cleanup. |
@@ -647,7 +647,7 @@ model.
 | Order | Milestone | Remaining implementation gap and risk | Evidence required to close the gate |
 | --- | --- | --- | --- |
 | 1 | Original-host integration and production lifecycle | No production owner registers the Worker/transports, survives Streamlit reruns, fences close/replacement or delivers results to the same Project/session. | A separately reviewed production lifecycle with exact Project/path/session/process/activation/pairing and claim binding, bounded shutdown, one-shot intent-before-send and original-host event delivery; failure/close races remain unknown and non-retriable. |
-| 2 | Protected root provisioning and capacity lifecycle | Current roots are host-supplied native observations for disposable fixtures. Reservations are process-local, not an OS quota; 17B/C/D and 17E-B methods require explicit opt-in, and Journal capacity is not the default Executor append path. 19F-C characterizes an explicit Profile A dual-custody policy (16 staged + 16 reserved promoted, 32 combined, 256 MiB shared bytes); this closes the entry-count preflight block only. It does not create a production root or Promotion writer. | Define a local Profile A root lifecycle that never repairs/adopts existing user directories; connect capacity admission to each selected production writer; decide concurrent app/process and restart accounting, evidence retention and user-facing capacity ceilings. Keep the 256 MiB aggregate byte constraint explicit. No OS quota or disk-space guarantee should be claimed. The next separate Promotion writer must use the exact preflight reservation and publish one atomic aggregate receipt without changing source evidence. |
+| 2 | Protected root provisioning and capacity lifecycle | Current roots are host-supplied native observations for disposable fixtures. Reservations are process-local, not an OS quota; 17B/C/D and 17E-B methods require explicit opt-in, and Journal capacity is not the default Executor append path. 19F-C defines the opt-in 16+16/256 MiB policy and 19F-D characterizes its exact-reservation Promotion Writer/private aggregate receipt. Neither creates a production root. | Define a local Profile A root lifecycle that never repairs/adopts existing user directories; connect capacity admission to each selected production writer; decide concurrent app/process and restart accounting, evidence retention and user-facing capacity ceilings. Keep the 256 MiB aggregate byte constraint explicit. Do not claim an OS quota or disk-space guarantee. |
 | 3 | Real ComfyUI/HTTP interoperability | All transport tests use injected/offline wires; endpoint, version, history status, `/view` descriptors, response framing and remote uncertainty have not been observed against a real server. | After explicit human authorization and disposable endpoint selection, verify exact POST/history/view behavior, supported workflow compatibility, bounded outcomes and no-resubmit semantics. Record the server/runtime version and uncertain cases. |
 | 4 | Explicit Human Start and UI activation | Review/confirmation and a Start characterization seam exist, but no production UI action dispatches it. | Add a distinct explicit human Start control and visible pending/unknown/unsaved state. Revalidate review, Project and host identity immediately before a one-shot production claim; confirmation alone must not execute. |
 | 5 | Candidate publication and Project JSON save | Existing Candidate/Undo/save owners have protected offline composition but no production call path for these receipts. | Connect only through the existing Gallery writer and exact-object/path save owner; prove idempotent provenance, Undo ordering, partial-append uncertainty, one-shot save and reload integrity in the supported host lifecycle. |
@@ -1183,15 +1183,13 @@ that default/legacy behavior and adds a separate explicit Profile A policy that
 allows 16 entries per root and 32 combined while retaining one shared 256 MiB
 byte ceiling. Under that policy only, a complete 16-image destination-only
 preflight reservation can succeed; retaining source bytes still means the
-combined byte budget must cover both source and estimate. There is still no
-Profile A Promotion writer. A later bounded milestone must use the exact
-reservation to authorize CREATE_NEW into the promoted root, copy and reverify
-every image, commit one exact aggregate ledger delta and private receipt, and
-serialize final publication with Host/owner close and invalidation. Partial or
-uncertain copies must be retained with no retry, overwrite, deletion or
-cleanup. The generic Profile A Promotion factory remains fail-closed until
-that owner is implemented and reviewed. Every production capability flag
-remains false and `authorship=unverified`.
+combined byte budget must cover both source and estimate. At the 19F-B/C
+checkpoint there was no Profile A Promotion writer; 19F-D below implements the
+exact-reservation offline writer/private aggregate commit. Final Host
+count-only publication remains a separate 19F-E boundary. Partial or uncertain
+copies must be retained with no retry, overwrite, deletion or cleanup. The
+generic Profile A Promotion factory remains fail-closed. Every production
+capability flag remains false and `authorship=unverified`.
 
 ## C2B-8D-19F-C Profile A dual-custody capacity characterization
 
@@ -1223,7 +1221,45 @@ Claim, and uncertain cancellation. Existing files and uncertain operations
 remain charged. This is bounded offline accounting, not an OS-enforced quota,
 guaranteed disk reservation, restart recovery or production storage
 provisioning. Production flags remain false and `authorship=unverified`.
-The next separate milestone is the Host-issued Promotion writer and one-shot
-native aggregate commit. It must keep the exact 16+16/256 MiB accounting,
-preserve staging source files, retain any partial destination evidence, and
-publish one receipt only after every destination image is verified.
+At this 19F-C checkpoint the next milestone was the Host-issued Promotion
+writer and one-shot native aggregate commit; the 19F-D section below records
+that offline boundary and the remaining deferred Host publication gate.
+
+## C2B-8D-19F-D original-Host protected Promotion Writer
+
+19F-D now consumes the exact settled 19F-B preflight observation through the
+same original-Host `GenerationWorkerProtectedPromotionPreflightObservation`
+owner. The integration claims the observation once, rechecks the current
+Project/Claim/Worker/Acceptance/source chain and existing four-root capacity
+binding, then admits one write token for the already-reserved destination
+operation. It does not create a new promotion operation or reservation, and it
+does not touch the separately completed 19D staging delta.
+
+The Host-issued internal binding authorizes only ordered copying of the exact
+accepted 1–16 staging images into the captured `promoted_assets` root. The
+protected Writer uses native `CREATE_NEW`, retains each destination handle,
+identity and ACL observation, flushes and rereads the bytes, decodes each image,
+and verifies the content and full-batch inventory delta. One aggregate ledger
+completion and one private `VerifiedProtectedPromotionReceipt` are committed
+together only after every image is verified. The dual-custody policy remains
+16 staging + 16 promoted entries under one 256 MiB budget; default policy is
+unchanged.
+
+The Host-level result is deliberately deferred. Even a complete private commit
+returns no count, receipt, path, image identity or success to the caller; the
+attempt remains `private_committed_host_publication_pending`. Host close or
+invalidation preserves the private evidence and converts unresolved state to
+`retained_uncertain`, retaining the full destination reservation and scope
+marker. Before any possible create, a positively proven unused reservation can
+be cancelled. After the first possible `CREATE_NEW`, all source and destination
+evidence is retained on failure, with no cleanup, rollback, overwrite or retry.
+
+The next bounded milestone is 19F-E: a separately reviewed original-Host
+count-only publication boundary. It must bind the exact private receipt, be
+serialized with Host and owner close/invalidation, compensate or retain
+uncertainty if publication fails after private commit, and never turn the
+Promotion result into Candidate or Project-save authority. Production root
+provisioning, cross-process capacity/durability, live ComfyUI interoperability,
+Human Start/UI activation, Candidate publication, Project save, restart
+recovery and retention/discard remain separate gates. All production flags
+remain false and `authorship=unverified`.
