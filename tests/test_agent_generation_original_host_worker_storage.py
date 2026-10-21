@@ -2239,6 +2239,56 @@ def test_profile_a_staged_acceptance_rejects_copied_observation_and_native_drift
         runtime.finish_generation_worker_storage_close_for_characterization()
 
 
+@pytest.mark.parametrize("mutation", ["completed_delta", "stream_attempt_identity"])
+def test_profile_a_single_image_acceptance_requires_exact_completed_write_binding(
+        native_profile_a_worker_storage, mutation):
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    record = capacity._ledger._reservations[attempt.reservation]
+    if mutation == "completed_delta":
+        delta = record["completed_observed_delta"]
+        delta["temporary_containment"] = (
+            delta["temporary_containment"][0] + 1,
+            delta["temporary_containment"][1],
+        )
+    else:
+        binding = record["asset_stream_completion"]
+        copied_attempt = tuple(list(binding[2]))
+        assert copied_attempt == binding[2] and copied_attempt is not binding[2]
+        record["asset_stream_completion"] = (
+            binding[0], binding[1], copied_attempt, binding[3],
+        )
+
+    # The aggregate inventory remains sufficient in both cases; acceptance
+    # must rely on this reservation's exact completion evidence instead.
+    observed_staging = capacity._ledger._observed["temporary_containment"]
+    assert observed_staging[0] >= len(data) and observed_staging[1] >= 1
+    try:
+        result, status = runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        )
+        assert result is None
+        assert status == "protected_acceptance_failed"
+        assert attempt.acceptance_state == "retained_uncertain"
+        assert attempt.acceptance_owner is None
+        assert attempt.accepted_batch is None
+        assert writer._stream_batches == {}
+        assert writer._stream_batch_acceptances == {}
+        assert record["state"] in {"completed", "uncertain", "retained_uncertain"}
+        assert capacity._invalid is True
+        capacity.close()
+        assert capacity._scope_lease._state == "retained_uncertain"
+        assert capacity._scope_lease._path.exists()
+    finally:
+        writer.close()
+        runtime.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+        capacity.close()
+
+
 @pytest.mark.parametrize("mutation", ["missing", "reordered", "duplicate", "substituted"])
 def test_profile_a_acceptance_requires_complete_ordered_exact_descriptor_observations(
         native_profile_a_worker_storage, mutation):

@@ -1142,6 +1142,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 or type(stream_attempt) is not tuple or len(stream_attempt) != 2
                 or stream_attempt != (stream_observation.request_id,
                                       stream_observation.descriptor_identity)
+                or type(stream_observation.image.byte_count) is not int
+                or stream_observation.image.byte_count <= 0
                 or stream_observation.image.purpose != "temporary_containment"
                 or any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
                        for purpose in ("temporary_containment", "promoted_assets"))):
@@ -1149,8 +1151,15 @@ class WindowsProtectedStorageAdmissionCharacterization:
         # Follow the established protected-assets -> admission -> ledger order.
         with asset_owner._lock:
             key = ("temporary_containment", stream_observation.image.storage_identity)
+            # Retain the owner-issued tuple object. Equal copied tuples are not
+            # sufficient evidence for the exact write completion binding.
+            owned_attempt = next((candidate for candidate, observation
+                                  in asset_owner._stream_images.items()
+                                  if candidate == stream_attempt
+                                  and observation is stream_observation), None)
             if (asset_owner._closed or asset_owner._revoking or asset_owner._invalid
                     or asset_owner._uncertain
+                    or owned_attempt is None
                     or asset_owner._stream_images.get(stream_attempt) is not stream_observation
                     or asset_owner._images.get(key) is not stream_observation.image
                     or key not in asset_owner._files):
@@ -1159,23 +1168,54 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 if self._closed or self._invalid:
                     return False
                 with self._ledger._lock:
-                    record = next((item for item in self._ledger._reservations.values()
-                                   if item.get("write") is write_admission
-                                   and item.get("operation") is operation), None)
+                    matching_records = [
+                        (reservation, item)
+                        for reservation, item in self._ledger._reservations.items()
+                        if item.get("write") is write_admission
+                        and item.get("operation") is operation
+                    ]
+                    reservation, record = (matching_records[0]
+                                           if len(matching_records) == 1 else (None, None))
                     operation_record = self._ledger._operations.get(operation)
+                    binding = (record.get("asset_stream_completion")
+                               if record is not None else None)
+                    expected_delta = {
+                        purpose: ((stream_observation.image.byte_count, 1)
+                                  if purpose == "temporary_containment" else (0, 0))
+                        for purpose in _WRITABLE
+                    }
+                    completed_delta = (record.get("completed_observed_delta")
+                                       if record is not None else None)
+                    estimate = (record.get("estimates", {}).get("temporary_containment")
+                                if record is not None
+                                and type(record.get("estimates")) is dict else None)
+                    observed_staging = self._ledger._observed.get("temporary_containment")
                     return bool(
-                        record is not None and record.get("state") == "completed"
+                        type(reservation) is _Opaque
+                        and self._ledger._reservations.get(reservation) is record
+                        and record is not None and record.get("state") == "completed"
+                        and record.get("operation") is operation
+                        and record.get("write") is write_admission
+                        and type(binding) is tuple and len(binding) == 4
+                        and binding[0] is asset_owner
+                        and binding[1] is stream_observation.image
+                        and binding[2] is owned_attempt
+                        and binding[3] is stream_observation
+                        and type(completed_delta) is dict
+                        and completed_delta == expected_delta
                         and type(record.get("estimates")) is dict
                         and set(record["estimates"]) == {"temporary_containment"}
-                        and record["estimates"]["temporary_containment"][0]
+                        and type(estimate) is tuple and len(estimate) == 2
+                        and estimate[0]
                             >= stream_observation.image.byte_count
-                        and record["estimates"]["temporary_containment"][1] >= 1
+                        and estimate[1] >= 1
                         and operation_record is not None
                         and operation_record.get("state") == "completed"
                         and self._ledger._active_write is None
-                        and self._ledger._observed["temporary_containment"][0]
+                        and type(observed_staging) is list and len(observed_staging) == 2
+                        and observed_staging[0]
                             >= stream_observation.image.byte_count
-                        and self._ledger._observed["temporary_containment"][1] >= 1
+                        and observed_staging[1] >= 1
                     )
 
     def admit_write_for_characterization(self, operation, reservation):
