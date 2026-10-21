@@ -104,7 +104,10 @@ class WindowsProtectedAssetsCharacterization:
         This is a distinct writer owner, not an upgrade of an inspect-only
         reopened owner. Its close lifecycle never closes the app-owned roots.
         """
-        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+        from core.generation_storage_admission import (
+            PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY,
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
 
         if characterization is not True or disposable_opt_in is not True:
             w._fail("execution_unavailable")
@@ -116,6 +119,12 @@ class WindowsProtectedAssetsCharacterization:
                        for key, value in vars(limits).items())
                 or not limits.image_bytes <= limits.request_bytes <= limits.aggregate_bytes):
             w._fail("invalid_storage_limits")
+        profile_a_capacity_policy = capacity_owner._asset_capacity_policy
+        if (not capacity_owner._capacity_policy_binding_matches()
+                or (profile_a_capacity_policy is not None
+                    and profile_a_capacity_policy is not PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY)
+                or (profile_a_capacity_policy is not None and limits != defaults)):
+            w._fail("profile_a_capacity_policy_mismatch")
 
         with capacity_owner._lock:
             roots = capacity_owner._roots
@@ -149,6 +158,7 @@ class WindowsProtectedAssetsCharacterization:
         owner = cls(
             borrowed, limits, True, fault, _factory=_FACTORY,
             owns_roots=False, profile_a_capacity_owner=capacity_owner,
+            profile_a_asset_capacity_policy=profile_a_capacity_policy,
         )
         owner._check()
         with capacity_owner._lock:
@@ -245,12 +255,14 @@ class WindowsProtectedAssetsCharacterization:
             raise  # Any successfully created evidence remains on disk.
 
     def __init__(self, roots, limits, writable, fault, *, _factory=None,
-                 owns_roots=True, profile_a_capacity_owner=None):
+                 owns_roots=True, profile_a_capacity_owner=None,
+                 profile_a_asset_capacity_policy=None):
         if _factory is not _FACTORY:
             w._fail("host_storage_required")
         self._roots, self._limits, self._writable, self._fault = roots, limits, writable, fault
         self._owns_roots = owns_roots is True
         self._profile_a_capacity_owner = profile_a_capacity_owner
+        self._profile_a_asset_capacity_policy = profile_a_asset_capacity_policy
         self._profile_a_handoff_integration = None
         # Names are unique only inside one purpose root; never key by filename alone.
         self._files, self._images = {}, {}
@@ -287,6 +299,40 @@ class WindowsProtectedAssetsCharacterization:
         self._verifier = object.__new__(ContainedOutputStore)
         self._verifier._limits = limits
 
+    def _entry_limit_for(self, purpose):
+        if self._profile_a_asset_capacity_policy is not None:
+            from core.generation_storage_admission import PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+
+            if self._profile_a_asset_capacity_policy is not PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY:
+                w._fail("profile_a_capacity_policy_mismatch")
+            if purpose == "temporary_containment":
+                return PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY.temporary_entries
+            if purpose == "promoted_assets":
+                return PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY.promoted_entries
+        return self._limits.images
+
+    def _inventory_entry_limit(self):
+        if self._profile_a_asset_capacity_policy is not None:
+            from core.generation_storage_admission import PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+
+            if self._profile_a_asset_capacity_policy is not PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY:
+                w._fail("profile_a_capacity_policy_mismatch")
+            return PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY.combined_entries
+        return self._limits.images
+
+    def _can_add_inventory_entries(self, purpose, count=1):
+        if purpose not in _PURPOSES or type(count) is not int or count <= 0:
+            return False
+        existing_total = len(self._files) + len(self._unobserved_files)
+        if existing_total > self._inventory_entry_limit() - count:
+            return False
+        if self._profile_a_asset_capacity_policy is not None:
+            purpose_count = sum(key[0] == purpose for key in self._files)
+            root = self._roots[purpose]
+            purpose_count += sum(path.parent == root._path for path, _ in self._unobserved_files)
+            return purpose_count <= self._entry_limit_for(purpose) - count
+        return True
+
     def _check(self):
         with self._lock:
             if self._closed:
@@ -301,6 +347,11 @@ class WindowsProtectedAssetsCharacterization:
             for _, root in roots:
                 if not root.readiness()["acl_verified"]:
                     w._fail("protected_root_unavailable")
+            capacity_owner = self._profile_a_capacity_owner
+            if capacity_owner is not None:
+                if (capacity_owner._asset_capacity_policy is not self._profile_a_asset_capacity_policy
+                        or not capacity_owner._capacity_policy_binding_matches()):
+                    w._fail("profile_a_capacity_policy_mismatch")
             for path, handle, identity, acl in files:
                 root = next(r for _, r in roots if path.parent == r._path)
                 w._revalidate(((path, False, handle, identity, acl[0]),), root._api, root._user)
@@ -375,7 +426,7 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("unsupported_asset_purpose_or_format")
             if (type(data) is not bytes or not 0 < len(data) <= min(self._limits.image_bytes, self._limits.request_bytes)
                     or self._used_bytes + len(data) > self._limits.aggregate_bytes
-                    or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                    or not self._can_add_inventory_entries(purpose, 1)):
                 w._fail("storage_capacity")
             self._check()
             root = self._roots[purpose]
@@ -471,7 +522,7 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("unsupported_asset_purpose_or_format")
             if (type(data) is not bytes or not 0 < len(data) <= min(self._limits.image_bytes, self._limits.request_bytes)
                     or self._used_bytes + len(data) > self._limits.aggregate_bytes
-                    or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                    or not self._can_add_inventory_entries(purpose, 1)):
                 w._fail("storage_capacity")
             root = self._roots[purpose]
 
@@ -493,7 +544,7 @@ class WindowsProtectedAssetsCharacterization:
                     or self._invalid or self._uncertain):
                 w._fail("storage_owner_unavailable")
             if (self._used_bytes + len(data) > self._limits.aggregate_bytes
-                    or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                    or not self._can_add_inventory_entries(purpose, 1)):
                 w._fail("storage_capacity")
             name = uuid.uuid4().hex + "." + extension
             key = (purpose, name)
@@ -852,7 +903,7 @@ class WindowsProtectedAssetsCharacterization:
                     or self._capacity_busy):
                 w._fail("storage_busy")
             if (len(self._stream_bindings) >= 100 and previous is None
-                    or len(self._files) + len(self._unobserved_files) + count > self._limits.images
+                    or not self._can_add_inventory_entries("temporary_containment", count)
                     or self._used_bytes + upper_bound > self._limits.aggregate_bytes
                     or self._stream_request_bytes.get(prepared.request_id, 0) + upper_bound
                         > self._limits.request_bytes):
@@ -1117,7 +1168,7 @@ class WindowsProtectedAssetsCharacterization:
                     or self._capacity_busy):
                 w._fail("storage_busy")
             if (len(self._stream_bindings) >= 100 and previous is None
-                    or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                    or not self._can_add_inventory_entries("temporary_containment", 1)):
                 w._fail("storage_capacity")
             self._stream_envelope = envelope
             self._stream_bindings[prepared.request_id] = (prepared, remote)
@@ -1156,7 +1207,7 @@ class WindowsProtectedAssetsCharacterization:
                 # conservative upper bound within current per-request/store limits.
                 if (request_bytes + upper_bound > self._limits.request_bytes
                         or self._used_bytes + upper_bound > self._limits.aggregate_bytes
-                        or len(self._files) + len(self._unobserved_files) >= self._limits.images):
+                        or not self._can_add_inventory_entries("temporary_containment", 1)):
                     w._fail("storage_capacity")
                 if reused_reservation:
                     if not admission_owner._staging_reservation_covers_for_characterization(
@@ -1967,12 +2018,15 @@ class WindowsProtectedAssetsCharacterization:
 
     def _inventory(self):
         paths = []
+        purpose_counts = {purpose: 0 for purpose in _PURPOSES}
         for purpose, root in self._roots.items():
             with os.scandir(root._path) as entries:
                 for entry in entries:
-                    if len(paths) >= self._limits.images:
+                    if (len(paths) >= self._inventory_entry_limit()
+                            or purpose_counts[purpose] >= self._entry_limit_for(purpose)):
                         w._fail("storage_capacity")
                     paths.append((purpose, root, root._path / entry.name))
+                    purpose_counts[purpose] += 1
         return paths
 
     def inspect_existing_for_characterization(self):
@@ -2041,6 +2095,15 @@ class WindowsProtectedAssetsCharacterization:
                         accepted_batch_count=len(self._stream_batch_acceptances),
                         protected_promotion_count=len(self._stream_promotions),
                         retained_byte_reservation=self._used_bytes,
+                        asset_capacity_policy=(
+                            self._profile_a_asset_capacity_policy.identity
+                            if self._profile_a_asset_capacity_policy is not None
+                            else "shared_temporary_promoted_16_v1"
+                        ),
+                        inventory_entry_limit=self._inventory_entry_limit(),
+                        purpose_entry_limits={
+                            purpose: self._entry_limit_for(purpose) for purpose in _PURPOSES
+                        },
                         retry_allowed=False, fresh_reopen="inspect_only", cross_file_transaction=False)
             if state in ("closed", "unsafe_or_unavailable"):
                 view.update(acl_verified=False, identity="unavailable", native_observation=state)

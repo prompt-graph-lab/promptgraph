@@ -1981,3 +1981,52 @@ receipt, and serializes final publication with Host/owner close and
 invalidation. Any failure after a possible destination create must retain
 partial evidence and capacity; it must not overwrite, retry, delete or clean
 up. No production capability flag changes.
+
+## C2B-8D-19F-C Profile A dual-custody capacity policy
+
+C2B-8D-19F-C adds an explicit opt-in capacity identity for the four-root
+Profile A characterization owner. It resolves the 19F-B 16-image preflight
+ceiling without changing `ProtectedStorageCapacityLimits` or the generic
+`ContainmentLimits` / `LocalOutputStore` defaults. The immutable
+`PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY` is accepted only by
+`capture_profile_a_root_set_for_characterization`; a generic five-root owner,
+copied policy object, changed byte ceiling, or ad-hoc Writer limit is refused.
+The borrowed Profile A Writer must retain the same policy identity as its exact
+capacity owner and root objects.
+
+| Profile A purpose | Per-purpose entries | Shared actual + reserved + uncertain entries | Shared bytes |
+| --- | ---: | ---: | ---: |
+| `temporary_containment` | 16 | 32 combined with promoted assets | 256 MiB combined with promoted assets |
+| `promoted_assets` | 16 | 32 combined with temporary containment | 256 MiB combined with temporary containment |
+
+The separate byte ceiling is not doubled: staging bytes, Promotion-copy
+estimates, existing inventory, and retained uncertainty all compete for the
+same 256 MiB. Request limits remain 1–16 images, at most 32 MiB per image and
+128 MiB per request. Journal, retained-uncertain, generic, and legacy limits
+are unchanged. Root capture, ledger reservation, subsequent inventory delta,
+native scan, and borrowed-Writer inventory apply the same per-purpose and
+combined entry ceilings. Files already present are retained-uncertain
+inventory; neither inventory nor reservations are waived to make a later
+operation fit.
+
+With this explicit policy, the original-Host 19F-B preflight can reserve one
+complete 16-image `promoted_assets` estimate while the exact 16-image staging
+source remains observed. The new operation has a reserved estimate only
+(`write is None`); the result remains immutable, count-only and
+non-authoritative. The staging operation stays completed exactly once. A
+default Profile A owner continues to use its recorded shared 16-entry limit
+and refuses that same 16+16 preflight. The bounded preflight creates no
+destination file, write admission, Promotion receipt or Candidate/Project
+authority. The existing Profile A `create_image*` entry points and generic
+Promotion factory remain fenced.
+
+This is process-local accounting and an advisory free-space observation, not
+an OS quota, guaranteed disk reservation, crash-durable inventory, or
+production root lifecycle. Close, stale inventory, identity/ACL drift,
+insufficient bytes, a 17th entry in either purpose, invalidation, or uncertain
+cancellation still refuses or retains the exact reservation/evidence. No
+automatic retry, overwrite, deletion, adoption, or cleanup is added. The next
+separate Promotion milestone must issue a narrow writer authorization, perform
+CREATE_NEW into the already verified promoted root, verify all destination
+bytes, and publish one aggregate Promotion receipt at a close-aware commit
+boundary. No production capability flag changes; `authorship=unverified`.

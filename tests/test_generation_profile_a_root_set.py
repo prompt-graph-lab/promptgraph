@@ -1,6 +1,7 @@
 """C2B-8D-19C-B four-root and independent Project binding characterization."""
 
 import gc
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
@@ -81,6 +82,49 @@ def _capture_profile_a(scope, roots):
     return admission.WindowsProtectedStorageAdmissionCharacterization.capture_profile_a_root_set_for_characterization(
         str(scope), roots, characterization=True, disposable_opt_in=True,
     )
+
+
+def test_dual_custody_policy_is_exact_profile_a_only_opt_in():
+    policy = admission.PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+    limits = admission.ProtectedStorageCapacityLimits()
+
+    with pytest.raises(TypeError):
+        admission.WindowsProtectedStorageAdmissionCharacterization.capture_for_characterization(
+            "unused", {}, characterization=True, disposable_opt_in=True,
+            asset_capacity_policy=policy,
+        )
+
+    with pytest.raises(ValueError, match="profile_a_capacity_policy_mismatch"):
+        admission.WindowsProtectedStorageAdmissionCharacterization._capture_for_characterization(
+            None, {}, expected_purposes=admission._WRITABLE,
+            characterization=True, disposable_opt_in=True, limits=limits,
+            profile_a=False, asset_capacity_policy=policy,
+        )
+
+    copied_policy = replace(policy)
+    assert copied_policy == policy and copied_policy is not policy
+    with pytest.raises(ValueError, match="profile_a_capacity_policy_mismatch"):
+        admission.WindowsProtectedStorageAdmissionCharacterization._capture_for_characterization(
+            None, {}, expected_purposes=admission._WRITABLE,
+            characterization=True, disposable_opt_in=True, limits=limits,
+            profile_a=True, asset_capacity_policy=copied_policy,
+        )
+
+    raised_entries = replace(limits, shared_temporary_and_promoted_entries=32)
+    with pytest.raises(ValueError, match="invalid_capacity_limits"):
+        admission.WindowsProtectedStorageAdmissionCharacterization._capture_for_characterization(
+            None, {}, expected_purposes=admission._WRITABLE,
+            characterization=True, disposable_opt_in=True, limits=raised_entries,
+            profile_a=True, asset_capacity_policy=policy,
+        )
+
+    lowered_bytes = replace(limits, shared_temporary_and_promoted_bytes=limits.shared_temporary_and_promoted_bytes - 1)
+    with pytest.raises(ValueError, match="profile_a_capacity_policy_mismatch"):
+        admission.WindowsProtectedStorageAdmissionCharacterization._capture_for_characterization(
+            None, {}, expected_purposes=admission._WRITABLE,
+            characterization=True, disposable_opt_in=True, limits=lowered_bytes,
+            profile_a=True, asset_capacity_policy=policy,
+        )
 
 
 def _create_owner_only_fixture_file(path, root, content):
@@ -250,6 +294,53 @@ def test_preexisting_inventory_remains_uncertain_and_holds_lease_across_close_an
     assert second_process.returncode != 0
     assert "scope_writer_lease_unavailable" in second_process.stderr
     assert unknown_file.read_bytes() == before
+
+
+def test_dual_custody_native_inventory_observes_sixteen_entries_per_asset_root(
+        native_profile_a_roots):
+    from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+
+    scope, roots, _project, _api = native_profile_a_roots
+    for purpose in ("temporary_containment", "promoted_assets"):
+        for index in range(16):
+            path = roots[purpose]._path / f"{index:032x}.png"
+            _create_owner_only_fixture_file(
+                path, roots[purpose], b"disposable preexisting capacity fixture",
+            )
+
+    owner = admission.WindowsProtectedStorageAdmissionCharacterization.capture_profile_a_root_set_for_characterization(
+        str(scope), roots, characterization=True, disposable_opt_in=True,
+        asset_capacity_policy=admission.PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY,
+    )
+    writer = None
+    try:
+        writer = WindowsProtectedAssetsCharacterization.borrow_profile_a_writer_for_characterization(
+            owner, characterization=True, disposable_opt_in=True,
+        )
+        capacity_view = owner.readiness()
+        rows = {row["purpose"]: row for row in capacity_view["roots"]}
+        assert capacity_view["asset_capacity_policy"] == "profile_a_dual_custody_16x16_v1"
+        assert capacity_view["shared_asset_entry_limit"] == 32
+        assert rows["temporary_containment"]["retained_uncertain_entries"] == 16
+        assert rows["promoted_assets"]["retained_uncertain_entries"] == 16
+        assert (rows["temporary_containment"]["retained_uncertain_entries"]
+                + rows["promoted_assets"]["retained_uncertain_entries"]) == 32
+
+        writer_view = writer.readiness()
+        assert writer_view["asset_capacity_policy"] == "profile_a_dual_custody_16x16_v1"
+        assert writer_view["inventory_entry_limit"] == 32
+        assert writer_view["purpose_entry_limits"] == {
+            "temporary_containment": 16, "promoted_assets": 16,
+        }
+        inventory = writer._inventory()
+        assert len(inventory) == 32
+        assert {purpose for purpose, _root, _path in inventory} == {
+            "temporary_containment", "promoted_assets",
+        }
+    finally:
+        if writer is not None:
+            writer.close()
+        owner.close()
 
 
 def test_clean_empty_scope_releases_marker_for_a_later_process(native_profile_a_roots):
@@ -724,6 +815,7 @@ def test_scope_lease_retains_host_lifecycle_for_late_worker_uncertainty(native_p
     lifecycle = runtime._generation_original_host_lifecycle
     integration = SimpleNamespace(
         _lock=threading.RLock(), _state="running", _active=object(), _uncertain_leases={},
+        _storage_preadmission_attempts={},
     )
     lifecycle._worker_storage_integration = integration
     marker = owner._scope_lease._path

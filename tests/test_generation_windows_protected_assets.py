@@ -7,6 +7,7 @@ import subprocess
 import threading
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -86,6 +87,35 @@ def assert_closed_gates(view):
         assert view[key] is False
     assert view["authorship"] == "unverified"
     assert view["directory_durability"] == "unsupported"
+
+
+def test_profile_a_dual_custody_writer_inventory_allows_sixteen_per_root_only(tmp_path):
+    writer = object.__new__(a.WindowsProtectedAssetsCharacterization)
+    writer._limits = ContainmentLimits()
+    writer._profile_a_asset_capacity_policy = admission.PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY
+    writer._roots = {}
+    writer._files = {}
+    writer._unobserved_files = []
+    for purpose in a._PURPOSES:
+        root = tmp_path / purpose
+        root.mkdir()
+        writer._roots[purpose] = SimpleNamespace(_path=root)
+        for index in range(16):
+            name = f"{index:032x}.png"
+            (root / name).write_bytes(b"bounded disposable inventory fixture")
+            writer._files[(purpose, name)] = None
+
+    inventory = writer._inventory()
+    assert len(inventory) == 32
+    assert {purpose for purpose, _root, _path in inventory} == set(a._PURPOSES)
+    assert writer._inventory_entry_limit() == 32
+    assert writer._can_add_inventory_entries("temporary_containment", 1) is False
+    assert writer._can_add_inventory_entries("promoted_assets", 1) is False
+
+    overflow = tmp_path / "promoted_assets" / "ffffffffffffffffffffffffffffffff.png"
+    overflow.write_bytes(b"overflow fixture")
+    with pytest.raises(ValueError, match="storage_capacity"):
+        writer._inventory()
 
 
 @pytest.mark.parametrize("purpose", a._PURPOSES)
