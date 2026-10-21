@@ -1871,3 +1871,65 @@ quotas, production provisioning, power-loss durability, cross-process quota
 accounting, real ComfyUI interoperability, restart authority, promotion,
 Candidate publication, Project save, Recovery, retention or Discard. Every
 production capability flag remains false and `authorship=unverified`.
+
+## C2B-8D-19F-A staged-image Acceptance bridge
+
+`ProjectAgentSessionRuntime.accept_generation_worker_staged_output_for_characterization()`
+accepts only the exact count-only staging observation already published by
+the same original Profile A Host integration. The count is a lookup handle,
+not authority: the integration resolves it to its private attempt, exact
+Worker evidence and ready history completion, accepted `RemoteOutputReceipt`,
+frozen request, ordered native image observations, borrowed Writer, four-root
+capacity owner, 19D operation/reservation/write token and selected-Project
+reference. Copied or substituted observations, another Host/Claim/Writer/root,
+or a changed lifecycle cannot begin Acceptance.
+
+Before issuing the existing `VerifiedProtectedImageBatchReceipt` shape, the
+protected-assets owner revalidates every ordered descriptor and image binding,
+native file identity, owner-only ACL, decoded image, digest and reread bytes.
+The capacity owner must still show the exact completed write and its exact
+previously recorded delta: one image for the single-image path, or the
+aggregate bytes and entry count for the 2–16 image path. This is the original
+completed 19D reservation; Acceptance creates no operation, reservation,
+write admission, `CREATE_NEW`, or ledger completion. The generic
+`commit_verified_remote_image_batch_for_characterization()` refusal for a
+Profile A borrowed Writer remains in force. Only the narrow Host-issued
+Profile A bridge can register the private receipt binding.
+
+The bridge then uses `ProtectedOutputAcceptanceCharacterization` and its
+existing protected-owner → Acceptance-owner joint commit. The callback checks
+the exact original Host, Project/path, activation/epoch/pairing, live Job Claim,
+Worker history completion and storage binding. Native inspection and callbacks
+run outside Host, Job, Inbox, lifecycle and capacity-ledger locks. The result
+returned to the caller contains only request index and accepted image count,
+with `protected_image_batch_accepted_non_authoritative` status and every
+production/publication flag still false. The batch receipt and accepted object
+remain privately retained by their issuing owners for a separately reviewed
+Promotion boundary; no legacy `LocalOutputReceipt` or Candidate authority is
+created.
+
+There are two commit boundaries. First, the protected owner jointly publishes
+the exact batch receipt and Acceptance object. Second, the current original
+Host publishes the count-only result under its current-claim gate. The final
+in-memory commit is serialized against Writer, Capacity and Acceptance close
+in the established Writer → Capacity → integration → Acceptance order. If the
+Host, Writer, Capacity or Acceptance owner closes or changes between those
+points, the caller receives no success; the private Acceptance is invalidated
+or remains closed, the attempt becomes retained-uncertain, the completed
+staging delta is moved to the reservation's full uncertain bound, and the
+files and cross-process scope marker remain. There is no rollback, retry,
+deletion or cleanup. A successfully published `accepted_non_authoritative`
+result is settled; later clean close does not turn it uncertain and may
+release the scope lease under the existing policy.
+
+Native Windows disposable tests characterize complete 1-, 2- and 16-image
+Acceptance, unchanged one-write ledger custody, copied-observation refusal,
+real file-byte/ACL drift, duplicate calls, concurrent acceptance, Host claim
+and Project-path drift during revalidation, Host loss after private commit,
+Writer/Capacity close during revalidation, Capacity/Acceptance close at the
+final publication boundary, and ordinary clean-close release. These tests do
+not enable or prove production Generation,
+protected-root provisioning, Worker/HTTP registration, Promotion, Candidate
+publication, Project save, Journal/restart recovery, retention/discard,
+cross-process quota enforcement or crash durability. No production capability
+flag changes and `authorship=unverified` remains unchanged.

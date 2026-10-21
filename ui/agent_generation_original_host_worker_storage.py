@@ -155,6 +155,21 @@ class GenerationWorkerProtectedWriterObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerProtectedAcceptanceObservation:
+    """Count-only result for one exact Profile A protected Acceptance."""
+
+    status: str
+    request_index: int
+    accepted_image_count: int
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass(frozen=True)
 class GenerationWorkerRemoteOutputWriterEvidence:
     """Exact remote-history evidence; never an actionable storage capability."""
 
@@ -213,6 +228,13 @@ class _StoragePreAdmissionAttempt:
     writer_create_attempt_count: int = 0
     writer_image_observation: object = None
     writer_image_observations: tuple = ()
+    writer_observation: object = None
+    acceptance_observations: tuple = ()
+    acceptance_state: str = "not_started"
+    acceptance_marker: object = None
+    acceptance_host_freshness: object = None
+    acceptance_owner: object = None
+    accepted_batch: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -1068,12 +1090,15 @@ class OriginalHostWorkerStorageIntegration:
                 return None, "writer_handoff_already_settled"
             attempt.writer_image_observation = image
             attempt.writer_handoff_state = "staged_non_authoritative"
-            return GenerationWorkerProtectedWriterObservation(
+            attempt.acceptance_observations = (image,)
+            observation = GenerationWorkerProtectedWriterObservation(
                 status="protected_image_staged_non_authoritative",
                 request_index=attempt.lease.request_index,
                 verified_image_count=1,
                 capacity_accounted=True,
-            ), "protected_image_staged_non_authoritative"
+            )
+            attempt.writer_observation = observation
+            return observation, "protected_image_staged_non_authoritative"
 
     def _publish_multi_image_writer_observation_locked(
             self, lifecycle, attempt, marker, evidence, writer_owner, observations,
@@ -1120,13 +1145,243 @@ class OriginalHostWorkerStorageIntegration:
                     or attempt.writer_create_attempt_count != len(observations)):
                 return None, "writer_handoff_already_settled"
             attempt.writer_image_observations = observations
+            attempt.acceptance_observations = observations
             attempt.writer_handoff_state = "staged_non_authoritative"
-            return GenerationWorkerProtectedWriterObservation(
+            observation = GenerationWorkerProtectedWriterObservation(
                 status="protected_image_batch_staged_non_authoritative",
                 request_index=attempt.lease.request_index,
                 verified_image_count=len(observations),
                 capacity_accounted=True,
-            ), "protected_image_batch_staged_non_authoritative"
+            )
+            attempt.writer_observation = observation
+            return observation, "protected_image_batch_staged_non_authoritative"
+
+    def _begin_profile_a_acceptance_locked(self, lifecycle, observation):
+        """Claim one exact staged count-only observation for Acceptance."""
+        if (not self._profile_a
+                or type(observation) is not GenerationWorkerProtectedWriterObservation):
+            return None, "protected_acceptance_unavailable"
+        with lifecycle._lock:
+            with self._capacity_owner._lock:
+                with self._lock:
+                    attempt = self._storage_preadmission_attempts.get(observation.request_index)
+                    if (lifecycle._worker_storage_integration is not self
+                            or lifecycle._state != "bound_non_executing"
+                            or lifecycle._generation != self._lifecycle_generation
+                            or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                            or not self._root_binding_matches()
+                            or self._state != "bound_non_executing"
+                            or attempt is None or attempt.state != "pre_admitted"
+                            or attempt.evidence_state != "evidence_published"
+                            or attempt.writer_handoff_state != "staged_non_authoritative"
+                            or attempt.writer_observation is not observation
+                            or observation.capacity_accounted is not True
+                            or observation.write_authorized is not False
+                            or attempt.acceptance_state != "not_started"
+                            or attempt.acceptance_marker is not None
+                            or attempt.acceptance_owner is not None
+                            or attempt.accepted_batch is not None
+                            or attempt.prepared is None or attempt.remote_receipt is None
+                            or attempt.history_completion is None
+                            or attempt.history_json != attempt.remote_receipt._validated_history_json
+                            or attempt.accepted_prompt_id != attempt.remote_receipt.prompt_id
+                            or attempt.writer_owner is not self._profile_a_writer_owner
+                            or self._profile_a_writer_owner is None
+                            or self._active is not None):
+                        return None, "protected_acceptance_evidence_unavailable"
+                    count = len(attempt.remote_receipt.images)
+                    expected_status = ("protected_image_staged_non_authoritative" if count == 1
+                                       else "protected_image_batch_staged_non_authoritative")
+                    observations = attempt.acceptance_observations
+                    if (count < 1 or count > _MAX_WRITER_IMAGES
+                            or observation.status != expected_status
+                            or observation.verified_image_count != count
+                            or type(observations) is not tuple or len(observations) != count
+                            or (count == 1 and observations[0] is not attempt.writer_image_observation)
+                            or (count > 1 and observations is not attempt.writer_image_observations)
+                            or attempt.writer_create_attempt_count != count):
+                        return None, "protected_acceptance_batch_incomplete"
+                    if (lifecycle._worker_storage_integration is not self
+                            or lifecycle._state != "bound_non_executing"
+                            or lifecycle._generation != self._lifecycle_generation
+                            or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                            or not self._root_binding_matches()
+                            or self._storage_preadmission_attempts.get(
+                                attempt.lease.request_index) is not attempt
+                            or attempt.evidence._issuer is not self
+                            or attempt.evidence._attempt_nonce != attempt.lease.nonce
+                            or attempt.writer_handoff_marker is None
+                            or attempt.writer_owner is not self._profile_a_writer_owner
+                            or attempt.writer_handoff_state != "staged_non_authoritative"
+                            or attempt.cancel_requested):
+                        return None, "protected_acceptance_host_changed"
+                    marker = object()
+                    attempt.acceptance_state = "in_progress"
+                    attempt.acceptance_marker = marker
+                    return (attempt, marker, attempt.evidence, attempt.writer_owner,
+                            lifecycle._envelope, attempt.prepared, attempt.remote_receipt,
+                            attempt.capacity_operation, attempt.reservation,
+                            attempt.writer_admission, observations), "acceptance_claimed"
+
+    def _bind_profile_a_acceptance_freshness(self, attempt, marker, callback):
+        if not callable(callback):
+            return False
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or attempt.acceptance_state != "in_progress"
+                    or attempt.acceptance_marker is not marker
+                    or attempt.acceptance_host_freshness is not None):
+                return False
+            attempt.acceptance_host_freshness = callback
+            return True
+
+    def _profile_a_acceptance_matches_locked(
+            self, lifecycle, attempt, marker, evidence, writer_owner, observation):
+        """Short host/Worker evidence check; called only inside current-host gate."""
+        if (attempt.acceptance_state != "in_progress"
+                or attempt.acceptance_marker is not marker
+                or attempt.writer_observation is not observation
+                or not self._writer_handoff_matches_locked(
+                    lifecycle, attempt, attempt.writer_handoff_marker,
+                    evidence, writer_owner, states={"staged_non_authoritative"})):
+            return False
+        history, remote = attempt.history_completion, attempt.remote_receipt
+        if (history is None or remote is None
+                or getattr(history, "kind", None) != "history"
+                or getattr(getattr(history, "outcome", None), "status", None) != "ready"
+                or getattr(getattr(history, "outcome", None), "history_json", None)
+                    != attempt.history_json
+                or attempt.history_json != remote._validated_history_json
+                or history.correlation.prompt_id != attempt.accepted_prompt_id):
+            return False
+        try:
+            return self._worker._run_if_issued_completion_for_prepared_request_for_characterization(
+                history, attempt.prepared, self._worker_owner_claim, lambda: True,
+            ) is True
+        except Exception:
+            return False
+
+    def _publish_profile_a_acceptance_locked(
+            self, lifecycle, attempt, marker, evidence, writer_owner,
+            observation, acceptance_owner, accepted):
+        """Publish count-only success at the original-host commit boundary."""
+        from core.comfy_output_containment import (
+            AcceptedProtectedOutputBatch, ProtectedOutputAcceptanceCharacterization,
+        )
+
+        if (type(acceptance_owner) is not ProtectedOutputAcceptanceCharacterization
+                or type(accepted) is not AcceptedProtectedOutputBatch
+                or acceptance_owner._protected_owner is not writer_owner
+                or accepted._protected_owner is not writer_owner
+                or accepted._envelope is not lifecycle._envelope
+                or accepted._prepared is not attempt.prepared
+                or accepted._remote is not attempt.remote_receipt
+                or accepted._batch_receipt.observations is not attempt.acceptance_observations
+                or accepted._host_freshness is not attempt.acceptance_host_freshness
+                or accepted.image_count != observation.verified_image_count
+                or not self._profile_a_acceptance_matches_locked(
+                    lifecycle, attempt, marker, evidence, writer_owner, observation)):
+            return None, "protected_acceptance_host_changed"
+
+        # Serialize the final count-only publication against Writer, Capacity
+        # and Acceptance close. Keep the established Writer -> Capacity ->
+        # integration -> Acceptance order; no native I/O or callback runs in
+        # this commit gate.
+        capacity_owner = self._capacity_owner
+        with writer_owner._lock:
+            with capacity_owner._lock:
+                if (self._capacity_owner is not capacity_owner
+                        or writer_owner._profile_a_capacity_owner is not capacity_owner
+                        or capacity_owner._closed or capacity_owner._invalid):
+                    return None, "protected_acceptance_capacity_changed"
+                if len(attempt.acceptance_observations) == 1:
+                    ledger_matches = capacity_owner._asset_stream_write_completed_for_characterization(
+                        attempt.capacity_operation, attempt.writer_admission, writer_owner,
+                        (attempt.prepared.request_id,
+                         attempt.remote_receipt.images[0].identity),
+                        attempt.acceptance_observations[0],
+                    )
+                else:
+                    ledger_matches = capacity_owner._asset_stream_image_batch_write_completed_for_characterization(
+                        attempt.capacity_operation, attempt.writer_admission, writer_owner,
+                        attempt.acceptance_observations,
+                    )
+                if ledger_matches is not True:
+                    return None, "protected_acceptance_capacity_changed"
+                with self._lock:
+                    if (attempt.acceptance_state != "in_progress"
+                            or attempt.acceptance_marker is not marker
+                            or attempt.acceptance_owner is not acceptance_owner
+                            or attempt.accepted_batch is not accepted):
+                        return None, "protected_acceptance_already_settled"
+                    key = (attempt.prepared.request_id, attempt.remote_receipt.identity)
+                    profile_binding = writer_owner._profile_a_stream_batch_receipt_bindings.get(key)
+                    if (writer_owner._closed or writer_owner._revoking
+                            or writer_owner._invalid or writer_owner._uncertain
+                            or writer_owner._stream_batches.get(key) is not accepted._batch_receipt
+                            or writer_owner._stream_batch_acceptances.get(key) is not accepted
+                            or type(profile_binding) is not tuple or len(profile_binding) != 10
+                            or profile_binding[0] is not self
+                            or profile_binding[1] is not attempt
+                            or profile_binding[2] is not marker
+                            or profile_binding[3] is not evidence
+                            or profile_binding[4] is not capacity_owner
+                            or profile_binding[5] is not attempt.capacity_operation
+                            or profile_binding[6] is not attempt.reservation
+                            or profile_binding[7] is not attempt.writer_admission
+                            or profile_binding[8] is not attempt.acceptance_observations
+                            or profile_binding[9] is not attempt.acceptance_host_freshness):
+                        return None, "protected_acceptance_owner_changed"
+                    with acceptance_owner._lock:
+                        if (acceptance_owner._closed or acceptance_owner._revoking
+                                or acceptance_owner._invalid or acceptance_owner._uncertain
+                                or acceptance_owner._busy or acceptance_owner._receipt is not accepted
+                                or acceptance_owner._protected_owner is not writer_owner
+                                or acceptance_owner._batch_receipt is not accepted._batch_receipt
+                                or acceptance_owner._host_freshness is not attempt.acceptance_host_freshness):
+                            return None, "protected_acceptance_owner_changed"
+                        attempt.acceptance_state = "accepted_non_authoritative"
+                        return GenerationWorkerProtectedAcceptanceObservation(
+                            status="protected_image_batch_accepted_non_authoritative",
+                            request_index=attempt.lease.request_index,
+                            accepted_image_count=accepted.image_count,
+                        ), "protected_image_batch_accepted_non_authoritative"
+
+    def _retain_profile_a_acceptance_uncertain(self, attempt, marker):
+        """Keep completed staging capacity uncertain after a failed Acceptance boundary."""
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or attempt.acceptance_marker is not marker
+                    or attempt.acceptance_state == "accepted_non_authoritative"):
+                return False
+            attempt.acceptance_state = "retained_uncertain"
+            attempt.writer_handoff_state = "retained_uncertain"
+            attempt.evidence_state = "uncertain"
+            acceptance_owner = attempt.acceptance_owner
+        if acceptance_owner is not None:
+            try:
+                acceptance_owner.invalidate_for_characterization()
+            except Exception:
+                pass
+        try:
+            observations = attempt.acceptance_observations
+            if len(observations) == 1:
+                self._capacity_owner.retain_completed_asset_stream_write_uncertain_for_characterization(
+                    attempt.capacity_operation, attempt.writer_admission,
+                    attempt.writer_owner, observations[0],
+                )
+            else:
+                self._capacity_owner.retain_completed_asset_stream_batch_uncertain_for_characterization(
+                    attempt.capacity_operation, attempt.writer_admission,
+                    attempt.writer_owner, observations,
+                )
+        except Exception:
+            try:
+                with self._capacity_owner._lock:
+                    self._capacity_owner._invalidate()
+            except Exception:
+                pass
+        return True
 
     def _fail_single_image_writer_handoff(self, attempt, marker, *, uncertain):
         with self._lock:

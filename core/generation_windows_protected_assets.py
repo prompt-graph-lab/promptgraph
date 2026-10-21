@@ -266,6 +266,8 @@ class WindowsProtectedAssetsCharacterization:
         self._stream_bindings, self._stream_attempts, self._stream_images = {}, set(), {}
         self._stream_pending_images = {}
         self._profile_a_stream_batch_attempts, self._profile_a_stream_batches = set(), {}
+        self._profile_a_stream_batch_receipt_attempts = set()
+        self._profile_a_stream_batch_receipt_bindings = {}
         self._stream_batch_attempts, self._stream_batches = set(), {}
         self._stream_batch_freshness = {}
         self._stream_batch_acceptance_attempts, self._stream_batch_acceptances = set(), {}
@@ -1540,6 +1542,169 @@ class WindowsProtectedAssetsCharacterization:
             with self._lock:
                 self._stream_batch_busy = False
 
+    def _issue_profile_a_staged_batch_receipt_for_acceptance_for_characterization(
+            self, integration, attempt, marker, evidence, capacity_owner,
+            operation, reservation, write_admission, envelope, prepared, remote,
+            observations, *, host_freshness):
+        """Privately bridge one completed Profile A stream to the existing batch shape.
+
+        This is deliberately not a general batch receipt factory. It is only
+        callable with the exact original-host attempt and its already
+        completed one-write capacity record; it never admits another write.
+        """
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerRemoteOutputWriterEvidence,
+            OriginalHostWorkerStorageIntegration,
+        )
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+
+        try:
+            if (type(integration) is not OriginalHostWorkerStorageIntegration
+                    or integration._profile_a is not True
+                    or type(evidence) is not GenerationWorkerRemoteOutputWriterEvidence
+                    or type(capacity_owner) is not WindowsProtectedStorageAdmissionCharacterization
+                    or self._profile_a_capacity_owner is not capacity_owner
+                    or self._profile_a_handoff_integration is not integration
+                    or integration._profile_a_writer_owner is not self
+                    or integration._capacity_owner is not capacity_owner
+                    or not callable(host_freshness)
+                    or type(observations) is not tuple
+                    or not 1 <= len(observations) <= 16
+                    or not is_owner_prepared_frozen_request(prepared)):
+                raise ValueError()
+            _validate_binding(envelope, prepared, remote)
+            if (remote.execution_succeeded is not True
+                    or integration._storage_preadmission_attempts.get(
+                        prepared.request_index) is not attempt
+                    or attempt.prepared is not prepared
+                    or attempt.remote_receipt is not remote
+                    or attempt.evidence is not evidence
+                    or attempt.capacity_operation is not operation
+                    or attempt.reservation is not reservation
+                    or attempt.writer_admission is not write_admission
+                    or evidence._issuer is not integration
+                    or evidence._attempt_nonce != attempt.lease.nonce
+                    or attempt.writer_owner is not self
+                    or attempt.writer_handoff_state != "staged_non_authoritative"
+                    or attempt.writer_observation is None
+                    or attempt.acceptance_state != "in_progress"
+                    or attempt.acceptance_marker is not marker
+                    or attempt.acceptance_host_freshness is not host_freshness
+                    or attempt.history_completion is None
+                    or attempt.history_json != remote._validated_history_json
+                    or attempt.accepted_prompt_id != remote.prompt_id):
+                raise ValueError()
+            expected = (attempt.writer_image_observations if len(observations) > 1
+                       else attempt.acceptance_observations)
+            if (expected is not observations
+                    or attempt.acceptance_observations is not observations
+                    or (len(observations) == 1
+                        and observations[0] is not attempt.writer_image_observation)
+                    or (len(observations) > 1
+                        and observations is not attempt.writer_image_observations)
+                    or len(observations) != len(remote.images)
+                    or tuple(item.descriptor_identity for item in observations)
+                    != tuple(item.identity for item in remote.images)
+                    or len({item.identity for item in remote.images}) != len(remote.images)):
+                raise ValueError()
+            for descriptor, observation in zip(remote.images, observations):
+                if (type(observation) is not VerifiedProtectedImageObservation
+                        or observation.job_id != remote.job_id
+                        or observation.claim_id != remote.claim_id
+                        or observation.manifest_identity != remote.manifest_identity
+                        or observation.request_id != prepared.request_id
+                        or observation.request_index != prepared.request_index
+                        or observation.workflow_identity != prepared.workflow_identity
+                        or observation.prompt_id != remote.prompt_id
+                        or observation.remote_receipt_identity != remote.identity
+                        or observation.descriptor_identity != descriptor.identity
+                        or observation.image.purpose != "temporary_containment"):
+                    raise ValueError()
+        except Exception:
+            w._fail("profile_a_acceptance_binding_invalid")
+
+        key = (prepared.request_id, remote.identity)
+        self._check()
+        with self._lock:
+            if (not self._writable or self._closed or self._revoking
+                    or self._invalid or self._uncertain):
+                w._fail("inspect_only_or_uncertain")
+            if self._stream_envelope is not envelope:
+                w._fail("storage_owner_mismatch")
+            binding = self._stream_bindings.get(prepared.request_id)
+            if binding is None or binding[0] is not prepared or binding[1] is not remote:
+                w._fail("remote_binding_conflict")
+            if (key in self._stream_batches
+                    or key in self._profile_a_stream_batch_receipt_attempts):
+                w._fail("acceptance_already_attempted")
+            self._profile_a_stream_batch_receipt_attempts.add(key)
+
+        try:
+            self._stream_fresh(lambda: host_freshness(envelope, remote))
+            if len(observations) == 1:
+                ledger_matches = capacity_owner._asset_stream_write_completed_for_characterization(
+                    operation, write_admission, self,
+                    (prepared.request_id, remote.images[0].identity), observations[0],
+                )
+            else:
+                ledger_matches = capacity_owner._asset_stream_image_batch_write_completed_for_characterization(
+                    operation, write_admission, self, observations,
+                )
+            if not ledger_matches:
+                w._fail("profile_a_acceptance_ledger_mismatch")
+            # Native identity, ACL, decoded image and reread bytes are checked
+            # outside host/Job/Inbox/lifecycle and capacity-ledger locks.
+            for observation in observations:
+                self._stream_fresh(lambda: host_freshness(envelope, remote))
+                self.inspect_verified_remote_image_for_characterization(observation)
+            self._stream_fresh(lambda: host_freshness(envelope, remote))
+            if len(observations) == 1:
+                ledger_matches = capacity_owner._asset_stream_write_completed_for_characterization(
+                    operation, write_admission, self,
+                    (prepared.request_id, remote.images[0].identity), observations[0],
+                )
+            else:
+                ledger_matches = capacity_owner._asset_stream_image_batch_write_completed_for_characterization(
+                    operation, write_admission, self, observations,
+                )
+            if not ledger_matches:
+                w._fail("profile_a_acceptance_ledger_mismatch")
+            payload_observations = observations
+            payload = [
+                "promptgraph.protected-image-batch.v1", remote.job_id, remote.claim_id,
+                remote.manifest_identity, prepared.request_id, prepared.request_index,
+                prepared.workflow_identity, remote.prompt_id, remote.identity,
+                [[item.descriptor_identity, item.image.storage_identity, item.image.purpose,
+                  item.image.content_sha256, item.image.byte_count, item.image.image_format,
+                  item.image.width, item.image.height] for item in payload_observations],
+            ]
+            identity = hashlib.sha256(json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+            receipt = VerifiedProtectedImageBatchReceipt(
+                remote.job_id, remote.claim_id, remote.manifest_identity,
+                prepared.request_id, prepared.request_index, prepared.workflow_identity,
+                remote.prompt_id, remote.identity, identity, payload_observations,
+            )
+            self._stream_fresh(lambda: host_freshness(envelope, remote))
+            self._check()
+            with self._lock:
+                if (self._stream_batches.get(key) is not None
+                        or key not in self._profile_a_stream_batch_receipt_attempts
+                        or self._profile_a_handoff_integration is not integration
+                        or self._profile_a_capacity_owner is not capacity_owner):
+                    w._fail("profile_a_acceptance_invalidated")
+                self._stream_batches[key] = receipt
+                self._stream_batch_freshness[key] = host_freshness
+                self._profile_a_stream_batch_receipt_bindings[key] = (
+                    integration, attempt, marker, evidence, capacity_owner,
+                    operation, reservation, write_admission, observations, host_freshness,
+                )
+                return receipt
+        except BaseException:
+            with self._lock:
+                self._uncertain = True
+            raise
+
     def inspect_verified_remote_image_batch_for_characterization(self, receipt):
         """Recheck exact owner custody and all current native bytes for a batch."""
         with self._lock:
@@ -1549,6 +1714,37 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("batch_owner_mismatch")
             if self._uncertain:
                 w._fail("inspect_only_or_uncertain")
+            if self._profile_a_capacity_owner is not None:
+                binding = self._profile_a_stream_batch_receipt_bindings.get(
+                    (receipt.request_id, receipt.remote_receipt_identity),
+                )
+                integration = self._profile_a_handoff_integration
+                capacity_owner = self._profile_a_capacity_owner
+                if integration is None:
+                    w._fail("profile_a_batch_owner_mismatch")
+                with capacity_owner._lock:
+                    with integration._lock:
+                        attempt = integration._storage_preadmission_attempts.get(
+                            receipt.request_index)
+                        if (type(binding) is not tuple or len(binding) != 10
+                                or binding[0] is not integration
+                                or binding[1] is not attempt
+                                or attempt is None
+                                or attempt.acceptance_marker is not binding[2]
+                                or attempt.evidence is not binding[3]
+                                or attempt.writer_owner is not self
+                                or binding[4] is not capacity_owner
+                                or binding[5] is not attempt.capacity_operation
+                                or binding[6] is not attempt.reservation
+                                or binding[7] is not attempt.writer_admission
+                                or binding[8] is not receipt.observations
+                                or attempt.acceptance_observations is not receipt.observations
+                                or binding[9] is not self._stream_batch_freshness.get(
+                                    (receipt.request_id, receipt.remote_receipt_identity))
+                                or attempt.acceptance_state not in {
+                                    "in_progress", "accepted_non_authoritative",
+                                }):
+                            w._fail("profile_a_batch_owner_mismatch")
             self._check()
             for observation in receipt.observations:
                 self.inspect_verified_remote_image_for_characterization(observation)
@@ -1596,6 +1792,32 @@ class WindowsProtectedAssetsCharacterization:
                 w._fail("batch_owner_mismatch")
             if self._stream_batch_freshness.get(key) is not host_freshness:
                 w._fail("host_freshness_owner_mismatch")
+            if self._profile_a_capacity_owner is not None:
+                profile_binding = self._profile_a_stream_batch_receipt_bindings.get(key)
+                integration = self._profile_a_handoff_integration
+                capacity_owner = self._profile_a_capacity_owner
+                if integration is None:
+                    w._fail("profile_a_acceptance_owner_mismatch")
+                with capacity_owner._lock:
+                    with integration._lock:
+                        attempt = integration._storage_preadmission_attempts.get(
+                            prepared.request_index)
+                        if (type(profile_binding) is not tuple or len(profile_binding) != 10
+                                or profile_binding[0] is not integration
+                                or profile_binding[1] is not attempt
+                                or attempt is None
+                                or attempt.acceptance_marker is not profile_binding[2]
+                                or attempt.evidence is not profile_binding[3]
+                                or attempt.writer_owner is not self
+                                or attempt.acceptance_state != "in_progress"
+                                or profile_binding[4] is not capacity_owner
+                                or profile_binding[5] is not attempt.capacity_operation
+                                or profile_binding[6] is not attempt.reservation
+                                or profile_binding[7] is not attempt.writer_admission
+                                or profile_binding[8] is not batch_receipt.observations
+                                or attempt.acceptance_observations is not batch_receipt.observations
+                                or profile_binding[9] is not host_freshness):
+                            w._fail("profile_a_acceptance_owner_mismatch")
             if key in self._stream_batch_acceptance_attempts:
                 w._fail("acceptance_already_attempted")
             self._stream_batch_acceptance_attempts.add(key)

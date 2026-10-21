@@ -902,6 +902,213 @@ class ProjectAgentSessionRuntime:
         )
         return None, status
 
+    def accept_generation_worker_staged_output_for_characterization(
+            self, writer_observation, *, characterization=False,
+            disposable_opt_in=False):
+        """Accept one exact settled Profile A stage through protected custody.
+
+        The caller supplies only the original count-only staging observation.
+        Image observations, ledger tokens and both Acceptance objects remain
+        private to the issuing Host, Worker, capacity and protected owners.
+        """
+        from core.comfy_output_containment import ProtectedOutputAcceptanceCharacterization
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+        )
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedWriterObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if type(writer_observation) is not GenerationWorkerProtectedWriterObservation:
+            return None, "protected_acceptance_observation_invalid"
+
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+                                if lifecycle_snapshot is not None else None)
+        if (type(integration_snapshot) is not OriginalHostWorkerStorageIntegration
+                or integration_snapshot._profile_a is not True
+                or type(integration_snapshot._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "profile_a_acceptance_unavailable"
+
+        captured = {}
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not lifecycle_snapshot):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_acceptance():
+                    started, status = integration_snapshot._begin_profile_a_acceptance_locked(
+                        lifecycle, writer_observation,
+                    )
+                    if started is not None:
+                        (attempt, marker, evidence, writer_owner, envelope, prepared,
+                         remote, operation, reservation, write_admission, observations) = started
+                        captured.update({
+                            "lifecycle": lifecycle, "integration": integration_snapshot,
+                            "attempt": attempt, "marker": marker, "evidence": evidence,
+                            "writer": writer_owner, "envelope": envelope,
+                            "prepared": prepared, "remote": remote,
+                            "operation": operation, "reservation": reservation,
+                            "write_admission": write_admission, "observations": observations,
+                            "capacity": integration_snapshot._capacity_owner,
+                            "project_reference": integration_snapshot._project_reference,
+                            "purpose_roots": integration_snapshot._purpose_roots,
+                            "pairing_generation": lifecycle._pairing_generation,
+                        })
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation, on_current=begin_acceptance,
+                )
+                if not type(start_result) is tuple or start_result is False:
+                    return None, "host_evidence_unavailable"
+                started, status = start_result
+                if started is None:
+                    return None, status
+
+        integration = captured["integration"]
+        attempt, marker = captured["attempt"], captured["marker"]
+        writer = captured["writer"]
+        capacity = captured["capacity"]
+        project_reference = captured["project_reference"]
+
+        def with_current_host(on_current):
+            with self._publication_gate:
+                if (self._closed
+                        or self._generation_original_host_lifecycle is not captured["lifecycle"]):
+                    return False
+                with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                    if lifecycle is not captured["lifecycle"]:
+                        return False
+                    result = self._generation_original_host_evidence_current_locked(
+                        lifecycle, captured["pairing_generation"], on_current=on_current,
+                    )
+                    return result is True
+
+        def host_freshness(envelope, remote):
+            if (envelope is not captured["envelope"]
+                    or remote is not captured["remote"]):
+                return False
+            return with_current_host(lambda: integration._profile_a_acceptance_matches_locked(
+                captured["lifecycle"], attempt, marker, captured["evidence"],
+                writer, writer_observation,
+            ))
+
+        if not integration._bind_profile_a_acceptance_freshness(
+                attempt, marker, host_freshness):
+            integration._retain_profile_a_acceptance_uncertain(attempt, marker)
+            return None, "protected_acceptance_already_attempted"
+
+        try:
+            # All native root, Project-reference and file observations happen
+            # outside the original Host, Job, Inbox, lifecycle and ledger locks.
+            capacity_view = capacity.readiness()
+            project_view = project_reference.readiness()
+            writer_view = writer.readiness()
+            if (capacity_view.get("status") != "characterization_only"
+                    or capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                    or capacity_view.get("scope_writer_lease") != "held"
+                    or project_view.get("status") != "read_only_reference_observed"
+                    or writer_view.get("asset_observation") != "observed"
+                    or not writer._is_fresh_profile_a_writer_for_handoff(
+                        capacity, captured["purpose_roots"], integration=integration)):
+                raise ValueError("profile_a_acceptance_storage_unavailable")
+
+            observations = captured["observations"]
+            for image_observation in observations:
+                if host_freshness(captured["envelope"], captured["remote"]) is not True:
+                    raise ValueError("profile_a_acceptance_host_stale")
+                writer.inspect_verified_remote_image_for_characterization(image_observation)
+
+            if len(observations) == 1:
+                ledger_matches = capacity._asset_stream_write_completed_for_characterization(
+                    captured["operation"], captured["write_admission"], writer,
+                    (captured["prepared"].request_id,
+                     captured["remote"].images[0].identity), observations[0],
+                )
+            else:
+                ledger_matches = capacity._asset_stream_image_batch_write_completed_for_characterization(
+                    captured["operation"], captured["write_admission"], writer, observations,
+                )
+            if ledger_matches is not True:
+                raise ValueError("profile_a_acceptance_ledger_mismatch")
+
+            batch_receipt = writer._issue_profile_a_staged_batch_receipt_for_acceptance_for_characterization(
+                integration, attempt, marker, captured["evidence"], capacity,
+                captured["operation"], captured["reservation"],
+                captured["write_admission"], captured["envelope"],
+                captured["prepared"], captured["remote"], observations,
+                host_freshness=host_freshness,
+            )
+            acceptance_owner = ProtectedOutputAcceptanceCharacterization.create_for_characterization(
+                writer, captured["envelope"], captured["prepared"],
+                captured["remote"], batch_receipt, host_freshness=host_freshness,
+                characterization=True, disposable_opt_in=True,
+            )
+            with integration._lock:
+                if (attempt.acceptance_state != "in_progress"
+                        or attempt.acceptance_marker is not marker
+                        or attempt.acceptance_owner is not None):
+                    raise ValueError("profile_a_acceptance_invalidated")
+                attempt.acceptance_owner = acceptance_owner
+
+            accepted = acceptance_owner.accept_for_characterization()
+            with integration._lock:
+                if (attempt.acceptance_state != "in_progress"
+                        or attempt.acceptance_marker is not marker
+                        or attempt.acceptance_owner is not acceptance_owner
+                        or attempt.accepted_batch is not None):
+                    raise ValueError("profile_a_acceptance_invalidated")
+                attempt.accepted_batch = accepted
+
+            # Revalidate exact protected custody and native bytes before the
+            # separate original-host count-only publication boundary.
+            acceptance_owner.inspect_for_characterization(accepted)
+            capacity_view = capacity.readiness()
+            project_view = project_reference.readiness()
+            writer_view = writer.readiness()
+            if (capacity_view.get("status") != "characterization_only"
+                    or capacity_view.get("scope_writer_lease") != "held"
+                    or project_view.get("status") != "read_only_reference_observed"
+                    or writer_view.get("asset_observation") != "observed"):
+                raise ValueError("profile_a_acceptance_storage_changed")
+
+            with self._publication_gate:
+                if (self._closed
+                        or self._generation_original_host_lifecycle is not captured["lifecycle"]):
+                    final = None
+                else:
+                    with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                        if lifecycle is captured["lifecycle"]:
+                            final = self._generation_original_host_evidence_current_locked(
+                                lifecycle, captured["pairing_generation"],
+                                on_current=lambda: integration._publish_profile_a_acceptance_locked(
+                                    lifecycle, attempt, marker, captured["evidence"],
+                                    writer, writer_observation, acceptance_owner, accepted,
+                                ),
+                            )
+                        else:
+                            final = None
+            if type(final) is tuple and final[0] is not None:
+                return final
+            integration._retain_profile_a_acceptance_uncertain(attempt, marker)
+            if type(final) is tuple and len(final) > 1 and type(final[1]) is str:
+                return None, final[1]
+            return None, "protected_acceptance_host_changed"
+        except Exception:
+            integration._retain_profile_a_acceptance_uncertain(attempt, marker)
+            return None, "protected_acceptance_failed"
+
     def stage_generation_worker_remote_output_with_protected_writer_for_characterization(
             self, evidence, writer_owner, *, stream_provider,
             characterization=False, disposable_opt_in=False):

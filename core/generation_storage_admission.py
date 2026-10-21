@@ -2325,6 +2325,9 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         attempt.writer_handoff_state in {
                             "create_boundary_crossed", "retained_uncertain",
                         }
+                        or attempt.acceptance_state in {
+                            "in_progress", "retained_uncertain",
+                        }
                         for attempt in integration._storage_preadmission_attempts.values()
                     )
                     if integration._uncertain_leases:
@@ -2376,6 +2379,9 @@ class WindowsProtectedStorageAdmissionCharacterization:
                     integration_uncertain = bool(integration._uncertain_leases) or any(
                         attempt.writer_handoff_state in {
                             "create_boundary_crossed", "retained_uncertain",
+                        }
+                        or attempt.acceptance_state in {
+                            "in_progress", "retained_uncertain",
                         }
                         for attempt in integration._storage_preadmission_attempts.values()
                     )
