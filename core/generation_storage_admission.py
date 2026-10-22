@@ -32,6 +32,11 @@ _MAX_JOURNAL_ENTRIES = 300
 _MAX_ROOT_FILE_BYTES = _MAX_OPERATION_BYTES
 _MAX_PROCESS_ACCOUNTING_SCOPES = 128
 _MAX_PROFILE_A_HOST_LIFECYCLES = 1
+_UNRESOLVED_PROFILE_A_PROMOTION_STATES = frozenset({
+    "promotion_claiming", "promotion_admitting", "promotion_admitted",
+    "promotion_may_have_created", "private_committed_host_publication_pending",
+    "retained_uncertain", "cancellation_requested", "cancellation_in_progress",
+})
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -43,6 +48,11 @@ _JOURNAL_REPLACEMENT_ISSUER = object()
 
 def _fail(code):
     raise ValueError(code)
+
+
+def _profile_a_promotion_is_unresolved(attempt):
+    """Share the Promotion retention boundary across lease and rebind checks."""
+    return attempt.promotion_preflight_state in _UNRESOLVED_PROFILE_A_PROMOTION_STATES
 
 
 def _validate_profile_a_root_set_shape(purpose_roots):
@@ -2669,11 +2679,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         or attempt.acceptance_state in {
                             "in_progress", "retained_uncertain",
                         }
-                        or attempt.promotion_preflight_state in {
-                            "promotion_claiming", "promotion_admitting", "promotion_admitted",
-                            "promotion_may_have_created", "private_committed_host_publication_pending",
-                            "retained_uncertain", "cancellation_requested", "cancellation_in_progress",
-                        }
+                        or _profile_a_promotion_is_unresolved(attempt)
                         for attempt in integration._storage_preadmission_attempts.values()
                     )
                     if integration._uncertain_leases:
@@ -2729,6 +2735,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         or attempt.acceptance_state in {
                             "in_progress", "retained_uncertain",
                         }
+                        or _profile_a_promotion_is_unresolved(attempt)
                         for attempt in integration._storage_preadmission_attempts.values()
                     )
             if state != "closed" or integration_active or integration_uncertain:

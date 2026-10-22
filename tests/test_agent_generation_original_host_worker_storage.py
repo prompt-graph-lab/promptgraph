@@ -2176,6 +2176,46 @@ def _stage_profile_a_for_acceptance(
             attempt, writer, observation, provider, data)
 
 
+def _assert_uncertain_promotion_prevents_profile_a_host_rebind(
+        capacity, reference, project_path, original_lifecycle, original_integration):
+    assert original_lifecycle._state == "closed"
+    assert original_integration._state == "closed"
+    assert not original_integration._uncertain_leases
+    assert capacity._scope_lease._state == "held"
+    assert capacity._scope_lease.readiness()["status"] == "held"
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+    original_references = tuple(capacity._host_lifecycle_refs)
+    assert original_references == (original_lifecycle,)
+
+    second_runtime, _route, _state, second_lifecycle = _ready_generation_at_project_path(
+        project_path,
+    )
+    try:
+        assert second_lifecycle is not original_lifecycle
+        # In the in-flight case a partial CREATE_NEW invalidates the capacity
+        # owner before any later binding can reach lifecycle publication. The
+        # privately committed case specifically exercises lifecycle retention.
+        expected_error = ("profile_a_storage_unavailable" if capacity._invalid
+                          else "profile_a_storage_lifecycle_unsettled")
+        with pytest.raises(ValueError, match=expected_error):
+            capacity._bind_profile_a_lifecycle_for_characterization(
+                second_lifecycle, reference,
+            )
+        host_status = second_runtime.bind_generation_profile_a_storage_for_characterization(
+            capacity, reference,
+        )
+        assert host_status in {
+            "storage_binding_unavailable", "storage_observation_unavailable",
+        }
+        assert tuple(capacity._host_lifecycle_refs) == original_references
+        assert original_lifecycle in capacity._host_lifecycle_refs
+        assert second_lifecycle not in capacity._host_lifecycle_refs
+        assert capacity._scope_lease._state == "held"
+        assert capacity._scope_lease_retention_reason() == "uncertain"
+    finally:
+        second_runtime.close()
+
+
 @pytest.mark.parametrize("descriptor_count", [1, 2, 16])
 def test_profile_a_staged_images_accept_as_exact_private_batch_without_new_write(
         native_profile_a_worker_storage, descriptor_count):
@@ -2590,6 +2630,39 @@ def test_profile_a_original_host_promotion_commits_exact_reserved_batch_privatel
     runtime.finish_generation_worker_storage_close_for_characterization()
 
 
+def test_profile_a_private_promotion_uncertainty_prevents_closed_host_rebind(
+        native_profile_a_dual_custody_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    assert runtime.promote_generation_worker_accepted_output_for_characterization(
+        preflight, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_promotion_host_publication_deferred")
+    integration = lifecycle._worker_storage_integration
+    assert attempt.promotion_preflight_state == "private_committed_host_publication_pending"
+    assert attempt.promotion_receipt is attempt.promotion_owner._receipt
+
+    runtime.close()
+    assert attempt.promotion_preflight_state == "retained_uncertain"
+    closed = runtime.finish_generation_worker_storage_close_for_characterization()
+    assert closed is not None and closed.lifecycle_state == "closed"
+    assert attempt.promotion_receipt is attempt.promotion_owner._receipt
+    _assert_uncertain_promotion_prevents_profile_a_host_rebind(
+        capacity, reference, project_path, lifecycle, integration,
+    )
+    writer.close()
+
+
 def test_profile_a_original_host_promotion_retains_full_reservation_after_partial_create(
         native_profile_a_dual_custody_worker_storage):
     roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
@@ -2717,10 +2790,11 @@ def test_profile_a_original_host_promotion_compensates_completed_ledger_after_lo
 def test_profile_a_original_host_promotion_host_close_at_create_retains_uncertain_batch(
         native_profile_a_dual_custody_worker_storage):
     roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
-    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
      attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
         roots, capacity, reference, project_path, descriptor_count=2,
     )
+    integration = lifecycle._worker_storage_integration
     accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
         staged, characterization=True, disposable_opt_in=True,
     )
@@ -2790,8 +2864,12 @@ def test_profile_a_original_host_promotion_host_close_at_create_retains_uncertai
     assert all(path.exists() for purpose, _root, path in writer._inventory()
                if purpose in {"temporary_containment", "promoted_assets"})
     assert not writer._stream_promotions
+    closed = runtime.finish_generation_worker_storage_close_for_characterization()
+    assert closed is not None and closed.lifecycle_state == "closed"
+    _assert_uncertain_promotion_prevents_profile_a_host_rebind(
+        capacity, reference, project_path, lifecycle, integration,
+    )
     writer.close()
-    runtime.finish_generation_worker_storage_close_for_characterization()
 
 
 def test_profile_a_original_host_promotion_rejects_copied_preflight_observation(
