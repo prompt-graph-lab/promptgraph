@@ -1263,3 +1263,34 @@ provisioning, cross-process capacity/durability, live ComfyUI interoperability,
 Human Start/UI activation, Candidate publication, Project save, restart
 recovery and retention/discard remain separate gates. All production flags
 remain false and `authorship=unverified`.
+
+## C2B-8D-19F-E — original-Host count-only Promotion publication
+
+After the private 19F-D copy commits, the original Host can now consume the
+exact pending preflight once and publish a separate count-only observation.
+The same live lifecycle/Claim, selected Project reference, Worker completion,
+accepted source batch, private Promotion receipt, capacity owner, reservation
+and write token must still match. Publication revalidates source and promoted
+bytes/ACL/native identity, complete ordered descriptor correspondence, the
+source and destination Ledger completions and the full four-root inventory.
+The returned result contains only request index and promoted-image count; it
+does not carry the private receipt or authorize Candidate registration, Project
+mutation/save, retry, Recovery or execution.
+
+This is a count publication over already-created files, not another write or
+Ledger completion. A copied, stale or replayed preflight, changed Host/Project,
+native or Ledger drift, or close/invalidation returns no success. If the exact
+completed destination delta is still provable, it is moved to
+`retained_uncertain` accounting at the full reserved upper bound and all source
+and destination evidence remains in place. If exact compensation is uncertain,
+the capacity/Promotion owners and scope lease remain fenced. Host, Job, Inbox,
+lifecycle, native-file observations and external callbacks are not combined
+under one lock; only the final identity/state commit uses the established lock
+order.
+
+This closes the offline private-Promotion-to-original-Host-count boundary
+only. It does not register Candidates, append Gallery rows, save Project JSON,
+enable production storage/Promotion, or establish power-loss durability,
+restart adoption, real ComfyUI interoperability, production root provisioning,
+Human Start, or Recovery/Discard. All capability flags remain false and
+`authorship=unverified`.

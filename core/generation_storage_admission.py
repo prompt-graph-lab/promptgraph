@@ -37,6 +37,9 @@ _UNRESOLVED_PROFILE_A_PROMOTION_STATES = frozenset({
     "promotion_may_have_created", "private_committed_host_publication_pending",
     "retained_uncertain", "cancellation_requested", "cancellation_in_progress",
 })
+_UNRESOLVED_PROFILE_A_PROMOTION_PUBLICATION_STATES = frozenset({
+    "in_progress", "retained_uncertain",
+})
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -52,7 +55,11 @@ def _fail(code):
 
 def _profile_a_promotion_is_unresolved(attempt):
     """Share the Promotion retention boundary across lease and rebind checks."""
-    return attempt.promotion_preflight_state in _UNRESOLVED_PROFILE_A_PROMOTION_STATES
+    return bool(
+        attempt.promotion_preflight_state in _UNRESOLVED_PROFILE_A_PROMOTION_STATES
+        or getattr(attempt, "promotion_publication_state", None)
+            in _UNRESOLVED_PROFILE_A_PROMOTION_PUBLICATION_STATES
+    )
 
 
 def _validate_profile_a_root_set_shape(purpose_roots):
@@ -2592,6 +2599,173 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         self._asset_writer_integrated = True
                         self._promotion_writer_integrated = True
                         return result
+
+    def _inspect_profile_a_promotion_publication_for_characterization(
+            self, operation, reservation, write_admission, asset_owner,
+            promotion_owner, acceptance_owner, accepted, receipt,
+            source_operation, source_write, source_observations):
+        """Reobserve exact completed 19D/19F-D custody before Host publication.
+
+        This is read-only with respect to the filesystem and ledger. Native
+        inventory scanning happens without owner/ledger locks; the returned
+        inventory and completed delta are only internal evidence for the
+        caller's short final commit or exact uncertainty compensation.
+        """
+        from core import generation_windows_protected_assets as assets
+        from core import generation_windows_protected_promotion as promotion
+
+        if (not self._profile_a_root_set
+                or type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(promotion_owner) is not promotion.ProtectedDurablePromotionCharacterization
+                or type(acceptance_owner) is not promotion.ProtectedOutputAcceptanceCharacterization
+                or type(accepted) is not promotion.AcceptedProtectedOutputBatch
+                or type(receipt) is not promotion.VerifiedProtectedPromotionReceipt
+                or type(source_observations) is not tuple
+                or not 1 <= len(source_observations) <= _MAX_ASSET_ENTRIES
+                or any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
+                       for purpose in ("temporary_containment", "promoted_assets"))
+                or promotion_owner._protected_owner is not asset_owner
+                or promotion_owner._acceptance_owner is not acceptance_owner
+                or promotion_owner._accepted is not accepted
+                or receipt._promotion_owner is not promotion_owner
+                or receipt._protected_owner is not asset_owner
+                or receipt._acceptance_owner is not acceptance_owner
+                or receipt._accepted is not accepted):
+            _fail("protected_promotion_publication_binding_invalid")
+
+        descriptors = tuple(accepted._remote.images)
+        rows = tuple(receipt.images)
+        sources = tuple(accepted._batch_receipt.observations)
+        if (len(descriptors) != len(source_observations)
+                or len(rows) != len(descriptors)
+                or len(sources) != len(descriptors)
+                or sources is not source_observations
+                or tuple(item.descriptor_identity for item in source_observations)
+                    != tuple(item.identity for item in descriptors)
+                or tuple(row.descriptor_identity for row in rows)
+                    != tuple(item.identity for item in descriptors)
+                or any(row.source_observation is not source
+                       for row, source in zip(rows, sources))):
+            _fail("protected_promotion_publication_incomplete")
+
+        total_bytes = 0
+        file_records = {}
+        source_records = {}
+        with asset_owner._lock:
+            key = (accepted._prepared.request_id, accepted._remote.identity)
+            if (asset_owner._closed or asset_owner._revoking or asset_owner._invalid
+                    or asset_owner._uncertain
+                    or asset_owner._stream_batch_acceptances.get(key) is not accepted
+                    or asset_owner._stream_promotions.get(key) is not receipt):
+                _fail("protected_promotion_publication_invalidated")
+            for descriptor, source, row in zip(descriptors, sources, rows):
+                size = source.image.byte_count
+                if (type(size) is not int or size <= 0
+                        or size > min(asset_owner._limits.image_bytes,
+                                      asset_owner._limits.request_bytes)
+                        or total_bytes > self._limits.shared_temporary_and_promoted_bytes - size):
+                    _fail("protected_promotion_publication_capacity_invalid")
+                total_bytes += size
+                source_key = ("temporary_containment", source.image.storage_identity)
+                destination_key = ("promoted_assets", row.promoted_image.storage_identity)
+                source_record = asset_owner._files.get(source_key)
+                destination_record = asset_owner._files.get(destination_key)
+                if (source_record is None or destination_record is None
+                        or source.image.purpose != "temporary_containment"
+                        or row.promoted_image.purpose != "promoted_assets"
+                        or asset_owner._stream_images.get((accepted._prepared.request_id,
+                                                          descriptor.identity)) is not source
+                        or asset_owner._images.get(source_key) is not source.image
+                        or asset_owner._images.get(destination_key) is not row.promoted_image
+                        or source_key in source_records
+                        or destination_key in file_records):
+                    _fail("protected_promotion_publication_file_mismatch")
+                source_records[source_key] = source_record
+                file_records[destination_key] = destination_record
+
+        expected_delta = {purpose: (0, 0) for purpose in _WRITABLE}
+        expected_delta["promoted_assets"] = (total_bytes, len(rows))
+        expected_estimate = {"promoted_assets": (total_bytes, len(rows))}
+        lease_view = self._scope_lease.readiness() if self._scope_lease is not None else {}
+        with self._lock:
+            self._require_live()
+            if (self._scope_lease is None or lease_view.get("status") != "held"
+                    or self._scope_lease._state != "held"):
+                _fail("scope_writer_lease_unavailable")
+            with self._ledger._lock:
+                record = self._ledger._reservations.get(reservation)
+                operation_record = self._ledger._operations.get(operation)
+                if (type(operation) is not _Opaque or type(reservation) is not _Opaque
+                        or type(write_admission) is not _Opaque
+                        or record is None or record.get("operation") is not operation
+                        or record.get("write") is not write_admission
+                        or record.get("state") != "completed"
+                        or record.get("estimates") != expected_estimate
+                        or record.get("completed_observed_delta") != expected_delta
+                        or operation_record is None
+                        or operation_record.get("state") != "completed"
+                        or self._ledger._active_write is not None):
+                    _fail("protected_promotion_publication_ledger_mismatch")
+                completed_delta = record["completed_observed_delta"]
+                ledger_inventory = {
+                    purpose: dict(entries)
+                    for purpose, entries in self._ledger._inventory.items()
+                }
+
+        if len(source_observations) == 1:
+            source_complete = self._asset_stream_write_completed_for_characterization(
+                source_operation, source_write, asset_owner,
+                (accepted._prepared.request_id, descriptors[0].identity),
+                source_observations[0],
+            )
+        else:
+            source_complete = self._asset_stream_image_batch_write_completed_for_characterization(
+                source_operation, source_write, asset_owner, source_observations,
+            )
+        if source_complete is not True:
+            _fail("protected_promotion_publication_source_ledger_mismatch")
+
+        # Scanning every purpose catches untracked additions, removals, ACL or
+        # native identity drift. Compare again under the ledger lock below so
+        # no parallel completed write can be silently adopted.
+        current_inventory = self._scan()
+        if current_inventory != ledger_inventory:
+            _fail("protected_promotion_publication_inventory_mismatch")
+        lease_view = self._scope_lease.readiness() if self._scope_lease is not None else {}
+        with self._lock:
+            self._require_live()
+            if (lease_view.get("status") != "held"
+                    or self._scope_lease is None or self._scope_lease._state != "held"):
+                _fail("scope_writer_lease_unavailable")
+            with self._ledger._lock:
+                record = self._ledger._reservations.get(reservation)
+                operation_record = self._ledger._operations.get(operation)
+                if (self._ledger._inventory != ledger_inventory
+                        or self._ledger._active_write is not None
+                        or record is None or record.get("operation") is not operation
+                        or record.get("write") is not write_admission
+                        or record.get("state") != "completed"
+                        or record.get("completed_observed_delta") != completed_delta
+                        or record.get("estimates") != expected_estimate
+                        or operation_record is None
+                        or operation_record.get("state") != "completed"):
+                    _fail("protected_promotion_publication_ledger_changed")
+
+        for row in rows:
+            image = row.promoted_image
+            record = file_records[("promoted_assets", image.storage_identity)]
+            if (record[0].parent != asset_owner._roots["promoted_assets"]._path
+                    or current_inventory["promoted_assets"].get(image.storage_identity)
+                        != (record[2], image.byte_count, record[3][0])):
+                _fail("protected_promotion_publication_inventory_mismatch")
+        for source in sources:
+            image = source.image
+            record = source_records[("temporary_containment", image.storage_identity)]
+            if (record[0].parent != asset_owner._roots["temporary_containment"]._path
+                    or current_inventory["temporary_containment"].get(image.storage_identity)
+                        != (record[2], image.byte_count, record[3][0])):
+                _fail("protected_promotion_publication_inventory_mismatch")
+        return current_inventory, completed_delta, file_records, source_records
 
     def _retain_asset_write(self, operation, write_admission):
         with self._lock:

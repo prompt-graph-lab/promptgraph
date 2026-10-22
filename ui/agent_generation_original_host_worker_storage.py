@@ -187,6 +187,21 @@ class GenerationWorkerProtectedPromotionPreflightObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerProtectedPromotionObservation:
+    """Count-only result after one exact original-Host Promotion publication."""
+
+    status: str
+    request_index: int
+    promoted_image_count: int
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass(frozen=True)
 class GenerationWorkerRemoteOutputWriterEvidence:
     """Exact remote-history evidence; never an actionable storage capability."""
 
@@ -266,6 +281,10 @@ class _StoragePreAdmissionAttempt:
     promotion_receipt: object = None
     promotion_create_attempt_count: int = 0
     promotion_create_descriptor_identities: tuple = ()
+    promotion_publication_state: str = "not_started"
+    promotion_publication_marker: object = None
+    promotion_publication_observation: object = None
+    promotion_publication_completed_delta: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -1591,6 +1610,471 @@ class OriginalHostWorkerStorageIntegration:
             and receipt._accepted is attempt.accepted_batch
         )
 
+    def _profile_a_promotion_publication_host_matches_locked(
+            self, lifecycle, attempt, marker, preflight_observation,
+            writer_marker, preflight_marker, evidence, writer_observation,
+            acceptance_observation, writer_owner, capacity_owner, operation,
+            reservation, estimate, write_admission, promotion_owner, receipt):
+        """Check the current Host/Claim/Worker side of a claimed publication.
+
+        Native roots, files and ledger inventory are deliberately verified by
+        the slow publication path outside the Host locks. This helper is the
+        short freshness callback used between those observations and again at
+        the final Host commit boundary.
+        """
+        from core.generation_windows_protected_promotion import _ProfileAHostPromotionBinding
+
+        if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                or self._profile_a is not True
+                or self._state != "bound_non_executing"
+                or lifecycle._worker_storage_integration is not self
+                or lifecycle._state != "bound_non_executing"
+                or lifecycle._generation != self._lifecycle_generation
+                or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                or not self._root_binding_matches()
+                or attempt.state != "pre_admitted"
+                or attempt.cancel_requested
+                or attempt.promotion_preflight_state != "private_committed_host_publication_pending"
+                or attempt.promotion_publication_state != "in_progress"
+                or attempt.promotion_publication_marker is not marker
+                or attempt.promotion_preflight_observation is not preflight_observation
+                or attempt.promotion_preflight_marker is not preflight_marker
+                or attempt.promotion_writer_marker is not writer_marker
+                or attempt.evidence is not evidence
+                or evidence._issuer is not self
+                or evidence._attempt_nonce != attempt.lease.nonce
+                or attempt.writer_observation is not writer_observation
+                or attempt.acceptance_observation is not acceptance_observation
+                or attempt.writer_owner is not writer_owner
+                or self._profile_a_writer_owner is not writer_owner
+                or self._capacity_owner is not capacity_owner
+                or attempt.promotion_capacity_operation is not operation
+                or attempt.promotion_capacity_reservation is not reservation
+                or attempt.promotion_capacity_estimate is not estimate
+                or attempt.promotion_write_admission is not write_admission
+                or attempt.promotion_owner is not promotion_owner
+                or attempt.promotion_receipt is not receipt
+                or type(attempt.promotion_host_binding) is not _ProfileAHostPromotionBinding
+                or attempt.promotion_host_binding is not promotion_owner._profile_a_host_binding
+                or attempt.acceptance_state != "accepted_non_authoritative"
+                or attempt.acceptance_observation is not acceptance_observation
+                or attempt.writer_handoff_state != "staged_non_authoritative"
+                or attempt.promotion_create_attempt_count != len(attempt.remote_receipt.images)
+                or attempt.promotion_create_descriptor_identities != tuple(
+                    descriptor.identity for descriptor in attempt.remote_receipt.images)):
+            return False
+        binding = attempt.promotion_host_binding
+        if (binding.integration is not self or binding.attempt is not attempt
+                or binding.envelope is not lifecycle._envelope
+                or binding.writer_owner is not writer_owner
+                or binding.capacity_owner is not capacity_owner
+                or binding.operation is not operation
+                or binding.reservation is not reservation
+                or binding.estimate is not estimate
+                or binding.write_admission is not write_admission
+                or binding.preflight_observation is not preflight_observation):
+            return False
+        history, remote, prepared = (
+            attempt.history_completion, attempt.remote_receipt, attempt.prepared,
+        )
+        if (history is None or remote is None or prepared is None
+                or attempt.accepted_prompt_id != remote.prompt_id
+                or remote.execution_succeeded is not True
+                or getattr(history, "kind", None) != "history"
+                or getattr(getattr(history, "outcome", None), "status", None) != "ready"
+                or getattr(getattr(history, "outcome", None), "history_json", None)
+                    != attempt.history_json
+                or attempt.history_json != remote._validated_history_json):
+            return False
+        try:
+            if self._worker._run_if_issued_completion_for_prepared_request_for_characterization(
+                    history, prepared, self._worker_owner_claim, lambda: True) is not True:
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _begin_profile_a_promotion_publication_locked(self, lifecycle, observation):
+        """Claim one separate Host publication after the private Promotion commit."""
+        from core.comfy_output_containment import AcceptedProtectedOutputBatch, ProtectedOutputAcceptanceCharacterization
+        from core.generation_storage_admission import (
+            CapacityEstimate, WindowsProtectedStorageAdmissionCharacterization, _Opaque,
+        )
+        from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+        from core.generation_windows_protected_promotion import (
+            ProtectedDurablePromotionCharacterization, VerifiedProtectedPromotionReceipt,
+            _ProfileAHostPromotionBinding,
+        )
+
+        if (type(observation) is not GenerationWorkerProtectedPromotionPreflightObservation
+                or observation.status != "protected_promotion_preflight_non_authoritative"
+                or observation._issuer is not self):
+            return None, "protected_promotion_publication_observation_invalid"
+        writer = self._profile_a_writer_owner
+        capacity = self._capacity_owner
+        if (type(writer) is not WindowsProtectedAssetsCharacterization
+                or type(capacity) is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "protected_promotion_publication_unavailable"
+        with lifecycle._lock:
+            if (lifecycle._worker_storage_integration is not self
+                    or lifecycle._state != "bound_non_executing"
+                    or lifecycle._generation != self._lifecycle_generation
+                    or not self._lifecycle_profile_binding_matches_locked(lifecycle)):
+                return None, "protected_promotion_publication_host_changed"
+            with writer._lock:
+                attempt = self._storage_preadmission_attempts.get(observation.request_index)
+                acceptance = attempt.acceptance_owner if attempt is not None else None
+                promoter = attempt.promotion_owner if attempt is not None else None
+                receipt = attempt.promotion_receipt if attempt is not None else None
+                if (type(acceptance) is not ProtectedOutputAcceptanceCharacterization
+                        or type(promoter) is not ProtectedDurablePromotionCharacterization
+                        or type(receipt) is not VerifiedProtectedPromotionReceipt):
+                    return None, "protected_promotion_publication_evidence_unavailable"
+                with acceptance._lock:
+                    with promoter._lock:
+                        with capacity._lock:
+                            with capacity._ledger._lock:
+                                with self._lock:
+                                    operation = attempt.promotion_capacity_operation
+                                    reservation = attempt.promotion_capacity_reservation
+                                    estimate = attempt.promotion_capacity_estimate
+                                    write = attempt.promotion_write_admission
+                                    binding = attempt.promotion_host_binding
+                                    record = capacity._ledger._reservations.get(reservation)
+                                    operation_record = capacity._ledger._operations.get(operation)
+                                    accepted = attempt.accepted_batch
+                                    descriptors = tuple(attempt.remote_receipt.images) if attempt.remote_receipt else ()
+                                    rows = tuple(receipt.images)
+                                    observations = attempt.acceptance_observations
+                                    if (self._state != "bound_non_executing"
+                                            or self._storage_preadmission_attempts.get(
+                                                observation.request_index) is not attempt
+                                            or attempt.state != "pre_admitted"
+                                            or attempt.cancel_requested
+                                            or attempt.promotion_preflight_state
+                                                != "private_committed_host_publication_pending"
+                                            or attempt.promotion_publication_state != "not_started"
+                                            or attempt.promotion_publication_marker is not None
+                                            or attempt.promotion_publication_observation is not None
+                                            or attempt.promotion_preflight_observation is not observation
+                                            or observation._attempt_nonce != attempt.lease.nonce
+                                            or attempt.acceptance_state != "accepted_non_authoritative"
+                                            or attempt.acceptance_observation is None
+                                            or attempt.acceptance_observation.accepted_image_count != len(descriptors)
+                                            or attempt.writer_handoff_state != "staged_non_authoritative"
+                                            or attempt.writer_owner is not writer
+                                            or attempt.acceptance_owner is not acceptance
+                                            or attempt.promotion_owner is not promoter
+                                            or attempt.promotion_receipt is not receipt
+                                            or type(accepted) is not AcceptedProtectedOutputBatch
+                                            or accepted._protected_owner is not writer
+                                            or receipt._promotion_owner is not promoter
+                                            or receipt._protected_owner is not writer
+                                            or receipt._acceptance_owner is not acceptance
+                                            or receipt._accepted is not accepted
+                                            or promoter._receipt is not receipt
+                                            or promoter._pending_receipt is not None
+                                            or promoter._closed or promoter._revoking or promoter._uncertain
+                                            or promoter._busy
+                                            or writer._closed or writer._revoking
+                                            or writer._invalid or writer._uncertain
+                                            or writer._stream_promotions.get((attempt.prepared.request_id,
+                                                                              attempt.remote_receipt.identity))
+                                                is not receipt
+                                            or writer._stream_batch_acceptances.get((attempt.prepared.request_id,
+                                                                                    attempt.remote_receipt.identity))
+                                                is not accepted
+                                            or acceptance._closed or acceptance._revoking
+                                            or acceptance._invalid or acceptance._uncertain
+                                            or acceptance._busy or acceptance._receipt is not accepted
+                                            or capacity._closed or capacity._invalid
+                                            or capacity._scope_lease is None
+                                            or capacity._scope_lease._state != "held"
+                                            or not capacity._profile_a_root_set
+                                            or not capacity._capacity_policy_binding_matches()
+                                            or type(operation) is not _Opaque
+                                            or type(reservation) is not _Opaque
+                                            or type(write) is not _Opaque
+                                            or type(estimate) is not CapacityEstimate
+                                            or capacity._ledger._active_write is not None
+                                            or record is None or record.get("operation") is not operation
+                                            or record.get("write") is not write
+                                            or record.get("state") != "completed"
+                                            or operation_record is None
+                                            or operation_record.get("state") != "completed"
+                                            or type(binding) is not _ProfileAHostPromotionBinding
+                                            or binding is not promoter._profile_a_host_binding
+                                            or binding.integration is not self
+                                            or binding.attempt is not attempt
+                                            or binding.preflight_observation is not observation
+                                            or binding.write_admission is not write
+                                            or len(rows) != len(descriptors)
+                                            or len(rows) != len(observations)
+                                            or tuple(row.descriptor_identity for row in rows)
+                                                != tuple(item.identity for item in descriptors)
+                                            or tuple(row.source_observation for row in rows)
+                                                != observations
+                                            or tuple(item.descriptor_identity for item in observations)
+                                                != tuple(item.identity for item in descriptors)):
+                                        return None, "protected_promotion_publication_evidence_unavailable"
+                                    marker = object()
+                                    attempt.promotion_publication_state = "in_progress"
+                                    attempt.promotion_publication_marker = marker
+                                    return {
+                                        "attempt": attempt, "marker": marker,
+                                        "preflight_observation": observation,
+                                        "writer_marker": attempt.promotion_writer_marker,
+                                        "preflight_marker": attempt.promotion_preflight_marker,
+                                        "evidence": attempt.evidence,
+                                        "writer_observation": attempt.writer_observation,
+                                        "acceptance_observation": attempt.acceptance_observation,
+                                        "writer": writer, "acceptance": acceptance,
+                                        "accepted": accepted, "promotion_owner": promoter,
+                                        "receipt": receipt, "capacity": capacity,
+                                        "operation": operation, "reservation": reservation,
+                                        "estimate": estimate, "write": write,
+                                        "binding": binding, "observations": observations,
+                                        "envelope": lifecycle._envelope,
+                                        "remote": attempt.remote_receipt,
+                                        "prepared": attempt.prepared,
+                                    }, "promotion_publication_claimed"
+
+    def _commit_profile_a_promotion_publication_locked(
+            self, lifecycle, captured, inventory, completed_delta,
+            destination_records, source_records, result):
+        """Short in-memory publication commit under the original Host gate.
+
+        Required lock order is Host publication/route/registry/Job/Inbox,
+        lifecycle, protected assets, Acceptance, Promotion, capacity, ledger,
+        then this integration. No filesystem I/O or callbacks are permitted.
+        """
+        from core.generation_storage_admission import _WRITABLE
+
+        attempt = captured["attempt"]
+        writer, acceptance = captured["writer"], captured["acceptance"]
+        promoter, capacity = captured["promotion_owner"], captured["capacity"]
+        receipt, accepted = captured["receipt"], captured["accepted"]
+        descriptors = tuple(captured["remote"].images)
+        sources = tuple(captured["observations"])
+        rows = tuple(receipt.images)
+        total_bytes = sum(item.image.byte_count for item in sources)
+        expected_source_delta = {purpose: (0, 0) for purpose in _WRITABLE}
+        expected_source_delta["temporary_containment"] = (total_bytes, len(sources))
+        expected_destination_delta = {purpose: (0, 0) for purpose in _WRITABLE}
+        expected_destination_delta["promoted_assets"] = (total_bytes, len(rows))
+        with lifecycle._lock:
+            with writer._lock:
+                with acceptance._lock:
+                    with promoter._lock:
+                        with capacity._lock:
+                            with capacity._ledger._lock:
+                                with self._lock:
+                                    record = capacity._ledger._reservations.get(captured["reservation"])
+                                    operation_record = capacity._ledger._operations.get(captured["operation"])
+                                    source_record = capacity._ledger._reservations.get(attempt.reservation)
+                                    source_operation_record = capacity._ledger._operations.get(
+                                        attempt.capacity_operation,
+                                    )
+                                    key = (captured["prepared"].request_id, captured["remote"].identity)
+                                    if (self._storage_preadmission_attempts.get(
+                                            attempt.lease.request_index) is not attempt
+                                            or lifecycle._worker_storage_integration is not self
+                                            or lifecycle._state != "bound_non_executing"
+                                            or self._state != "bound_non_executing"
+                                            or attempt.cancel_requested
+                                            or attempt.promotion_preflight_state
+                                                != "private_committed_host_publication_pending"
+                                            or attempt.promotion_publication_state != "in_progress"
+                                            or attempt.promotion_publication_marker is not captured["marker"]
+                                            or attempt.promotion_preflight_observation
+                                                is not captured["preflight_observation"]
+                                            or attempt.promotion_owner is not promoter
+                                            or attempt.promotion_receipt is not receipt
+                                            or attempt.promotion_host_binding is not captured["binding"]
+                                            or attempt.promotion_write_admission is not captured["write"]
+                                            or attempt.promotion_capacity_operation is not captured["operation"]
+                                            or attempt.promotion_capacity_reservation is not captured["reservation"]
+                                            or attempt.promotion_capacity_estimate is not captured["estimate"]
+                                            or attempt.promotion_publication_observation is not None
+                                            or writer._closed or writer._revoking or writer._invalid or writer._uncertain
+                                            or acceptance._closed or acceptance._revoking
+                                            or acceptance._invalid or acceptance._uncertain
+                                            or acceptance._busy or acceptance._receipt is not accepted
+                                            or promoter._closed or promoter._revoking or promoter._uncertain
+                                            or promoter._busy or promoter._receipt is not receipt
+                                            or writer._stream_promotions.get(key) is not receipt
+                                            or writer._stream_batch_acceptances.get(key) is not accepted
+                                            or capacity._closed or capacity._invalid
+                                            or capacity._scope_lease is None
+                                            or capacity._scope_lease._state != "held"
+                                            or capacity._ledger._active_write is not None
+                                            or capacity._ledger._inventory != inventory
+                                            or record is None or record.get("operation") is not captured["operation"]
+                                            or record.get("write") is not captured["write"]
+                                            or record.get("state") != "completed"
+                                            or record.get("estimates") != {
+                                                "promoted_assets": (
+                                                    captured["estimate"].byte_upper_bound,
+                                                    captured["estimate"].entry_upper_bound,
+                                                ),
+                                            }
+                                            or record.get("completed_observed_delta") != completed_delta
+                                            or capacity._ledger._operations.get(captured["operation"])
+                                                is not operation_record
+                                            or operation_record is None
+                                            or operation_record.get("state") != "completed"
+                                            or source_record is None
+                                            or source_record.get("operation") is not attempt.capacity_operation
+                                            or source_record.get("write") is not attempt.writer_admission
+                                            or source_record.get("state") != "completed"
+                                            or source_record.get("completed_observed_delta")
+                                                != expected_source_delta
+                                            or source_operation_record is None
+                                            or source_operation_record.get("state") != "completed"
+                                            or source_record.get("estimates") != {
+                                                "temporary_containment": (
+                                                    attempt.estimate.byte_upper_bound,
+                                                    attempt.estimate.entry_upper_bound,
+                                                ),
+                                            }
+                                            or len(descriptors) != len(sources)
+                                            or len(rows) != len(sources)
+                                            or tuple(item.identity for item in descriptors)
+                                                != tuple(row.descriptor_identity for row in rows)
+                                            or tuple(item.descriptor_identity for item in sources)
+                                                != tuple(row.descriptor_identity for row in rows)
+                                            or any(row.source_observation is not source
+                                                   for row, source in zip(rows, sources))
+                                            or expected_destination_delta != completed_delta
+                                            or result.request_index != attempt.lease.request_index
+                                            or type(result) is not GenerationWorkerProtectedPromotionObservation
+                                            or result.status != "protected_promotion_published_non_authoritative"
+                                            or result.promoted_image_count != len(receipt.images)
+                                            or result.execution_available is not False
+                                            or result.protected_storage_available is not False
+                                            or result.promotion_available is not False
+                                            or result.candidate_publication_allowed is not False
+                                            or result.project_save_allowed is not False
+                                            or result.authorship != "unverified"):
+                                        return False
+                                    for source, row in zip(sources, rows):
+                                        source_key = ("temporary_containment",
+                                                      source.image.storage_identity)
+                                        destination_key = ("promoted_assets",
+                                                           row.promoted_image.storage_identity)
+                                        source_file = source_records.get(source_key)
+                                        destination_file = destination_records.get(destination_key)
+                                        if (source_file is None or destination_file is None
+                                                or writer._files.get(source_key) is not source_file
+                                                or writer._files.get(destination_key) is not destination_file
+                                                or writer._images.get(source_key) is not source.image
+                                                or writer._images.get(destination_key) is not row.promoted_image
+                                                or writer._stream_images.get((captured["prepared"].request_id,
+                                                                              source.descriptor_identity)) is not source
+                                                or inventory["temporary_containment"].get(
+                                                    source.image.storage_identity)
+                                                    != (source_file[2], source.image.byte_count,
+                                                        source_file[3][0])
+                                                or inventory["promoted_assets"].get(
+                                                    row.promoted_image.storage_identity)
+                                                    != (destination_file[2],
+                                                        row.promoted_image.byte_count,
+                                                        destination_file[3][0])
+                                                or source_file[0].parent
+                                                    != writer._roots["temporary_containment"]._path
+                                                or destination_file[0].parent
+                                                    != writer._roots["promoted_assets"]._path):
+                                            return False
+                                    attempt.promotion_publication_observation = result
+                                    attempt.promotion_publication_completed_delta = completed_delta
+                                    attempt.promotion_publication_state = "published_non_authoritative"
+                                    attempt.promotion_preflight_state = "promoted_non_authoritative"
+                                    return True
+
+    def _retain_profile_a_promotion_publication_uncertain(self, attempt, marker=None):
+        """Compensate only the exact completed destination delta; retain files."""
+        from core.generation_windows_protected_promotion import VerifiedProtectedPromotionReceipt
+
+        writer = self._profile_a_writer_owner
+        capacity = self._capacity_owner
+        promoter = attempt.promotion_owner if attempt is not None else None
+        acceptance = attempt.acceptance_owner if attempt is not None else None
+        receipt = attempt.promotion_receipt if attempt is not None else None
+        if (attempt is None or writer is None or capacity is None or promoter is None
+                or acceptance is None or type(receipt) is not VerifiedProtectedPromotionReceipt):
+            return False
+        try:
+            with writer._lock:
+                with acceptance._lock:
+                    with promoter._lock:
+                        with capacity._lock:
+                            with capacity._ledger._lock:
+                                with self._lock:
+                                    if (self._storage_preadmission_attempts.get(
+                                            attempt.lease.request_index) is not attempt
+                                            or attempt.promotion_preflight_state
+                                                == "promoted_non_authoritative"
+                                            or (marker is not None
+                                                and attempt.promotion_publication_marker is not marker)
+                                            or attempt.promotion_owner is not promoter
+                                            or promoter._receipt is not receipt
+                                            or receipt._promotion_owner is not promoter
+                                            or receipt._protected_owner is not writer
+                                            or receipt._acceptance_owner is not acceptance
+                                            or receipt._accepted is not attempt.accepted_batch
+                                            or attempt.promotion_capacity_operation is None
+                                            or attempt.promotion_capacity_reservation is None
+                                            or attempt.promotion_write_admission is None):
+                                        return False
+                                    record = capacity._ledger._reservations.get(
+                                        attempt.promotion_capacity_reservation,
+                                    )
+                                    operation_record = capacity._ledger._operations.get(
+                                        attempt.promotion_capacity_operation,
+                                    )
+                                    delta = (record.get("completed_observed_delta")
+                                             if record is not None else None)
+                                    if (record is not None
+                                            and record.get("operation") is attempt.promotion_capacity_operation
+                                            and record.get("write") is attempt.promotion_write_admission
+                                            and operation_record is not None
+                                            and (record.get("state") == "completed"
+                                                 or (record.get("state") == "uncertain"
+                                                     and record.get("uncertain_completed_delta") == delta))
+                                            and (operation_record.get("state") == "completed"
+                                                 or operation_record.get("state") == "uncertain")
+                                            and type(delta) is dict):
+                                        try:
+                                            capacity._ledger.retain_completed_write_as_uncertain(
+                                                attempt.promotion_capacity_operation,
+                                                attempt.promotion_write_admission, delta,
+                                            )
+                                        except Exception:
+                                            pass
+                                    # If exact compensation cannot be proven, an
+                                    # invalid owner plus the unresolved attempt
+                                    # retains the cross-process marker and files.
+                                    capacity._invalid = True
+                                    promoter._uncertain = True
+                                    attempt.cancel_requested = True
+                                    attempt.promotion_preflight_state = "retained_uncertain"
+                                    attempt.promotion_publication_state = "retained_uncertain"
+                                    attempt.promotion_publication_observation = None
+                                    return True
+        except Exception:
+            with self._lock:
+                if self._storage_preadmission_attempts.get(
+                        attempt.lease.request_index) is attempt:
+                    attempt.cancel_requested = True
+                    attempt.promotion_preflight_state = "retained_uncertain"
+                    attempt.promotion_publication_state = "retained_uncertain"
+            try:
+                capacity._invalid = True
+                promoter._uncertain = True
+            except Exception:
+                pass
+            return False
+
     def _bind_profile_a_acceptance_freshness(self, attempt, marker, callback):
         if not callable(callback):
             return False
@@ -2213,6 +2697,7 @@ class OriginalHostWorkerStorageIntegration:
             reason = "host_evidence_unavailable"
         preadmissions_to_cancel = []
         promotion_reservations_to_cancel = []
+        promotion_publications_to_retain = []
         with self._lock:
             if self._state == "closed":
                 worker = None
@@ -2258,6 +2743,10 @@ class OriginalHostWorkerStorageIntegration:
                             if attempt.promotion_preflight_state == (
                                     "private_committed_host_publication_pending"):
                                 attempt.promotion_preflight_state = "retained_uncertain"
+                                attempt.promotion_publication_state = "retained_uncertain"
+                                promotion_publications_to_retain.append(
+                                    (attempt, attempt.promotion_publication_marker),
+                                )
                         continue
                     if attempt.evidence_state != "uncertain":
                         attempt.evidence_state = "revoked"
@@ -2283,6 +2772,11 @@ class OriginalHostWorkerStorageIntegration:
             # This exact destination reservation cannot have crossed CREATE_NEW:
             # the fallback preflight never issues a Writer admission.
             self._cancel_profile_a_promotion_preflight_reservation(attempt, observation)
+        for attempt, marker in promotion_publications_to_retain:
+            # The private CREATE_NEW/ledger commit already happened. Preserve
+            # its exact destination estimate as uncertain before the owner can
+            # release the cross-process scope marker.
+            self._retain_profile_a_promotion_publication_uncertain(attempt, marker)
         return self._safe_state()
 
     def finish_close_for_characterization(self):

@@ -2205,6 +2205,7 @@ class WindowsProtectedAssetsCharacterization:
             # cannot close the protected owner while holding its own dispatch
             # lease; refuse reentry without changing lifecycle state.
             for owner in promotion_owners:
+                owner._ensure_profile_a_host_publication_revocation_allowed()
                 owner._ensure_executor_event_revocation_allowed()
                 owner._ensure_candidate_publication_revocation_allowed()
                 owner._ensure_project_save_revocation_allowed()
@@ -2227,6 +2228,7 @@ class WindowsProtectedAssetsCharacterization:
             # already committed at the separate boundary completes first;
             # otherwise close prevents a later outputs_ready dispatch.
             for owner in promotion_owners:
+                owner._revoke_profile_a_host_publication_for_characterization()
                 owner._revoke_executor_event_for_characterization()
                 owner._revoke_candidate_publication_for_characterization()
                 owner._revoke_project_save_for_characterization()

@@ -1641,6 +1641,177 @@ class ProjectAgentSessionRuntime:
             code = str(error)
             return None, code if code in safe else "protected_promotion_uncertain"
 
+    def publish_generation_worker_accepted_output_promotion_for_characterization(
+            self, preflight_observation, *, characterization=False,
+            disposable_opt_in=False):
+        """Publish one count-only result after exact private Profile A Promotion.
+
+        This separate Host operation revalidates native source/destination
+        evidence and the completed Ledger outside Host/owner locks, then makes
+        a short one-shot commit under the original Host/Claim publication gate.
+        """
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+        )
+        from core.generation_windows_protected_promotion import (
+            ProtectedDurablePromotionCharacterization,
+            VerifiedProtectedPromotionReceipt,
+        )
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedPromotionObservation,
+            GenerationWorkerProtectedPromotionPreflightObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if type(preflight_observation) is not GenerationWorkerProtectedPromotionPreflightObservation:
+            return None, "protected_promotion_preflight_observation_invalid"
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+                                if lifecycle_snapshot is not None else None)
+        if (type(integration_snapshot) is not OriginalHostWorkerStorageIntegration
+                or integration_snapshot._profile_a is not True
+                or type(integration_snapshot._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "profile_a_promotion_publication_unavailable"
+
+        captured = {}
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not lifecycle_snapshot):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_publication():
+                    started, status = integration_snapshot._begin_profile_a_promotion_publication_locked(
+                        lifecycle, preflight_observation,
+                    )
+                    if started is not None:
+                        captured.update(started)
+                        captured.update({
+                            "lifecycle": lifecycle,
+                            "project_reference": integration_snapshot._project_reference,
+                            "pairing_generation": lifecycle._pairing_generation,
+                        })
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation, on_current=begin_publication,
+                )
+                if not type(start_result) is tuple or start_result is False:
+                    return None, "host_evidence_unavailable"
+                started, status = start_result
+                if started is None:
+                    return None, status
+
+        integration = integration_snapshot
+        lifecycle = captured["lifecycle"]
+        attempt = captured["attempt"]
+        marker = captured["marker"]
+        writer = captured["writer"]
+        capacity = captured["capacity"]
+        promotion_owner = captured["promotion_owner"]
+        receipt = captured["receipt"]
+        if (type(writer) is not WindowsProtectedAssetsCharacterization
+                or type(promotion_owner) is not ProtectedDurablePromotionCharacterization
+                or type(receipt) is not VerifiedProtectedPromotionReceipt):
+            integration._retain_profile_a_promotion_publication_uncertain(attempt, marker)
+            return None, "protected_promotion_publication_uncertain"
+
+        publication_token = None
+        try:
+            def with_current_host(callback):
+                with self._publication_gate:
+                    if (self._closed
+                            or self._generation_original_host_lifecycle is not lifecycle):
+                        return False
+                    with self._current_generation_original_host_lifecycle_locked() as current:
+                        if current is not lifecycle:
+                            return False
+                        current_result = self._generation_original_host_evidence_current_locked(
+                            lifecycle, captured["pairing_generation"], on_current=callback,
+                        )
+                        return current_result is True
+
+            def host_matches():
+                return integration._profile_a_promotion_publication_host_matches_locked(
+                    lifecycle, attempt, marker, captured["preflight_observation"],
+                    captured["writer_marker"], captured["preflight_marker"],
+                    captured["evidence"], captured["writer_observation"],
+                    captured["acceptance_observation"], writer, capacity,
+                    captured["operation"], captured["reservation"],
+                    captured["estimate"], captured["write"], promotion_owner, receipt,
+                )
+
+            def host_freshness(envelope, remote):
+                return bool(envelope is captured["envelope"]
+                            and remote is captured["remote"]
+                            and with_current_host(host_matches))
+
+            if not with_current_host(host_matches):
+                raise ValueError("protected_promotion_publication_host_changed")
+            publication_token = promotion_owner._begin_profile_a_original_host_publication_for_characterization(
+                receipt, marker,
+            )
+
+            # The issuing Acceptance and Promotion owners verify the complete
+            # source and destination byte/native chain. No owner lock is held
+            # across those observations or the full-root inventory scan.
+            if promotion_owner._inspect_for_characterization(receipt, host_freshness) is not receipt:
+                raise ValueError("protected_promotion_publication_receipt_changed")
+            writer._check()
+            project_view = captured["project_reference"].readiness()
+            if project_view.get("status") != "read_only_reference_observed":
+                raise ValueError("protected_promotion_publication_project_reference_unavailable")
+            inventory, completed_delta, destination_records, source_records = (
+                capacity._inspect_profile_a_promotion_publication_for_characterization(
+                    captured["operation"], captured["reservation"], captured["write"],
+                    writer, promotion_owner, captured["acceptance"], captured["accepted"],
+                    receipt, attempt.capacity_operation, attempt.writer_admission,
+                    captured["observations"],
+                )
+            )
+            writer._check()
+            project_view = captured["project_reference"].readiness()
+            if (project_view.get("status") != "read_only_reference_observed"
+                    or not with_current_host(host_matches)):
+                raise ValueError("protected_promotion_publication_host_changed")
+
+            result = GenerationWorkerProtectedPromotionObservation(
+                status="protected_promotion_published_non_authoritative",
+                request_index=attempt.lease.request_index,
+                promoted_image_count=len(receipt.images),
+            )
+
+            def commit_publication():
+                if not host_matches():
+                    return False
+                return integration._commit_profile_a_promotion_publication_locked(
+                    lifecycle, captured, inventory, completed_delta,
+                    destination_records, source_records, result,
+                )
+
+            if not with_current_host(commit_publication):
+                raise ValueError("protected_promotion_publication_commit_refused")
+            return result, result.status
+        except Exception as error:
+            # A claimed publication is one-shot. If the original Host cannot
+            # settle it, compensate only the exact completed destination delta
+            # and retain all native evidence for later authorized handling.
+            integration._retain_profile_a_promotion_publication_uncertain(attempt, marker)
+            return None, "protected_promotion_publication_uncertain"
+        finally:
+            if publication_token is not None:
+                promotion_owner._finish_profile_a_original_host_publication_for_characterization(
+                    publication_token,
+                )
+
     def cancel_generation_worker_promotion_preflight_for_characterization(self, observation):
         """Release only this Host's exact pre-CREATE_NEW Promotion reservation."""
         from ui.agent_generation_original_host_worker_storage import (

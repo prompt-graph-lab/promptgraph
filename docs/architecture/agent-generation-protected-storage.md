@@ -2083,3 +2083,50 @@ quota, production root provisioning, cross-process accounting, power-loss
 durability, restart adoption or live ComfyUI behavior. Execution, protected
 storage, promotion, Candidate publication and Project-save flags remain false;
 `authorship=unverified`.
+
+## C2B-8D-19F-E Profile A original-Host Promotion publication
+
+19F-E adds the separate Host publication after the 19F-D private Promotion
+commit. It accepts only the exact 19F-B preflight observation still held by the
+same Original-host lifecycle and attempt, and the exact
+`VerifiedProtectedPromotionReceipt` still held by its issuing Promotion owner.
+Before publication it revalidates the accepted staging batch, successful
+remote-history/Worker evidence, selected Project JSON reference, protected
+source and destination files, native identities and ACLs, decoded bytes and
+hashes, the complete ordered descriptor correspondence, both completed Ledger
+deltas, the four-root capacity binding and the held scope-writer lease. A fresh
+native inventory must exactly match the Ledger inventory; additions,
+removals, identity/ACL drift, stale Host evidence or changed ownership refuse
+publication.
+
+The successful transition is one in-memory Host/owner commit. It creates no
+file, reservation, write token, Ledger completion or second Promotion. The
+caller receives only the immutable
+`GenerationWorkerProtectedPromotionObservation` with the request index and
+promoted-image count. The exact private receipt remains inside the original
+attempt and Promotion owner. The count observation grants no Candidate append,
+Project mutation/save, Recovery, retry or execution authority; all production
+capability flags remain false and `authorship=unverified`.
+
+Publication is one-shot. A copied or replayed preflight, host/claim/project
+drift, close/invalidation, or any uncertain native or Ledger observation
+withholds the count result. If the exact completed destination delta can be
+proven, the Ledger moves its observed destination bytes back to the reserved
+accounting and retains the full destination upper bound as `retained_uncertain`.
+The staging and promoted files, handles, receipt and other evidence are not
+deleted. If exact compensation cannot be established, the capacity and
+Promotion owners are invalidated and the unresolved attempt keeps the scope
+lease from being released. No automatic retry, overwrite, cleanup, replay or
+authority reconstruction is provided.
+
+Native scans and Project-reference observations run outside Host, Job, Inbox,
+lifecycle and protected-owner locks. Final publication uses the established
+Host → lifecycle → protected assets → Acceptance → Promotion → capacity →
+Ledger → integration lock order. The Promotion owner's publication boundary
+serializes its close against the in-flight observation; Host revocation and
+capacity close are rechecked at commit and failures retain the completed
+destination evidence. These offline Windows tests do not establish power-loss
+durability, a disk quota, production root provisioning, real ComfyUI
+interoperability, Candidate registration, Project save, or restart-time
+recovery. Candidate publication and Project JSON save remain separate future
+boundaries.
