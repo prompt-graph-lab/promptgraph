@@ -2026,7 +2026,60 @@ production root lifecycle. Close, stale inventory, identity/ACL drift,
 insufficient bytes, a 17th entry in either purpose, invalidation, or uncertain
 cancellation still refuses or retains the exact reservation/evidence. No
 automatic retry, overwrite, deletion, adoption, or cleanup is added. The next
-separate Promotion milestone must issue a narrow writer authorization, perform
-CREATE_NEW into the already verified promoted root, verify all destination
-bytes, and publish one aggregate Promotion receipt at a close-aware commit
-boundary. No production capability flag changes; `authorship=unverified`.
+separate Promotion milestone at this 19F-C checkpoint was the narrow writer
+authorization and aggregate private commit; the 19F-D section below records
+that offline boundary and the still-deferred Host publication. No production
+capability flag changes; `authorship=unverified`.
+
+## C2B-8D-19F-D Profile A original-Host Promotion Writer and private commit
+
+19F-D consumes the exact `GenerationWorkerProtectedPromotionPreflightObservation`
+issued by the current Profile A original-Host integration. The Host claims that
+observation once, revalidates the selected Project reference, lifecycle, Claim,
+Worker evidence, accepted staging batch, four-root identity, and the exact
+existing `promoted_assets` reservation from 19F-B. It issues one destination
+write admission against that reservation; it does not create a second
+operation, reserve again, or reuse the completed 19D staging write token.
+
+For each of the ordered 1–16 accepted descriptors, the original protected
+assets owner rereads the verified staging bytes and creates a distinct file in
+the already captured `promoted_assets` root with native `CREATE_NEW`. The
+existing admitted writer retains the file handle and native identity/ACL
+evidence, flushes the bytes, rereads and decodes them, and checks format,
+dimensions, byte count and SHA-256 against the accepted staging image. The
+aggregate commit rescans all roots and requires exactly the expected new
+promoted identities and byte/count delta; the original `temporary_containment`
+files and their completed ledger evidence remain unchanged. Promotion receipt
+and destination ledger completion are published together as one private owner
+transition only after the entire batch verifies.
+
+The caller receives no receipt, destination path, image identity, count or
+success claim. The Host method returns only
+`protected_promotion_host_publication_deferred` with no result object, while
+the exact private `VerifiedProtectedPromotionReceipt` remains held by its
+issuing Promotion owner and Host attempt in
+`private_committed_host_publication_pending`. This is not the final
+original-Host count-only publication, Candidate admission, a legacy
+`PromotedImage`, or save authority. 19F-E must separately implement that Host
+publication boundary or keep the attempt uncertain; a settled private ledger
+and receipt alone are not caller-visible success.
+
+Before a possible `CREATE_NEW`, only the exact still-reserved destination
+estimate may be cancelled after a positive pre-create proof. From the first
+possible create onward, any partial file, write/flush/readback/ACL/inventory
+failure, Host drift, invalidation or close retains the source and every created
+destination handle/file, with the full destination upper bound charged as
+`retained_uncertain`. There is no rollback, retry, overwrite, cleanup or
+automatic capacity release. A close after the private commit changes the Host
+attempt to `retained_uncertain`; the cross-process scope marker remains held
+while this unresolved state exists.
+
+The characterized limits are the existing opt-in 16 staging + 16 promoted
+entry policy and shared 256 MiB byte budget, with the 32 MiB per-image and 128
+MiB per-request ceilings. The legacy/default shared 16-entry policy and generic
+Profile A `create_image*` and Promotion factory refusals are unchanged. Tests
+use disposable Windows-native protected roots; this does not establish an OS
+quota, production root provisioning, cross-process accounting, power-loss
+durability, restart adoption or live ComfyUI behavior. Execution, protected
+storage, promotion, Candidate publication and Project-save flags remain false;
+`authorship=unverified`.

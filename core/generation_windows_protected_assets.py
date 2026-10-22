@@ -618,6 +618,85 @@ class WindowsProtectedAssetsCharacterization:
             # cleanup, overwrite or retry is attempted.
             raise
 
+    def _create_profile_a_promoted_image_for_original_host_for_characterization(
+            self, promotion_owner, data, extension, *, integration, attempt,
+            writer_marker, preflight_observation, capacity_owner, operation,
+            reservation, estimate, write_admission, capacity_lease, descriptor,
+            source_observation, request_order):
+        """Narrow Profile A Promotion-only CREATE_NEW handoff.
+
+        Generic Profile A creation APIs remain fenced. Only the issuing Host
+        integration, after marking this exact ordered descriptor as a possible
+        create, may route source-verified bytes through the existing native
+        admitted writer.
+        """
+        from core import generation_storage_admission as admission
+        from core import generation_windows_protected_promotion as promotion
+        from core.comfy_remote_output_receipts import RemoteImageDescriptor
+        from ui.agent_generation_original_host_worker_storage import (
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        if (type(integration) is not OriginalHostWorkerStorageIntegration
+                or integration._profile_a is not True
+                or type(promotion_owner) is not promotion.ProtectedDurablePromotionCharacterization
+                or type(descriptor) is not RemoteImageDescriptor
+                or type(source_observation) is not VerifiedProtectedImageObservation
+                or type(capacity_owner) is not admission.WindowsProtectedStorageAdmissionCharacterization
+                or capacity_owner is not self._profile_a_capacity_owner
+                or self._profile_a_asset_capacity_policy is not capacity_owner._asset_capacity_policy
+                or (self._profile_a_asset_capacity_policy is not None
+                    and self._profile_a_asset_capacity_policy is not
+                        admission.PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY)
+                or type(estimate) is not admission.CapacityEstimate
+                or type(data) is not bytes
+                or type(extension) is not str
+                or extension != descriptor.image_format
+                or extension not in SUPPORTED_EXTENSIONS
+                or len(data) != source_observation.image.byte_count
+                or hashlib.sha256(data).hexdigest() != source_observation.image.content_sha256
+                or source_observation.image.purpose != "temporary_containment"
+                or type(request_order) is not int):
+            w._fail("profile_a_promotion_writer_binding_invalid")
+
+        accepted = attempt.accepted_batch
+        descriptors = tuple(attempt.remote_receipt.images) if attempt.remote_receipt is not None else ()
+        observations = attempt.acceptance_observations
+        if (request_order < 0 or request_order >= len(descriptors)
+                or descriptors[request_order] is not descriptor
+                or len(observations) != len(descriptors)
+                or observations[request_order] is not source_observation
+                or source_observation.descriptor_identity != descriptor.identity
+                or attempt.writer_owner is not self
+                or accepted is None or accepted._protected_owner is not self
+                or attempt.promotion_owner is not promotion_owner
+                or attempt.promotion_write_admission is not write_admission
+                or attempt.promotion_capacity_operation is not operation
+                or attempt.promotion_capacity_reservation is not reservation
+                or attempt.promotion_capacity_estimate is not estimate
+                or attempt.promotion_writer_marker is not writer_marker
+                or attempt.promotion_preflight_observation is not preflight_observation):
+            w._fail("profile_a_promotion_writer_binding_invalid")
+
+        if not capacity_owner._profile_a_promotion_write_is_live_for_characterization(
+                operation, reservation, write_admission, self, estimate):
+            w._fail("protected_promotion_capacity_mismatch")
+        with integration._lock:
+            if (integration._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                    or attempt.cancel_requested
+                    or attempt.promotion_preflight_state != "promotion_may_have_created"
+                    or attempt.promotion_create_attempt_count <= request_order
+                    or attempt.promotion_create_descriptor_identities[request_order] != descriptor.identity
+                    or attempt.promotion_writer_marker is not writer_marker
+                    or attempt.promotion_owner is not promotion_owner):
+                w._fail("protected_promotion_invalidated")
+
+        return self._create_admitted_image_for_characterization(
+            "promoted_assets", data, extension, capacity_lease,
+            promotion_owner=promotion_owner,
+            admission_context=(capacity_owner, operation, write_admission),
+        )
+
     def _begin_promotion_capacity_lease_for_characterization(self, promotion_owner):
         """Pin a complete admitted promotion batch against asset close/writers."""
         lease = object()

@@ -2176,6 +2176,46 @@ def _stage_profile_a_for_acceptance(
             attempt, writer, observation, provider, data)
 
 
+def _assert_uncertain_promotion_prevents_profile_a_host_rebind(
+        capacity, reference, project_path, original_lifecycle, original_integration):
+    assert original_lifecycle._state == "closed"
+    assert original_integration._state == "closed"
+    assert not original_integration._uncertain_leases
+    assert capacity._scope_lease._state == "held"
+    assert capacity._scope_lease.readiness()["status"] == "held"
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+    original_references = tuple(capacity._host_lifecycle_refs)
+    assert original_references == (original_lifecycle,)
+
+    second_runtime, _route, _state, second_lifecycle = _ready_generation_at_project_path(
+        project_path,
+    )
+    try:
+        assert second_lifecycle is not original_lifecycle
+        # In the in-flight case a partial CREATE_NEW invalidates the capacity
+        # owner before any later binding can reach lifecycle publication. The
+        # privately committed case specifically exercises lifecycle retention.
+        expected_error = ("profile_a_storage_unavailable" if capacity._invalid
+                          else "profile_a_storage_lifecycle_unsettled")
+        with pytest.raises(ValueError, match=expected_error):
+            capacity._bind_profile_a_lifecycle_for_characterization(
+                second_lifecycle, reference,
+            )
+        host_status = second_runtime.bind_generation_profile_a_storage_for_characterization(
+            capacity, reference,
+        )
+        assert host_status in {
+            "storage_binding_unavailable", "storage_observation_unavailable",
+        }
+        assert tuple(capacity._host_lifecycle_refs) == original_references
+        assert original_lifecycle in capacity._host_lifecycle_refs
+        assert second_lifecycle not in capacity._host_lifecycle_refs
+        assert capacity._scope_lease._state == "held"
+        assert capacity._scope_lease_retention_reason() == "uncertain"
+    finally:
+        second_runtime.close()
+
+
 @pytest.mark.parametrize("descriptor_count", [1, 2, 16])
 def test_profile_a_staged_images_accept_as_exact_private_batch_without_new_write(
         native_profile_a_worker_storage, descriptor_count):
@@ -2493,6 +2533,528 @@ def test_profile_a_dual_custody_preflights_exact_sixteen_image_batch_without_pro
     assert writer._files == before_files
     assert writer._stream_promotions == before_promotions
     writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+@pytest.mark.parametrize("descriptor_count", [1, 2, 16])
+def test_profile_a_original_host_promotion_commits_exact_reserved_batch_privately(
+        native_profile_a_dual_custody_worker_storage, descriptor_count):
+    from core import generation_windows_protected_promotion as promotion
+
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=descriptor_count,
+    )
+    accepted_observation, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted_observation, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    operation, reservation = (attempt.promotion_capacity_operation,
+                              attempt.promotion_capacity_reservation)
+    operations_before = set(capacity._ledger._operations)
+    reservations_before = set(capacity._ledger._reservations)
+    source_bytes = tuple(
+        writer._bytes(writer._files[(item.image.purpose, item.image.storage_identity)])
+        for item in attempt.acceptance_observations
+    )
+    source_records = tuple(
+        writer._files[(item.image.purpose, item.image.storage_identity)]
+        for item in attempt.acceptance_observations
+    )
+
+    public_result, status = runtime.promote_generation_worker_accepted_output_for_characterization(
+        preflight, characterization=True, disposable_opt_in=True,
+    )
+
+    assert public_result is None
+    assert status == "protected_promotion_host_publication_deferred"
+    assert attempt.promotion_preflight_state == "private_committed_host_publication_pending"
+    receipt = attempt.promotion_receipt
+    promoter = attempt.promotion_owner
+    assert type(receipt) is promotion.VerifiedProtectedPromotionReceipt
+    assert promoter._receipt is receipt
+    assert writer._stream_promotions[(attempt.prepared.request_id,
+                                      attempt.remote_receipt.identity)] is receipt
+    assert len(receipt.images) == descriptor_count
+    assert tuple(row.descriptor_identity for row in receipt.images) == tuple(
+        descriptor.identity for descriptor in attempt.remote_receipt.images)
+    assert set(capacity._ledger._operations) == operations_before
+    assert set(capacity._ledger._reservations) == reservations_before
+    assert capacity._ledger._reservations[attempt.reservation]["state"] == "completed"
+    destination_record = capacity._ledger._reservations[reservation]
+    assert destination_record["operation"] is operation
+    assert destination_record["state"] == "completed"
+    assert destination_record["completed_observed_delta"]["promoted_assets"] == (
+        len(data) * descriptor_count, descriptor_count,
+    )
+    assert destination_record["completed_observed_delta"]["temporary_containment"] == (0, 0)
+    assert len(writer._files) == descriptor_count * 2
+    assert tuple(writer._bytes(record) for record in source_records) == source_bytes
+    for row, expected_bytes in zip(receipt.images, source_bytes):
+        image = row.promoted_image
+        key = ("promoted_assets", image.storage_identity)
+        record = writer._files[key]
+        assert record[0].parent == roots["promoted_assets"]._path
+        assert record[1] is not None and record[2] is not None and record[3] is not None
+        assert writer._observe(image.storage_identity, "promoted_assets", record[0].suffix[1:]) == image
+        assert writer._bytes(record) == expected_bytes
+        assert image.storage_identity != row.source_observation.image.storage_identity
+        assert image.content_sha256 == row.source_observation.image.content_sha256
+    assert writer.readiness()["inventory_entry_limit"] == 32
+    rows = {row["purpose"]: row for row in capacity.readiness()["roots"]}
+    assert (rows["temporary_containment"]["observed_used_entries"],
+            rows["promoted_assets"]["observed_used_entries"]) == (
+                descriptor_count, descriptor_count,
+            )
+    assert (rows["temporary_containment"]["observed_used_bytes"]
+            + rows["promoted_assets"]["observed_used_bytes"]) == len(data) * descriptor_count * 2
+    assert promoter.execution_available is False
+    assert promoter.protected_storage_available is False
+    assert promoter.promotion_available is False
+    assert promoter.candidate_publication_allowed is False
+    assert promoter.project_save_allowed is False
+    assert promoter.authorship == "unverified"
+    assert runtime.promote_generation_worker_accepted_output_for_characterization(
+        preflight, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_promotion_preflight_evidence_unavailable")
+
+    runtime.close()
+    assert attempt.promotion_preflight_state == "retained_uncertain"
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_private_promotion_uncertainty_prevents_closed_host_rebind(
+        native_profile_a_dual_custody_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    assert runtime.promote_generation_worker_accepted_output_for_characterization(
+        preflight, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_promotion_host_publication_deferred")
+    integration = lifecycle._worker_storage_integration
+    assert attempt.promotion_preflight_state == "private_committed_host_publication_pending"
+    assert attempt.promotion_receipt is attempt.promotion_owner._receipt
+
+    runtime.close()
+    assert attempt.promotion_preflight_state == "retained_uncertain"
+    closed = runtime.finish_generation_worker_storage_close_for_characterization()
+    assert closed is not None and closed.lifecycle_state == "closed"
+    assert attempt.promotion_receipt is attempt.promotion_owner._receipt
+    _assert_uncertain_promotion_prevents_profile_a_host_rebind(
+        capacity, reference, project_path, lifecycle, integration,
+    )
+    writer.close()
+
+
+def test_profile_a_original_host_promotion_retains_full_reservation_after_partial_create(
+        native_profile_a_dual_custody_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=2,
+    )
+    accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    operation, reservation = attempt.promotion_capacity_operation, attempt.promotion_capacity_reservation
+    source_records = tuple(
+        writer._files[(item.image.purpose, item.image.storage_identity)]
+        for item in attempt.acceptance_observations
+    )
+    creates = []
+
+    def fail_after_second_create(boundary):
+        if boundary == "after_file_create":
+            creates.append(boundary)
+            if len(creates) == 2:
+                raise RuntimeError("disposable second promotion create failure")
+
+    writer._fault = fail_after_second_create
+    public_result, status = runtime.promote_generation_worker_accepted_output_for_characterization(
+        preflight, characterization=True, disposable_opt_in=True,
+    )
+
+    assert public_result is None
+    assert status == "protected_promotion_uncertain"
+    assert len(creates) == 2
+    assert attempt.promotion_preflight_state == "retained_uncertain"
+    assert attempt.promotion_receipt is None
+    assert attempt.promotion_owner._receipt is None
+    assert writer._stream_promotions == {}
+    assert capacity._ledger._operations[operation]["state"] == "retained_uncertain"
+    record = capacity._ledger._reservations[reservation]
+    assert record["state"] == "retained_uncertain"
+    assert record["estimates"]["promoted_assets"] == (len(data) * 2, 2)
+    assert capacity._ledger._active_write is None
+    assert capacity._ledger._uncertain["promoted_assets"] == [len(data) * 2, 2]
+    assert len(writer._files) == 4  # two staged sources and both retained CREATE_NEW targets
+    assert tuple(writer._bytes(row) for row in source_records) == (data, data)
+    destinations = [row for row in writer._files.values() if row[0].parent == roots["promoted_assets"]._path]
+    assert len(destinations) == 2
+    assert sorted(len(row[0].read_bytes()) for row in destinations) == [0, len(data)]
+    assert all(row[1] is not None and row[2] is not None and row[3] is not None
+               for row in destinations)
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+
+    # A failed attempt is one-shot. Retained evidence is never overwritten or retried.
+    assert runtime.promote_generation_worker_accepted_output_for_characterization(
+        preflight, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_promotion_preflight_evidence_unavailable")
+    assert len(writer._files) == 4
+    assert writer._stream_promotions == {}
+    writer.close()
+    runtime.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_original_host_promotion_compensates_completed_ledger_after_lost_ack(
+        native_profile_a_dual_custody_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=2,
+    )
+    accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    operation, reservation = attempt.promotion_capacity_operation, attempt.promotion_capacity_reservation
+    complete = capacity._ledger.complete_write
+
+    def complete_then_lose_ack(*args, **kwargs):
+        complete(*args, **kwargs)
+        raise RuntimeError("disposable aggregate completion acknowledgement loss")
+
+    monkeypatch.setattr(capacity._ledger, "complete_write", complete_then_lose_ack)
+    public_result, status = runtime.promote_generation_worker_accepted_output_for_characterization(
+        preflight, characterization=True, disposable_opt_in=True,
+    )
+
+    assert public_result is None
+    assert status == "protected_promotion_uncertain"
+    assert attempt.promotion_preflight_state == "retained_uncertain"
+    assert attempt.promotion_receipt is None
+    assert attempt.promotion_owner._receipt is None
+    assert writer._stream_promotions == {}
+    record = capacity._ledger._reservations[reservation]
+    assert record["state"] == "uncertain"
+    assert capacity._ledger._operations[operation]["state"] == "uncertain"
+    assert record["completed_observed_delta"]["promoted_assets"] == (len(data) * 2, 2)
+    assert record["uncertain_completed_delta"] == record["completed_observed_delta"]
+    assert capacity._ledger._uncertain["promoted_assets"] == [len(data) * 2, 2]
+    assert capacity._ledger._observed["promoted_assets"] == [0, 0]
+    assert capacity._ledger._active_write is None
+    assert len(writer._files) == 4
+    assert all(row[0].exists() for row in writer._files.values())
+    assert sorted(len(row[0].read_bytes()) for row in writer._files.values()
+                  if row[0].parent == roots["promoted_assets"]._path) == [len(data), len(data)]
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+
+    # The exact completed-delta compensation is idempotent for this reservation.
+    capacity._ledger.retain_completed_write_as_uncertain(
+        operation, attempt.promotion_write_admission, record["completed_observed_delta"],
+    )
+    assert capacity._ledger._uncertain["promoted_assets"] == [len(data) * 2, 2]
+    assert capacity._ledger._observed["promoted_assets"] == [0, 0]
+    writer.close()
+    runtime.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_original_host_promotion_host_close_at_create_retains_uncertain_batch(
+        native_profile_a_dual_custody_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=2,
+    )
+    integration = lifecycle._worker_storage_integration
+    accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    operation, reservation = attempt.promotion_capacity_operation, attempt.promotion_capacity_reservation
+    entered, release = threading.Event(), threading.Event()
+    close_finished = threading.Event()
+    close_errors, results, errors = [], [], []
+
+    def pause_after_first_create(boundary):
+        if boundary == "after_file_create":
+            entered.set()
+            assert release.wait(10)
+
+    writer._fault = pause_after_first_create
+
+    def promote():
+        try:
+            results.append(runtime.promote_generation_worker_accepted_output_for_characterization(
+                preflight, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as error:
+            errors.append(error)
+
+    def close_host():
+        try:
+            runtime.close()
+        except BaseException as error:
+            close_errors.append(error)
+        finally:
+            close_finished.set()
+
+    promote_thread = threading.Thread(target=promote)
+    close_thread = None
+    try:
+        promote_thread.start()
+        assert entered.wait(10)
+        close_thread = threading.Thread(target=close_host)
+        close_thread.start()
+        assert close_finished.wait(10), "Host close must not wait on native CREATE_NEW callback"
+    finally:
+        release.set()
+        promote_thread.join(20)
+        if close_thread is not None:
+            close_thread.join(10)
+
+    assert not promote_thread.is_alive()
+    assert close_thread is None or not close_thread.is_alive()
+    assert not errors and not close_errors
+    assert results == [(None, "protected_promotion_uncertain")]
+    assert attempt.promotion_preflight_state == "retained_uncertain"
+    assert attempt.promotion_receipt is None
+    assert attempt.promotion_owner._receipt is None
+    assert writer._stream_promotions == {}
+    assert capacity._ledger._operations[operation]["state"] == "retained_uncertain"
+    record = capacity._ledger._reservations[reservation]
+    assert record["state"] == "retained_uncertain"
+    assert capacity._ledger._uncertain["promoted_assets"] == [len(data) * 2, 2]
+    assert capacity._ledger._active_write is None
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+    assert len([row for row in writer._files.values()
+                if row[0].parent == roots["promoted_assets"]._path]) == 1
+    assert all(path.exists() for purpose, _root, path in writer._inventory()
+               if purpose in {"temporary_containment", "promoted_assets"})
+    assert not writer._stream_promotions
+    closed = runtime.finish_generation_worker_storage_close_for_characterization()
+    assert closed is not None and closed.lifecycle_state == "closed"
+    _assert_uncertain_promotion_prevents_profile_a_host_rebind(
+        capacity, reference, project_path, lifecycle, integration,
+    )
+    writer.close()
+
+
+def test_profile_a_original_host_promotion_rejects_copied_preflight_observation(
+        native_profile_a_dual_custody_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    copied = replace(preflight)
+    assert copied == preflight and copied is not preflight
+    before_files = dict(writer._files)
+    before_promotions = dict(writer._stream_promotions)
+    record = capacity._ledger._reservations[attempt.promotion_capacity_reservation]
+
+    assert runtime.promote_generation_worker_accepted_output_for_characterization(
+        copied, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_promotion_preflight_evidence_unavailable")
+    assert record["state"] == "reserved"
+    assert writer._files == before_files
+    assert writer._stream_promotions == before_promotions
+    assert attempt.promotion_receipt is None
+    assert runtime.promote_generation_worker_accepted_output_for_characterization(
+        preflight, characterization=True, disposable_opt_in=True,
+    )[1] == "protected_promotion_host_publication_deferred"
+    runtime.close()
+    assert record["state"] == "completed"
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_original_host_promotion_competing_call_cannot_create_twice(
+        native_profile_a_dual_custody_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, _lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path, descriptor_count=2,
+    )
+    accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    entered, release = threading.Event(), threading.Event()
+    original = attempt.acceptance_owner._inspect_for_promotion_preflight_for_characterization
+    first = True
+
+    def pause_first_writer_inspection(batch, freshness):
+        nonlocal first
+        if first:
+            first = False
+            entered.set()
+            assert release.wait(10)
+        return original(batch, freshness)
+
+    monkeypatch.setattr(attempt.acceptance_owner,
+                        "_inspect_for_promotion_preflight_for_characterization",
+                        pause_first_writer_inspection)
+    results, errors = [], []
+
+    def run_first():
+        try:
+            results.append(runtime.promote_generation_worker_accepted_output_for_characterization(
+                preflight, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=run_first)
+    thread.start()
+    try:
+        assert entered.wait(10)
+        # The Writer has claimed this one-shot attempt, but the first native
+        # source revalidation precedes destination write admission.
+        assert attempt.promotion_preflight_state == "promotion_claiming"
+        record = capacity._ledger._reservations[attempt.promotion_capacity_reservation]
+        assert record["state"] == "reserved"
+        duplicate = runtime.promote_generation_worker_accepted_output_for_characterization(
+            preflight, characterization=True, disposable_opt_in=True,
+        )
+        assert duplicate == (None, "protected_promotion_preflight_evidence_unavailable")
+        assert record["state"] == "reserved"
+        assert not any(row[0].parent == roots["promoted_assets"]._path
+                       for row in writer._files.values())
+    finally:
+        release.set()
+        thread.join(20)
+
+    assert not thread.is_alive() and not errors
+    assert results == [(None, "protected_promotion_host_publication_deferred")]
+    assert attempt.promotion_preflight_state == "private_committed_host_publication_pending"
+    assert attempt.promotion_create_attempt_count == 2
+    assert len(attempt.promotion_create_descriptor_identities) == 2
+    assert attempt.promotion_owner._receipt is attempt.promotion_receipt
+    assert len(attempt.promotion_receipt.images) == 2
+    assert len([row for row in writer._files.values()
+                if row[0].parent == roots["promoted_assets"]._path]) == 2
+    assert record["state"] == "completed"
+    assert len(writer._stream_promotions) == 1
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_original_host_promotion_cancels_exact_write_before_first_create_on_host_loss(
+        native_profile_a_dual_custody_worker_storage, monkeypatch):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, _preadmission, _evidence,
+     attempt, writer, staged, _provider, _data) = _stage_profile_a_for_acceptance(
+        roots, capacity, reference, project_path,
+    )
+    accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+        staged, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_image_batch_accepted_non_authoritative"
+    preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+        accepted, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_promotion_preflight_non_authoritative"
+    entered, release = threading.Event(), threading.Event()
+    original = attempt.acceptance_owner._inspect_for_promotion_preflight_for_characterization
+    inspections = 0
+
+    def pause_second_writer_inspection(batch, freshness):
+        nonlocal inspections
+        inspections += 1
+        if inspections == 2:
+            entered.set()
+            assert release.wait(10)
+        return original(batch, freshness)
+
+    monkeypatch.setattr(attempt.acceptance_owner,
+                        "_inspect_for_promotion_preflight_for_characterization",
+                        pause_second_writer_inspection)
+    results, errors = [], []
+
+    def run_promotion():
+        try:
+            results.append(runtime.promote_generation_worker_accepted_output_for_characterization(
+                preflight, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=run_promotion)
+    thread.start()
+    try:
+        assert entered.wait(10)
+        record = capacity._ledger._reservations[attempt.promotion_capacity_reservation]
+        assert record["state"] == "writing"
+        runtime.synchronize_target(
+            lifecycle._project_ref(),
+            str(project_path.with_name("profile-a-promotion-host-changed.json")),
+        )
+    finally:
+        release.set()
+        thread.join(20)
+
+    assert not thread.is_alive() and not errors
+    # The acceptance owner marks a failed post-claim freshness observation
+    # uncertain, even though the exact destination reservation is safely
+    # cancelled before any CREATE_NEW attempt.
+    assert results == [(None, "protected_promotion_uncertain")]
+    assert attempt.promotion_preflight_state == "cancelled"
+    assert attempt.promotion_create_attempt_count == 0
+    assert record["state"] == "cancelled"
+    assert capacity._ledger._operations[attempt.promotion_capacity_operation]["state"] == "cancelled"
+    assert capacity._ledger._active_write is None
+    assert writer._stream_promotions == {}
+    assert attempt.promotion_receipt is None
+    assert not any(row[0].parent == roots["promoted_assets"]._path
+                   for row in writer._files.values())
+    writer.close()
+    runtime.close()
     runtime.finish_generation_worker_storage_close_for_characterization()
 
 

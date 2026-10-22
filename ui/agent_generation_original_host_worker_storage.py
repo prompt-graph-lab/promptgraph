@@ -259,6 +259,13 @@ class _StoragePreAdmissionAttempt:
     promotion_capacity_operation: object = None
     promotion_capacity_reservation: object = None
     promotion_capacity_estimate: object = None
+    promotion_writer_marker: object = None
+    promotion_write_admission: object = None
+    promotion_owner: object = None
+    promotion_host_binding: object = None
+    promotion_receipt: object = None
+    promotion_create_attempt_count: int = 0
+    promotion_create_descriptor_identities: tuple = ()
 
 
 def unavailable_observation(status="unavailable"):
@@ -1340,6 +1347,250 @@ class OriginalHostWorkerStorageIntegration:
                                     "promotion_preflight_claimed"
                                 )
 
+    def _begin_profile_a_promotion_writer_locked(self, lifecycle, observation):
+        """Consume one exact reserved preflight for the original-Host Writer.
+
+        This is only an in-memory one-shot claim. Native readiness and all file
+        operations happen after the Host gate and owner locks are released.
+        """
+        from core.generation_storage_admission import WindowsProtectedStorageAdmissionCharacterization
+        from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+
+        if (not self._profile_a
+                or type(observation) is not GenerationWorkerProtectedPromotionPreflightObservation
+                or observation.status != "protected_promotion_preflight_non_authoritative"
+                or observation._issuer is not self):
+            return None, "protected_promotion_preflight_evidence_unavailable"
+        writer, capacity = self._profile_a_writer_owner, self._capacity_owner
+        if (type(writer) is not WindowsProtectedAssetsCharacterization
+                or type(capacity) is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "protected_promotion_preflight_evidence_unavailable"
+        with lifecycle._lock:
+            with writer._lock:
+                with capacity._lock:
+                    with self._lock:
+                        attempt = self._storage_preadmission_attempts.get(observation.request_index)
+                        if (lifecycle._worker_storage_integration is not self
+                                or lifecycle._state != "bound_non_executing"
+                                or lifecycle._generation != self._lifecycle_generation
+                                or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                                or not self._root_binding_matches()
+                                or self._state != "bound_non_executing"
+                                or attempt is None or attempt.state != "pre_admitted"
+                                or attempt.cancel_requested
+                                or attempt.acceptance_state != "accepted_non_authoritative"
+                                or attempt.promotion_preflight_state != "reserved_non_authoritative"
+                                or attempt.promotion_preflight_observation is not observation
+                                or attempt.promotion_writer_marker is not None
+                                or attempt.promotion_write_admission is not None
+                                or attempt.promotion_owner is not None
+                                or attempt.promotion_receipt is not None
+                                or attempt.promotion_create_attempt_count != 0
+                                or attempt.promotion_create_descriptor_identities != ()
+                                or attempt.promotion_capacity_operation is None
+                                or attempt.promotion_capacity_reservation is None
+                                or attempt.promotion_capacity_estimate is None):
+                            return None, "protected_promotion_preflight_evidence_unavailable"
+                        accepted_observation = attempt.acceptance_observation
+                        marker = attempt.promotion_preflight_marker
+                        evidence = attempt.evidence
+                        writer_observation = attempt.writer_observation
+                        operation = attempt.promotion_capacity_operation
+                        reservation = attempt.promotion_capacity_reservation
+                        estimate = attempt.promotion_capacity_estimate
+
+        # The shared predicate reacquires lifecycle, capacity and integration
+        # locks itself. Run it with none of those non-reentrant locks held.
+        if (marker is None or not self._profile_a_promotion_preflight_matches_locked(
+                lifecycle, attempt, marker, evidence,
+                writer_observation, accepted_observation, writer,
+                operation=operation, reservation=reservation,
+                estimate=estimate,
+                expected_states=("reserved_non_authoritative",),
+                promotion_observation=observation)):
+            return None, "protected_promotion_preflight_host_changed"
+
+        with lifecycle._lock:
+            with writer._lock:
+                with capacity._lock:
+                    with self._lock:
+                        if (self._storage_preadmission_attempts.get(
+                                observation.request_index) is not attempt
+                                or lifecycle._worker_storage_integration is not self
+                                or lifecycle._state != "bound_non_executing"
+                                or self._state != "bound_non_executing"
+                                or attempt.state != "pre_admitted"
+                                or attempt.cancel_requested
+                                or attempt.promotion_preflight_state != "reserved_non_authoritative"
+                                or attempt.promotion_preflight_observation is not observation
+                                or attempt.promotion_preflight_marker is not marker
+                                or attempt.promotion_capacity_operation is not operation
+                                or attempt.promotion_capacity_reservation is not reservation
+                                or attempt.promotion_capacity_estimate is not estimate
+                                or attempt.acceptance_observation is not accepted_observation):
+                            return None, "protected_promotion_preflight_host_changed"
+                        writer_marker = object()
+                        attempt.promotion_writer_marker = writer_marker
+                        attempt.promotion_preflight_state = "promotion_claiming"
+                        return (
+                            attempt, writer_marker, marker, evidence,
+                            writer_observation, accepted_observation, writer,
+                            capacity, operation, reservation, estimate,
+                            attempt.acceptance_owner, attempt.accepted_batch,
+                            attempt.acceptance_observations, lifecycle._envelope,
+                            attempt.prepared, attempt.remote_receipt,
+                        ), "promotion_writer_claimed"
+
+    def _profile_a_promotion_writer_matches_locked(
+            self, lifecycle, attempt, writer_marker, preflight_marker, evidence,
+            writer_observation, acceptance_observation, promotion_observation,
+            writer_owner, capacity_owner, operation, reservation, estimate,
+            *, write_admission=None, promotion_owner=None,
+            expected_states=("promotion_claiming", "promotion_admitting",
+                             "promotion_admitted", "promotion_may_have_created")):
+        """Check the exact Host/preflight/source chain at a Writer boundary."""
+        if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
+                or attempt.promotion_writer_marker is not writer_marker
+                or attempt.promotion_preflight_marker is not preflight_marker
+                or attempt.promotion_preflight_observation is not promotion_observation
+                or attempt.promotion_capacity_operation is not operation
+                or attempt.promotion_capacity_reservation is not reservation
+                or attempt.promotion_capacity_estimate is not estimate
+                or attempt.promotion_write_admission is not write_admission
+                or self._capacity_owner is not capacity_owner
+                or self._profile_a_writer_owner is not writer_owner):
+            return False
+        return self._profile_a_promotion_preflight_matches_locked(
+            lifecycle, attempt, preflight_marker, evidence, writer_observation,
+            acceptance_observation, writer_owner, operation=operation,
+            reservation=reservation, estimate=estimate,
+            expected_states=expected_states,
+            promotion_observation=promotion_observation,
+            write_admission=write_admission, promotion_owner=promotion_owner,
+        )
+
+    def _mark_profile_a_promotion_create_for_characterization(
+            self, lifecycle, attempt, writer_marker, preflight_marker, evidence,
+            writer_observation, acceptance_observation, promotion_observation,
+            writer_owner, capacity_owner, operation, reservation, estimate,
+            write_admission, promotion_owner, descriptor, request_order):
+        """Linearize one possible CREATE_NEW under current original-Host custody."""
+        from core.comfy_output_containment import AcceptedProtectedOutputBatch
+        from core.comfy_remote_output_receipts import RemoteImageDescriptor
+        states = ("promotion_admitted", "promotion_may_have_created")
+        if (type(descriptor) is not RemoteImageDescriptor
+                or type(request_order) is not int or request_order < 0):
+            return False
+
+        # Revalidate every potentially expensive or cross-owner observation
+        # while the original Host gate is held but before taking the short
+        # native-owner/integration locks below. The Host gate prevents a
+        # Project, Claim or route replacement between this check and marker
+        # publication.
+        if not self._profile_a_promotion_writer_matches_locked(
+                lifecycle, attempt, writer_marker, preflight_marker,
+                evidence, writer_observation, acceptance_observation,
+                promotion_observation, writer_owner, capacity_owner,
+                operation, reservation, estimate,
+                write_admission=write_admission,
+                promotion_owner=promotion_owner,
+                expected_states=states):
+            return False
+
+        # Lock order remains lifecycle -> protected assets -> capacity ->
+        # integration. Do not invoke the freshness predicate while these
+        # locks are held: it reopens the earlier owner chain.
+        with lifecycle._lock:
+            with writer_owner._lock:
+                with capacity_owner._lock:
+                    ledger = capacity_owner._ledger
+                    with ledger._lock:
+                        active_reservation = ledger._reservations.get(reservation)
+                        active_operation = ledger._operations.get(operation)
+                        write_live = bool(
+                            not capacity_owner._closed and not capacity_owner._invalid
+                            and capacity_owner._scope_lease is not None
+                            and capacity_owner._scope_lease._state == "held"
+                            and ledger._active_write is write_admission
+                            and active_reservation is not None
+                            and active_reservation.get("operation") is operation
+                            and active_reservation.get("state") == "writing"
+                            and active_reservation.get("write") is write_admission
+                            and active_operation is not None
+                            and active_operation.get("state") == "writing"
+                        )
+                    if (not write_live
+                            or lifecycle._worker_storage_integration is not self
+                            or lifecycle._state != "bound_non_executing"
+                            or self._state != "bound_non_executing"
+                            or writer_owner._closed or writer_owner._revoking
+                            or writer_owner._invalid or writer_owner._uncertain
+                            or attempt.writer_owner is not writer_owner
+                            or type(attempt.accepted_batch) is not AcceptedProtectedOutputBatch
+                            or attempt.accepted_batch._protected_owner is not writer_owner
+                            or attempt.accepted_batch._envelope is not lifecycle._envelope
+                            or request_order != attempt.promotion_create_attempt_count
+                            or request_order >= len(attempt.remote_receipt.images)
+                            or attempt.remote_receipt.images[request_order] is not descriptor
+                            or descriptor.identity in attempt.promotion_create_descriptor_identities):
+                        return False
+                    with self._lock:
+                        if (self._storage_preadmission_attempts.get(
+                                attempt.lease.request_index) is not attempt
+                                or attempt.promotion_preflight_state not in states
+                                or attempt.promotion_writer_marker is not writer_marker
+                                or attempt.promotion_preflight_marker is not preflight_marker
+                                or attempt.promotion_preflight_observation is not promotion_observation
+                                or attempt.promotion_write_admission is not write_admission
+                                or attempt.promotion_owner is not promotion_owner
+                                or attempt.cancel_requested
+                                or attempt.promotion_create_attempt_count != request_order
+                                or descriptor.identity in attempt.promotion_create_descriptor_identities):
+                            return False
+                        attempt.promotion_create_attempt_count += 1
+                        attempt.promotion_create_descriptor_identities = (
+                            attempt.promotion_create_descriptor_identities + (descriptor.identity,)
+                        )
+                        attempt.promotion_preflight_state = "promotion_may_have_created"
+                        return True
+
+    def _profile_a_promotion_private_commit_matches_locked(
+            self, attempt, writer_marker, preflight_marker, promotion_observation,
+            writer_owner, capacity_owner, operation, reservation, estimate,
+            write_admission, promotion_owner, receipt):
+        """Cheap in-memory gate called while this integration lock is held."""
+        descriptors = tuple(attempt.remote_receipt.images) if attempt.remote_receipt is not None else ()
+        return bool(
+            self._storage_preadmission_attempts.get(attempt.lease.request_index) is attempt
+            and self._profile_a is True
+            and self._state == "bound_non_executing"
+            and attempt.state == "pre_admitted"
+            and not attempt.cancel_requested
+            and attempt.promotion_preflight_state == "promotion_may_have_created"
+            and attempt.promotion_writer_marker is writer_marker
+            and attempt.promotion_preflight_marker is preflight_marker
+            and attempt.promotion_preflight_observation is promotion_observation
+            and attempt.promotion_capacity_operation is operation
+            and attempt.promotion_capacity_reservation is reservation
+            and attempt.promotion_capacity_estimate is estimate
+            and attempt.promotion_write_admission is write_admission
+            and attempt.promotion_create_attempt_count == len(descriptors)
+            and attempt.promotion_create_descriptor_identities == tuple(
+                descriptor.identity for descriptor in descriptors)
+            and attempt.writer_owner is writer_owner
+            and self._profile_a_writer_owner is writer_owner
+            and self._capacity_owner is capacity_owner
+            and attempt.promotion_owner is promotion_owner
+            and attempt.promotion_host_binding is promotion_owner._profile_a_host_binding
+            and attempt.promotion_receipt is None
+            and promotion_owner._pending_receipt is receipt
+            and promotion_owner._receipt is None
+            and receipt._promotion_owner is promotion_owner
+            and receipt._protected_owner is writer_owner
+            and receipt._acceptance_owner is attempt.acceptance_owner
+            and receipt._accepted is attempt.accepted_batch
+        )
+
     def _bind_profile_a_acceptance_freshness(self, attempt, marker, callback):
         if not callable(callback):
             return False
@@ -1381,7 +1632,8 @@ class OriginalHostWorkerStorageIntegration:
     def _profile_a_promotion_preflight_matches_locked(
             self, lifecycle, attempt, marker, evidence, writer_observation,
             acceptance_observation, writer_owner, *, operation=None, reservation=None,
-            estimate=None):
+            estimate=None, expected_states=("in_progress",),
+            promotion_observation=None, write_admission=None, promotion_owner=None):
         """Freshness gate for the already-settled Acceptance-to-Promotion preflight.
 
         This deliberately does not reuse the in-progress Acceptance predicate.
@@ -1394,12 +1646,16 @@ class OriginalHostWorkerStorageIntegration:
         from core.generation_storage_admission import CapacityEstimate
         from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
 
-        if (attempt.promotion_preflight_state != "in_progress"
+        if (attempt.promotion_preflight_state not in expected_states
                 or attempt.promotion_preflight_marker is not marker
                 or attempt.acceptance_state != "accepted_non_authoritative"
                 or attempt.acceptance_observation is not acceptance_observation
                 or attempt.writer_observation is not writer_observation
                 or attempt.writer_owner is not writer_owner
+                or attempt.cancel_requested
+                or (promotion_observation is not None
+                    and attempt.promotion_preflight_observation is not promotion_observation)
+                or (promotion_owner is not None and attempt.promotion_owner is not promotion_owner)
                 or not self._writer_handoff_matches_locked(
                     lifecycle, attempt, attempt.writer_handoff_marker,
                     evidence, writer_owner, states={"staged_non_authoritative"})):
@@ -1446,6 +1702,10 @@ class OriginalHostWorkerStorageIntegration:
         # reserves destination capacity only and never consumes another 19D write.
         try:
             capacity = self._capacity_owner
+            active_promotion = (
+                (operation, reservation, write_admission, estimate)
+                if write_admission is not None else None
+            )
             if (type(writer_owner) is not WindowsProtectedAssetsCharacterization
                     or capacity is None):
                 return False
@@ -1454,18 +1714,24 @@ class OriginalHostWorkerStorageIntegration:
                     attempt.capacity_operation, attempt.writer_admission, writer_owner,
                     (prepared.request_id, remote.images[0].identity),
                     attempt.acceptance_observations[0],
+                    active_promotion=active_promotion,
                 )
             else:
                 staging_matches = capacity._asset_stream_image_batch_write_completed_for_characterization(
                     attempt.capacity_operation, attempt.writer_admission, writer_owner,
                     attempt.acceptance_observations,
+                    active_promotion=active_promotion,
                 )
             if staging_matches is not True:
                 return False
             if operation is not None or reservation is not None or estimate is not None:
                 if (operation is None or reservation is None or type(estimate) is not CapacityEstimate
-                        or not capacity._profile_a_promotion_reservation_is_live_for_characterization(
-                            operation, reservation, writer_owner, estimate)):
+                        or (write_admission is None
+                            and not capacity._profile_a_promotion_reservation_is_live_for_characterization(
+                                operation, reservation, writer_owner, estimate))
+                        or (write_admission is not None
+                            and not capacity._profile_a_promotion_write_is_live_for_characterization(
+                                operation, reservation, write_admission, writer_owner, estimate))):
                     return False
         except Exception:
             return False
@@ -1981,6 +2247,17 @@ class OriginalHostWorkerStorageIntegration:
                             promotion_reservations_to_cancel.append(
                                 (attempt, attempt.promotion_preflight_observation),
                             )
+                        elif attempt.promotion_preflight_state in {
+                                "promotion_claiming", "promotion_admitting", "promotion_admitted",
+                                "promotion_may_have_created", "private_committed_host_publication_pending"}:
+                            # The writer path owns cancellation from this point.
+                            # It may still be before CREATE_NEW, have a live
+                            # token, or already have retained native evidence;
+                            # revoke must not guess and release that capacity.
+                            attempt.cancel_requested = True
+                            if attempt.promotion_preflight_state == (
+                                    "private_committed_host_publication_pending"):
+                                attempt.promotion_preflight_state = "retained_uncertain"
                         continue
                     if attempt.evidence_state != "uncertain":
                         attempt.evidence_state = "revoked"

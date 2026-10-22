@@ -32,6 +32,11 @@ _MAX_JOURNAL_ENTRIES = 300
 _MAX_ROOT_FILE_BYTES = _MAX_OPERATION_BYTES
 _MAX_PROCESS_ACCOUNTING_SCOPES = 128
 _MAX_PROFILE_A_HOST_LIFECYCLES = 1
+_UNRESOLVED_PROFILE_A_PROMOTION_STATES = frozenset({
+    "promotion_claiming", "promotion_admitting", "promotion_admitted",
+    "promotion_may_have_created", "private_committed_host_publication_pending",
+    "retained_uncertain", "cancellation_requested", "cancellation_in_progress",
+})
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -43,6 +48,11 @@ _JOURNAL_REPLACEMENT_ISSUER = object()
 
 def _fail(code):
     raise ValueError(code)
+
+
+def _profile_a_promotion_is_unresolved(attempt):
+    """Share the Promotion retention boundary across lease and rebind checks."""
+    return attempt.promotion_preflight_state in _UNRESOLVED_PROFILE_A_PROMOTION_STATES
 
 
 def _validate_profile_a_root_set_shape(purpose_roots):
@@ -1194,6 +1204,93 @@ class WindowsProtectedStorageAdmissionCharacterization:
                     and operation_record.get("state") == "reserved"
                 )
 
+    def _profile_a_promotion_write_is_live_for_characterization(
+            self, operation, reservation, write_admission, asset_owner, estimate):
+        """Check the exact 19F-B destination reservation after its one admission.
+
+        This does not create another operation or reservation. It proves only
+        that the existing promoted-assets estimate has transitioned once to
+        this exact active write token for the original Profile A Writer.
+        """
+        from core import generation_windows_protected_assets as assets
+
+        if (self._profile_a_root_set is not True
+                or type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(estimate) is not CapacityEstimate
+                or type(reservation) is not _Opaque
+                or type(operation) is not _Opaque
+                or type(write_admission) is not _Opaque
+                or self._roots.get("temporary_containment") is not
+                    asset_owner._roots.get("temporary_containment")
+                or self._roots.get("promoted_assets") is not
+                    asset_owner._roots.get("promoted_assets")
+                or asset_owner._profile_a_capacity_owner is not self
+                or asset_owner._profile_a_asset_capacity_policy is not self._asset_capacity_policy
+                or (self._asset_capacity_policy is not None
+                    and self._asset_capacity_policy is not PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY)
+                or not self._capacity_policy_binding_matches()):
+            return False
+        try:
+            normalized = self._ledger._validate_estimates({"promoted_assets": estimate})
+        except ValueError:
+            return False
+        with self._lock:
+            if (self._closed or self._invalid or self._scope_lease is None
+                    or self._scope_lease._state != "held"):
+                return False
+            with self._ledger._lock:
+                return self._profile_a_promotion_write_record_matches_locked(
+                    operation, reservation, write_admission, estimate, asset_owner,
+                    normalized=normalized,
+                )
+
+    def _profile_a_promotion_write_record_matches_locked(
+            self, operation, reservation, write_admission, estimate, asset_owner,
+            *, normalized=None):
+        """Check a destination write token without acquiring locks again.
+
+        Callers of this helper hold both the capacity owner and ledger locks.
+        Avoiding a reverse ledger-to-capacity acquisition is required when a
+        completed staging record is rechecked beside the active destination
+        reservation.
+        """
+        from core import generation_windows_protected_assets as assets
+        if (type(asset_owner) is not assets.WindowsProtectedAssetsCharacterization
+                or type(estimate) is not CapacityEstimate
+                or type(operation) is not _Opaque
+                or type(reservation) is not _Opaque
+                or type(write_admission) is not _Opaque
+                or self._roots.get("temporary_containment") is not
+                    asset_owner._roots.get("temporary_containment")
+                or self._roots.get("promoted_assets") is not
+                    asset_owner._roots.get("promoted_assets")
+                or self._closed or self._invalid or self._scope_lease is None
+                or self._scope_lease._state != "held"
+                or self._profile_a_root_set is not True
+                or asset_owner._profile_a_capacity_owner is not self
+                or asset_owner._profile_a_asset_capacity_policy is not self._asset_capacity_policy
+                or (self._asset_capacity_policy is not None
+                    and self._asset_capacity_policy is not PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY)
+                or not self._capacity_policy_binding_matches()):
+            return False
+        if normalized is None:
+            try:
+                normalized = self._ledger._validate_estimates({"promoted_assets": estimate})
+            except ValueError:
+                return False
+        record = self._ledger._reservations.get(reservation)
+        operation_record = self._ledger._operations.get(operation)
+        return bool(
+            record is not None
+            and record.get("operation") is operation
+            and record.get("state") == "writing"
+            and record.get("write") is write_admission
+            and record.get("estimates") == normalized
+            and operation_record is not None
+            and operation_record.get("state") == "writing"
+            and self._ledger._active_write is write_admission
+        )
+
     def _staging_reservation_covers_for_characterization(
             self, operation, reservation, purpose, minimum_bytes, minimum_entries):
         """Check a live, exact single-purpose staging reservation by identity.
@@ -1267,7 +1364,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
 
     def _asset_stream_write_completed_for_characterization(
             self, operation, write_admission, asset_owner, stream_attempt,
-            stream_observation):
+            stream_observation, *, active_promotion=None):
         """Verify exact completed ledger custody for one protected stream image."""
         from core import generation_windows_protected_assets as assets
 
@@ -1324,6 +1421,17 @@ class WindowsProtectedStorageAdmissionCharacterization:
                                 if record is not None
                                 and type(record.get("estimates")) is dict else None)
                     observed_staging = self._ledger._observed.get("temporary_containment")
+                    active_promotion_matches = self._ledger._active_write is None
+                    if active_promotion is not None:
+                        promotion_operation, promotion_reservation, promotion_write, promotion_estimate = (
+                            active_promotion
+                        )
+                        active_promotion_matches = bool(
+                            self._ledger._active_write is promotion_write
+                            and self._profile_a_promotion_write_record_matches_locked(
+                                promotion_operation, promotion_reservation, promotion_write,
+                                promotion_estimate, asset_owner)
+                        )
                     return bool(
                         type(reservation) is _Opaque
                         and self._ledger._reservations.get(reservation) is record
@@ -1345,7 +1453,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         and estimate[1] >= 1
                         and operation_record is not None
                         and operation_record.get("state") == "completed"
-                        and self._ledger._active_write is None
+                        and active_promotion_matches
                         and type(observed_staging) is list and len(observed_staging) == 2
                         and observed_staging[0]
                             >= stream_observation.image.byte_count
@@ -2175,7 +2283,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
             raise
 
     def _asset_stream_image_batch_write_completed_for_characterization(
-            self, operation, write_admission, asset_owner, observations):
+            self, operation, write_admission, asset_owner, observations, *,
+            active_promotion=None):
         """Verify exact private batch custody after its one ledger completion."""
         from core import generation_windows_protected_assets as assets
 
@@ -2204,12 +2313,23 @@ class WindowsProtectedStorageAdmissionCharacterization:
                                    and item.get("operation") is operation), None)
                     binding = (record.get("asset_stream_batch_completion")
                                if record is not None else None)
+                    active_promotion_matches = self._ledger._active_write is None
+                    if active_promotion is not None:
+                        promotion_operation, promotion_reservation, promotion_write, promotion_estimate = (
+                            active_promotion
+                        )
+                        active_promotion_matches = bool(
+                            self._ledger._active_write is promotion_write
+                            and self._profile_a_promotion_write_record_matches_locked(
+                                promotion_operation, promotion_reservation, promotion_write,
+                                promotion_estimate, asset_owner)
+                        )
                     return bool(
                         record is not None and record.get("state") == "completed"
                         and type(binding) is tuple and len(binding) == 3
                         and binding[0] is asset_owner and binding[1] == attempts
                         and binding[2] is observations
-                        and self._ledger._active_write is None
+                        and active_promotion_matches
                         and record.get("completed_observed_delta", {}).get(
                             "temporary_containment") == (
                                 sum(item.image.byte_count for item in observations), len(observations),
@@ -2218,7 +2338,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
 
     def complete_protected_promotion_batch_for_characterization(
             self, operation, write_admission, asset_owner, promotion_owner,
-            acceptance_owner, accepted, receipt, capacity_lease, *, final_revalidate):
+            acceptance_owner, accepted, receipt, capacity_lease, *, final_revalidate,
+            profile_a_host_binding=None):
         """Atomically account and publish one exact all-image promotion batch.
 
         Native image verification and the final host callback run without
@@ -2237,6 +2358,26 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 or any(self._roots.get(purpose) is not asset_owner._roots.get(purpose)
                        for purpose in ("temporary_containment", "promoted_assets"))):
             _fail("protected_promotion_binding_invalid")
+        if profile_a_host_binding is not None:
+            from ui.agent_generation_original_host_worker_storage import (
+                OriginalHostWorkerStorageIntegration,
+            )
+            if (type(profile_a_host_binding) is not promotion._ProfileAHostPromotionBinding
+                    or type(profile_a_host_binding.integration) is not OriginalHostWorkerStorageIntegration
+                    or profile_a_host_binding.capacity_owner is not self
+                    or profile_a_host_binding.writer_owner is not asset_owner
+                    or profile_a_host_binding.operation is not operation
+                    or type(profile_a_host_binding.reservation) is not _Opaque
+                    or profile_a_host_binding.write_admission is not write_admission
+                    or profile_a_host_binding.attempt.promotion_owner is not promotion_owner
+                    or profile_a_host_binding.attempt.promotion_host_binding is not profile_a_host_binding):
+                _fail("protected_promotion_binding_invalid")
+            if (asset_owner._profile_a_capacity_owner is not self
+                    or asset_owner._profile_a_asset_capacity_policy is not self._asset_capacity_policy
+                    or (self._asset_capacity_policy is not None
+                        and self._asset_capacity_policy is not
+                            PROFILE_A_DUAL_CUSTODY_CAPACITY_POLICY)):
+                _fail("protected_promotion_capacity_mismatch")
         if (promotion_owner._protected_owner is not asset_owner
                 or promotion_owner._acceptance_owner is not acceptance_owner
                 or promotion_owner._accepted is not accepted
@@ -2386,35 +2527,68 @@ class WindowsProtectedStorageAdmissionCharacterization:
                                        is not source for descriptor, source in zip(descriptors, sources))):
                             _fail("protected_promotion_invalidated")
                         ledger_completed = False
-                        try:
-                            result = self._ledger.complete_write(
-                                operation, write_admission, inventory, free_bytes)
-                            ledger_completed = True
-                            promotion_owner._receipt = receipt
-                            asset_owner._stream_promotions[request_key] = receipt
-                            promotion_owner._pending_receipt = None
-                        except BaseException:
-                            asset_owner._stream_promotions.pop(request_key, None)
-                            promotion_owner._receipt = None
-                            promotion_owner._pending_receipt = receipt
-                            if not ledger_completed:
-                                with self._ledger._lock:
+                        with self._ledger._lock:
+                            # The existing order is capacity -> ledger -> Host
+                            # integration. Promotion CREATE admission uses the
+                            # same order; reversing the last two locks here
+                            # could deadlock a concurrent Host revocation.
+                            host_lock = (profile_a_host_binding.integration._lock
+                                         if profile_a_host_binding is not None else None)
+                            if host_lock is not None:
+                                host_lock.acquire()
+                            try:
+                                if (profile_a_host_binding is not None
+                                        and not profile_a_host_binding.integration
+                                        ._profile_a_promotion_private_commit_matches_locked(
+                                            profile_a_host_binding.attempt,
+                                            profile_a_host_binding.writer_marker,
+                                            profile_a_host_binding.preflight_marker,
+                                            profile_a_host_binding.preflight_observation,
+                                            asset_owner, self, operation,
+                                            profile_a_host_binding.reservation,
+                                            profile_a_host_binding.estimate,
+                                            write_admission, promotion_owner, receipt)):
+                                    _fail("protected_promotion_invalidated")
+                                result = self._ledger.complete_write(
+                                    operation, write_admission, inventory, free_bytes)
+                                ledger_completed = True
+                                promotion_owner._receipt = receipt
+                                asset_owner._stream_promotions[request_key] = receipt
+                                promotion_owner._pending_receipt = None
+                                if profile_a_host_binding is not None:
+                                    attempt = profile_a_host_binding.attempt
+                                    attempt.promotion_receipt = receipt
+                                    attempt.promotion_preflight_state = (
+                                        "private_committed_host_publication_pending"
+                                    )
+                            except BaseException:
+                                asset_owner._stream_promotions.pop(request_key, None)
+                                promotion_owner._receipt = None
+                                promotion_owner._pending_receipt = receipt
+                                if profile_a_host_binding is not None:
+                                    attempt = profile_a_host_binding.attempt
+                                    if attempt.promotion_receipt is receipt:
+                                        attempt.promotion_preflight_state = "retained_uncertain"
+                                if not ledger_completed:
                                     ledger_completed = any(
                                         item.get("write") is write_admission
                                         and item["operation"] is operation
                                         and item["state"] == "completed"
                                         for item in self._ledger._reservations.values())
-                            if ledger_completed:
-                                try:
-                                    self._ledger.retain_completed_write_as_uncertain(
-                                        operation, write_admission, delta)
-                                    self._invalid = True
-                                except BaseException:
-                                    # Preserve the verified inventory and any
-                                    # already-invalid ledger; never claim a
-                                    # public promotion receipt after this path.
-                                    self._invalid = True
-                            raise
+                                if ledger_completed:
+                                    try:
+                                        self._ledger.retain_completed_write_as_uncertain(
+                                            operation, write_admission, delta)
+                                        self._invalid = True
+                                    except BaseException:
+                                        # Preserve the verified inventory and any
+                                        # already-invalid ledger; never claim a
+                                        # public promotion receipt after this path.
+                                        self._invalid = True
+                                raise
+                            finally:
+                                if host_lock is not None:
+                                    host_lock.release()
                         self._asset_writer_integrated = True
                         self._promotion_writer_integrated = True
                         return result
@@ -2505,6 +2679,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         or attempt.acceptance_state in {
                             "in_progress", "retained_uncertain",
                         }
+                        or _profile_a_promotion_is_unresolved(attempt)
                         for attempt in integration._storage_preadmission_attempts.values()
                     )
                     if integration._uncertain_leases:
@@ -2560,6 +2735,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         or attempt.acceptance_state in {
                             "in_progress", "retained_uncertain",
                         }
+                        or _profile_a_promotion_is_unresolved(attempt)
                         for attempt in integration._storage_preadmission_attempts.values()
                     )
             if state != "closed" or integration_active or integration_uncertain:
