@@ -229,6 +229,11 @@ class ProtectedDurablePromotionCharacterization:
         self._receipt = None
         self._pending_receipt = None
         self._profile_a_host_binding = None
+        # The original Host's later count-only publication is distinct from
+        # executor events, Candidate append, and Project save. This one-shot
+        # lease orders owner close against that Host commit without holding
+        # protected/native owner locks across the slow verification phase.
+        self._profile_a_host_publication_boundary = _PromotionEventBoundary()
         self._executor_event_boundary = _PromotionEventBoundary()
         # Candidate append is a separate commit from the executor's count-only
         # event. Keep its revocation lease independent and one-shot as well.
@@ -792,6 +797,52 @@ class ProtectedDurablePromotionCharacterization:
                         w._fail("protected_promotion_invalidated")
                     return self._executor_event_boundary.begin()
 
+    def _begin_profile_a_original_host_publication_for_characterization(
+            self, receipt, publication_marker):
+        """Claim the distinct one-shot Host result after private Promotion."""
+        if (type(receipt) is not VerifiedProtectedPromotionReceipt
+                or type(self._profile_a_host_binding) is not _ProfileAHostPromotionBinding
+                or type(publication_marker) is not object):
+            w._fail("protected_promotion_publication_binding_invalid")
+        binding = self._profile_a_host_binding
+        attempt = binding.attempt
+        accepted = self._accepted
+        protected, acceptance = self._protected_owner, self._acceptance_owner
+        key = (accepted._prepared.request_id, accepted._remote.identity)
+        with protected._lock:
+            with acceptance._lock:
+                with self._lock:
+                    if (self._closed or self._revoking or self._uncertain
+                            or self._receipt is not receipt or self._pending_receipt is not None
+                            or receipt._promotion_owner is not self
+                            or receipt._protected_owner is not protected
+                            or receipt._acceptance_owner is not acceptance
+                            or receipt._accepted is not accepted
+                            or protected._closed or protected._revoking
+                            or protected._invalid or protected._uncertain
+                            or protected._stream_promotions.get(key) is not receipt
+                            or protected._stream_batch_acceptances.get(key) is not accepted
+                            or acceptance._closed or acceptance._revoking
+                            or acceptance._invalid or acceptance._uncertain
+                            or acceptance._busy or acceptance._receipt is not accepted
+                            or attempt.promotion_publication_state != "in_progress"
+                            or attempt.promotion_publication_marker is not publication_marker
+                            or attempt.promotion_preflight_state
+                                != "private_committed_host_publication_pending"
+                            or attempt.promotion_receipt is not receipt
+                            or attempt.promotion_owner is not self):
+                        w._fail("protected_promotion_publication_invalidated")
+                    return self._profile_a_host_publication_boundary.begin()
+
+    def _finish_profile_a_original_host_publication_for_characterization(self, token):
+        self._profile_a_host_publication_boundary.finish(token)
+
+    def _ensure_profile_a_host_publication_revocation_allowed(self):
+        self._profile_a_host_publication_boundary.ensure_revocation_not_reentrant()
+
+    def _revoke_profile_a_host_publication_for_characterization(self):
+        self._profile_a_host_publication_boundary.revoke()
+
     def finish_executor_event_for_characterization(self, token):
         self._executor_event_boundary.finish(token)
 
@@ -848,6 +899,7 @@ class ProtectedDurablePromotionCharacterization:
         self._ensure_executor_event_revocation_allowed()
         self._ensure_candidate_publication_revocation_allowed()
         self._ensure_project_save_revocation_allowed()
+        self._ensure_profile_a_host_publication_revocation_allowed()
         with self._lock:
             if self._closed:
                 return
@@ -855,6 +907,7 @@ class ProtectedDurablePromotionCharacterization:
         self._revoke_executor_event_for_characterization()
         self._revoke_candidate_publication_for_characterization()
         self._revoke_project_save_for_characterization()
+        self._revoke_profile_a_host_publication_for_characterization()
         with self._lock:
             self._closed = True
             self._revoking = False
