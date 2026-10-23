@@ -697,16 +697,53 @@ class ProjectAgentSessionRuntime:
                         any(event.progress.kind == "submitted" for event in paired)
                         and not submitted_bound
                     )
-                    source_kinds = (("submission_started", "submitted")
-                                    if submitted_bound else
-                                    ("submission_started",) if started_bound else ())
                     marker_state = (submitted_attempt.state
                                     if submitted_attempt is not None else None)
+                    remote_attempt = integration._profile_a_remote_outputs_ready_event_attempts.get(
+                        request_index,
+                    )
+                    remote_event = (remote_attempt.event
+                                    if remote_attempt is not None else None)
+                    storage_attempt = integration._storage_preadmission_attempts.get(
+                        request_index,
+                    )
+                    remote_bound = (
+                        submitted_bound
+                        and remote_attempt is not None
+                        and remote_attempt.state == "events_accepted"
+                        and remote_event is not None
+                        and any(item is remote_event for item in paired)
+                        and storage_attempt is not None
+                        and integration._profile_a_remote_outputs_ready_event_is_current_locked(
+                            lifecycle, storage_attempt, remote_attempt,
+                        )
+                    )
+                    if (remote_attempt is not None
+                            and remote_attempt.state == "events_accepted"
+                            and not remote_bound):
+                        conflict = True
+                    accepted_unbound_remote = (
+                        any(event.progress.kind == "remote_outputs_ready" for event in paired)
+                        and not remote_bound
+                    )
+                    source_kinds = (
+                        ("submission_started", "submitted", "remote_outputs_ready")
+                        if remote_bound else
+                        ("submission_started", "submitted") if submitted_bound else
+                        ("submission_started",) if started_bound else ()
+                    )
+                    remote_marker_state = (remote_attempt.state
+                                           if remote_attempt is not None else None)
                     blocked_states = {
                         "claim_in_progress", "event_acceptance_in_progress",
                         "retained_uncertain", "submission_rejected",
                     }
-                    if submitted_bound:
+                    if remote_bound:
+                        next_event = "outputs_ready"
+                    elif (accepted_unbound_remote or remote_marker_state in {
+                            "event_acceptance_in_progress", "retained_uncertain", "refused"}):
+                        next_event = None
+                    elif submitted_bound:
                         next_event = "remote_outputs_ready"
                     elif accepted_unbound_submitted or marker_state in blocked_states:
                         next_event = None
@@ -718,6 +755,16 @@ class ProjectAgentSessionRuntime:
                         next_event = None
                     if conflict:
                         audit_status = "event_chain_conflict"
+                    elif remote_bound:
+                        audit_status = "profile_a_remote_outputs_ready_event_observed"
+                    elif remote_marker_state == "retained_uncertain":
+                        audit_status = "remote_outputs_ready_event_uncertain"
+                    elif remote_marker_state == "event_acceptance_in_progress":
+                        audit_status = "remote_outputs_ready_event_pending"
+                    elif remote_marker_state == "refused":
+                        audit_status = "remote_outputs_ready_event_refused"
+                    elif accepted_unbound_remote:
+                        audit_status = "remote_outputs_ready_event_unbound"
                     elif submitted_bound:
                         audit_status = "profile_a_submitted_event_observed"
                     elif accepted_unbound_submitted:

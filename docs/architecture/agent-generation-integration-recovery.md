@@ -1384,3 +1384,65 @@ Promotion, Candidate eligibility, Candidate append or Project save. The next
 19G-D boundary must derive `remote_outputs_ready` from actual ready-history and
 exact `RemoteOutputReceipt` evidence. All production gates remain disabled,
 `candidate_eligibility="not_established"`, and `authorship=unverified`.
+
+## C2B-8D-19G-D Profile A ready-History remote event
+
+19G-D closes that source-event boundary. Following the exact source-bound
+`submission_started` and `submitted` pair, the original Host validates the same
+Worker-issued `HTTPIOCompletion(kind="history")`, frozen request, history
+correlation, `HistoryResult(status="ready")` and accepted prompt identity. It
+then calls the existing `validate_remote_outputs` owner and requires its
+`RemoteOutputReceipt` to carry `execution_succeeded is True`, exact
+job/claim/manifest/request/workflow identity and the exact validated History
+bytes. Unique ordered descriptors are bounded to one through sixteen;
+status-less, pending, conflicting, copied or unverifiable History does not
+produce readiness.
+
+The original Host sends one exact `ExecutorEvent` through the existing Job
+Registry and Inbox. Its opaque `OutputReceipt` is bound to the validated remote
+receipt identity and count, but is correlation only. The integration source
+binds the exact event object after both existing owners acknowledge it and the
+Job is `awaiting_download` with that remote-output count and zero registered
+Candidates. Slow History/remote validation and native root/Project readiness
+observations remain outside final Job/Inbox/Host locks. One-shot attempts,
+accepted-but-unbound event retention and the shared capacity unresolved check
+fence uncertain outcomes; there is no replay.
+
+This is a remote-metadata state only. No image is downloaded or written, no
+protected staging/Acceptance/Promotion or `outputs_ready` event is created,
+and no Candidate, Undo or Project save occurs. A source-bound chain now reports
+`submission_started → submitted → remote_outputs_ready`, with `outputs_ready`
+required next. The opaque event receipt does not itself grant protected-writer,
+Candidate, save, Recovery or execution authority. All production gates remain
+false and `authorship=unverified`.
+
+## C2B-8D-19G-D Profile A ready-History remote event
+
+19G-D closes that source-event boundary. Following the exact source-bound
+`submission_started` and `submitted` pair, the original Host now validates the
+same Worker-issued `HTTPIOCompletion(kind="history")`, the matching frozen
+request and history correlation, a `HistoryResult(status="ready")`, and the
+exact accepted prompt identity. It then calls the existing
+`validate_remote_outputs` owner and requires its `RemoteOutputReceipt` to carry
+`execution_succeeded is True`, exact job/claim/manifest/request/workflow
+identity and the exact validated History bytes. Unique ordered descriptors are
+bounded to one through sixteen; status-less, pending, conflicting, copied or
+unverifiable History does not produce readiness.
+
+The original Host sends one exact `ExecutorEvent` through the existing Job
+Registry and Inbox. Its opaque `OutputReceipt` is bound to the validated remote
+receipt identity and count, but is correlation only. The integration source
+binds the exact event object after both existing owners acknowledge it and the
+Job is `awaiting_download` with that remote-output count and zero registered
+Candidates. Slow History/remote validation and native root/project readiness
+observations remain outside final Job/Inbox/Host locks. One-shot attempts,
+accepted-but-unbound event retention and the shared capacity unresolved check
+fence uncertain outcomes; there is no replay.
+
+This is a remote-metadata state only. No image is downloaded or written, no
+protected staging/Acceptance/Promotion or `outputs_ready` event is created,
+and no Candidate, Undo or Project save occurs. A source-bound chain now reports
+`submission_started → submitted → remote_outputs_ready`, with
+`outputs_ready` required next. The opaque event receipt does not itself grant
+protected-writer, Candidate, save, Recovery or execution authority. All
+production gates remain false and `authorship=unverified`.

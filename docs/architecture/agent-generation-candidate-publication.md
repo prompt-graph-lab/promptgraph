@@ -339,3 +339,24 @@ not satisfy Candidate Admission: no `remote_outputs_ready`, protected
 Project save is produced. Candidate eligibility remains
 `not_established`, and production gates remain disabled. The next bounded
 source transition is ready-history plus exact remote-output evidence.
+
+## C2B-8D-19G-D verified remote History is not Candidate readiness
+
+The original Host now accepts one source-bound `remote_outputs_ready` event
+after the exact 19G-B/C event pair, Worker-issued ready History, accepted prompt
+identity, and successful `validate_remote_outputs` receipt with complete
+one-to-sixteen ordered descriptors. The Job moves to `awaiting_download` and
+records the remote descriptor count while `registered=0`. The same exact
+`ExecutorEvent` must remain accepted by both Job Registry and Inbox and bound
+by the issuing Profile A integration; copied or accepted-but-unbound events do
+not count as source provenance.
+
+This event only proves that remote metadata passed the existing validator. Its
+opaque `OutputReceipt` is correlation evidence, not local protected custody or
+Candidate authority. It does not satisfy the later protected `outputs_ready`
+event expected by Candidate Admission, because no images have been contained
+and promoted. The source chain therefore requires `outputs_ready` next and
+keeps `candidate_eligibility="not_established"`. Candidate append, registration
+settlement, Undo publication and Project save remain separate host-owned
+transitions; all production capability flags remain false and
+`authorship=unverified`.

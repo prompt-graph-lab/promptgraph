@@ -250,6 +250,21 @@ class _ProfileASubmittedEventAttempt:
     event: object = None
 
 
+@dataclass
+class _ProfileARemoteOutputsReadyEventAttempt:
+    """Private one-shot custody for a validated successful History event."""
+
+    preadmission_attempt: object = field(repr=False)
+    submitted_attempt: object = field(repr=False)
+    history_lease: object = field(repr=False)
+    history_completion: object = field(repr=False)
+    prepared: object = field(repr=False)
+    remote_receipt: object = field(repr=False)
+    evidence: object = field(repr=False)
+    state: str = "event_acceptance_in_progress"
+    event: object = field(default=None, repr=False)
+
+
 @dataclass(frozen=True)
 class GenerationWorkerRemoteOutputWriterEvidence:
     """Exact remote-history evidence; never an actionable storage capability."""
@@ -495,6 +510,10 @@ class OriginalHostWorkerStorageIntegration:
         # observes the exact issued Worker completion and both Job/Inbox owners
         # accept the same ExecutorEvent object.
         self._profile_a_submitted_event_attempts = {}
+        # The next prospective Profile A source event is issued only alongside
+        # exact validated ready-History evidence. Accepted-but-unbound events
+        # remain here as uncertainty and cannot be replayed.
+        self._profile_a_remote_outputs_ready_event_attempts = {}
         # One staging pre-admission attempt per manifest request. The entries
         # privately retain only the exact host lease and the existing
         # capacity owner's opaque reservation; neither is returned as a
@@ -1275,6 +1294,224 @@ class OriginalHostWorkerStorageIntegration:
             return self._cancel_staging_preadmission_attempt(attempt)
         return "refused"
 
+    def _profile_a_remote_outputs_ready_event_is_current_locked(
+            self, lifecycle, attempt, marker):
+        """Check exact Job/Inbox acceptance and the private History source."""
+        from core.comfy_remote_output_receipts import RemoteOutputReceipt
+        from ui.agent_generation_executor_inbox import ExecutorEvent, OutputReceipt
+        from ui.agent_generation_job import WorkerEvent
+
+        index = attempt.lease.request_index
+        source_started = self._profile_a_submission_started_events.get(index)
+        submitted = self._profile_a_submitted_event_attempts.get(index)
+        inbox = lifecycle._inbox
+        job = lifecycle._jobs._authorized_locked(lifecycle._job_id, lifecycle._claim_id)
+        event = marker.event
+        remote = marker.remote_receipt
+        evidence = marker.evidence
+        source_sequence = getattr(getattr(source_started, "progress", None), "sequence", None)
+        submitted_event = getattr(submitted, "event", None)
+        submitted_sequence = getattr(
+            getattr(submitted_event, "progress", None), "sequence", None,
+        )
+        return bool(
+            self._profile_a_remote_outputs_ready_event_attempts.get(index) is marker
+            and marker.preadmission_attempt is attempt
+            and submitted is not None and marker.submitted_attempt is submitted
+            and submitted.state == "events_accepted"
+            and marker.history_lease is attempt.history_lease
+            and marker.history_completion is attempt.history_completion
+            and marker.prepared is attempt.prepared
+            and remote is attempt.remote_receipt
+            and type(remote) is RemoteOutputReceipt
+            and remote.execution_succeeded is True
+            and type(remote.images) is tuple
+            and 1 <= len(remote.images) <= 16
+            and evidence is attempt.evidence
+            and type(evidence) is GenerationWorkerRemoteOutputWriterEvidence
+            and evidence._issuer is self
+            and evidence._attempt_nonce == attempt.lease.nonce
+            and evidence.remote_output_identity == remote.identity
+            and evidence.descriptor_count == len(remote.images)
+            and type(event) is ExecutorEvent
+            and type(event.progress) is WorkerEvent
+            and type(event.outputs) is OutputReceipt
+            and source_started is not None
+            and type(source_started) is ExecutorEvent
+            and type(source_started.progress) is WorkerEvent
+            and source_started.job_id == lifecycle._job_id
+            and source_started.claim_id == lifecycle._claim_id
+            and source_started.manifest_identity == lifecycle._manifest_identity
+            and source_started.progress.kind == "submission_started"
+            and source_started.progress.request_index == index
+            and source_started.progress.prompt_id is None
+            and submitted_event is not None
+            and type(submitted_event) is ExecutorEvent
+            and type(submitted_event.progress) is WorkerEvent
+            and submitted.submission_started_event is source_started
+            and submitted_event.job_id == lifecycle._job_id
+            and submitted_event.claim_id == lifecycle._claim_id
+            and submitted_event.manifest_identity == lifecycle._manifest_identity
+            and submitted_event.progress.kind == "submitted"
+            and submitted_event.progress.request_index == index
+            and submitted_event.progress.prompt_id == attempt.accepted_prompt_id
+            and type(source_sequence) is int
+            and type(submitted_sequence) is int
+            and source_sequence < submitted_sequence < event.progress.sequence
+            # Job progress alone is not enough to authorize a later protected
+            # Writer handoff. Retain the exact accepted Inbox objects for both
+            # preceding source events throughout the full event prefix.
+            and inbox._events.get(source_sequence) is source_started
+            and sum(item is source_started for item in inbox._authority_events) == 1
+            and inbox._events.get(submitted_sequence) is submitted_event
+            and sum(item is submitted_event for item in inbox._authority_events) == 1
+            and job is not None
+            and job.events.get(source_started.progress.sequence) == source_started.progress
+            and sum(item == source_started.progress for item in job.authority_events) == 1
+            and job.events.get(submitted_sequence) == submitted_event.progress
+            and sum(item == submitted_event.progress for item in job.authority_events) == 1
+            and event.job_id == lifecycle._job_id
+            and event.claim_id == lifecycle._claim_id
+            and event.manifest_identity == lifecycle._manifest_identity
+            and event.progress.kind == "remote_outputs_ready"
+            and event.progress.request_index == index
+            and event.progress.prompt_id is None
+            and event.progress.cause is None
+            and event.progress.output_count == len(remote.images)
+            and event.outputs.receipt_id == remote.identity[:32]
+            and event.outputs.output_count == len(remote.images)
+            and not inbox._closed
+            and inbox._state == "accepted"
+            and inbox._envelope is lifecycle._envelope
+            and inbox._events.get(event.progress.sequence) is event
+            and sum(item is event for item in inbox._authority_events) == 1
+            and job.event_count == event.progress.sequence
+            and job.events.get(event.progress.sequence) == event.progress
+            and sum(item == event.progress for item in job.authority_events) == 1
+            and 0 <= index < len(job.request_states)
+            and job.request_states[index] == "awaiting_download"
+            and job.remote_outputs[index] == len(remote.images)
+            and job.registered[index] == 0
+        )
+
+    def _commit_profile_a_remote_outputs_ready_event_locked(
+            self, lifecycle, attempt, remote, evidence):
+        """Accept one genuine event after the exact successful History receipt."""
+        from ui.agent_generation_executor_inbox import ExecutorEvent, OutputReceipt
+        from ui.agent_generation_job import WorkerEvent
+
+        index = attempt.lease.request_index
+        source_started = self._profile_a_submission_started_events.get(index)
+        # Preserve older direct/fake characterization as non-source-bound.
+        if source_started is None:
+            return evidence, evidence.status
+        if index in self._profile_a_remote_outputs_ready_event_attempts:
+            return evidence, "remote_outputs_ready_event_already_claimed"
+
+        submitted = self._profile_a_submitted_event_attempts.get(index)
+        marker = _ProfileARemoteOutputsReadyEventAttempt(
+            preadmission_attempt=attempt,
+            submitted_attempt=submitted,
+            history_lease=attempt.history_lease,
+            history_completion=attempt.history_completion,
+            prepared=attempt.prepared,
+            remote_receipt=remote,
+            evidence=evidence,
+        )
+        self._profile_a_remote_outputs_ready_event_attempts[index] = marker
+        job = lifecycle._jobs._authorized_locked(lifecycle._job_id, lifecycle._claim_id)
+        inbox = lifecycle._inbox
+        if (not self._profile_a or submitted is None
+                or submitted.state != "events_accepted"
+                or submitted.submission_started_event is not source_started
+                or submitted.lease is not attempt.lease
+                or submitted.completion is not attempt.submission_completion
+                or submitted.prompt_id != attempt.accepted_prompt_id
+                or submitted.event is None
+                or source_started.progress.kind != "submission_started"
+                or submitted.event.progress.kind != "submitted"
+                or job is None
+                or job.events.get(source_started.progress.sequence) != source_started.progress
+                or sum(item == source_started.progress for item in job.authority_events) != 1
+                or job.events.get(submitted.event.progress.sequence) != submitted.event.progress
+                or sum(item == submitted.event.progress for item in job.authority_events) != 1
+                or inbox._events.get(source_started.progress.sequence) is not source_started
+                or not any(item is source_started for item in inbox._authority_events)
+                or inbox._events.get(submitted.event.progress.sequence) is not submitted.event
+                or not any(item is submitted.event for item in inbox._authority_events)
+                or job is None or inbox._closed or inbox._state != "accepted"
+                or inbox._envelope is not lifecycle._envelope
+                or not 0 <= index < len(job.request_states)
+                or job.request_states[index] != "awaiting_result"
+                or job.remote_outputs[index] != 0 or job.registered[index] != 0
+                or (submitted.event.job_id, submitted.event.claim_id,
+                    submitted.event.manifest_identity)
+                    != (lifecycle._job_id, lifecycle._claim_id,
+                        lifecycle._manifest_identity)
+                or submitted.event.progress.request_index != index
+                or submitted.event.progress.prompt_id != attempt.accepted_prompt_id
+                or lifecycle._state != "bound_non_executing"
+                or self._state != "bound_non_executing"
+                or self._capacity_owner._closed or self._capacity_owner._invalid
+                or self._worker._state != "running"
+                or self._worker._active_task is not None
+                or self._worker._characterization_owner_claim is not self._worker_owner_claim):
+            marker.state = "refused"
+            return evidence, "remote_outputs_ready_event_refused"
+
+        event = ExecutorEvent(
+            lifecycle._job_id, lifecycle._claim_id, lifecycle._manifest_identity,
+            WorkerEvent(
+                job.event_count + 1, index, "remote_outputs_ready",
+                output_count=len(remote.images),
+            ),
+            OutputReceipt(remote.identity[:32], len(remote.images)),
+        )
+        marker.event = event
+
+        def event_mutation_observed():
+            sequence = event.progress.sequence
+            current = lifecycle._jobs._authorized_locked(
+                lifecycle._job_id, lifecycle._claim_id,
+            )
+            return bool(
+                current is not None
+                and (current.events.get(sequence) == event.progress
+                     or any(item == event.progress for item in current.authority_events)
+                     or inbox._events.get(sequence) is event
+                     or any(item is event for item in inbox._authority_events))
+            )
+
+        try:
+            accepted = inbox.event_for_characterization(
+                lifecycle._jobs, event, target_current=True,
+            )
+        except Exception:
+            marker.state = "retained_uncertain"
+            return evidence, "remote_outputs_ready_event_uncertain"
+
+        if (accepted == "accepted"
+                and self._profile_a_remote_outputs_ready_event_is_current_locked(
+                    lifecycle, attempt, marker,
+                )
+                and lifecycle._state == "bound_non_executing"
+                and self._state == "bound_non_executing"
+                and not self._capacity_owner._closed
+                and not self._capacity_owner._invalid
+                and self._worker._state == "running"
+                and self._worker._active_task is None
+                and self._worker._characterization_owner_claim is self._worker_owner_claim):
+            marker.state = "events_accepted"
+            return evidence, evidence.status
+
+        marker.state = ("retained_uncertain" if event_mutation_observed()
+                        else "refused")
+        return evidence, (
+            "remote_outputs_ready_event_uncertain"
+            if marker.state == "retained_uncertain"
+            else "remote_outputs_ready_event_refused"
+        )
+
     def _publish_remote_output_writer_evidence_locked(
             self, lifecycle, attempt, marker, host_snapshot, remote, evidence,
             capacity_view, project_view):
@@ -1337,7 +1574,9 @@ class OriginalHostWorkerStorageIntegration:
                         attempt.evidence = evidence
                         attempt.evidence_state = "evidence_published"
                         attempt.validation_marker = None
-                        return evidence, evidence.status
+                        return self._commit_profile_a_remote_outputs_ready_event_locked(
+                            lifecycle, attempt, remote, evidence,
+                        )
 
                     result = self._worker._run_if_issued_completion_for_prepared_request_for_characterization(
                         attempt.history_completion, attempt.prepared,
@@ -1362,6 +1601,19 @@ class OriginalHostWorkerStorageIntegration:
             with self._capacity_owner._lock:
                 with self._lock:
                     attempt = self._storage_preadmission_attempts.get(evidence.request_index)
+                    if (attempt is not None
+                            and self._profile_a_submission_started_events.get(
+                                evidence.request_index,
+                            ) is not None):
+                        remote_event_attempt = self._profile_a_remote_outputs_ready_event_attempts.get(
+                            evidence.request_index,
+                        )
+                        if (remote_event_attempt is None
+                                or remote_event_attempt.state != "events_accepted"
+                                or not self._profile_a_remote_outputs_ready_event_is_current_locked(
+                                    lifecycle, attempt, remote_event_attempt,
+                                )):
+                            return None, "remote_outputs_ready_event_required"
                     if (lifecycle._worker_storage_integration is not self
                             or lifecycle._state != "bound_non_executing"
                             or lifecycle._generation != self._lifecycle_generation

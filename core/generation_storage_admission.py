@@ -46,6 +46,9 @@ _UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES = frozenset({
 _UNRESOLVED_PROFILE_A_SUBMITTED_EVENT_STATES = frozenset({
     "claim_in_progress", "event_acceptance_in_progress", "retained_uncertain",
 })
+_UNRESOLVED_PROFILE_A_REMOTE_OUTPUT_EVENT_STATES = frozenset({
+    "claim_in_progress", "event_acceptance_in_progress", "retained_uncertain",
+})
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -70,13 +73,27 @@ def _profile_a_promotion_is_unresolved(attempt):
     )
 
 
-def _profile_a_submitted_event_is_unresolved(integration):
-    """Keep pending/uncertain source-event custody across close and rebind."""
+def _profile_a_executor_event_is_unresolved(integration):
+    """Keep pending/uncertain source events across close and Host rebind."""
     attempts = getattr(integration, "_profile_a_submitted_event_attempts", {})
-    return any(
+    if any(
         getattr(attempt, "state", None) in _UNRESOLVED_PROFILE_A_SUBMITTED_EVENT_STATES
         for attempt in attempts.values()
+    ):
+        return True
+    remote_attempts = getattr(
+        integration, "_profile_a_remote_outputs_ready_event_attempts", {},
     )
+    return any(
+        getattr(attempt, "state", None)
+            in _UNRESOLVED_PROFILE_A_REMOTE_OUTPUT_EVENT_STATES
+        for attempt in remote_attempts.values()
+    )
+
+
+def _profile_a_submitted_event_is_unresolved(integration):
+    """Compatibility name for the shared Profile A Executor-event check."""
+    return _profile_a_executor_event_is_unresolved(integration)
 
 
 def _validate_profile_a_root_set_shape(purpose_roots):
@@ -2872,7 +2889,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         }
                         or _profile_a_promotion_is_unresolved(attempt)
                         for attempt in integration._storage_preadmission_attempts.values()
-                    ) or _profile_a_submitted_event_is_unresolved(integration)
+                    ) or _profile_a_executor_event_is_unresolved(integration)
                     if integration._uncertain_leases:
                         return "uncertain"
                     if unresolved_writer_handoff:
@@ -2931,7 +2948,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                             or _profile_a_promotion_is_unresolved(attempt)
                             for attempt in integration._storage_preadmission_attempts.values()
                         )
-                        or _profile_a_submitted_event_is_unresolved(integration)
+                        or _profile_a_executor_event_is_unresolved(integration)
                     )
             if state != "closed" or integration_active or integration_uncertain:
                 retained.append(previous)

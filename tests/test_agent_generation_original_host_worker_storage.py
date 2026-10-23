@@ -344,6 +344,64 @@ def _profile_a_history_observed(*, descriptor_count=1, estimate_bytes=32 * 1024 
             history_lease, history, observed_status, prompt_id)
 
 
+def _profile_a_prospective_history_observed(
+        native_profile_a_worker_storage, *, descriptor_count=1,
+        include_status=True, completed=True):
+    """Run the genuine prospective 19G-B/C path on disposable native roots."""
+    roots, capacity, reference, project_path = native_profile_a_worker_storage
+    runtime, _route, state, lifecycle = _ready_generation_at_project_path(project_path)
+    prompt_id = str(uuid.uuid4())
+    worker = _worker(prompt_id=prompt_id)
+    assert runtime.bind_generation_profile_a_storage_for_characterization(
+        capacity, reference,
+    ) == "matched_reference_only"
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    assert worker.start_for_characterization().state == "running"
+    prepared = _prepared(lifecycle)
+
+    submission_lease, status = runtime.begin_profile_a_worker_submission_with_executor_event_for_characterization(
+        state, prepared, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "admitted_with_submission_started"
+    preadmission, status = runtime.pre_admit_generation_worker_staging_for_characterization(
+        submission_lease, CapacityEstimate(128 * 1024 * 1024, 16),
+    )
+    assert status == "pre_admitted_non_authoritative"
+
+    submission = worker.perform_for_characterization(
+        "submission", prepared, None, submission_lease.correlation,
+    )
+    assert submission.outcome.status == "accepted"
+    submitted_status = runtime.observe_generation_worker_http_result_for_characterization(
+        submission_lease, submission,
+    )
+    assert submitted_status == "submitted_event_accepted_non_authoritative"
+
+    history_json = _history_json_for(
+        prepared, prompt_id, descriptor_count=descriptor_count,
+        include_status=include_status, completed=completed,
+    )
+    worker._test_history_body_ref[0] = history_json
+    history_correlation = runtime.generation_worker_http_correlation_for_characterization(
+        0, kind="history", prompt_id=prompt_id,
+    )
+    history_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+        "history", prepared, prompt_id, history_correlation,
+    )
+    assert status == "admitted_non_executing"
+    history = worker.perform_for_characterization(
+        "history", prepared, prompt_id, history_correlation,
+    )
+    observed_history_status = runtime.observe_generation_worker_http_result_for_characterization(
+        history_lease, history,
+    )
+    return (runtime, state, lifecycle, roots, capacity, reference, project_path,
+            worker, prepared, submission_lease, preadmission, submission,
+            history_lease, history, history_json, observed_history_status)
+
+
 def _ready_generation_at_project_path(project_path, *, run_count=1):
     from core import agent_facade
     from ui.agent_generation_executor_handoff import (
@@ -753,6 +811,479 @@ def test_profile_a_pre_send_seam_accepts_exact_started_event_before_worker_admis
     assert integration.candidate_publication_allowed is False
     assert integration.authorship == "unverified"
     runtime.close()
+
+
+@pytest.mark.parametrize("descriptor_count", [1, 2, 16])
+def test_profile_a_successful_history_accepts_one_source_bound_remote_outputs_event(
+        native_profile_a_worker_storage, descriptor_count):
+    from core.generation_storage_admission import _profile_a_executor_event_is_unresolved
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerExecutorEventChainObservation,
+    )
+
+    (runtime, state, lifecycle, roots, capacity, _reference, project_path,
+     worker, prepared, _submission_lease, preadmission, _submission,
+     _history_lease, _history, _history_json, observed_history_status) = (
+        _profile_a_prospective_history_observed(
+            native_profile_a_worker_storage, descriptor_count=descriptor_count,
+        )
+    )
+    project_before = copy.deepcopy(state["project"])
+    project_file_before = project_path.read_bytes()
+    ledger_operations_before = set(capacity._ledger._operations)
+    ledger_reservations_before = set(capacity._ledger._reservations)
+    integration = lifecycle._worker_storage_integration
+    try:
+        assert observed_history_status == "observed_non_authoritative"
+        before_event_count = len(runtime._generation_executor_inbox._authority_events)
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+        assert evidence is not None and evidence.descriptor_count == descriptor_count
+
+        attempt = integration._storage_preadmission_attempts[0]
+        remote_event_attempt = integration._profile_a_remote_outputs_ready_event_attempts[0]
+        event = remote_event_attempt.event
+        assert _profile_a_executor_event_is_unresolved(integration) is False
+        inbox = runtime._generation_executor_inbox
+        assert remote_event_attempt.state == "events_accepted"
+        assert remote_event_attempt.preadmission_attempt is attempt
+        assert remote_event_attempt.remote_receipt is attempt.remote_receipt
+        assert remote_event_attempt.evidence is evidence
+        assert event is inbox._events[event.progress.sequence]
+        assert sum(item is event for item in inbox._authority_events) == 1
+        assert event.progress.kind == "remote_outputs_ready"
+        assert event.progress.sequence == 3
+        assert event.progress.output_count == descriptor_count
+        assert event.progress.prompt_id is None
+        assert event.outputs.receipt_id == attempt.remote_receipt.identity[:32]
+        assert event.outputs.output_count == descriptor_count
+        assert tuple(image.identity for image in attempt.remote_receipt.images) == tuple(
+            sorted(image.identity for image in attempt.remote_receipt.images)
+        )
+        assert len(inbox._authority_events) == before_event_count + 1
+        assert tuple(item.progress.kind for item in inbox._authority_events) == (
+            "submission_started", "submitted", "remote_outputs_ready",
+        )
+
+        with runtime.generation_jobs._lock:
+            job = runtime.generation_jobs._authorized_locked(
+                lifecycle._job_id, lifecycle._claim_id,
+            )
+            assert job.request_states[0] == "awaiting_download"
+            assert job.remote_outputs[0] == descriptor_count
+            assert job.registered[0] == 0
+            assert sum(job.registered) == 0
+            assert job.event_count == 3
+
+        audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+            state, 0, characterization=True, disposable_opt_in=True,
+        )
+        assert type(audit) is GenerationWorkerExecutorEventChainObservation
+        assert audit.accepted_event_kinds == (
+            "submission_started", "submitted", "remote_outputs_ready",
+        )
+        assert audit.profile_a_event_kinds == audit.accepted_event_kinds
+        assert audit.next_required_event == "outputs_ready"
+        assert audit.candidate_eligibility == "not_established"
+        assert audit.execution_available is False
+        assert audit.protected_storage_available is False
+        assert audit.promotion_available is False
+        assert audit.candidate_publication_allowed is False
+        assert audit.project_save_allowed is False
+        assert audit.authorship == "unverified"
+
+        # Event publication creates no local image, destination reservation,
+        # promotion, Candidate record or Project mutation.
+        assert set(capacity._ledger._operations) == ledger_operations_before
+        assert set(capacity._ledger._reservations) == ledger_reservations_before
+        assert state["project"] == project_before
+        assert project_path.read_bytes() == project_file_before
+        assert all(not any(root._path.iterdir()) for root in roots.values())
+
+        duplicate, duplicate_status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert duplicate is None
+        assert duplicate_status == "remote_output_evidence_unavailable"
+        assert len(inbox._authority_events) == before_event_count + 1
+        assert worker.observation_for_characterization().accepted_operations == 2
+        assert prepared.request_index == 0
+    finally:
+        runtime.close()
+
+
+def test_profile_a_statusless_ready_history_never_emits_remote_outputs_event(
+        native_profile_a_worker_storage):
+    (runtime, state, lifecycle, _roots, _capacity, _reference, _project_path,
+     _worker_instance, _prepared_request, _submission_lease, preadmission,
+     _submission, _history_lease, _history, _history_json,
+     observed_history_status) = _profile_a_prospective_history_observed(
+        native_profile_a_worker_storage, include_status=False,
+    )
+    integration = lifecycle._worker_storage_integration
+    try:
+        assert observed_history_status == "observed_non_authoritative"
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert evidence is None
+        assert status == "remote_output_descriptor_policy_failed"
+        assert integration._profile_a_remote_outputs_ready_event_attempts == {}
+        inbox = runtime._generation_executor_inbox
+        assert tuple(event.progress.kind for event in inbox._authority_events) == (
+            "submission_started", "submitted",
+        )
+        audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+            state, 0, characterization=True, disposable_opt_in=True,
+        )
+        assert audit.status == "profile_a_submitted_event_observed"
+        assert audit.profile_a_event_kinds == ("submission_started", "submitted")
+        assert audit.next_required_event == "remote_outputs_ready"
+        with runtime.generation_jobs._lock:
+            job = runtime.generation_jobs._authorized_locked(
+                lifecycle._job_id, lifecycle._claim_id,
+            )
+            assert job.request_states[0] == "awaiting_result"
+            assert job.remote_outputs[0] == 0
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(("source_kind", "mutation"), [
+    ("submission_started", "events_removed"),
+    ("submitted", "events_replaced"),
+    ("submission_started", "authority_missing"),
+    ("submitted", "authority_duplicated"),
+])
+def test_profile_a_writer_handoff_rechecks_exact_prior_inbox_event_custody(
+        native_profile_a_worker_storage, source_kind, mutation):
+    """Accepted remote output cannot outlive its exact Inbox event prefix."""
+    (runtime, state, lifecycle, roots, capacity, _reference, project_path,
+     _worker_instance, _prepared_request, _submission_lease, preadmission,
+     _submission, _history_lease, _history, _history_json,
+     observed_history_status) = _profile_a_prospective_history_observed(
+        native_profile_a_worker_storage,
+    )
+    integration = lifecycle._worker_storage_integration
+    try:
+        assert observed_history_status == "observed_non_authoritative"
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+        assert evidence is not None
+
+        inbox = runtime._generation_executor_inbox
+        marker = integration._profile_a_remote_outputs_ready_event_attempts[0]
+        remote_event = marker.event
+        assert marker.state == "events_accepted"
+        assert inbox._events[remote_event.progress.sequence] is remote_event
+        assert sum(item is remote_event for item in inbox._authority_events) == 1
+
+        if source_kind == "submission_started":
+            source_event = integration._profile_a_submission_started_events[0]
+        else:
+            source_event = integration._profile_a_submitted_event_attempts[0].event
+        source_sequence = source_event.progress.sequence
+        assert inbox._events[source_sequence] is source_event
+        assert sum(item is source_event for item in inbox._authority_events) == 1
+
+        # Model loss or substitution in either Inbox custody surface after the
+        # remote event was accepted, while leaving Job progress and that third
+        # remote event intact.
+        with runtime.generation_jobs._lock:
+            with inbox._lock:
+                if mutation == "events_removed":
+                    inbox._events.pop(source_sequence)
+                elif mutation == "events_replaced":
+                    inbox._events[source_sequence] = replace(source_event)
+                elif mutation == "authority_missing":
+                    inbox._authority_events[:] = [
+                        item for item in inbox._authority_events
+                        if item is not source_event
+                    ]
+                else:
+                    assert mutation == "authority_duplicated"
+                    inbox._authority_events.append(source_event)
+
+        assert inbox._events.get(remote_event.progress.sequence) is remote_event
+        with runtime.generation_jobs._lock:
+            job = runtime.generation_jobs._authorized_locked(
+                lifecycle._job_id, lifecycle._claim_id,
+            )
+            assert job.events.get(remote_event.progress.sequence) == remote_event.progress
+            assert job.request_states[0] == "awaiting_download"
+            assert job.remote_outputs[0] == remote_event.progress.output_count
+            assert job.registered[0] == 0
+
+        audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+            state, 0, characterization=True, disposable_opt_in=True,
+        )
+        assert audit.status == "event_chain_conflict"
+        assert audit.next_required_event is None
+        assert audit.candidate_eligibility == "not_established"
+
+        attempt = integration._storage_preadmission_attempts[0]
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+        )
+        writer_owner = object.__new__(WindowsProtectedAssetsCharacterization)
+        operations_before = set(capacity._ledger._operations)
+        reservations_before = set(capacity._ledger._reservations)
+        root_entries_before = {
+            purpose: tuple(root._path.iterdir()) for purpose, root in roots.items()
+        }
+        project_before = copy.deepcopy(state["project"])
+        project_file_before = project_path.read_bytes()
+
+        handoff, refusal = integration._begin_single_image_writer_handoff_locked(
+            lifecycle, evidence, writer_owner, allow_batch=True,
+        )
+        assert handoff is None
+        assert refusal == "remote_outputs_ready_event_required"
+        assert attempt.writer_handoff_state == "not_started"
+        assert attempt.writer_owner is None
+        assert set(capacity._ledger._operations) == operations_before
+        assert set(capacity._ledger._reservations) == reservations_before
+        assert {purpose: tuple(root._path.iterdir())
+                for purpose, root in roots.items()} == root_entries_before
+        assert state["project"] == project_before
+        assert project_path.read_bytes() == project_file_before
+        assert runtime.generation_jobs.snapshot(lifecycle._job_id)["registered_count"] == 0
+    finally:
+        runtime.close()
+
+
+def test_profile_a_remote_outputs_event_ack_loss_is_unbound_and_retains_capacity(
+        native_profile_a_worker_storage):
+    from core.generation_storage_admission import _profile_a_executor_event_is_unresolved
+
+    (runtime, state, lifecycle, _roots, capacity, _reference, _project_path,
+     _worker_instance, _prepared_request, _submission_lease, preadmission,
+     _submission, _history_lease, _history, _history_json,
+     observed_history_status) = _profile_a_prospective_history_observed(
+        native_profile_a_worker_storage,
+    )
+    integration = lifecycle._worker_storage_integration
+    inbox = runtime._generation_executor_inbox
+    original_event = inbox.event_for_characterization
+
+    def accept_then_lose_ack(jobs, event, *, target_current):
+        result = original_event(jobs, event, target_current=target_current)
+        if event.progress.kind == "remote_outputs_ready" and result == "accepted":
+            raise RuntimeError("synthetic_ack_loss")
+        return result
+
+    inbox.event_for_characterization = accept_then_lose_ack
+    try:
+        assert observed_history_status == "observed_non_authoritative"
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert evidence is not None
+        assert status == "remote_outputs_ready_event_uncertain"
+        marker = integration._profile_a_remote_outputs_ready_event_attempts[0]
+        assert marker.state == "retained_uncertain"
+        assert _profile_a_executor_event_is_unresolved(integration) is True
+        assert marker.event is inbox._events[marker.event.progress.sequence]
+        audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+            state, 0, characterization=True, disposable_opt_in=True,
+        )
+        assert audit.status == "remote_outputs_ready_event_uncertain"
+        assert audit.profile_a_event_kinds == ("submission_started", "submitted")
+        assert audit.next_required_event is None
+        assert audit.candidate_eligibility == "not_established"
+        assert len([event for event in inbox._authority_events
+                    if event.progress.kind == "remote_outputs_ready"]) == 1
+
+        # An unbound event cannot start protected Writer handoff, even though
+        # the validated remote metadata remains privately inspectable.
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+        )
+        writer_owner = object.__new__(WindowsProtectedAssetsCharacterization)
+        handoff, refusal = integration._begin_single_image_writer_handoff_locked(
+            lifecycle, evidence, writer_owner, allow_batch=True,
+        )
+        assert handoff is None
+        assert refusal == "remote_outputs_ready_event_required"
+    finally:
+        runtime.close()
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+
+
+def test_profile_a_remote_outputs_event_commit_serializes_worker_and_capacity_close(
+        native_profile_a_worker_storage):
+    (runtime, _state, lifecycle, _roots, capacity, _reference, _project_path,
+     _worker_instance, _prepared_request, _submission_lease, preadmission,
+     _submission, _history_lease, _history, _history_json,
+     _observed_history_status) = _profile_a_prospective_history_observed(
+        native_profile_a_worker_storage,
+    )
+    integration = lifecycle._worker_storage_integration
+    worker = integration._worker
+    inbox = runtime._generation_executor_inbox
+    accepted, release = threading.Event(), threading.Event()
+    worker_close_started, worker_close_done = threading.Event(), threading.Event()
+    capacity_close_started, capacity_close_done = threading.Event(), threading.Event()
+    result, errors = [], []
+    original_event = inbox.event_for_characterization
+
+    def accept_then_pause(jobs, event, *, target_current):
+        observation = original_event(jobs, event, target_current=target_current)
+        if event.progress.kind == "remote_outputs_ready" and observation == "accepted":
+            accepted.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("test did not release paused remote event commit")
+        return observation
+
+    inbox.event_for_characterization = accept_then_pause
+
+    def observe_remote_outputs():
+        try:
+            result.append(runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+                preadmission,
+            ))
+        except BaseException as exc:
+            errors.append(exc)
+
+    def close_worker():
+        worker_close_started.set()
+        worker.request_close_for_characterization()
+        worker_close_done.set()
+
+    def close_capacity():
+        capacity_close_started.set()
+        capacity.close()
+        capacity_close_done.set()
+
+    observer = threading.Thread(target=observe_remote_outputs)
+    worker_closer = threading.Thread(target=close_worker)
+    capacity_closer = threading.Thread(target=close_capacity)
+    try:
+        assert _observed_history_status == "observed_non_authoritative"
+        observer.start()
+        assert accepted.wait(timeout=5)
+
+        worker_lock_acquired = worker._lock.acquire(blocking=False)
+        if worker_lock_acquired:
+            worker._lock.release()
+        capacity_lock_acquired = capacity._lock.acquire(blocking=False)
+        if capacity_lock_acquired:
+            capacity._lock.release()
+        assert not worker_lock_acquired
+        assert not capacity_lock_acquired
+
+        worker_closer.start()
+        capacity_closer.start()
+        assert worker_close_started.wait(timeout=2)
+        assert capacity_close_started.wait(timeout=2)
+        assert not worker_close_done.is_set()
+        assert not capacity_close_done.is_set()
+
+        release.set()
+        observer.join(timeout=5)
+        worker_closer.join(timeout=5)
+        capacity_closer.join(timeout=5)
+        assert not errors
+        assert all(not thread.is_alive()
+                   for thread in (observer, worker_closer, capacity_closer))
+        assert result and result[0][0] is not None
+        assert result[0][1] == "remote_output_writer_evidence_observed_non_authoritative"
+        assert worker_close_done.is_set()
+        assert capacity_close_done.is_set()
+
+        marker = integration._profile_a_remote_outputs_ready_event_attempts[0]
+        assert marker.state == "events_accepted"
+        assert marker.event is inbox._events[marker.event.progress.sequence]
+        assert sum(item is marker.event for item in inbox._authority_events) == 1
+        snapshot = runtime.generation_jobs.snapshot(lifecycle._job_id)
+        assert snapshot["requests"][0]["state"] == "awaiting_download"
+        assert snapshot["requests"][0]["remote_output_count"] == len(
+            marker.remote_receipt.images,
+        )
+        assert snapshot["registered_count"] == 0
+        assert capacity._closed is True
+    finally:
+        release.set()
+        for thread in (observer, worker_closer, capacity_closer):
+            if thread.ident is not None:
+                thread.join(timeout=5)
+        runtime.close()
+
+
+def test_profile_a_copied_remote_outputs_event_is_not_source_bound(
+        native_profile_a_worker_storage):
+    (runtime, state, lifecycle, _roots, _capacity, _reference, _project_path,
+     _worker_instance, _prepared_request, _submission_lease, preadmission,
+     _submission, _history_lease, _history, _history_json,
+     _observed_history_status) = _profile_a_prospective_history_observed(
+        native_profile_a_worker_storage,
+    )
+    try:
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+        assert evidence is not None
+        inbox = runtime._generation_executor_inbox
+        marker = lifecycle._worker_storage_integration._profile_a_remote_outputs_ready_event_attempts[0]
+        event = marker.event
+        inbox._events[event.progress.sequence] = replace(event)
+        audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+            state, 0, characterization=True, disposable_opt_in=True,
+        )
+        assert audit.status == "event_chain_conflict"
+        assert audit.profile_a_event_kinds == ("submission_started", "submitted")
+        assert audit.next_required_event is None
+        assert audit.candidate_eligibility == "not_established"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("owner", ["job_registry", "inbox"])
+def test_profile_a_remote_outputs_event_requires_current_exact_submitted_source(
+        native_profile_a_worker_storage, owner):
+    (runtime, _state, lifecycle, _roots, _capacity, _reference, _project_path,
+     _worker_instance, _prepared_request, _submission_lease, preadmission,
+     _submission, _history_lease, _history, _history_json,
+     _observed_history_status) = _profile_a_prospective_history_observed(
+        native_profile_a_worker_storage,
+    )
+    integration = lifecycle._worker_storage_integration
+    try:
+        submitted = integration._profile_a_submitted_event_attempts[0].event
+        if owner == "job_registry":
+            with runtime.generation_jobs._lock:
+                job = runtime.generation_jobs._authorized_locked(
+                    lifecycle._job_id, lifecycle._claim_id,
+                )
+                job.events[submitted.progress.sequence] = replace(
+                    submitted.progress, kind="execution_progress", prompt_id=None,
+                )
+        else:
+            runtime._generation_executor_inbox._events[
+                submitted.progress.sequence
+            ] = replace(submitted)
+
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert evidence is not None
+        assert status == "remote_outputs_ready_event_refused"
+        marker = integration._profile_a_remote_outputs_ready_event_attempts[0]
+        assert marker.state == "refused"
+        inbox = runtime._generation_executor_inbox
+        assert not any(event.progress.kind == "remote_outputs_ready"
+                       for event in inbox._authority_events)
+        snapshot = runtime.generation_jobs.snapshot(lifecycle._job_id)
+        assert snapshot["requests"][0]["state"] == "awaiting_result"
+        assert snapshot["remote_output_count"] == 0
+        assert snapshot["registered_count"] == 0
+    finally:
+        runtime.close()
 
 
 def test_profile_a_copied_completion_does_not_consume_valid_submitted_event_claim():
