@@ -1294,3 +1294,36 @@ enable production storage/Promotion, or establish power-loss durability,
 restart adoption, real ComfyUI interoperability, production root provisioning,
 Human Start, or Recovery/Discard. All capability flags remain false and
 `authorship=unverified`.
+
+## C2B-8D-19G-A Profile A Candidate admission preflight
+
+After the 19F-E original-Host count-only protected Promotion publication,
+19G-A adds a read-only, one-shot Host preflight for the exact published
+observation. It rechecks the live lifecycle, route/process/session, Project
+object/path and original `GenerationPublicationOrigin` source snapshot,
+pairing, Claim, frozen request, accepted remote-history receipt, ordered
+descriptor set, protected Acceptance and Promotion owners, selected Project
+JSON reference, full protected inventory, native identities/ACLs, decoded
+bytes/hashes, and both completed capacity ledger deltas. Slow native reads and
+scans run outside the Job/Inbox/Host commit locks. A short final commit is
+serialized against close and invalidation.
+
+The result reports only the verified promoted-image count and
+`candidate_eligibility="not_established"`. The new Profile A worker-to-storage
+path has no genuine accepted `remote_outputs_ready` / `outputs_ready` event
+pair in the existing executor/inbox owners. A matching count, status string,
+or runtime `GenerationPublicationOrigin` cannot stand in for those events.
+19G-A creates no Executor event, legacy receipt, Candidate, Undo entry, save
+write or new capacity record, and does not invoke the existing Candidate
+admission or writer. Native/Host/source-snapshot drift returns no result and
+retains downstream preflight uncertainty while preserving the already
+published Promotion and its completed ledger evidence.
+
+This closes a verification boundary only. A subsequent bounded integration
+must route an exact Profile A Promotion result through the original Host's
+existing event acceptance owner before Candidate admission can become
+eligible. It must keep event acceptance, Candidate registration and Project
+JSON persistence as distinct one-shot transitions. Production transport,
+Human Start, protected-root provisioning, durable restart/recovery, retention
+and discard remain unimplemented or unauthorized. All production capability
+flags remain false and `authorship=unverified`.

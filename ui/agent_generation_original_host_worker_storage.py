@@ -202,6 +202,22 @@ class GenerationWorkerProtectedPromotionObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerProtectedCandidateAdmissionPreflightObservation:
+    """Read-only Profile A review; Candidate eligibility is not established."""
+
+    status: str
+    request_index: int
+    verified_promoted_image_count: int
+    candidate_eligibility: str = "not_established"
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass(frozen=True)
 class GenerationWorkerRemoteOutputWriterEvidence:
     """Exact remote-history evidence; never an actionable storage capability."""
 
@@ -285,6 +301,9 @@ class _StoragePreAdmissionAttempt:
     promotion_publication_marker: object = None
     promotion_publication_observation: object = None
     promotion_publication_completed_delta: object = None
+    candidate_admission_state: str = "not_started"
+    candidate_admission_marker: object = None
+    candidate_admission_observation: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -1614,7 +1633,8 @@ class OriginalHostWorkerStorageIntegration:
             self, lifecycle, attempt, marker, preflight_observation,
             writer_marker, preflight_marker, evidence, writer_observation,
             acceptance_observation, writer_owner, capacity_owner, operation,
-            reservation, estimate, write_admission, promotion_owner, receipt):
+            reservation, estimate, write_admission, promotion_owner, receipt, *,
+            settled_publication=False, published_observation=None):
         """Check the current Host/Claim/Worker side of a claimed publication.
 
         Native roots, files and ledger inventory are deliberately verified by
@@ -1623,6 +1643,11 @@ class OriginalHostWorkerStorageIntegration:
         the final Host commit boundary.
         """
         from core.generation_windows_protected_promotion import _ProfileAHostPromotionBinding
+
+        expected_preflight_state = ("promoted_non_authoritative" if settled_publication
+                                    else "private_committed_host_publication_pending")
+        expected_publication_state = ("published_non_authoritative" if settled_publication
+                                      else "in_progress")
 
         if (self._storage_preadmission_attempts.get(attempt.lease.request_index) is not attempt
                 or self._profile_a is not True
@@ -1634,9 +1659,11 @@ class OriginalHostWorkerStorageIntegration:
                 or not self._root_binding_matches()
                 or attempt.state != "pre_admitted"
                 or attempt.cancel_requested
-                or attempt.promotion_preflight_state != "private_committed_host_publication_pending"
-                or attempt.promotion_publication_state != "in_progress"
+                or attempt.promotion_preflight_state != expected_preflight_state
+                or attempt.promotion_publication_state != expected_publication_state
                 or attempt.promotion_publication_marker is not marker
+                or (settled_publication
+                    and attempt.promotion_publication_observation is not published_observation)
                 or attempt.promotion_preflight_observation is not preflight_observation
                 or attempt.promotion_preflight_marker is not preflight_marker
                 or attempt.promotion_writer_marker is not writer_marker
@@ -1693,6 +1720,217 @@ class OriginalHostWorkerStorageIntegration:
         except Exception:
             return False
         return True
+
+    def _profile_a_candidate_admission_host_matches_locked(
+            self, lifecycle, captured):
+        """Check settled Profile A Promotion plus the exact claimed preflight."""
+        attempt = captured["attempt"]
+        runtime = captured["runtime"]
+        origin = captured["publication_origin"]
+        project = captured["project"]
+        if (attempt.candidate_admission_state != "in_progress"
+                or attempt.candidate_admission_marker is not captured["marker"]
+                or attempt.promotion_publication_observation
+                    is not captured["promotion_observation"]
+                or lifecycle._runtime_ref() is not runtime
+                or runtime._generation_publication_origin is not origin
+                or origin.envelope is not captured["envelope"]
+                or origin.project is not project
+                or origin.path != lifecycle._project_path
+                or origin.source_snapshot is not captured["source_snapshot"]
+                or lifecycle._project_ref() is not project):
+            return False
+        try:
+            if origin.project != origin.source_snapshot:
+                return False
+        except Exception:
+            return False
+        if not self._profile_a_promotion_publication_host_matches_locked(
+            lifecycle, attempt, captured["promotion_marker"],
+            captured["preflight_observation"], captured["writer_marker"],
+            captured["preflight_marker"], captured["evidence"],
+            captured["writer_observation"], captured["acceptance_observation"],
+            captured["writer"], captured["capacity"], captured["operation"],
+            captured["reservation"], captured["estimate"], captured["write"],
+            captured["promotion_owner"], captured["receipt"],
+            settled_publication=True,
+            published_observation=captured["promotion_observation"],
+        ):
+            return False
+        try:
+            envelope = captured["envelope"]
+            index = attempt.lease.request_index
+            request = envelope.manifest.requests[index]
+            prepared, remote, receipt = (
+                captured["prepared"], captured["remote"], captured["receipt"],
+            )
+            descriptors = tuple(remote.images)
+            rows = tuple(receipt.images)
+            sources = tuple(captured["observations"])
+            return bool(
+                1 <= len(descriptors) <= _MAX_WRITER_IMAGES
+                and prepared.request_index == index
+                and (prepared.request_id, prepared.workflow_identity)
+                    == (request.request_id, request.workflow_identity)
+                and (remote.job_id, remote.claim_id, remote.manifest_identity,
+                     remote.request_id, remote.request_index, remote.workflow_identity)
+                    == (envelope.job_id, envelope.claim_id,
+                        envelope.manifest.manifest_identity, request.request_id,
+                        index, request.workflow_identity)
+                and (receipt.job_id, receipt.claim_id, receipt.manifest_identity,
+                     receipt.request_id, receipt.request_index, receipt.workflow_identity,
+                     receipt.prompt_id, receipt.remote_receipt_identity)
+                    == (envelope.job_id, envelope.claim_id,
+                        envelope.manifest.manifest_identity, request.request_id,
+                        index, request.workflow_identity, remote.prompt_id, remote.identity)
+                and captured["promotion_observation"].request_index == index
+                and captured["promotion_observation"].promoted_image_count == len(rows)
+                and tuple(item.identity for item in descriptors)
+                    == tuple(item.descriptor_identity for item in sources)
+                and tuple(item.identity for item in descriptors)
+                    == tuple(row.descriptor_identity for row in rows)
+            )
+        except Exception:
+            return False
+
+    def _begin_profile_a_candidate_admission_preflight_locked(
+            self, lifecycle, promotion_observation):
+        """Claim one exact post-Promotion read-only Host preflight."""
+        from core.comfy_remote_output_receipts import RemoteOutputReceipt
+        from ui.agent_generation_executor_handoff import GenerationPublicationOrigin
+
+        if (type(promotion_observation) is not GenerationWorkerProtectedPromotionObservation
+                or promotion_observation.status
+                    != "protected_promotion_published_non_authoritative"
+                or type(promotion_observation.request_index) is not int):
+            return None, "protected_candidate_admission_observation_invalid"
+        index = promotion_observation.request_index
+        with lifecycle._lock:
+            if (lifecycle._state != "bound_non_executing"
+                    or lifecycle._worker_storage_integration is not self
+                    or not self._profile_a
+                    or not self._lifecycle_profile_binding_matches_locked(lifecycle)):
+                return None, "protected_candidate_admission_host_changed"
+            runtime = lifecycle._runtime_ref()
+            origin = getattr(runtime, "_generation_publication_origin", None)
+            project = lifecycle._project_ref()
+            if (runtime is None or type(origin) is not GenerationPublicationOrigin
+                    or origin.envelope is not lifecycle._envelope
+                    or origin.project is not project
+                    or origin.path != lifecycle._project_path
+                    or origin.source_snapshot is None):
+                return None, "protected_candidate_admission_host_changed"
+            attempt = self._storage_preadmission_attempts.get(index)
+            if (attempt is None
+                    or attempt.promotion_publication_observation is not promotion_observation
+                    or attempt.promotion_publication_state != "published_non_authoritative"
+                    or attempt.promotion_preflight_state != "promoted_non_authoritative"
+                    or attempt.candidate_admission_state != "not_started"
+                    or attempt.cancel_requested):
+                return None, "protected_candidate_admission_evidence_unavailable"
+            writer = self._profile_a_writer_owner
+            capacity = self._capacity_owner
+            acceptance = attempt.acceptance_owner
+            promoter = attempt.promotion_owner
+            receipt = attempt.promotion_receipt
+            accepted = attempt.accepted_batch
+            if (writer is None or capacity is None or acceptance is None or promoter is None
+                    or receipt is None or accepted is None):
+                return None, "protected_candidate_admission_evidence_unavailable"
+            with writer._lock:
+                with acceptance._lock:
+                    with promoter._lock:
+                        with capacity._lock:
+                            with capacity._ledger._lock:
+                                with self._lock:
+                                    remote = attempt.remote_receipt
+                                    descriptors = tuple(remote.images) if remote is not None else ()
+                                    sources = tuple(attempt.acceptance_observations)
+                                    rows = tuple(getattr(receipt, "images", ()))
+                                    if (self._storage_preadmission_attempts.get(index) is not attempt
+                                            or self._state != "bound_non_executing"
+                                            or lifecycle._worker_storage_integration is not self
+                                            or self._profile_a_writer_owner is not writer
+                                            or self._capacity_owner is not capacity
+                                            or attempt.candidate_admission_state != "not_started"
+                                            or attempt.promotion_publication_observation
+                                                is not promotion_observation
+                                            or attempt.promotion_publication_state
+                                                != "published_non_authoritative"
+                                            or attempt.promotion_preflight_state
+                                                != "promoted_non_authoritative"
+                                            or type(descriptors) is not tuple
+                                            or not 1 <= len(descriptors) <= _MAX_WRITER_IMAGES
+                                            or len(sources) != len(descriptors)
+                                            or len(rows) != len(descriptors)
+                                            or tuple(item.identity for item in descriptors)
+                                                != tuple(item.descriptor_identity for item in sources)
+                                            or tuple(item.identity for item in descriptors)
+                                                != tuple(row.descriptor_identity for row in rows)
+                                            or any(row.source_observation is not source
+                                                   for row, source in zip(rows, sources))
+                                            or attempt.prepared is None
+                                            or attempt.prepared.request_index != index
+                                            or type(remote) is not RemoteOutputReceipt
+                                            or attempt.accepted_prompt_id != remote.prompt_id
+                                            or remote.execution_succeeded is not True
+                                            or attempt.acceptance_state
+                                                != "accepted_non_authoritative"
+                                            or attempt.writer_handoff_state
+                                                != "staged_non_authoritative"
+                                            or writer._closed or writer._revoking
+                                            or writer._invalid or writer._uncertain
+                                            or acceptance._closed or acceptance._revoking
+                                            or acceptance._invalid or acceptance._uncertain
+                                            or acceptance._busy or acceptance._receipt is not accepted
+                                            or promoter._closed or promoter._revoking
+                                            or promoter._uncertain or promoter._busy
+                                            or promoter._receipt is not receipt
+                                            or promoter._pending_receipt is not None
+                                            or capacity._closed or capacity._invalid
+                                            or capacity._scope_lease is None
+                                            or capacity._scope_lease._state != "held"
+                                            or not capacity._profile_a_root_set
+                                            or capacity._ledger._active_write is not None):
+                                        return None, "protected_candidate_admission_evidence_unavailable"
+                                    marker = object()
+                                    attempt.candidate_admission_state = "in_progress"
+                                    attempt.candidate_admission_marker = marker
+                                    return {
+                                        "attempt": attempt,
+                                        "marker": marker,
+                                        "promotion_observation": promotion_observation,
+                                        "promotion_marker": attempt.promotion_publication_marker,
+                                        "preflight_observation": attempt.promotion_preflight_observation,
+                                        "preflight_marker": attempt.promotion_preflight_marker,
+                                        "writer_marker": attempt.promotion_writer_marker,
+                                        "evidence": attempt.evidence,
+                                        "writer_observation": attempt.writer_observation,
+                                        "acceptance_observation": attempt.acceptance_observation,
+                                        "writer": writer,
+                                        "capacity": capacity,
+                                        "acceptance": acceptance,
+                                        "accepted": accepted,
+                                        "promotion_owner": promoter,
+                                        "receipt": receipt,
+                                        "operation": attempt.promotion_capacity_operation,
+                                        "reservation": attempt.promotion_capacity_reservation,
+                                        "estimate": attempt.promotion_capacity_estimate,
+                                        "write": attempt.promotion_write_admission,
+                                        "source_operation": attempt.capacity_operation,
+                                        "source_write": attempt.writer_admission,
+                                        "observations": sources,
+                                        "remote": remote,
+                                        "prepared": attempt.prepared,
+                                        "envelope": lifecycle._envelope,
+                                        "runtime": runtime,
+                                        "publication_origin": origin,
+                                        "source_snapshot": origin.source_snapshot,
+                                        "project": project,
+                                        "project_reference": self._project_reference,
+                                        "pairing_generation": lifecycle._pairing_generation,
+                                        "binding": attempt.promotion_host_binding,
+                                    }, "candidate_admission_preflight_claimed"
 
     def _begin_profile_a_promotion_publication_locked(self, lifecycle, observation):
         """Claim one separate Host publication after the private Promotion commit."""
@@ -1990,6 +2228,208 @@ class OriginalHostWorkerStorageIntegration:
                                     attempt.promotion_publication_state = "published_non_authoritative"
                                     attempt.promotion_preflight_state = "promoted_non_authoritative"
                                     return True
+
+    def _commit_profile_a_candidate_admission_preflight_locked(
+            self, lifecycle, captured, inventory, completed_delta,
+            destination_records, source_records, result):
+        """Publish only a read-only, non-authoritative Profile A preflight.
+
+        The caller holds the original runtime/route/Job/Inbox gate. This short
+        commit takes lifecycle -> assets -> acceptance -> promotion -> capacity
+        -> ledger -> integration locks. It performs no native I/O or callbacks.
+        """
+        from core.generation_storage_admission import _WRITABLE
+        from core.generation_windows_protected_promotion import (
+            VerifiedProtectedPromotionReceipt,
+        )
+        if (type(result) is not GenerationWorkerProtectedCandidateAdmissionPreflightObservation
+                or result.status != "protected_candidate_admission_preflight_non_authoritative"):
+            return False
+
+        attempt = captured["attempt"]
+        writer, acceptance = captured["writer"], captured["acceptance"]
+        promoter, capacity = captured["promotion_owner"], captured["capacity"]
+        receipt, accepted = captured["receipt"], captured["accepted"]
+        sources = captured["observations"]
+        descriptors = tuple(captured["remote"].images)
+        rows = tuple(receipt.images)
+        total_bytes = sum(item.image.byte_count for item in sources)
+        expected_source_delta = {purpose: (0, 0) for purpose in _WRITABLE}
+        expected_source_delta["temporary_containment"] = (total_bytes, len(sources))
+        expected_destination_delta = {purpose: (0, 0) for purpose in _WRITABLE}
+        expected_destination_delta["promoted_assets"] = (total_bytes, len(rows))
+        with lifecycle._lock:
+            with writer._lock:
+                with acceptance._lock:
+                    with promoter._lock:
+                        with capacity._lock:
+                            with capacity._ledger._lock:
+                                with self._lock:
+                                    destination_record = capacity._ledger._reservations.get(
+                                        captured["reservation"],
+                                    )
+                                    destination_operation = capacity._ledger._operations.get(
+                                        captured["operation"],
+                                    )
+                                    source_record = capacity._ledger._reservations.get(
+                                        attempt.reservation,
+                                    )
+                                    source_operation = capacity._ledger._operations.get(
+                                        attempt.capacity_operation,
+                                    )
+                                    key = (captured["prepared"].request_id,
+                                           captured["remote"].identity)
+                                    if (type(receipt) is not VerifiedProtectedPromotionReceipt
+                                            or self._storage_preadmission_attempts.get(
+                                                attempt.lease.request_index) is not attempt
+                                            or lifecycle._worker_storage_integration is not self
+                                            or lifecycle._state != "bound_non_executing"
+                                            or self._state != "bound_non_executing"
+                                            or attempt.cancel_requested
+                                            or attempt.candidate_admission_state != "in_progress"
+                                            or attempt.candidate_admission_marker is not captured["marker"]
+                                            or attempt.candidate_admission_observation is not None
+                                            or attempt.promotion_publication_observation
+                                                is not captured["promotion_observation"]
+                                            or attempt.promotion_publication_state
+                                                != "published_non_authoritative"
+                                            or attempt.promotion_preflight_state
+                                                != "promoted_non_authoritative"
+                                            or attempt.promotion_owner is not promoter
+                                            or attempt.promotion_receipt is not receipt
+                                            or attempt.promotion_host_binding is not captured["binding"]
+                                            or attempt.promotion_write_admission is not captured["write"]
+                                            or attempt.promotion_capacity_operation
+                                                is not captured["operation"]
+                                            or attempt.promotion_capacity_reservation
+                                                is not captured["reservation"]
+                                            or attempt.promotion_capacity_estimate
+                                                is not captured["estimate"]
+                                            or writer._closed or writer._revoking
+                                            or writer._invalid or writer._uncertain
+                                            or acceptance._closed or acceptance._revoking
+                                            or acceptance._invalid or acceptance._uncertain
+                                            or acceptance._busy or acceptance._receipt is not accepted
+                                            or accepted._protected_owner is not writer
+                                            or accepted._envelope is not captured["envelope"]
+                                            or accepted._prepared is not captured["prepared"]
+                                            or accepted._remote is not captured["remote"]
+                                            or acceptance._host_freshness
+                                                is not attempt.acceptance_host_freshness
+                                            or promoter._closed or promoter._revoking
+                                            or promoter._uncertain or promoter._busy
+                                            or promoter._receipt is not receipt
+                                            or promoter._pending_receipt is not None
+                                            or receipt._promotion_owner is not promoter
+                                            or receipt._protected_owner is not writer
+                                            or receipt._acceptance_owner is not acceptance
+                                            or receipt._accepted is not accepted
+                                            or writer._stream_promotions.get(key) is not receipt
+                                            or writer._stream_batch_acceptances.get(key) is not accepted
+                                            or capacity._closed or capacity._invalid
+                                            or capacity._scope_lease is None
+                                            or capacity._scope_lease._state != "held"
+                                            or not capacity._profile_a_root_set
+                                            or capacity._ledger._active_write is not None
+                                            or capacity._ledger._inventory != inventory
+                                            or destination_record is None
+                                            or destination_record.get("operation") is not captured["operation"]
+                                            or destination_record.get("write") is not captured["write"]
+                                            or destination_record.get("state") != "completed"
+                                            or destination_record.get("estimates") != {
+                                                "promoted_assets": (
+                                                    captured["estimate"].byte_upper_bound,
+                                                    captured["estimate"].entry_upper_bound,
+                                                ),
+                                            }
+                                            or destination_record.get("completed_observed_delta")
+                                                != completed_delta
+                                            or destination_operation is None
+                                            or destination_operation.get("state") != "completed"
+                                            or source_record is None
+                                            or source_record.get("operation")
+                                                is not attempt.capacity_operation
+                                            or source_record.get("write") is not attempt.writer_admission
+                                            or source_record.get("state") != "completed"
+                                            or source_record.get("completed_observed_delta")
+                                                != expected_source_delta
+                                            or source_record.get("estimates") != {
+                                                "temporary_containment": (
+                                                    attempt.estimate.byte_upper_bound,
+                                                    attempt.estimate.entry_upper_bound,
+                                                ),
+                                            }
+                                            or source_operation is None
+                                            or source_operation.get("state") != "completed"
+                                            or not 1 <= len(descriptors) <= _MAX_WRITER_IMAGES
+                                            or len(sources) != len(descriptors)
+                                            or len(rows) != len(descriptors)
+                                            or tuple(item.identity for item in descriptors)
+                                                != tuple(item.descriptor_identity for item in sources)
+                                            or tuple(item.identity for item in descriptors)
+                                                != tuple(row.descriptor_identity for row in rows)
+                                            or any(row.source_observation is not source
+                                                   for row, source in zip(rows, sources))
+                                            or expected_destination_delta != completed_delta
+                                            or result.request_index != attempt.lease.request_index
+                                            or result.verified_promoted_image_count != len(rows)
+                                            or result.candidate_eligibility != "not_established"
+                                            or result.execution_available is not False
+                                            or result.protected_storage_available is not False
+                                            or result.promotion_available is not False
+                                            or result.candidate_publication_allowed is not False
+                                            or result.project_save_allowed is not False
+                                            or result.authorship != "unverified"):
+                                        return False
+                                    for source, row in zip(sources, rows):
+                                        source_key = ("temporary_containment",
+                                                      source.image.storage_identity)
+                                        destination_key = ("promoted_assets",
+                                                           row.promoted_image.storage_identity)
+                                        source_file = source_records.get(source_key)
+                                        destination_file = destination_records.get(destination_key)
+                                        if (source_file is None or destination_file is None
+                                                or writer._files.get(source_key) is not source_file
+                                                or writer._files.get(destination_key) is not destination_file
+                                                or writer._images.get(source_key) is not source.image
+                                                or writer._images.get(destination_key)
+                                                    is not row.promoted_image
+                                                or writer._stream_images.get((
+                                                    captured["prepared"].request_id,
+                                                    source.descriptor_identity)) is not source
+                                                or inventory["temporary_containment"].get(
+                                                    source.image.storage_identity)
+                                                    != (source_file[2], source.image.byte_count,
+                                                        source_file[3][0])
+                                                or inventory["promoted_assets"].get(
+                                                    row.promoted_image.storage_identity)
+                                                    != (destination_file[2],
+                                                        row.promoted_image.byte_count,
+                                                        destination_file[3][0])
+                                                or source_file[0].parent
+                                                    != writer._roots["temporary_containment"]._path
+                                                or destination_file[0].parent
+                                                    != writer._roots["promoted_assets"]._path):
+                                            return False
+                                    attempt.candidate_admission_observation = result
+                                    attempt.candidate_admission_state = (
+                                        "preflight_observed_non_authoritative")
+                                    return True
+
+    def _retain_profile_a_candidate_admission_preflight_uncertain(self, captured):
+        """Retain only this downstream preflight uncertainty; never rewrite Promotion."""
+        attempt = captured.get("attempt") if type(captured) is dict else None
+        if attempt is None:
+            return False
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(
+                    attempt.lease.request_index) is not attempt
+                    or attempt.candidate_admission_state != "in_progress"
+                    or attempt.candidate_admission_marker is not captured.get("marker")):
+                return False
+            attempt.candidate_admission_state = "retained_uncertain"
+            attempt.candidate_admission_observation = None
+            return True
 
     def _retain_profile_a_promotion_publication_uncertain(self, attempt, marker=None):
         """Compensate only the exact completed destination delta; retain files."""
@@ -2718,6 +3158,16 @@ class OriginalHostWorkerStorageIntegration:
             # owner close/invalidation wins, that owner retains the estimate
             # as uncertain and the cancellation below remains fail-closed.
             for attempt in self._storage_preadmission_attempts.values():
+                if attempt.candidate_admission_state == "in_progress":
+                    # This is downstream eligibility uncertainty only. The
+                    # already-published Promotion and its completed capacity
+                    # evidence remain settled and are never compensated here.
+                    attempt.candidate_admission_state = "retained_uncertain"
+                    attempt.candidate_admission_observation = None
+                    # This attempt has already crossed every staging and
+                    # Promotion boundary. Do not route it through the older
+                    # pre-admission cancellation branch below.
+                    continue
                 if attempt.state in {"preparing", "reserved", "pre_admitted"}:
                     attempt.cancel_requested = True
                     if attempt.acceptance_state == "accepted_non_authoritative":

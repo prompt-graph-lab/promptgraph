@@ -263,3 +263,38 @@ request without resolving the earlier uncertainty. Save remains blocked.
 `authorship=unverified` and all production execution/storage/promotion gates
 remain false. See the [protected Candidate writer integration](agent-generation-protected-storage.md#c2b-8d-11-protected-candidate-writer-integration)
 for its native custody and approved destination contract.
+
+## C2B-8D-19G-A Profile A protected Candidate admission preflight
+
+The current Profile A original-Host path now has a one-shot, read-only
+preflight after its 19F-E protected Promotion publication. It binds the exact
+count observation and privately retained Promotion receipt to the live Host
+lifecycle, `GenerationPublicationOrigin` and its unchanged source snapshot,
+Project object/path and read-only Project JSON reference, route/process/session,
+pairing, Job Claim, frozen request, successful remote receipt, descriptor
+order, protected Acceptance, Promotion and completed staging/destination
+capacity records. Native source/promoted bytes are decoded and hashed again;
+the full root inventory and ACL/identity evidence are rechecked outside the
+Host/Job/Inbox commit locks.
+
+The returned `GenerationWorkerProtectedCandidateAdmissionPreflightObservation`
+is only count evidence and reports `candidate_eligibility="not_established"`.
+The Profile A path has not published the genuine, accepted
+`remote_outputs_ready` then `outputs_ready` pair required by the existing
+admission owner. The presence of a runtime `GenerationPublicationOrigin` or a
+matching count does not replace that event custody. The preflight therefore
+does not call `GenerationProtectedCandidateAdmission`, synthesize events or
+legacy receipts, invoke `GenerationCandidatePublication`, append Candidates,
+settle registration counts, mutate Undo history or save Project JSON. The
+existing single Candidate writer and its legacy validation remain unchanged.
+
+Preflight is one-shot. A copied or replayed Promotion observation is rejected;
+stale Project snapshot, Host, Claim, pairing, native file, ACL, inventory or
+ledger evidence withholds success and retains only the downstream preflight
+uncertainty. The already-published Promotion and completed capacity records
+remain intact. A later Profile A Candidate path requires a separately reviewed
+bridge that causes the original Host to accept the exact promotion through the
+existing Executor event owner and then reuses the existing admission and
+single-writer checks. This characterization is offline-only: all production
+capability flags remain false, no Candidate or Project state is changed, and
+`authorship=unverified`.

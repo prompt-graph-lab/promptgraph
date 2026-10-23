@@ -2130,3 +2130,50 @@ durability, a disk quota, production root provisioning, real ComfyUI
 interoperability, Candidate registration, Project save, or restart-time
 recovery. Candidate publication and Project JSON save remain separate future
 boundaries.
+
+## C2B-8D-19G-A Profile A protected Candidate admission preflight
+
+19G-A adds a separate, read-only Host preflight after the exact 19F-E
+count-only Promotion observation. It accepts that exact object once from the
+same Original-host lifecycle and rechecks its private `VerifiedProtectedPromotionReceipt`
+chain, prepared request, successful remote-history evidence, ordered source and
+promoted descriptors, four-root capacity owner, completed staging and
+promotion ledger deltas, native identities/ACL inventory, decoded image bytes
+and hashes. It also rechecks the live route, process/session, Project object
+and path, frozen `GenerationPublicationOrigin` source snapshot, pairing, Job
+Claim, and selected Project JSON reference. Native reads, hash/decode and root
+inventory scans occur outside Host, Job, Inbox and protected-owner commit
+locks; a short final commit is serialized against close and invalidation.
+
+The result is an immutable count-only
+`GenerationWorkerProtectedCandidateAdmissionPreflightObservation` with
+`candidate_eligibility="not_established"`. It issues no legacy
+`LocalOutputReceipt` or `PromotedImage`, does not call the existing Candidate
+writer, and does not create `remote_outputs_ready` or `outputs_ready` events. A
+`GenerationPublicationOrigin` by itself is insufficient: the existing
+Candidate admission requires the genuine, host-accepted ordered event pair,
+which the current Profile A promotion path does not publish. A copied or
+replayed Promotion observation is refused. File, ACL, inventory, Project
+snapshot or Host drift withholds the result and retains only downstream
+preflight uncertainty; the already-published Promotion receipt, files and
+completed ledger records are not rewritten or compensated.
+
+Unresolved Candidate-admission preflight is also part of the common Profile A
+capacity-owner retention decision. `in_progress` and `retained_uncertain`
+prevent the original Host lifecycle reference from being replaced and cause
+capacity close to retain the cross-process scope-writer marker. A completed
+`preflight_observed_non_authoritative` result is distinct and does not itself
+retain the marker as unresolved evidence. Host close during an in-flight
+read-only check is retained as Candidate-admission uncertainty without
+rewriting the settled Promotion.
+
+This proves current offline protected Promotion evidence can be rechecked by
+its original Host; it does not prove Candidate eligibility or authorize
+Candidate mutation, Undo, Project save, retry, Recovery, cleanup or execution.
+The next bridge must have the original Host accept the exact Profile A result
+through the existing Executor event owner, without fabricating legacy events
+or receipts, before the existing single Candidate Admission and Writer can be
+considered. Tests use disposable Windows-native roots. They do not establish
+power-loss durability, restart authority, cross-process byte quotas, production
+root provisioning or live ComfyUI behavior. All production gates remain false
+and `authorship=unverified`.

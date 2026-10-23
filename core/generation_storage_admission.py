@@ -40,6 +40,9 @@ _UNRESOLVED_PROFILE_A_PROMOTION_STATES = frozenset({
 _UNRESOLVED_PROFILE_A_PROMOTION_PUBLICATION_STATES = frozenset({
     "in_progress", "retained_uncertain",
 })
+_UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES = frozenset({
+    "in_progress", "retained_uncertain",
+})
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -54,11 +57,13 @@ def _fail(code):
 
 
 def _profile_a_promotion_is_unresolved(attempt):
-    """Share the Promotion retention boundary across lease and rebind checks."""
+    """Share unresolved downstream custody across lease and rebind checks."""
     return bool(
         attempt.promotion_preflight_state in _UNRESOLVED_PROFILE_A_PROMOTION_STATES
         or getattr(attempt, "promotion_publication_state", None)
             in _UNRESOLVED_PROFILE_A_PROMOTION_PUBLICATION_STATES
+        or getattr(attempt, "candidate_admission_state", None)
+            in _UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES
     )
 
 

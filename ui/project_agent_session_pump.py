@@ -1812,6 +1812,200 @@ class ProjectAgentSessionRuntime:
                     publication_token,
                 )
 
+    def preflight_generation_worker_protected_candidate_admission_for_characterization(
+            self, promotion_observation, *, characterization=False,
+            disposable_opt_in=False):
+        """Reverify Profile A Promotion without claiming Candidate eligibility.
+
+        The current Profile A path does not publish the genuine accepted
+        ``remote_outputs_ready`` / ``outputs_ready`` event pair that the
+        existing Candidate admission requires. A runtime-held legacy
+        ``GenerationPublicationOrigin`` alone is insufficient. This preflight
+        therefore returns count-only evidence with
+        ``candidate_eligibility=not_established``. It never synthesizes events
+        or calls a Candidate writer.
+        """
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+        )
+        from core.generation_windows_protected_promotion import (
+            ProtectedDurablePromotionCharacterization,
+            VerifiedProtectedPromotionReceipt,
+        )
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedCandidateAdmissionPreflightObservation,
+            GenerationWorkerProtectedPromotionObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if (type(promotion_observation) is not GenerationWorkerProtectedPromotionObservation
+                or promotion_observation.status
+                    != "protected_promotion_published_non_authoritative"):
+            return None, "protected_candidate_admission_observation_invalid"
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (
+            getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+            if lifecycle_snapshot is not None else None
+        )
+        if (type(integration_snapshot) is not OriginalHostWorkerStorageIntegration
+                or integration_snapshot._profile_a is not True
+                or type(integration_snapshot._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "protected_candidate_admission_unavailable"
+
+        captured = {}
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not lifecycle_snapshot):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_preflight():
+                    started, status = (
+                        integration_snapshot
+                        ._begin_profile_a_candidate_admission_preflight_locked(
+                            lifecycle, promotion_observation,
+                        )
+                    )
+                    if started is not None:
+                        captured.update(started)
+                        captured.update({
+                            "lifecycle": lifecycle,
+                            "project_reference": integration_snapshot._project_reference,
+                        })
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation,
+                    on_current=begin_preflight,
+                )
+                if not type(start_result) is tuple or start_result is False:
+                    return None, "host_evidence_unavailable"
+                started, status = start_result
+                if started is None:
+                    return None, status
+
+        integration = integration_snapshot
+        lifecycle = captured["lifecycle"]
+        attempt = captured["attempt"]
+        writer = captured["writer"]
+        capacity = captured["capacity"]
+        acceptance = captured["acceptance"]
+        promotion_owner = captured["promotion_owner"]
+        receipt = captured["receipt"]
+        project_reference = captured["project_reference"]
+        if (type(writer) is not WindowsProtectedAssetsCharacterization
+                or type(promotion_owner) is not ProtectedDurablePromotionCharacterization
+                or type(receipt) is not VerifiedProtectedPromotionReceipt):
+            integration._retain_profile_a_candidate_admission_preflight_uncertain(captured)
+            return None, "protected_candidate_admission_preflight_uncertain"
+
+        try:
+            def with_current_host(callback):
+                with self._publication_gate:
+                    if (self._closed
+                            or self._generation_original_host_lifecycle is not lifecycle):
+                        return False
+                    with self._current_generation_original_host_lifecycle_locked() as current:
+                        if current is not lifecycle:
+                            return False
+                        return self._generation_original_host_evidence_current_locked(
+                            lifecycle, captured["pairing_generation"],
+                            on_current=callback,
+                        ) is True
+
+            def host_matches():
+                return integration._profile_a_candidate_admission_host_matches_locked(
+                    lifecycle, captured,
+                )
+
+            if not with_current_host(host_matches):
+                raise ValueError("protected_candidate_admission_host_changed")
+            project_view = project_reference.readiness()
+            if project_view.get("status") != "read_only_reference_observed":
+                raise ValueError("protected_candidate_admission_project_reference_unavailable")
+
+            # Reinspect the original protected Acceptance and Promotion files,
+            # native roots, full purpose inventory and both already-completed
+            # Ledger writes. No new reservation or write is created.
+            writer._check()
+            inventory, completed_delta, destination_records, source_records = (
+                capacity._inspect_profile_a_promotion_publication_for_characterization(
+                    captured["operation"], captured["reservation"],
+                    captured["write"], writer, promotion_owner, acceptance,
+                    captured["accepted"], receipt, captured["source_operation"],
+                    captured["source_write"], captured["observations"],
+                )
+            )
+
+            # Hash and decode each pinned staging and promoted file outside all
+            # Host, Job, Inbox, protected-owner, Promotion, Capacity and Ledger
+            # commit locks. Equality binds bytes and descriptors to issued rows.
+            for source, row in zip(captured["observations"], receipt.images):
+                source_image, promoted_image = source.image, row.promoted_image
+                source_record = source_records.get((
+                    "temporary_containment", source_image.storage_identity,
+                ))
+                destination_record = destination_records.get((
+                    "promoted_assets", promoted_image.storage_identity,
+                ))
+                if (source_record is None or destination_record is None
+                        or source_image.content_sha256 != promoted_image.content_sha256
+                        or source_image.byte_count != promoted_image.byte_count
+                        or source_record[0].parent
+                            != writer._roots["temporary_containment"]._path
+                        or destination_record[0].parent
+                            != writer._roots["promoted_assets"]._path
+                        or writer._observe(
+                            source_image.storage_identity, "temporary_containment",
+                            source_record[0].suffix[1:],
+                        ) != source_image
+                        or writer._observe(
+                            promoted_image.storage_identity, "promoted_assets",
+                            destination_record[0].suffix[1:],
+                        ) != promoted_image):
+                    raise ValueError("protected_candidate_admission_image_changed")
+
+            writer._check()
+            if capacity._scan() != inventory:
+                raise ValueError("protected_candidate_admission_inventory_changed")
+            project_view = project_reference.readiness()
+            if (project_view.get("status") != "read_only_reference_observed"
+                    or not with_current_host(host_matches)):
+                raise ValueError("protected_candidate_admission_host_changed")
+
+            result = GenerationWorkerProtectedCandidateAdmissionPreflightObservation(
+                status="protected_candidate_admission_preflight_non_authoritative",
+                request_index=attempt.lease.request_index,
+                verified_promoted_image_count=len(receipt.images),
+            )
+
+            def commit_preflight():
+                if not host_matches():
+                    return False
+                return integration._commit_profile_a_candidate_admission_preflight_locked(
+                    lifecycle, captured, inventory, completed_delta,
+                    destination_records, source_records, result,
+                )
+
+            if not with_current_host(commit_preflight):
+                raise ValueError("protected_candidate_admission_commit_refused")
+            return result, result.status
+        except Exception:
+            # Keep the previously settled Promotion and both Ledger records
+            # unchanged. Only this downstream eligibility preflight is uncertain.
+            integration._retain_profile_a_candidate_admission_preflight_uncertain(
+                captured,
+            )
+            return None, "protected_candidate_admission_preflight_uncertain"
+
     def cancel_generation_worker_promotion_preflight_for_characterization(self, observation):
         """Release only this Host's exact pre-CREATE_NEW Promotion reservation."""
         from ui.agent_generation_original_host_worker_storage import (
