@@ -1309,6 +1309,11 @@ class OriginalHostWorkerStorageIntegration:
         event = marker.event
         remote = marker.remote_receipt
         evidence = marker.evidence
+        source_sequence = getattr(getattr(source_started, "progress", None), "sequence", None)
+        submitted_event = getattr(submitted, "event", None)
+        submitted_sequence = getattr(
+            getattr(submitted_event, "progress", None), "sequence", None,
+        )
         return bool(
             self._profile_a_remote_outputs_ready_event_attempts.get(index) is marker
             and marker.preadmission_attempt is attempt
@@ -1332,14 +1337,39 @@ class OriginalHostWorkerStorageIntegration:
             and type(event.progress) is WorkerEvent
             and type(event.outputs) is OutputReceipt
             and source_started is not None
+            and type(source_started) is ExecutorEvent
+            and type(source_started.progress) is WorkerEvent
+            and source_started.job_id == lifecycle._job_id
+            and source_started.claim_id == lifecycle._claim_id
+            and source_started.manifest_identity == lifecycle._manifest_identity
+            and source_started.progress.kind == "submission_started"
+            and source_started.progress.request_index == index
+            and source_started.progress.prompt_id is None
+            and submitted_event is not None
+            and type(submitted_event) is ExecutorEvent
+            and type(submitted_event.progress) is WorkerEvent
             and submitted.submission_started_event is source_started
-            and submitted.event is not None
-            and submitted.event.progress.kind == "submitted"
+            and submitted_event.job_id == lifecycle._job_id
+            and submitted_event.claim_id == lifecycle._claim_id
+            and submitted_event.manifest_identity == lifecycle._manifest_identity
+            and submitted_event.progress.kind == "submitted"
+            and submitted_event.progress.request_index == index
+            and submitted_event.progress.prompt_id == attempt.accepted_prompt_id
+            and type(source_sequence) is int
+            and type(submitted_sequence) is int
+            and source_sequence < submitted_sequence < event.progress.sequence
+            # Job progress alone is not enough to authorize a later protected
+            # Writer handoff. Retain the exact accepted Inbox objects for both
+            # preceding source events throughout the full event prefix.
+            and inbox._events.get(source_sequence) is source_started
+            and sum(item is source_started for item in inbox._authority_events) == 1
+            and inbox._events.get(submitted_sequence) is submitted_event
+            and sum(item is submitted_event for item in inbox._authority_events) == 1
             and job is not None
             and job.events.get(source_started.progress.sequence) == source_started.progress
             and sum(item == source_started.progress for item in job.authority_events) == 1
-            and job.events.get(submitted.event.progress.sequence) == submitted.event.progress
-            and sum(item == submitted.event.progress for item in job.authority_events) == 1
+            and job.events.get(submitted_sequence) == submitted_event.progress
+            and sum(item == submitted_event.progress for item in job.authority_events) == 1
             and event.job_id == lifecycle._job_id
             and event.claim_id == lifecycle._claim_id
             and event.manifest_identity == lifecycle._manifest_identity

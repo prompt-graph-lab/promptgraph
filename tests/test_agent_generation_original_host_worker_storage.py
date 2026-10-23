@@ -951,6 +951,111 @@ def test_profile_a_statusless_ready_history_never_emits_remote_outputs_event(
         runtime.close()
 
 
+@pytest.mark.parametrize(("source_kind", "mutation"), [
+    ("submission_started", "events_removed"),
+    ("submitted", "events_replaced"),
+    ("submission_started", "authority_missing"),
+    ("submitted", "authority_duplicated"),
+])
+def test_profile_a_writer_handoff_rechecks_exact_prior_inbox_event_custody(
+        native_profile_a_worker_storage, source_kind, mutation):
+    """Accepted remote output cannot outlive its exact Inbox event prefix."""
+    (runtime, state, lifecycle, roots, capacity, _reference, project_path,
+     _worker_instance, _prepared_request, _submission_lease, preadmission,
+     _submission, _history_lease, _history, _history_json,
+     observed_history_status) = _profile_a_prospective_history_observed(
+        native_profile_a_worker_storage,
+    )
+    integration = lifecycle._worker_storage_integration
+    try:
+        assert observed_history_status == "observed_non_authoritative"
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+        assert evidence is not None
+
+        inbox = runtime._generation_executor_inbox
+        marker = integration._profile_a_remote_outputs_ready_event_attempts[0]
+        remote_event = marker.event
+        assert marker.state == "events_accepted"
+        assert inbox._events[remote_event.progress.sequence] is remote_event
+        assert sum(item is remote_event for item in inbox._authority_events) == 1
+
+        if source_kind == "submission_started":
+            source_event = integration._profile_a_submission_started_events[0]
+        else:
+            source_event = integration._profile_a_submitted_event_attempts[0].event
+        source_sequence = source_event.progress.sequence
+        assert inbox._events[source_sequence] is source_event
+        assert sum(item is source_event for item in inbox._authority_events) == 1
+
+        # Model loss or substitution in either Inbox custody surface after the
+        # remote event was accepted, while leaving Job progress and that third
+        # remote event intact.
+        with runtime.generation_jobs._lock:
+            with inbox._lock:
+                if mutation == "events_removed":
+                    inbox._events.pop(source_sequence)
+                elif mutation == "events_replaced":
+                    inbox._events[source_sequence] = replace(source_event)
+                elif mutation == "authority_missing":
+                    inbox._authority_events[:] = [
+                        item for item in inbox._authority_events
+                        if item is not source_event
+                    ]
+                else:
+                    assert mutation == "authority_duplicated"
+                    inbox._authority_events.append(source_event)
+
+        assert inbox._events.get(remote_event.progress.sequence) is remote_event
+        with runtime.generation_jobs._lock:
+            job = runtime.generation_jobs._authorized_locked(
+                lifecycle._job_id, lifecycle._claim_id,
+            )
+            assert job.events.get(remote_event.progress.sequence) == remote_event.progress
+            assert job.request_states[0] == "awaiting_download"
+            assert job.remote_outputs[0] == remote_event.progress.output_count
+            assert job.registered[0] == 0
+
+        audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+            state, 0, characterization=True, disposable_opt_in=True,
+        )
+        assert audit.status == "event_chain_conflict"
+        assert audit.next_required_event is None
+        assert audit.candidate_eligibility == "not_established"
+
+        attempt = integration._storage_preadmission_attempts[0]
+        from core.generation_windows_protected_assets import (
+            WindowsProtectedAssetsCharacterization,
+        )
+        writer_owner = object.__new__(WindowsProtectedAssetsCharacterization)
+        operations_before = set(capacity._ledger._operations)
+        reservations_before = set(capacity._ledger._reservations)
+        root_entries_before = {
+            purpose: tuple(root._path.iterdir()) for purpose, root in roots.items()
+        }
+        project_before = copy.deepcopy(state["project"])
+        project_file_before = project_path.read_bytes()
+
+        handoff, refusal = integration._begin_single_image_writer_handoff_locked(
+            lifecycle, evidence, writer_owner, allow_batch=True,
+        )
+        assert handoff is None
+        assert refusal == "remote_outputs_ready_event_required"
+        assert attempt.writer_handoff_state == "not_started"
+        assert attempt.writer_owner is None
+        assert set(capacity._ledger._operations) == operations_before
+        assert set(capacity._ledger._reservations) == reservations_before
+        assert {purpose: tuple(root._path.iterdir())
+                for purpose, root in roots.items()} == root_entries_before
+        assert state["project"] == project_before
+        assert project_path.read_bytes() == project_file_before
+        assert runtime.generation_jobs.snapshot(lifecycle._job_id)["registered_count"] == 0
+    finally:
+        runtime.close()
+
+
 def test_profile_a_remote_outputs_event_ack_loss_is_unbound_and_retains_capacity(
         native_profile_a_worker_storage):
     from core.generation_storage_admission import _profile_a_executor_event_is_unresolved
