@@ -1355,3 +1355,32 @@ backfilled. The start event is a pre-send state transition, not proof that a
 POST happened or ComfyUI accepted it. Candidate registration, Undo and
 Project save remain separate later transitions. No production gate is opened;
 `authorship=unverified`.
+
+## C2B-8D-19G-C Profile A accepted submission event
+
+After 19G-B, the original Host can now publish `submitted` only from the exact
+Worker-issued HTTP submission completion associated with that pre-send
+operation. It claims a one-shot private marker before Host result observation,
+then requires the same Host to accept a typed `SubmissionResult(status="accepted")`
+with a validated Prompt ID recorded by the integration. Only that Prompt ID is
+placed in a count-zero `WorkerEvent(kind="submitted")`; the event carries no
+output receipt and is accepted by the existing Job Registry and Inbox. The Job
+moves from `submitting` to `awaiting_result` with `registered=0`.
+
+The private Profile A source record retains the exact accepted `ExecutorEvent`
+object. Read-only event-chain inspection reports the pair
+`("submission_started", "submitted")` only while both remain exact, current
+Job/Inbox events. After that pair, `remote_outputs_ready` is the next required
+event; it is not produced here. An accepted-but-unbound `submitted` event stays
+in accepted Job/Inbox history but is excluded from Profile A source kinds and
+pins uncertainty. Invalid/foreign completions do not consume the valid claim;
+pre-send rejection emits no `submitted`; unknown or uncertain outcomes do not
+retry or fabricate an event. History for this source-bound flow cannot be
+started until `submitted` has been source-bound.
+
+This remains characterization-only. It proves HTTP submission acknowledgment,
+not ComfyUI execution completion, output provenance, protected image custody,
+Promotion, Candidate eligibility, Candidate append or Project save. The next
+19G-D boundary must derive `remote_outputs_ready` from actual ready-history and
+exact `RemoteOutputReceipt` evidence. All production gates remain disabled,
+`candidate_eligibility="not_established"`, and `authorship=unverified`.

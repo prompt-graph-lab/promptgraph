@@ -2207,3 +2207,39 @@ neither that an HTTP request was sent nor that ComfyUI accepted it. Later
 events must be accepted at their actual original-Host Worker/result/Promotion
 boundaries before Candidate eligibility can be considered. All production
 capability flags remain false and `authorship=unverified`.
+
+## C2B-8D-19G-C Profile A accepted submission event
+
+19G-C extends the original-Host Profile A event chain only after an exact
+19G-B `submission_started` was accepted by the Job Registry and Inbox and
+privately bound to the Worker integration. Before observing a returned result,
+the Host claims one private attempt only for the exact Worker-issued
+`HTTPIOCompletion`, exact frozen prepared request, operation lease, Claim,
+manifest, request and source-bound start-event object. Copied completions do
+not consume the valid operation.
+
+The Host then observes that same completion. Only a typed accepted
+`SubmissionResult` whose actual response contains a validated Prompt ID stored
+by the same integration can produce `WorkerEvent(kind="submitted")`. The
+original Host sends one count-zero `ExecutorEvent` with no output receipt
+through the existing Job Registry and Inbox. It privately binds that same
+accepted event object only after both owners confirm the transition to
+`awaiting_result`. The Job remains at `registered=0`; this event is evidence of
+accepted HTTP submission only, not completed generation or output readiness.
+
+Pre-send rejection produces no `submitted` event. Unknown, timeout, invalid
+response, Worker close, or uncertain event acknowledgment is retained as
+one-shot uncertainty. If Job/Inbox accepted the event but private source
+binding then fails, the event remains visible as accepted-but-unbound and is
+never deleted, replayed, or upgraded by matching values. The read-only audit
+reports Profile A source kinds `("submission_started", "submitted")` and
+requires `remote_outputs_ready` next only when both exact event objects remain
+current. An accepted unbound event is not Profile A provenance. A Profile A
+history correlation following the source-bound start is withheld until this
+submitted event is source-bound, so an accepted Prompt ID alone cannot stand
+in for the event.
+
+This does not create `remote_outputs_ready` or `outputs_ready`, invoke protected
+Promotion or Candidate Admission, append Candidates, change the Project, or
+save. Candidate eligibility remains `not_established`; all production
+capability flags remain false and `authorship=unverified`.

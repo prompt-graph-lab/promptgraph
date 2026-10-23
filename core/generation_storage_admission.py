@@ -43,6 +43,9 @@ _UNRESOLVED_PROFILE_A_PROMOTION_PUBLICATION_STATES = frozenset({
 _UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES = frozenset({
     "in_progress", "retained_uncertain",
 })
+_UNRESOLVED_PROFILE_A_SUBMITTED_EVENT_STATES = frozenset({
+    "claim_in_progress", "event_acceptance_in_progress", "retained_uncertain",
+})
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -64,6 +67,15 @@ def _profile_a_promotion_is_unresolved(attempt):
             in _UNRESOLVED_PROFILE_A_PROMOTION_PUBLICATION_STATES
         or getattr(attempt, "candidate_admission_state", None)
             in _UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES
+    )
+
+
+def _profile_a_submitted_event_is_unresolved(integration):
+    """Keep pending/uncertain source-event custody across close and rebind."""
+    attempts = getattr(integration, "_profile_a_submitted_event_attempts", {})
+    return any(
+        getattr(attempt, "state", None) in _UNRESOLVED_PROFILE_A_SUBMITTED_EVENT_STATES
+        for attempt in attempts.values()
     )
 
 
@@ -2860,7 +2872,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                         }
                         or _profile_a_promotion_is_unresolved(attempt)
                         for attempt in integration._storage_preadmission_attempts.values()
-                    )
+                    ) or _profile_a_submitted_event_is_unresolved(integration)
                     if integration._uncertain_leases:
                         return "uncertain"
                     if unresolved_writer_handoff:
@@ -2907,15 +2919,19 @@ class WindowsProtectedStorageAdmissionCharacterization:
                 with integration._lock:
                     integration_active = (integration._state != "closed"
                                           or integration._active is not None)
-                    integration_uncertain = bool(integration._uncertain_leases) or any(
-                        attempt.writer_handoff_state in {
-                            "create_boundary_crossed", "retained_uncertain",
-                        }
-                        or attempt.acceptance_state in {
-                            "in_progress", "retained_uncertain",
-                        }
-                        or _profile_a_promotion_is_unresolved(attempt)
-                        for attempt in integration._storage_preadmission_attempts.values()
+                    integration_uncertain = (
+                        bool(integration._uncertain_leases)
+                        or any(
+                            attempt.writer_handoff_state in {
+                                "create_boundary_crossed", "retained_uncertain",
+                            }
+                            or attempt.acceptance_state in {
+                                "in_progress", "retained_uncertain",
+                            }
+                            or _profile_a_promotion_is_unresolved(attempt)
+                            for attempt in integration._storage_preadmission_attempts.values()
+                        )
+                        or _profile_a_submitted_event_is_unresolved(integration)
                     )
             if state != "closed" or integration_active or integration_uncertain:
                 retained.append(previous)

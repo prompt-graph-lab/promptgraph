@@ -320,3 +320,22 @@ next bounded integration must source each later transition from its real
 original-Host Worker/result/Promotion boundary, then reuse the existing
 admission and single Candidate writer unchanged. All production gates remain
 false and `authorship=unverified`.
+
+## C2B-8D-19G-C sources only accepted submission
+
+The Profile A source chain now allows `submitted` only after the original Host
+observes the exact Worker-issued accepted HTTP completion from an operation
+whose `submission_started` was already accepted and privately source-bound.
+The Job Registry and Inbox accept one exact count-zero event carrying the
+validated Prompt ID and no output receipt; the same accepted event object is
+then retained by the Profile A integration. Rejected-before-send, unknown,
+forged or stale completion evidence cannot produce it, and no send or event is
+retried. An accepted-but-unbound event remains visible as accepted evidence but
+cannot become Profile A source provenance.
+
+This advances the request only to `awaiting_result` with `registered=0`. It does
+not satisfy Candidate Admission: no `remote_outputs_ready`, protected
+`outputs_ready`, promotion receipt, Candidate mutation, Undo publication or
+Project save is produced. Candidate eligibility remains
+`not_established`, and production gates remain disabled. The next bounded
+source transition is ready-history plus exact remote-output evidence.
