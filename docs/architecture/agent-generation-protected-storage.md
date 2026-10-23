@@ -2243,3 +2243,37 @@ This does not create `remote_outputs_ready` or `outputs_ready`, invoke protected
 Promotion or Candidate Admission, append Candidates, change the Project, or
 save. Candidate eligibility remains `not_established`; all production
 capability flags remain false and `authorship=unverified`.
+
+## C2B-8D-19G-D Profile A verified remote outputs ready event
+
+After the 19G-B `submission_started` and 19G-C `submitted` events are both
+accepted and retained as exact original-Host source objects, the Host can now
+accept `remote_outputs_ready` for that request. It requires the same
+Worker-issued History completion and frozen request, a `ready` History result,
+the exact accepted prompt ID and correlation, and a fresh
+`validate_remote_outputs` receipt with `execution_succeeded is True`. The
+complete descriptor tuple must be unique, ordered and within the existing
+one-to-sixteen output bound; status-less History and copied or substituted
+completions cannot produce the event.
+
+One exact `ExecutorEvent` is sent through the existing Job Registry and Inbox
+inside the final original-Host commit. The integration privately binds that
+same object only after both owners accept it and confirm the Job moved to
+`awaiting_download` with the matching descriptor count and `registered=0`.
+Its `OutputReceipt` retains the existing opaque remote receipt identity/count
+shape; the identifier is correlation evidence and grants no custody. The event
+represents validated remote metadata only. It is not local image containment,
+protected staging, Promotion, or the later `outputs_ready` event.
+
+Validation and native readiness observations happen outside the final Job /
+Inbox / Host commit locks. An accepted event whose acknowledgment or private
+binding is uncertain remains in Job/Inbox history, is excluded from the
+Profile A source chain, cannot be replayed, and keeps unresolved capacity
+evidence retained. A refused or stale attempt is also one-shot. The audit
+reports `("submission_started", "submitted", "remote_outputs_ready")` and
+requires `outputs_ready` next only while the exact source event remains current.
+If an accepted event is evicted or no longer agrees across owners, the chain
+fails closed. This does not itself invoke a protected writer, Promotion,
+Candidate admission, Candidate append, Undo, Project save, Recovery, or
+execution; candidate eligibility remains `not_established`, all production
+capability flags remain false, and `authorship=unverified`.
