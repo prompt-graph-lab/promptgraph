@@ -2895,6 +2895,9 @@ def test_profile_a_published_promotion_candidate_admission_is_read_only_and_one_
     runtime.close()
     writer.close()
     runtime.finish_generation_worker_storage_close_for_characterization()
+    capacity.close()
+    assert capacity._scope_lease._state == "released"
+    assert not capacity._scope_lease._path.exists()
 
 
 @pytest.mark.parametrize("drift", ["content", "acl"])
@@ -2937,8 +2940,72 @@ def test_profile_a_candidate_admission_preflight_file_drift_retains_published_pr
 
         mutate_disposable_acl(record[0], roots["promoted_assets"]._api, "original")
     runtime.close()
-    writer.close()
     runtime.finish_generation_worker_storage_close_for_characterization()
+    writer.close()
+    capacity.close()
+    assert capacity._scope_lease._state == "retained_uncertain"
+    assert capacity._scope_lease._path.exists()
+
+
+def test_profile_a_candidate_admission_uncertainty_after_host_close_blocks_rebind(
+        native_profile_a_dual_custody_worker_storage):
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker_instance, _prepared_request, attempt, writer,
+     _accepted, _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_promotion_for_candidate_preflight(
+            roots, capacity, reference, project_path,
+        )
+    )
+    image = attempt.promotion_receipt.images[0].promoted_image
+    writer._files[("promoted_assets", image.storage_identity)][0].write_bytes(
+        b"changed retained evidence",
+    )
+    result, status = runtime.preflight_generation_worker_protected_candidate_admission_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert result is None
+    assert status == "protected_candidate_admission_preflight_uncertain"
+    assert attempt.candidate_admission_state == "retained_uncertain"
+    assert attempt.promotion_publication_state == "published_non_authoritative"
+    assert attempt.promotion_preflight_state == "promoted_non_authoritative"
+
+    original_integration = lifecycle._worker_storage_integration
+    runtime.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+    assert lifecycle._state == "closed"
+    assert original_integration._state == "closed"
+    assert capacity._scope_lease._state == "held"
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+    original_references = tuple(capacity._host_lifecycle_refs)
+    assert original_references == (lifecycle,)
+
+    second_runtime, _route, _state, second_lifecycle = _ready_generation_at_project_path(
+        project_path,
+    )
+    try:
+        assert second_lifecycle is not lifecycle
+        with pytest.raises(ValueError, match="profile_a_storage_lifecycle_unsettled"):
+            capacity._bind_profile_a_lifecycle_for_characterization(
+                second_lifecycle, reference,
+            )
+        host_status = second_runtime.bind_generation_profile_a_storage_for_characterization(
+            capacity, reference,
+        )
+        assert host_status in {
+            "storage_binding_unavailable", "storage_observation_unavailable",
+        }
+        assert tuple(capacity._host_lifecycle_refs) == original_references
+        assert lifecycle in capacity._host_lifecycle_refs
+        assert second_lifecycle not in capacity._host_lifecycle_refs
+        assert capacity._scope_lease._state == "held"
+        assert capacity._scope_lease_retention_reason() == "uncertain"
+    finally:
+        second_runtime.close()
+
+    writer.close()
+    capacity.close()
+    assert capacity._scope_lease._state == "retained_uncertain"
+    assert capacity._scope_lease._path.exists()
 
 
 def test_profile_a_candidate_admission_preflight_rejects_changed_original_project_snapshot(
@@ -2968,6 +3035,9 @@ def test_profile_a_candidate_admission_preflight_rejects_changed_original_projec
     runtime.close()
     writer.close()
     runtime.finish_generation_worker_storage_close_for_characterization()
+    capacity.close()
+    assert capacity._scope_lease._state == "retained_uncertain"
+    assert capacity._scope_lease._path.exists()
 
 
 def test_profile_a_candidate_admission_preflight_rejects_changed_original_project_path(
@@ -3058,6 +3128,9 @@ def test_profile_a_candidate_admission_preflight_serializes_duplicate_and_host_c
     assert capacity._scope_lease._state == "held"
     writer.close()
     runtime.finish_generation_worker_storage_close_for_characterization()
+    capacity.close()
+    assert capacity._scope_lease._state == "retained_uncertain"
+    assert capacity._scope_lease._path.exists()
 
 
 @pytest.mark.parametrize("close_owner", ["host", "capacity", "promotion"])

@@ -2158,6 +2158,15 @@ snapshot or Host drift withholds the result and retains only downstream
 preflight uncertainty; the already-published Promotion receipt, files and
 completed ledger records are not rewritten or compensated.
 
+Unresolved Candidate-admission preflight is also part of the common Profile A
+capacity-owner retention decision. `in_progress` and `retained_uncertain`
+prevent the original Host lifecycle reference from being replaced and cause
+capacity close to retain the cross-process scope-writer marker. A completed
+`preflight_observed_non_authoritative` result is distinct and does not itself
+retain the marker as unresolved evidence. Host close during an in-flight
+read-only check is retained as Candidate-admission uncertainty without
+rewriting the settled Promotion.
+
 This proves current offline protected Promotion evidence can be rechecked by
 its original Host; it does not prove Candidate eligibility or authorize
 Candidate mutation, Undo, Project save, retry, Recovery, cleanup or execution.
