@@ -237,6 +237,19 @@ class GenerationWorkerExecutorEventChainObservation:
     authorship: str = "unverified"
 
 
+@dataclass
+class _ProfileASubmittedEventAttempt:
+    """Private one-shot custody for an issued submission completion and event."""
+
+    lease: object
+    completion: object
+    prepared: object
+    submission_started_event: object
+    state: str = "claim_in_progress"
+    prompt_id: str | None = None
+    event: object = None
+
+
 @dataclass(frozen=True)
 class GenerationWorkerRemoteOutputWriterEvidence:
     """Exact remote-history evidence; never an actionable storage capability."""
@@ -478,6 +491,10 @@ class OriginalHostWorkerStorageIntegration:
         # Executor event here. Existing fake/legacy event observations are not
         # upgraded by matching sequence, count, or event values.
         self._profile_a_submission_started_events = {}
+        # A submitted event becomes source-bound only after this original Host
+        # observes the exact issued Worker completion and both Job/Inbox owners
+        # accept the same ExecutorEvent object.
+        self._profile_a_submitted_event_attempts = {}
         # One staging pre-admission attempt per manifest request. The entries
         # privately retain only the exact host lease and the existing
         # capacity owner's opaque reservation; neither is returned as a
@@ -660,6 +677,14 @@ class OriginalHostWorkerStorageIntegration:
                 or (kind == "history" and (prompt_id is None or correlation.prompt_id != prompt_id))):
             return None, "correlation_mismatch"
         if self._profile_a:
+            if kind == "submission" and index in self._profile_a_submission_started_events:
+                return None, "profile_a_submission_already_started"
+            if (kind == "history"
+                    and index in self._profile_a_submission_started_events):
+                submitted_attempt = self._profile_a_submitted_event_attempts.get(index)
+                if (submitted_attempt is None
+                        or submitted_attempt.state != "events_accepted"):
+                    return None, "profile_a_submitted_event_required"
             if any(attempt.evidence_state in {"validating", "history_observed"}
                    or (attempt.evidence_state == "evidence_published"
                        and attempt.writer_handoff_state != "staged_non_authoritative")
@@ -755,6 +780,256 @@ class OriginalHostWorkerStorageIntegration:
                                 return False
                             self._profile_a_submission_started_events[index] = event
                             return True
+
+    def _claim_profile_a_submitted_event_attempt_for_characterization(
+            self, lease, completion):
+        """Claim one exact issued completion before Host result observation.
+
+        The original runtime calls this while its publication/route guard and
+        Job/Inbox locks are held. This method performs bounded in-memory checks
+        only; it does not inspect transport state beyond the Worker-issued
+        completion witness.
+        """
+        from core.comfy_prompt_request import is_owner_prepared_frozen_request
+        from ui.agent_generation_executor_inbox import ExecutorEvent
+        from ui.agent_generation_http_io_worker import HTTPIOCompletion
+        from ui.agent_generation_job import WorkerEvent
+
+        if not self._profile_a:
+            return None
+        lifecycle = self._lifecycle_ref()
+        if lifecycle is None:
+            return None
+        jobs, inbox = lifecycle._jobs, lifecycle._inbox
+        with jobs._lock:
+            with inbox._lock:
+                job = jobs._authorized_locked(lifecycle._job_id, lifecycle._claim_id)
+                envelope = lifecycle._envelope
+                if (job is None or envelope is None or inbox._closed
+                        or inbox._state != "accepted" or inbox._envelope is not envelope
+                        or type(lease) is not GenerationWorkerOperationLease
+                        or type(completion) is not HTTPIOCompletion
+                        or completion.kind != "submission"
+                        or completion.correlation is not lease.correlation
+                        or lease.kind != "submission"):
+                    return None
+                index = lease.request_index
+                if (type(index) is not int or not 0 <= index < len(envelope.manifest.requests)
+                        or index in self._profile_a_submitted_event_attempts):
+                    return None
+                started = self._profile_a_submission_started_events.get(index)
+                prepared = self._active_prepared if self._active is lease else None
+                request = envelope.manifest.requests[index]
+                sequence = getattr(getattr(started, "progress", None), "sequence", None)
+                if (type(started) is not ExecutorEvent
+                        or type(started.progress) is not WorkerEvent
+                        or inbox._events.get(sequence) is not started
+                        or not any(item is started for item in inbox._authority_events)
+                        or job.event_count != sequence
+                        or job.events.get(sequence) != started.progress
+                        or not job.authority_events
+                        or job.authority_events[-1] != started.progress
+                        or job.request_states[index] != "submitting"
+                        or (started.job_id, started.claim_id, started.manifest_identity)
+                            != (lifecycle._job_id, lifecycle._claim_id,
+                                lifecycle._manifest_identity)
+                        or (started.progress.kind, started.progress.request_index,
+                            started.progress.output_count, started.progress.prompt_id,
+                            started.outputs) != ("submission_started", index, 0, None, None)
+                        or not is_owner_prepared_frozen_request(prepared)
+                        or prepared.request_index != index
+                        or prepared.request_id != request.request_id
+                        or prepared.workflow_identity != request.workflow_identity
+                        or lease.lifecycle_generation != self._lifecycle_generation
+                        or self._issued.get(self._correlation_key(
+                            "submission", lease.correlation,
+                        )) is not lease.correlation):
+                    return None
+                with lifecycle._lock:
+                    with self._capacity_owner._lock:
+                        with self._lock:
+                            attempt = self._storage_preadmission_attempts.get(index)
+                            if (lifecycle._worker_storage_integration is not self
+                                    or lifecycle._state != "bound_non_executing"
+                                    or lifecycle._generation != self._lifecycle_generation
+                                    or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                                    or not self._root_binding_matches()
+                                    or self._state != "bound_non_executing"
+                                    or self._active is not lease
+                                    or self._active_prepared is not prepared
+                                    or (attempt is not None and attempt.lease is not lease)):
+                                return None
+
+                            marker = _ProfileASubmittedEventAttempt(
+                                lease, completion, prepared, started,
+                            )
+
+                            def retain_claim():
+                                self._profile_a_submitted_event_attempts[index] = marker
+                                return marker
+
+                            # Worker lock is last in the established order. It
+                            # proves the exact returned completion and fences
+                            # a close that wins before the claim.
+                            return self._worker._run_if_issued_completion_for_prepared_request_for_characterization(
+                                completion, prepared, self._worker_owner_claim,
+                                retain_claim,
+                            )
+
+    def _retain_profile_a_submitted_event_uncertain_locked(
+            self, marker, *, accepted_event=None, reason="submitted_event_uncertain"):
+        marker.state = "retained_uncertain"
+        if accepted_event is not None:
+            marker.event = accepted_event
+        self._uncertain_leases[marker.lease.nonce] = marker.lease
+        if self._state == "bound_non_executing":
+            self._state = "uncertain"
+        self._reason = self._reason or reason
+
+    def _complete_profile_a_submitted_event_for_characterization(
+            self, lease, completion, observation_status):
+        """Publish submitted only from the claimed, Host-observed completion."""
+        from core.comfy_http_submission import SubmissionResult
+        from ui.agent_generation_executor_inbox import ExecutorEvent
+        from ui.agent_generation_http_io_worker import HTTPIOCompletion
+        from ui.agent_generation_job import WorkerEvent
+
+        if not self._profile_a:
+            return observation_status
+        lifecycle = self._lifecycle_ref()
+        if lifecycle is None:
+            return observation_status
+        jobs, inbox = lifecycle._jobs, lifecycle._inbox
+        index = getattr(lease, "request_index", None)
+        with jobs._lock:
+            with inbox._lock:
+                with lifecycle._lock:
+                    with self._capacity_owner._lock:
+                        with self._lock:
+                            marker = self._profile_a_submitted_event_attempts.get(index)
+                            if (marker is None or marker.lease is not lease
+                                    or marker.completion is not completion
+                                    or marker.state != "claim_in_progress"):
+                                return observation_status
+
+                            if observation_status != "observed_non_authoritative":
+                                self._retain_profile_a_submitted_event_uncertain_locked(marker)
+                                return (observation_status if observation_status in {
+                                    "stale_non_authoritative", "foreign_non_authoritative",
+                                    "duplicate_non_authoritative",
+                                } else "uncertain_non_authoritative")
+
+                            outcome = (completion.outcome
+                                       if type(completion) is HTTPIOCompletion else None)
+                            if (type(outcome) is SubmissionResult
+                                    and outcome.status == "rejected_before_submission"):
+                                marker.state = "submission_rejected"
+                                return observation_status
+                            accepted_prompt_id = self._accepted_prompt_ids.get(index)
+                            attempt = self._storage_preadmission_attempts.get(index)
+                            if (type(completion) is not HTTPIOCompletion
+                                    or completion.kind != "submission"
+                                    or completion.correlation is not lease.correlation
+                                    or type(outcome) is not SubmissionResult
+                                    or outcome.status != "accepted"
+                                    or type(accepted_prompt_id) is not str
+                                    or not accepted_prompt_id
+                                    or (attempt is not None and (
+                                        attempt.lease is not lease
+                                        or attempt.prepared is not marker.prepared
+                                        or attempt.submission_completion is not completion
+                                        or attempt.accepted_prompt_id != accepted_prompt_id
+                                    ))):
+                                self._retain_profile_a_submitted_event_uncertain_locked(marker)
+                                return "uncertain_non_authoritative"
+
+                            marker.prompt_id = accepted_prompt_id
+                            marker.state = "event_acceptance_in_progress"
+                            started = marker.submission_started_event
+                            job = jobs._authorized_locked(lifecycle._job_id, lifecycle._claim_id)
+                            if (lifecycle._worker_storage_integration is not self
+                                    or lifecycle._state != "bound_non_executing"
+                                    or lifecycle._generation != self._lifecycle_generation
+                                    or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                                    or not self._root_binding_matches()
+                                    or self._capacity_owner._closed
+                                    or self._capacity_owner._invalid
+                                    or self._state != "bound_non_executing"
+                                    or inbox._closed or inbox._state != "accepted"
+                                    or inbox._envelope is not lifecycle._envelope
+                                    or job is None
+                                    or job.event_count != started.progress.sequence
+                                    or job.request_states[index] != "submitting"
+                                    or inbox._events.get(started.progress.sequence) is not started
+                                    or not any(item is started for item in inbox._authority_events)
+                                    or job.events.get(started.progress.sequence) != started.progress):
+                                self._retain_profile_a_submitted_event_uncertain_locked(marker)
+                                return "uncertain_non_authoritative"
+
+                            event = ExecutorEvent(
+                                lifecycle._job_id,
+                                lifecycle._claim_id,
+                                lifecycle._manifest_identity,
+                                WorkerEvent(
+                                    job.event_count + 1, index, "submitted", 0,
+                                    None, accepted_prompt_id,
+                                ),
+                                None,
+                            )
+
+                            def accept_and_bind():
+                                accepted_event = False
+                                try:
+                                    accepted = inbox.event_for_characterization(
+                                        jobs, event, target_current=True,
+                                    )
+                                    accepted_event = (
+                                        inbox._events.get(event.progress.sequence) is event
+                                        and any(item is event for item in inbox._authority_events)
+                                        and job.events.get(event.progress.sequence) == event.progress
+                                        and job.event_count == event.progress.sequence
+                                        and job.request_states[index] == "awaiting_result"
+                                    )
+                                    if accepted == "accepted" and accepted_event:
+                                        marker.event = event
+                                        # A same-thread reentrant close or
+                                        # invalidation may run inside a test
+                                        # sink. Preserve the accepted event but
+                                        # never claim Profile A binding then.
+                                        if (self._state == "bound_non_executing"
+                                                and lifecycle._state == "bound_non_executing"
+                                                and not self._capacity_owner._closed
+                                                and not self._capacity_owner._invalid
+                                                and self._worker._state == "running"
+                                                and self._worker._active_task is None
+                                                and self._worker._characterization_owner_claim
+                                                    is self._worker_owner_claim):
+                                            marker.state = "events_accepted"
+                                            return "submitted_event_accepted_non_authoritative"
+                                    elif accepted_event:
+                                        marker.event = event
+                                except Exception:
+                                    accepted_event = (
+                                        inbox._events.get(event.progress.sequence) is event
+                                        and any(item is event for item in inbox._authority_events)
+                                        and job.events.get(event.progress.sequence) == event.progress
+                                    )
+                                    if accepted_event:
+                                        marker.event = event
+                                self._retain_profile_a_submitted_event_uncertain_locked(
+                                    marker,
+                                    accepted_event=event if accepted_event else None,
+                                )
+                                return "uncertain_non_authoritative"
+
+                            published = self._worker._run_if_issued_completion_for_prepared_request_for_characterization(
+                                completion, marker.prepared,
+                                self._worker_owner_claim, accept_and_bind,
+                            )
+                            if published is None:
+                                self._retain_profile_a_submitted_event_uncertain_locked(marker)
+                                return "uncertain_non_authoritative"
+                            return published
 
     def _begin_staging_preadmission_for_characterization(self, lifecycle, lease, estimate):
         """Reserve bounded staging capacity for one exact active Profile A lease."""

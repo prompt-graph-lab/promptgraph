@@ -666,16 +666,70 @@ class ProjectAgentSessionRuntime:
                     source_event = integration._profile_a_submission_started_events.get(
                         request_index,
                     )
-                    source_kinds = ()
-                    if (source_event is not None
-                            and any(item is source_event for item in paired)
-                            and source_event.progress.kind == "submission_started"):
-                        source_kinds = ("submission_started",)
-                    next_event = ("submitted" if source_kinds
-                                  else "submission_started")
+                    started_bound = (
+                        source_event is not None
+                        and any(item is source_event for item in paired)
+                        and source_event.progress.kind == "submission_started"
+                    )
+                    submitted_attempt = integration._profile_a_submitted_event_attempts.get(
+                        request_index,
+                    )
+                    submitted_event = (submitted_attempt.event
+                                       if submitted_attempt is not None else None)
+                    submitted_bound = (
+                        started_bound
+                        and submitted_attempt is not None
+                        and submitted_attempt.state == "events_accepted"
+                        and submitted_event is not None
+                        and submitted_event.progress.kind == "submitted"
+                        and any(item is submitted_event for item in paired)
+                    )
+                    if (source_event is not None and not started_bound) or (
+                            submitted_attempt is not None
+                            and submitted_attempt.state == "events_accepted"
+                            and not submitted_bound):
+                        # Both event owners may evict their bounded history.
+                        # Private retained identity without a current paired
+                        # event is stale evidence, not permission to restart
+                        # this one-shot request chain.
+                        conflict = True
+                    accepted_unbound_submitted = (
+                        any(event.progress.kind == "submitted" for event in paired)
+                        and not submitted_bound
+                    )
+                    source_kinds = (("submission_started", "submitted")
+                                    if submitted_bound else
+                                    ("submission_started",) if started_bound else ())
+                    marker_state = (submitted_attempt.state
+                                    if submitted_attempt is not None else None)
+                    blocked_states = {
+                        "claim_in_progress", "event_acceptance_in_progress",
+                        "retained_uncertain", "submission_rejected",
+                    }
+                    if submitted_bound:
+                        next_event = "remote_outputs_ready"
+                    elif accepted_unbound_submitted or marker_state in blocked_states:
+                        next_event = None
+                    elif started_bound:
+                        next_event = "submitted"
+                    else:
+                        next_event = "submission_started"
+                    if conflict:
+                        next_event = None
+                    if conflict:
+                        audit_status = "event_chain_conflict"
+                    elif submitted_bound:
+                        audit_status = "profile_a_submitted_event_observed"
+                    elif accepted_unbound_submitted:
+                        audit_status = "submitted_event_unbound"
+                    elif marker_state == "retained_uncertain":
+                        audit_status = "submitted_event_uncertain"
+                    elif marker_state in {"claim_in_progress", "event_acceptance_in_progress"}:
+                        audit_status = "submitted_event_pending"
+                    else:
+                        audit_status = "profile_a_event_chain_incomplete"
                     result = GenerationWorkerExecutorEventChainObservation(
-                        "event_chain_conflict" if conflict
-                        else "profile_a_event_chain_incomplete",
+                        audit_status,
                         request_index,
                         tuple(event.progress.kind for event in paired),
                         source_kinds,
@@ -2599,11 +2653,30 @@ class ProjectAgentSessionRuntime:
                             )
                     if current:
                         if integration_snapshot._profile_a:
+                            def observe_and_publish_profile_a_submitted():
+                                marker = integration_snapshot._claim_profile_a_submitted_event_attempt_for_characterization(
+                                    lease, completion,
+                                )
+                                try:
+                                    observed = integration_snapshot.observe_result_for_characterization(
+                                        lease, completion, worker_observation, current=True,
+                                    )
+                                except Exception:
+                                    if marker is not None:
+                                        return integration_snapshot._complete_profile_a_submitted_event_for_characterization(
+                                            lease, completion,
+                                            "host_observation_uncertain",
+                                        )
+                                    raise
+                                if marker is not None:
+                                    return integration_snapshot._complete_profile_a_submitted_event_for_characterization(
+                                        lease, completion, observed,
+                                    )
+                                return observed
+
                             result = self._generation_original_host_evidence_current_locked(
                                 lifecycle, lifecycle._pairing_generation,
-                                on_current=lambda: integration_snapshot.observe_result_for_characterization(
-                                    lease, completion, worker_observation, current=True,
-                                ),
+                                on_current=observe_and_publish_profile_a_submitted,
                             )
                             if result is not False:
                                 return result
