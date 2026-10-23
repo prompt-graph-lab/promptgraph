@@ -1327,3 +1327,31 @@ JSON persistence as distinct one-shot transitions. Production transport,
 Human Start, protected-root provisioning, durable restart/recovery, retention
 and discard remain unimplemented or unauthorized. All production capability
 flags remain false and `authorship=unverified`.
+
+## C2B-8D-19G-B Profile A genuine Executor event custody (first transition)
+
+19G-B supplies a prospective Host-owned pre-send seam for a new, exact
+Profile A Worker operation. Before the Worker operation is registered, the
+original Host accepts one `submission_started` event through the existing Job
+Registry and Inbox for the active envelope, Claim and frozen request. A private
+integration record distinguishes this event's source from generic injected
+Executor events. A read-only audit reports accepted Job/Inbox event agreement
+and Profile A source-bound event kinds separately; a matching fake event is
+never upgraded to genuine source evidence. If acceptance is refused or
+uncertain, the Worker lease is withheld/revoked. If capacity invalidation
+follows Job/Inbox acceptance but precedes Worker registration, the accepted
+event remains visible but is not marked Profile A sourced; the one-shot
+integration is revoked and cannot be retried. Host disarm/close racing with
+admission fences later use of the Worker registration.
+
+This is a deliberately partial 19G-B boundary. It does not report
+`submitted` after Worker completion, nor does it bridge ready history and
+remote validation to `remote_outputs_ready`, or protected Promotion
+publication to `outputs_ready`. It does not call
+`GenerationProtectedCandidateAdmission`; `candidate_eligibility` remains
+`not_established`, and the existing Candidate writer and publication checks
+are unchanged. Old 19G-A count observations remain read-only and cannot be
+backfilled. The start event is a pre-send state transition, not proof that a
+POST happened or ComfyUI accepted it. Candidate registration, Undo and
+Project save remain separate later transitions. No production gate is opened;
+`authorship=unverified`.

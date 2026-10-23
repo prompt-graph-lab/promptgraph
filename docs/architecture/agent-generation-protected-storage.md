@@ -2177,3 +2177,33 @@ considered. Tests use disposable Windows-native roots. They do not establish
 power-loss durability, restart authority, cross-process byte quotas, production
 root provisioning or live ComfyUI behavior. All production gates remain false
 and `authorship=unverified`.
+
+## C2B-8D-19G-B Profile A pre-send Executor event custody
+
+19G-B adds a prospective, explicitly opted-in original-Host seam for the
+first Job/Inbox transition only. For an exact active Profile A lifecycle,
+accepted envelope, frozen request, Claim and bound Worker integration, the
+Host accepts `submission_started` through the existing Job Registry and Inbox
+before it registers the exact Worker operation. A failed or unacknowledged
+event acceptance does not return an operation lease; the attempted integration
+is revoked rather than reopened. If capacity/owner invalidation occurs after
+Job/Inbox acceptance but before Worker registration, that accepted record is
+retained but is not entered in the Profile A source-bound event map; no Worker
+lease is returned and the integration is revoked. A concurrent Host close or
+disarm fences later use of the Worker registration.
+
+The source-bound event is retained privately by the original integration.
+Previously accepted generic or fake Executor events are not upgraded by
+matching event values, sequence numbers or counts. The read-only event-chain
+inspection reports accepted Job/Inbox agreement separately from Profile A
+source-bound event provenance. It cannot make an old 19G-A count observation
+eligible and always reports `candidate_eligibility="not_established"`.
+
+No `submitted`, `awaiting_result`, `remote_outputs_ready`, or `outputs_ready`
+event is sourced by this slice. It does not invoke the existing protected
+Candidate Admission or Candidate writer and does not mutate Candidates,
+Project, Undo, or persistence. The first accepted start event alone proves
+neither that an HTTP request was sent nor that ComfyUI accepted it. Later
+events must be accepted at their actual original-Host Worker/result/Promotion
+boundaries before Candidate eligibility can be considered. All production
+capability flags remain false and `authorship=unverified`.
