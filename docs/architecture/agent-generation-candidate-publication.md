@@ -298,3 +298,25 @@ existing Executor event owner and then reuses the existing admission and
 single-writer checks. This characterization is offline-only: all production
 capability flags remain false, no Candidate or Project state is changed, and
 `authorship=unverified`.
+
+## C2B-8D-19G-B records only the original-Host pre-send event
+
+The new prospective Profile A seam accepts `submission_started` through the
+existing Job Registry and Inbox before the exact Worker operation is
+registered. The original Worker integration privately records that exact
+accepted event as Profile A sourced. The read-only event-chain observation
+distinguishes it from generic/fake Executor events, and never upgrades an old
+event or 19G-A promotion-count observation by matching values. If capacity is
+invalidated between Job/Inbox acceptance and Worker registration, the accepted
+event is retained but is not source-bound; the Worker lease is withheld and
+the one-shot integration is revoked.
+
+No later `submitted`, `remote_outputs_ready`, or `outputs_ready` source event
+is provided yet, so this does not satisfy the protected Candidate Admission's
+ordered event requirements. It never calls that admission or the Candidate
+writer; `candidate_eligibility="not_established"`. The event indicates a
+pre-send transition only, not an actual HTTP send or remote acceptance. The
+next bounded integration must source each later transition from its real
+original-Host Worker/result/Promotion boundary, then reuse the existing
+admission and single Candidate writer unchanged. All production gates remain
+false and `authorship=unverified`.

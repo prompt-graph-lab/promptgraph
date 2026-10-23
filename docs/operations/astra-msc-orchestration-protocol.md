@@ -118,6 +118,10 @@ These are the normal gates for this repository's Astra-MSC procedure.
   the current coordinator identity and target identity; if they are equal,
   stop and classify the attempt as `SELF_DISPATCH_BLOCKED`.
 - Current and target worker identities must be distinct before dispatch.
+- If a task explicitly declares coordinator-only work with no worker
+  delegation, the coordinator performs only the authorized bounded work
+  directly. Worker identity/evidence is not applicable and must not be
+  invented or implied.
 - Conversation identity and execution identity are separate gates. A durable
   conversation is not a valid Persistent resource without its bound,
   verified execution environment, and a Worktree is not bound merely because

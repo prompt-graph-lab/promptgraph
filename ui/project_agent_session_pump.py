@@ -483,6 +483,213 @@ class ProjectAgentSessionRuntime:
                     kind, prepared, prompt_id, correlation,
                 )
 
+    def begin_profile_a_worker_submission_with_executor_event_for_characterization(
+            self, state, prepared, *, characterization=False, disposable_opt_in=False):
+        """Prospectively accept the real Profile A pre-send event before Worker admission.
+
+        This deliberately covers only ``submission_started``. It does not emit
+        ``submitted`` or any later event, and it cannot make a Profile A
+        Promotion eligible for Candidate admission. The exact Worker operation
+        remains unregistered until both the Job Registry and Inbox accept the
+        source-bound event.
+        """
+        from core.comfy_prompt_request import is_owner_prepared_frozen_request
+        from ui.agent_generation_executor_inbox import ExecutorEvent
+        from ui.agent_generation_job import JobRequest, WorkerEvent
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerOperationLease,
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if not is_owner_prepared_frozen_request(prepared):
+            return None, "prepared_request_invalid"
+
+        captured = {}
+        status = "host_unavailable"
+        try:
+            with self._publication_gate:
+                if self._closed:
+                    return None, "runtime_closed"
+                if type(state) is not dict:
+                    return None, "host_unavailable"
+                self._synchronize_target_locked(
+                    state.get("project"), state.get("current_project_path", ""),
+                )
+                with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                    if lifecycle is None:
+                        return None, self._generation_original_host_lifecycle_reason or "lifecycle_unavailable"
+                    integration = lifecycle._worker_storage_integration
+                    if (type(integration) is not OriginalHostWorkerStorageIntegration
+                            or integration._profile_a is not True):
+                        return None, "profile_a_worker_unavailable"
+
+                    def begin_and_accept_source_event():
+                        jobs, inbox = self.generation_jobs, self._generation_executor_inbox
+                        envelope = lifecycle._envelope
+                        index = prepared.request_index
+                        if (inbox._state != "accepted" or inbox._envelope is not envelope
+                                or envelope is None or not 0 <= index < len(envelope.manifest.requests)):
+                            return None, "accepted_executor_envelope_required"
+                        job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
+                        request = envelope.manifest.requests[index]
+                        if (job is None or index >= len(job.requests)
+                                or job.request_states[index] != "unsent"
+                                or job.requests[index] != JobRequest(
+                                    request.request_id, request.illustration_id,
+                                    request.run_index, request.workflow_identity,
+                                )):
+                            return None, "executor_event_chain_conflict"
+                        correlation = integration.correlation_for_request_for_characterization(
+                            index, kind="submission",
+                        )
+                        if correlation is None:
+                            return None, "worker_correlation_unavailable"
+                        lease, lease_status = integration.begin_operation_for_characterization(
+                            "submission", prepared, None, correlation,
+                            _defer_worker_registration=True,
+                        )
+                        if (type(lease) is not GenerationWorkerOperationLease
+                                or lease_status != "pending_executor_event"):
+                            return None, lease_status
+                        captured.update({"integration": integration, "lease": lease})
+                        event = ExecutorEvent(
+                            envelope.job_id,
+                            envelope.claim_id,
+                            envelope.manifest.manifest_identity,
+                            WorkerEvent(job.event_count + 1, index, "submission_started"),
+                        )
+                        accepted = inbox.event_for_characterization(
+                            jobs, event, target_current=True,
+                        )
+                        if accepted != "accepted":
+                            return None, "executor_event_not_accepted"
+                        captured["event"] = event
+                        if not integration._activate_profile_a_submission_after_event_for_characterization(
+                                lease, event):
+                            return None, "worker_admission_after_event_refused"
+                        return lease, "admitted_with_submission_started"
+
+                    result = self._generation_original_host_evidence_current_locked(
+                        lifecycle, lifecycle._pairing_generation,
+                        on_current=begin_and_accept_source_event,
+                    )
+                    if result is False:
+                        status = "host_evidence_unavailable"
+                    elif type(result) is tuple and len(result) == 2:
+                        lease, status = result
+                    else:
+                        status = "host_evidence_unavailable"
+        except Exception:
+            status = "executor_event_outcome_uncertain"
+
+        if status != "admitted_with_submission_started":
+            integration = captured.get("integration")
+            if integration is not None and captured.get("lease") is not None:
+                # A failed or unacknowledged source-event publication is
+                # one-shot. Retain the operation instead of reopening it.
+                integration.revoke("host_evidence_unavailable")
+            return None, status
+        return captured["lease"], status
+
+    def inspect_profile_a_worker_executor_event_chain_for_characterization(
+            self, state, request_index, *, characterization=False, disposable_opt_in=False):
+        """Read exact Job/Inbox event agreement without upgrading event authority."""
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerExecutorEventChainObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        unavailable = GenerationWorkerExecutorEventChainObservation(
+            "host_unavailable", request_index if type(request_index) is int else -1,
+            (), (), "submission_started",
+        )
+        if characterization is not True or disposable_opt_in is not True:
+            return GenerationWorkerExecutorEventChainObservation(
+                "execution_unavailable", unavailable.request_index, (), (), "submission_started",
+            )
+        if type(state) is not dict or type(request_index) is not int or request_index < 0:
+            return GenerationWorkerExecutorEventChainObservation(
+                "invalid_input", unavailable.request_index, (), (), "submission_started",
+            )
+
+        result = unavailable
+        with self._publication_gate:
+            if self._closed:
+                return unavailable
+            self._synchronize_target_locked(
+                state.get("project"), state.get("current_project_path", ""),
+            )
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is None:
+                    return unavailable
+                integration = lifecycle._worker_storage_integration
+                if (type(integration) is not OriginalHostWorkerStorageIntegration
+                        or integration._profile_a is not True):
+                    return unavailable
+
+                def inspect_chain():
+                    nonlocal result
+                    jobs, inbox = self.generation_jobs, self._generation_executor_inbox
+                    envelope = lifecycle._envelope
+                    if (envelope is None or inbox._state != "accepted"
+                            or inbox._envelope is not envelope
+                            or request_index >= len(envelope.manifest.requests)):
+                        return False
+                    job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
+                    if (job is None or request_index >= len(job.request_states)):
+                        return False
+
+                    job_by_sequence = {
+                        event.sequence: event for event in job.authority_events
+                        if type(getattr(event, "sequence", None)) is int
+                    }
+                    inbox_events = tuple(
+                        event for event in inbox._authority_events
+                        if event.progress.request_index == request_index
+                    )
+                    paired = []
+                    conflict = False
+                    for event in inbox_events:
+                        progress = event.progress
+                        if job_by_sequence.get(progress.sequence) == progress:
+                            paired.append(event)
+                        else:
+                            conflict = True
+                    paired_sequences = {event.progress.sequence for event in paired}
+                    if any(event.request_index == request_index
+                           and event.sequence not in paired_sequences
+                           for event in job.authority_events):
+                        conflict = True
+
+                    source_event = integration._profile_a_submission_started_events.get(
+                        request_index,
+                    )
+                    source_kinds = ()
+                    if (source_event is not None
+                            and any(item is source_event for item in paired)
+                            and source_event.progress.kind == "submission_started"):
+                        source_kinds = ("submission_started",)
+                    next_event = ("submitted" if source_kinds
+                                  else "submission_started")
+                    result = GenerationWorkerExecutorEventChainObservation(
+                        "event_chain_conflict" if conflict
+                        else "profile_a_event_chain_incomplete",
+                        request_index,
+                        tuple(event.progress.kind for event in paired),
+                        source_kinds,
+                        next_event,
+                    )
+                    return True
+
+                current = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation, on_current=inspect_chain,
+                )
+                if current is False:
+                    return unavailable
+        return result
+
     def pre_admit_generation_worker_staging_for_characterization(self, lease, estimate):
         """Reserve staging capacity for one exact Profile A Worker lease only.
 

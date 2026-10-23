@@ -2,9 +2,11 @@
 
 This owner binds exact references, retains bounded diagnostic observations and
 may reserve one pre-write staging estimate per request through the existing
-Profile A capacity ledger. It never starts or performs Worker I/O, invokes a
-Journal/storage/promotion writer, advances the Job Registry/Inbox, or grants
-write or publication authority.
+Profile A capacity ledger. The original-host runtime's explicit Profile A
+pre-send seam can retain one exact accepted ``submission_started`` Executor
+event here before registering the Worker operation. This owner itself never
+advances the Job Registry/Inbox, performs Worker I/O, invokes a Journal/storage/
+promotion writer, or grants write or publication authority.
 """
 
 from collections import deque
@@ -218,6 +220,24 @@ class GenerationWorkerProtectedCandidateAdmissionPreflightObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerExecutorEventChainObservation:
+    """Read-only view of accepted and Profile A source-bound Job/Inbox events."""
+
+    status: str
+    request_index: int
+    accepted_event_kinds: tuple[str, ...]
+    profile_a_event_kinds: tuple[str, ...]
+    next_required_event: str | None
+    candidate_eligibility: str = "not_established"
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass(frozen=True)
 class GenerationWorkerRemoteOutputWriterEvidence:
     """Exact remote-history evidence; never an actionable storage capability."""
 
@@ -321,7 +341,11 @@ def unavailable_observation(status="unavailable"):
 
 
 class OriginalHostWorkerStorageIntegration:
-    """One exact lifecycle's Worker/root references and bounded pre-admission."""
+    """One exact lifecycle's Worker/root references and bounded pre-admission.
+
+    The runtime may retain one source-bound pre-send event after Job/Inbox
+    acceptance; all subsequent Executor event stages remain unimplemented here.
+    """
 
     execution_available = False
     protected_storage_available = False
@@ -450,6 +474,10 @@ class OriginalHostWorkerStorageIntegration:
         self._submitted = set()
         self._history_attempts = {}
         self._accepted_prompt_ids = {}
+        # Only the prospective Profile A pre-send seam records a source-bound
+        # Executor event here. Existing fake/legacy event observations are not
+        # upgraded by matching sequence, count, or event values.
+        self._profile_a_submission_started_events = {}
         # One staging pre-admission attempt per manifest request. The entries
         # privately retain only the exact host lease and the existing
         # capacity owner's opaque reservation; neither is returned as a
@@ -543,12 +571,16 @@ class OriginalHostWorkerStorageIntegration:
         self._issued[key] = correlation
         return correlation
 
-    def begin_operation_for_characterization(self, kind, prepared, prompt_id, correlation):
+    def begin_operation_for_characterization(
+            self, kind, prepared, prompt_id, correlation, *, _defer_worker_registration=False):
         """Pin one host operation before an external caller uses its Worker."""
         from core.comfy_prompt_request import is_owner_prepared_frozen_request
         from ui.agent_generation_http_io_worker import HTTPIOCorrelation
 
-        if (kind not in {"submission", "history"}
+        if (type(_defer_worker_registration) is not bool
+                or (_defer_worker_registration
+                    and (not self._profile_a or kind != "submission"))
+                or kind not in {"submission", "history"}
                 or type(correlation) is not HTTPIOCorrelation
                 or not is_owner_prepared_frozen_request(prepared)):
             return None, "invalid_operation"
@@ -575,13 +607,16 @@ class OriginalHostWorkerStorageIntegration:
                     with self._lock:
                         result = self._begin_operation_locked(
                             kind, prepared, prompt_id, correlation, lifecycle,
+                            defer_worker_registration=_defer_worker_registration,
                         )
         if binding_invalid:
             self.revoke("host_evidence_unavailable")
             return None, "stale_non_authoritative"
         return result
 
-    def _begin_operation_locked(self, kind, prepared, prompt_id, correlation, lifecycle):
+    def _begin_operation_locked(
+            self, kind, prepared, prompt_id, correlation, lifecycle, *,
+            defer_worker_registration=False):
         """Install exact Worker admission while lifecycle/capacity are pinned."""
         from core.comfy_prompt_request import (
             _frozen_fields, prepare_frozen_prompt_request,
@@ -636,9 +671,10 @@ class OriginalHostWorkerStorageIntegration:
                         or attempt.prepared is not prepared
                         or attempt.accepted_prompt_id != prompt_id):
                     return None, "remote_output_history_unavailable"
-        if not self._worker._register_original_host_operation_for_characterization(
-                self._worker_owner_claim, kind, correlation):
-            return None, "worker_unavailable"
+        if not defer_worker_registration:
+            if not self._worker._register_original_host_operation_for_characterization(
+                    self._worker_owner_claim, kind, correlation):
+                return None, "worker_unavailable"
         if kind == "submission":
             self._submitted.add((kind, index, correlation.attempt_id))
         lease = GenerationWorkerOperationLease(
@@ -653,7 +689,72 @@ class OriginalHostWorkerStorageIntegration:
                 # runs; a copied completion or unrelated same-prompt read
                 # cannot later be paired with the pre-admission.
                 attempt.history_lease = lease
-        return lease, "admitted_non_executing"
+        return lease, ("pending_executor_event" if defer_worker_registration
+                       else "admitted_non_executing")
+
+    def _activate_profile_a_submission_after_event_for_characterization(self, lease, event):
+        """Register an exact Worker submission only after its accepted Host event.
+
+        The caller must hold the runtime publication/route gate and the exact
+        Job Registry + Inbox locks. This method repeats the private custody
+        checks under the established Job -> Inbox -> lifecycle -> capacity ->
+        integration -> Worker lock order.
+        """
+        from ui.agent_generation_executor_inbox import ExecutorEvent
+        from ui.agent_generation_job import WorkerEvent
+
+        lifecycle = self._lifecycle_ref()
+        if (not self._profile_a or lifecycle is None
+                or type(lease) is not GenerationWorkerOperationLease
+                or type(event) is not ExecutorEvent
+                or type(event.progress) is not WorkerEvent):
+            return False
+        jobs, inbox = lifecycle._jobs, lifecycle._inbox
+        with jobs._lock:
+            with inbox._lock:
+                job = jobs._authorized_locked(lifecycle._job_id, lifecycle._claim_id)
+                sequence = event.progress.sequence
+                index = lease.request_index
+                if (job is None or inbox._closed or inbox._state != "accepted"
+                        or inbox._envelope is not lifecycle._envelope
+                        or inbox._events.get(sequence) is not event
+                        or not any(item is event for item in inbox._authority_events)
+                        or job.event_count != sequence
+                        or job.events.get(sequence) != event.progress
+                        or not job.authority_events
+                        or job.authority_events[-1] != event.progress
+                        or job.request_states[index] != "submitting"
+                        or (event.job_id, event.claim_id, event.manifest_identity)
+                            != (lifecycle._job_id, lifecycle._claim_id,
+                                lifecycle._manifest_identity)
+                        or (event.progress.kind, event.progress.request_index,
+                            event.progress.output_count, event.progress.prompt_id,
+                            event.outputs)
+                            != ("submission_started", index, 0, None, None)
+                        or self._profile_a_submission_started_events.get(index) is not None):
+                    return False
+                with lifecycle._lock:
+                    with self._capacity_owner._lock:
+                        with self._lock:
+                            if (lifecycle._worker_storage_integration is not self
+                                    or lifecycle._state != "bound_non_executing"
+                                    or lifecycle._generation != self._lifecycle_generation
+                                    or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                                    or not self._root_binding_matches()
+                                    or self._state != "bound_non_executing"
+                                    or self._active is not lease
+                                    or lease.kind != "submission"
+                                    or lease.lifecycle_generation != self._lifecycle_generation
+                                    or self._active_prepared is None
+                                    or self._active_prepared.request_index != index
+                                    or self._issued.get(self._correlation_key(
+                                        "submission", lease.correlation)) is not lease.correlation):
+                                return False
+                            if not self._worker._register_original_host_operation_for_characterization(
+                                    self._worker_owner_claim, "submission", lease.correlation):
+                                return False
+                            self._profile_a_submission_started_events[index] = event
+                            return True
 
     def _begin_staging_preadmission_for_characterization(self, lifecycle, lease, estimate):
         """Reserve bounded staging capacity for one exact active Profile A lease."""

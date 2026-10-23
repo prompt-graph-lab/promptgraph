@@ -626,6 +626,296 @@ def test_profile_a_worker_storage_uses_exact_four_roots_and_bound_project_refere
     assert all(root._closed is False for root in roots.values())
 
 
+def test_profile_a_pre_send_seam_accepts_exact_started_event_before_worker_admission():
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerExecutorEventChainObservation,
+    )
+
+    prompt_id = str(uuid.uuid4())
+    (_values, runtime, _route, state, lifecycle, roots, capacity,
+     reference, worker) = _profile_a_bound_claim(prompt_id=prompt_id)
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    assert worker.start_for_characterization().state == "running"
+    prepared = _prepared(lifecycle)
+
+    before = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+        state, 0, characterization=True, disposable_opt_in=True,
+    )
+    assert type(before) is GenerationWorkerExecutorEventChainObservation
+    assert before.profile_a_event_kinds == ()
+    assert before.candidate_eligibility == "not_established"
+    assert before.next_required_event == "submission_started"
+
+    lease, status = runtime.begin_profile_a_worker_submission_with_executor_event_for_characterization(
+        state, prepared, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "admitted_with_submission_started"
+    assert lease.kind == "submission" and lease.correlation is not None
+    job = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    assert job["event_count"] == 1
+    assert job["requests"][0]["state"] == "submitting"
+    inbox_events = tuple(runtime._generation_executor_inbox._authority_events)
+    assert len(inbox_events) == 1
+    assert inbox_events[0].progress.kind == "submission_started"
+    assert inbox_events[0].progress.sequence == 1
+    assert inbox_events[0].progress.request_index == 0
+    assert inbox_events[0].outputs is None
+
+    # The exact first operation is one-shot; a duplicate call cannot add a
+    # second source event or obtain a second Worker admission.
+    duplicate, duplicate_status = runtime.begin_profile_a_worker_submission_with_executor_event_for_characterization(
+        state, prepared, characterization=True, disposable_opt_in=True,
+    )
+    assert duplicate is None
+    assert duplicate_status == "executor_event_chain_conflict"
+    assert len(runtime._generation_executor_inbox._authority_events) == 1
+
+    completion = worker.perform_for_characterization(
+        "submission", prepared, None, lease.correlation,
+    )
+    assert completion.outcome.status == "accepted"
+    assert runtime.observe_generation_worker_http_result_for_characterization(
+        lease, completion,
+    ) == "observed_non_authoritative"
+
+    audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+        state, 0, characterization=True, disposable_opt_in=True,
+    )
+    assert audit.profile_a_event_kinds == ("submission_started",)
+    assert audit.accepted_event_kinds == ("submission_started",)
+    assert audit.next_required_event == "submitted"
+    assert audit.candidate_eligibility == "not_established"
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id)["registered_count"] == 0
+    assert runtime._generation_executor_inbox._authority_events == [inbox_events[0]]
+    integration = lifecycle._worker_storage_integration
+    assert integration.execution_available is False
+    assert integration.protected_storage_available is False
+    assert integration.promotion_available is False
+    assert integration.candidate_publication_allowed is False
+    assert integration.authorship == "unverified"
+    runtime.close()
+
+
+def test_profile_a_pre_send_seam_does_not_upgrade_existing_fake_event_progress():
+    from ui.agent_generation_executor_handoff import deliver_executor_event_for_characterization
+    from ui.agent_generation_executor_inbox import ExecutorEvent
+    from ui.agent_generation_job import WorkerEvent
+
+    prompt_id = str(uuid.uuid4())
+    (_values, runtime, _route, state, lifecycle, roots, capacity,
+     reference, worker) = _profile_a_bound_claim(prompt_id=prompt_id)
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    prepared = _prepared(lifecycle)
+    envelope = lifecycle._envelope
+    assert deliver_executor_event_for_characterization(
+        state, runtime, ExecutorEvent(
+            envelope.job_id, envelope.claim_id, envelope.manifest.manifest_identity,
+            WorkerEvent(1, 0, "submission_started"),
+        ),
+    ) == "accepted"
+
+    lease, status = runtime.begin_profile_a_worker_submission_with_executor_event_for_characterization(
+        state, prepared, characterization=True, disposable_opt_in=True,
+    )
+    assert lease is None
+    assert status == "executor_event_chain_conflict"
+    audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+        state, 0, characterization=True, disposable_opt_in=True,
+    )
+    assert audit.accepted_event_kinds == ("submission_started",)
+    assert audit.profile_a_event_kinds == ()
+    assert audit.candidate_eligibility == "not_established"
+    assert worker.observation_for_characterization().accepted_operations == 0
+    runtime.close()
+
+
+def test_profile_a_pre_send_event_commit_serializes_with_host_close():
+    prompt_id = str(uuid.uuid4())
+    (_values, runtime, _route, state, lifecycle, roots, capacity,
+     reference, worker) = _profile_a_bound_claim(prompt_id=prompt_id)
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    prepared = _prepared(lifecycle)
+    integration = lifecycle._worker_storage_integration
+    event_commit_entered = threading.Event()
+    release_event_commit = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    original_activate = integration._activate_profile_a_submission_after_event_for_characterization
+
+    def pause_after_event_acceptance(lease, event):
+        event_commit_entered.set()
+        assert release_event_commit.wait(5)
+        return original_activate(lease, event)
+
+    integration._activate_profile_a_submission_after_event_for_characterization = (
+        pause_after_event_acceptance
+    )
+    result = []
+
+    def begin():
+        result.append(runtime.begin_profile_a_worker_submission_with_executor_event_for_characterization(
+            state, prepared, characterization=True, disposable_opt_in=True,
+        ))
+
+    def close_host():
+        close_started.set()
+        runtime.close()
+        close_finished.set()
+
+    begin_thread = threading.Thread(target=begin)
+    close_thread = threading.Thread(target=close_host)
+    begin_thread.start()
+    assert event_commit_entered.wait(5)
+    accepted_before_close = tuple(runtime._generation_executor_inbox._authority_events)
+    assert len(accepted_before_close) == 1
+    assert accepted_before_close[0].progress.kind == "submission_started"
+    close_thread.start()
+    assert close_started.wait(5)
+    release_event_commit.set()
+    begin_thread.join(5)
+    close_thread.join(5)
+    assert not begin_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert close_finished.is_set()
+    assert len(result) == 1
+    lease, status = result[0]
+    assert status == "admitted_with_submission_started"
+
+    # Close wins before the caller can use the returned correlation. The
+    # registered Worker is closed and cannot cross its transport boundary.
+    completion = worker.perform_for_characterization(
+        "submission", prepared, None, lease.correlation,
+    )
+    # The close path clears the exact Worker registration, so the later caller
+    # is rejected as unknown before queue admission rather than being given a
+    # synthetic pre-send result.
+    assert completion.outcome.status == "unknown"
+    assert worker.observation_for_characterization().accepted_operations == 0
+
+
+def test_profile_a_pre_send_event_commit_serializes_with_host_disarm():
+    prompt_id = str(uuid.uuid4())
+    (_values, runtime, _route, state, lifecycle, roots, capacity,
+     reference, worker) = _profile_a_bound_claim(prompt_id=prompt_id)
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    assert worker.start_for_characterization().state == "running"
+    prepared = _prepared(lifecycle)
+    integration = lifecycle._worker_storage_integration
+    event_commit_entered = threading.Event()
+    release_event_commit = threading.Event()
+    disarm_started = threading.Event()
+    disarm_finished = threading.Event()
+    original_activate = integration._activate_profile_a_submission_after_event_for_characterization
+
+    def pause_after_event_acceptance(lease, event):
+        event_commit_entered.set()
+        assert release_event_commit.wait(5)
+        return original_activate(lease, event)
+
+    integration._activate_profile_a_submission_after_event_for_characterization = (
+        pause_after_event_acceptance
+    )
+    result = []
+
+    def begin():
+        result.append(runtime.begin_profile_a_worker_submission_with_executor_event_for_characterization(
+            state, prepared, characterization=True, disposable_opt_in=True,
+        ))
+
+    def disarm_host():
+        disarm_started.set()
+        runtime.disarm_launcher_rendezvous()
+        disarm_finished.set()
+
+    begin_thread = threading.Thread(target=begin)
+    disarm_thread = threading.Thread(target=disarm_host)
+    begin_thread.start()
+    assert event_commit_entered.wait(5)
+    disarm_thread.start()
+    assert disarm_started.wait(5)
+    release_event_commit.set()
+    begin_thread.join(5)
+    disarm_thread.join(5)
+    assert not begin_thread.is_alive()
+    assert not disarm_thread.is_alive()
+    assert disarm_finished.is_set()
+    assert len(result) == 1
+    lease, status = result[0]
+    assert status == "admitted_with_submission_started"
+
+    # Host disarm invalidates the exact Claim and Worker registration before a
+    # later caller can use the returned correlation.
+    completion = worker.perform_for_characterization(
+        "submission", prepared, None, lease.correlation,
+    )
+    assert completion.outcome.status == "unknown"
+    assert worker.observation_for_characterization().accepted_operations == 0
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id)["state"] == "unavailable"
+
+
+def test_profile_a_pre_send_event_refuses_capacity_closed_before_worker_admission():
+    prompt_id = str(uuid.uuid4())
+    (_values, runtime, _route, state, lifecycle, roots, capacity,
+     reference, worker) = _profile_a_bound_claim(prompt_id=prompt_id)
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    assert worker.start_for_characterization().state == "running"
+    prepared = _prepared(lifecycle)
+    integration = lifecycle._worker_storage_integration
+    event_commit_entered = threading.Event()
+    release_event_commit = threading.Event()
+    original_activate = integration._activate_profile_a_submission_after_event_for_characterization
+
+    def pause_after_event_acceptance(lease, event):
+        event_commit_entered.set()
+        assert release_event_commit.wait(5)
+        return original_activate(lease, event)
+
+    integration._activate_profile_a_submission_after_event_for_characterization = (
+        pause_after_event_acceptance
+    )
+    result = []
+    begin_thread = threading.Thread(target=lambda: result.append(
+        runtime.begin_profile_a_worker_submission_with_executor_event_for_characterization(
+            state, prepared, characterization=True, disposable_opt_in=True,
+        )
+    ))
+    begin_thread.start()
+    assert event_commit_entered.wait(5)
+    capacity.close()
+    release_event_commit.set()
+    begin_thread.join(5)
+    assert not begin_thread.is_alive()
+    assert len(result) == 1
+    lease, status = result[0]
+    assert lease is None
+    assert status == "worker_admission_after_event_refused"
+
+    # The Job/Inbox event remains visible as accepted, but has no private
+    # Profile A source binding and cannot be retried/upgraded after capacity
+    # ownership was lost.
+    event = runtime._generation_executor_inbox._authority_events[0]
+    assert event.progress.kind == "submission_started"
+    assert integration._profile_a_submission_started_events == {}
+    assert worker.observation_for_characterization().accepted_operations == 0
+    audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+        state, 0, characterization=True, disposable_opt_in=True,
+    )
+    assert audit.accepted_event_kinds == ("submission_started",)
+    assert audit.profile_a_event_kinds == ()
+    assert audit.candidate_eligibility == "not_established"
+    runtime.close()
+
+
 def test_profile_a_exact_success_history_publishes_non_authoritative_writer_evidence_once():
     from ui.agent_generation_original_host_worker_storage import (
         GenerationWorkerRemoteOutputWriterEvidence,
@@ -2865,6 +3155,14 @@ def test_profile_a_published_promotion_candidate_admission_is_read_only_and_one_
     assert result.authorship == "unverified"
     assert attempt.candidate_admission_observation is result
     assert attempt.candidate_admission_state == "preflight_observed_non_authoritative"
+    event_audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+        {"project": project, "current_project_path": lifecycle._project_path},
+        attempt.lease.request_index, characterization=True, disposable_opt_in=True,
+    )
+    assert event_audit.accepted_event_kinds == ()
+    assert event_audit.profile_a_event_kinds == ()
+    assert event_audit.next_required_event == "submission_started"
+    assert event_audit.candidate_eligibility == "not_established"
     assert attempt.promotion_publication_observation is publication
     assert attempt.promotion_receipt is promotion_receipt
     assert attempt.promotion_preflight_state == promotion_state == "promoted_non_authoritative"
