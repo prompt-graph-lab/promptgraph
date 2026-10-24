@@ -4203,6 +4203,54 @@ def test_profile_a_outputs_ready_rejects_copied_locator_then_accepts_exact_obser
     runtime.finish_generation_worker_storage_close_for_characterization()
 
 
+def test_profile_a_outputs_ready_known_inbox_refusal_is_not_retained_uncertain(
+        native_profile_a_dual_custody_worker_storage, monkeypatch):
+    from core.generation_storage_admission import _profile_a_executor_event_is_unresolved
+
+    _roots, capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, _attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    inbox = runtime._generation_executor_inbox
+    original = inbox.event_for_characterization
+
+    def refuse_without_mutation(jobs, event, *, target_current):
+        if event.progress.kind == "outputs_ready":
+            return "acceptance_required"
+        return original(jobs, event, target_current=target_current)
+
+    monkeypatch.setattr(inbox, "event_for_characterization", refuse_without_mutation)
+    result, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert result is None
+    assert status == "protected_outputs_ready_event_refused"
+    marker = integration._profile_a_outputs_ready_event_attempts[0]
+    assert marker.state == "refused"
+    assert marker.event is not None
+    assert not any(event.progress.kind == "outputs_ready"
+                   for event in inbox._events.values())
+    assert not any(event.progress.kind == "outputs_ready"
+                   for event in inbox._authority_events)
+    job = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    assert job["event_count"] == 3
+    assert job["requests"][0]["state"] == "awaiting_download"
+    assert _profile_a_executor_event_is_unresolved(integration) is False
+    assert runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_outputs_ready_evidence_unavailable")
+
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+    assert capacity._scope_lease_retention_reason() == "settled"
+    capacity.close()
+
+
 def test_profile_a_outputs_ready_lost_ack_retains_unbound_event_without_replay(
         native_profile_a_dual_custody_worker_storage, monkeypatch):
     from core.generation_storage_admission import _profile_a_executor_event_is_unresolved

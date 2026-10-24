@@ -2369,16 +2369,38 @@ class ProjectAgentSessionRuntime:
                     lifecycle, captured, inventory, completed_delta,
                     destination_records, source_records, result,
                 )
-                return bool(
-                    type(commit_result["value"]) is tuple
-                    and len(commit_result["value"]) == 2
-                    and commit_result["value"][0] is result
-                    and commit_result["value"][1] == result.status
-                )
+                # This boolean reports only that the guarded callback ran.
+                # The integration result below separately carries accepted,
+                # definite refusal, or ambiguous event-acceptance status.
+                return True
 
             committed = with_current_host(commit_outputs_ready)
-            if committed is True and commit_result.get("value") is not None:
-                return commit_result["value"]
+            if committed is True:
+                outcome = commit_result.get("value")
+                if (type(outcome) is tuple and len(outcome) == 2
+                        and outcome[0] is result and outcome[1] == result.status):
+                    return outcome
+                if (type(outcome) is tuple and len(outcome) == 2
+                        and outcome[0] is None):
+                    outcome_status = outcome[1]
+                    if outcome_status == "protected_outputs_ready_event_uncertain":
+                        integration._retain_profile_a_outputs_ready_event(
+                            attempt, marker, "retained_uncertain",
+                        )
+                        return outcome
+                    if (outcome_status in {
+                            "protected_outputs_ready_event_refused",
+                            "protected_outputs_ready_event_commit_refused",
+                            "protected_outputs_ready_receipt_collision",
+                    }):
+                        integration._retain_profile_a_outputs_ready_event(
+                            attempt, marker, "refused",
+                        )
+                        return outcome
+                integration._retain_profile_a_outputs_ready_event(
+                    attempt, marker, "retained_uncertain",
+                )
+                return None, "protected_outputs_ready_event_uncertain"
             if committed is False:
                 integration._retain_profile_a_outputs_ready_event(
                     attempt, marker, "retained_uncertain",
