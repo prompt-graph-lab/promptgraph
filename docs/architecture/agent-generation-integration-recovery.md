@@ -284,8 +284,8 @@ production Start, or background worker was exercised.
 | Accepted handoff -> `POST /prompt` and prompt identity | Handoff/inbox/job owners, `ui/agent_generation_comfy_executor.py`, `core/comfy_prompt_request.py`, `core/comfy_http_submission.py`; exact frozen request and returned prompt UUID | Handoff/executor fake-provider tests plus isolated injected/monkeypatched HTTP wire tests; one attempt, sequential order, possible-send uncertainty, no automatic retry | HTTP submission is not the executor's production default and no live ComfyUI request is made. No production Worker registration or production durable-intent call site; C2B-8D-14/15B/16A characterize the Journal-gated pre-send contract offline. Production deadline policy and original-host event-loop delivery remain absent. |
 | Accepted prompt -> history observation | `core/comfy_http_history.py`, `core/comfy_remote_output_receipts.py`, executor result gate; exact accepted UUID and frozen origin | Bounded pending/ready/unknown transport contract, strict metadata parsing and correlation tests; explicit later read does not resubmit | No polling scheduler, live history interoperability evidence, or durable restart association. Missing/timeout history is unknown, never proof of execution failure. |
 | Successful history -> `/view` stream -> protected staging | `core/comfy_http_view.py`, `core/comfy_output_containment.py`, `core/generation_windows_protected_assets.py`; exact remote descriptor, prompt/request binding, original-host freshness | Injected HTTP stream composed with real Windows disposable roots/files, incremental stream, native identity/DACL, decode/size/hash and retention checks | No production transport registration. No remote cancellation or cleanup, and no claim of constant-memory decode or hard end-to-end deadline. |
-| Complete protected staging batch -> acceptance -> promotion | Legacy path: `WindowsProtectedAssetsCharacterization`, protected acceptance owner and `ProtectedDurablePromotionCharacterization`; Profile A uses the exact 19F-B reservation through the 19F-D original-Host Writer | Windows-native disposable tests cover legacy and Profile A source/destination copying, native identity/ACL, exact batch inventory, one aggregate destination ledger commit, private receipt, and 1/2/16-image policy limits | Profile A final Host count-only success remains deferred to 19F-E. No production root lifecycle, live transport or Candidate/Project authority is implied by the private receipt. |
-| Promotion -> `outputs_ready` -> Candidate admission | executor adapter and `GenerationProtectedCandidateAdmission`; opaque event ID is correlation only, promotion receipt remains owner-held | Composed fake executor tests emit one count-only event; admission tests verify exact original Project/path/snapshot, activation/epoch/pairing, job/claim/request and event evidence | Event delivery is not wired to a production worker. Admission is eligibility evidence, not human approval or a reusable capability. All publication gates remain disabled. |
+| Complete protected staging batch -> acceptance -> promotion | Legacy path: `WindowsProtectedAssetsCharacterization`, protected acceptance owner and `ProtectedDurablePromotionCharacterization`; Profile A uses the exact 19F-B reservation through the 19F-D original-Host Writer | Windows-native disposable tests cover legacy and Profile A source/destination copying, native identity/ACL, exact batch inventory, one aggregate destination ledger commit, private receipt, and 1/2/16-image policy limits | No production root lifecycle, live transport or Candidate/Project authority is implied by the private receipt. |
+| Promotion -> `outputs_ready` -> Candidate admission | Profile A 19G-E original-Host bridge publishes one event through the existing Job Registry and Inbox; exact Promotion receipt remains privately owner-held and the opaque event ID is correlation only | Windows-native disposable tests compose source-bound 19G-B/C/D events, staging, acceptance, Promotion, native revalidation, and one 1/2/16-count `outputs_ready`; separate admission tests verify exact original Project/path/snapshot, activation/epoch/pairing, job/claim/request and event evidence | No production worker/event-loop delivery is wired. The event leaves `registered=0` and is not Candidate eligibility, human approval or a reusable capability. All publication gates remain disabled. |
 | Admission -> Candidate append through existing Gallery writer | `GenerationCandidatePublication.publish_protected_for_characterization`, existing Gallery candidate factory/appender and Undo snapshot | Windows-native disposable composition mutates only the exact in-memory fixture Project, records actual Candidate delta, checks path/provenance and one-shot settlement; partial append remains uncertain and is not replayed | No production entry point or enabled publication authority. No second writer or conversion to legacy receipt custody was introduced. |
 | Settled Candidate registration -> Project JSON save | Same publication owner and existing app save callback -> `core.io.save_project_to_json`; exact Project object/path and protected provenance | Disposable integration writes then reopens JSON with the normal loader; verifies Candidate lineage, prompt/seed/provenance, one-shot save and distinct save outcome | Does not establish crash/power-loss durability, cross-file atomicity, or permission to recover after restart. Save uncertainty is retained; no retry/rollback/cleanup. |
 
@@ -1446,3 +1446,35 @@ and no Candidate, Undo or Project save occurs. A source-bound chain now reports
 `outputs_ready` required next. The opaque event receipt does not itself grant
 protected-writer, Candidate, save, Recovery or execution authority. All
 production gates remain false and `authorship=unverified`.
+
+## C2B-8D-19G-E Profile A protected Promotion outputs-ready event
+
+19G-E completes the next source-bound event transition after 19G-D. It accepts
+only the exact count-only Promotion publication observation retained by the
+original Host integration, then revalidates the privately retained
+`VerifiedProtectedPromotionReceipt`, accepted batch, descriptor order, staging
+and promoted native identities/ACLs/bytes, complete root inventory, completed
+capacity records, read-only Project reference, and current Host/Claim/pairing
+binding. Native and Project-reference observations run outside the final
+Host/Job/Inbox and protected-owner commit locks.
+
+At the short commit boundary the existing Job Registry and Inbox must still
+contain the exact source-bound `submission_started → submitted →
+remote_outputs_ready` prefix. The Host sends one `ExecutorEvent(kind=
+"outputs_ready")` and privately retains that exact event object only after both
+owners accept it and the Job reaches `awaiting_host_registration` with matching
+remote/output counts and `registered=0`. The event receipt uses a truncated
+Promotion identity as correlation only; it is not independent Promotion
+custody. Repeated, copied, stale, drifted or cross-owner evidence cannot emit a
+second event. An acknowledgment or post-acceptance binding uncertainty is
+retained one-shot; it does not trigger replay, rollback, Promotion mutation or
+Candidate publication.
+
+Windows-native disposable compositions cover 1, 2 and 16 images, locator
+copying, content/ACL drift, event acknowledgment loss, event-history eviction,
+duplicate calls, and close races. This is offline characterization, not a
+live worker integration. It advances only the Job to `awaiting_host_registration`;
+Candidate eligibility remains `not_established`, registration remains zero,
+and Candidate admission, append, Undo, Project save, Recovery and execution are
+not performed. Production capability flags remain false and
+`authorship=unverified`.

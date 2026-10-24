@@ -49,6 +49,9 @@ _UNRESOLVED_PROFILE_A_SUBMITTED_EVENT_STATES = frozenset({
 _UNRESOLVED_PROFILE_A_REMOTE_OUTPUT_EVENT_STATES = frozenset({
     "claim_in_progress", "event_acceptance_in_progress", "retained_uncertain",
 })
+_UNRESOLVED_PROFILE_A_OUTPUTS_READY_EVENT_STATES = frozenset({
+    "claim_in_progress", "event_acceptance_in_progress", "retained_uncertain",
+})
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -88,6 +91,12 @@ def _profile_a_executor_event_is_unresolved(integration):
         getattr(attempt, "state", None)
             in _UNRESOLVED_PROFILE_A_REMOTE_OUTPUT_EVENT_STATES
         for attempt in remote_attempts.values()
+    ) or any(
+        getattr(attempt, "state", None)
+            in _UNRESOLVED_PROFILE_A_OUTPUTS_READY_EVENT_STATES
+        for attempt in getattr(
+            integration, "_profile_a_outputs_ready_event_attempts", {},
+        ).values()
     )
 
 

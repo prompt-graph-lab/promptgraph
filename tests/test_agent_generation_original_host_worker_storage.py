@@ -3451,6 +3451,70 @@ def _publish_profile_a_promotion_for_candidate_preflight(
             preflight, publication, provider, data)
 
 
+def _publish_profile_a_source_bound_promotion_for_outputs_ready(
+        native_profile_a_dual_custody_worker_storage, *, descriptor_count=1):
+    """Compose genuine 19G-B/C/D events with native staging and Promotion."""
+    from core import generation_windows_protected_assets as assets
+    from test_comfy_output_containment import image_bytes
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedWriterObservation,
+    )
+
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, _state, lifecycle, _roots, _capacity, _reference, _path,
+     worker, prepared, _submission_lease, preadmission, _submission,
+     _history_lease, _history, _history_json, history_status) = (
+        _profile_a_prospective_history_observed(
+            native_profile_a_dual_custody_worker_storage,
+            descriptor_count=descriptor_count,
+        )
+    )
+    try:
+        assert history_status == "observed_non_authoritative"
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+        assert evidence.descriptor_count == descriptor_count
+        attempt = lifecycle._worker_storage_integration._storage_preadmission_attempts[0]
+        writer = assets.WindowsProtectedAssetsCharacterization.borrow_profile_a_writer_for_characterization(
+            capacity, characterization=True, disposable_opt_in=True,
+        )
+        data = image_bytes()
+        provider = (_WriterDownloadStream(data) if descriptor_count == 1
+                    else _WriterDownloadBatchProvider(data))
+        stage = (runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization
+                 if descriptor_count == 1 else
+                 runtime.stage_generation_worker_remote_output_batch_with_protected_writer_for_characterization)
+        staged, status = stage(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        )
+        assert type(staged) is GenerationWorkerProtectedWriterObservation, status
+        assert staged.verified_image_count == descriptor_count
+        accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_image_batch_accepted_non_authoritative"
+        preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+            accepted, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_promotion_preflight_non_authoritative"
+        assert runtime.promote_generation_worker_accepted_output_for_characterization(
+            preflight, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_promotion_host_publication_deferred")
+        publication, status = runtime.publish_generation_worker_accepted_output_promotion_for_characterization(
+            preflight, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_promotion_published_non_authoritative"
+        assert publication is attempt.promotion_publication_observation
+        return (runtime, lifecycle, worker, prepared, attempt, writer, accepted,
+                preflight, publication, provider, data)
+    except BaseException:
+        runtime.close()
+        raise
+
+
 def _assert_uncertain_promotion_prevents_profile_a_host_rebind(
         capacity, reference, project_path, original_lifecycle, original_integration):
     assert original_lifecycle._state == "closed"
@@ -3993,6 +4057,427 @@ def test_profile_a_original_host_promotion_publishes_exact_batch_count_once(
     writer.close()
     assert capacity._scope_lease_retention_reason() == "settled"
     capacity.close()
+
+
+@pytest.mark.parametrize("descriptor_count", [1, 2, 16])
+def test_profile_a_published_promotion_emits_one_exact_outputs_ready_event(
+        native_profile_a_dual_custody_worker_storage, descriptor_count):
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerExecutorEventChainObservation,
+        GenerationWorkerProtectedOutputsReadyObservation,
+    )
+
+    _roots, capacity, _reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+            descriptor_count=descriptor_count,
+        )
+    )
+    project = lifecycle._project_ref()
+    project_before = copy.deepcopy(project)
+    project_file_before = project_path.read_bytes()
+    job_before = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    integration = lifecycle._worker_storage_integration
+    inbox = runtime._generation_executor_inbox
+    event_count_before = len(inbox._authority_events)
+    ledger_operations_before = set(capacity._ledger._operations)
+    ledger_reservations_before = set(capacity._ledger._reservations)
+    file_keys_before = set(writer._files)
+    promotion_receipt = attempt.promotion_receipt
+    remote_receipt = attempt.remote_receipt
+
+    result, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+
+    assert status == "protected_outputs_ready_event_accepted_non_authoritative"
+    assert type(result) is GenerationWorkerProtectedOutputsReadyObservation
+    assert (result.request_index, result.output_count) == (0, descriptor_count)
+    assert result.candidate_eligibility == "not_established"
+    assert result.execution_available is False
+    assert result.protected_storage_available is False
+    assert result.promotion_available is False
+    assert result.candidate_publication_allowed is False
+    assert result.project_save_allowed is False
+    assert result.authorship == "unverified"
+    assert not ({"promotion_receipt", "remote_receipt", "event", "images", "paths"}
+                & set(result.__dataclass_fields__))
+
+    marker = integration._profile_a_outputs_ready_event_attempts[0]
+    event = marker.event
+    assert marker.state == "events_accepted"
+    assert marker.preadmission_attempt is attempt
+    assert marker.promotion_observation is publication
+    assert marker.promotion_receipt is promotion_receipt
+    assert marker.remote_receipt is remote_receipt
+    assert promotion_receipt._promotion_owner is marker.promotion_owner
+    assert promotion_receipt.remote_receipt_identity == remote_receipt.identity
+    assert type(event).__name__ == "ExecutorEvent"
+    assert event.progress.kind == "outputs_ready"
+    assert event.progress.sequence == 4
+    assert event.progress.request_index == 0
+    assert event.progress.prompt_id is None and event.progress.cause is None
+    assert event.progress.output_count == descriptor_count
+    assert event.outputs.receipt_id == promotion_receipt.identity[:32]
+    assert event.outputs.receipt_id != remote_receipt.identity[:32]
+    assert event.outputs.output_count == descriptor_count
+    assert inbox._events[event.progress.sequence] is event
+    assert sum(item is event for item in inbox._authority_events) == 1
+    assert len(inbox._authority_events) == event_count_before + 1
+    assert tuple(item.progress.kind for item in inbox._authority_events) == (
+        "submission_started", "submitted", "remote_outputs_ready", "outputs_ready",
+    )
+
+    job = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    assert job["event_count"] == 4
+    assert job["requests"][0]["state"] == "awaiting_host_registration"
+    assert job["requests"][0]["remote_output_count"] == descriptor_count
+    assert job["requests"][0]["output_count"] == descriptor_count
+    assert job["requests"][0]["registered_count"] == 0
+    assert job["registered_count"] == 0
+    audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+        {"project": project, "current_project_path": lifecycle._project_path},
+        0, characterization=True, disposable_opt_in=True,
+    )
+    assert type(audit) is GenerationWorkerExecutorEventChainObservation
+    assert audit.status == "profile_a_outputs_ready_event_observed"
+    assert audit.accepted_event_kinds == (
+        "submission_started", "submitted", "remote_outputs_ready", "outputs_ready",
+    )
+    assert audit.profile_a_event_kinds == audit.accepted_event_kinds
+    assert audit.next_required_event is None
+    assert audit.candidate_eligibility == "not_established"
+    assert audit.execution_available is False
+    assert audit.protected_storage_available is False
+    assert audit.promotion_available is False
+    assert audit.candidate_publication_allowed is False
+    assert audit.project_save_allowed is False
+    assert audit.authorship == "unverified"
+    assert runtime._generation_protected_candidate_admission is None
+    assert set(capacity._ledger._operations) == ledger_operations_before
+    assert set(capacity._ledger._reservations) == ledger_reservations_before
+    assert set(writer._files) == file_keys_before
+    assert project == project_before
+    assert project_path.read_bytes() == project_file_before
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id) != job_before
+
+    duplicate, duplicate_status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert duplicate is None
+    assert duplicate_status == "protected_outputs_ready_evidence_unavailable"
+    assert len(inbox._authority_events) == event_count_before + 1
+    assert marker.event is event and marker.state == "events_accepted"
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_outputs_ready_rejects_copied_locator_then_accepts_exact_observation(
+        native_profile_a_dual_custody_worker_storage):
+    _roots, _capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    inbox = runtime._generation_executor_inbox
+    assert runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        replace(publication), characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_outputs_ready_evidence_unavailable")
+    assert integration._profile_a_outputs_ready_event_attempts == {}
+    assert not any(event.progress.kind == "outputs_ready" for event in inbox._events.values())
+    result, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_outputs_ready_event_accepted_non_authoritative"
+    assert result.output_count == len(attempt.promotion_receipt.images)
+    assert len([event for event in inbox._authority_events
+                if event.progress.kind == "outputs_ready"]) == 1
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_outputs_ready_known_inbox_refusal_is_not_retained_uncertain(
+        native_profile_a_dual_custody_worker_storage, monkeypatch):
+    from core.generation_storage_admission import _profile_a_executor_event_is_unresolved
+
+    _roots, capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, _attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    inbox = runtime._generation_executor_inbox
+    original = inbox.event_for_characterization
+
+    def refuse_without_mutation(jobs, event, *, target_current):
+        if event.progress.kind == "outputs_ready":
+            return "acceptance_required"
+        return original(jobs, event, target_current=target_current)
+
+    monkeypatch.setattr(inbox, "event_for_characterization", refuse_without_mutation)
+    result, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert result is None
+    assert status == "protected_outputs_ready_event_refused"
+    marker = integration._profile_a_outputs_ready_event_attempts[0]
+    assert marker.state == "refused"
+    assert marker.event is not None
+    assert not any(event.progress.kind == "outputs_ready"
+                   for event in inbox._events.values())
+    assert not any(event.progress.kind == "outputs_ready"
+                   for event in inbox._authority_events)
+    job = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    assert job["event_count"] == 3
+    assert job["requests"][0]["state"] == "awaiting_download"
+    assert _profile_a_executor_event_is_unresolved(integration) is False
+    assert runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_outputs_ready_evidence_unavailable")
+
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+    assert capacity._scope_lease_retention_reason() == "settled"
+    capacity.close()
+
+
+def test_profile_a_outputs_ready_lost_ack_retains_unbound_event_without_replay(
+        native_profile_a_dual_custody_worker_storage, monkeypatch):
+    from core.generation_storage_admission import _profile_a_executor_event_is_unresolved
+
+    _roots, capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+        )
+    )
+    inbox = runtime._generation_executor_inbox
+    original = inbox.event_for_characterization
+
+    def accept_then_lose_ack(jobs, event, *, target_current):
+        accepted = original(jobs, event, target_current=target_current)
+        if event.progress.kind == "outputs_ready" and accepted == "accepted":
+            raise RuntimeError("simulated lost acknowledgment")
+        return accepted
+
+    monkeypatch.setattr(inbox, "event_for_characterization", accept_then_lose_ack)
+    result, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert result is None and status == "protected_outputs_ready_event_uncertain"
+    marker = lifecycle._worker_storage_integration._profile_a_outputs_ready_event_attempts[0]
+    assert marker.state == "retained_uncertain"
+    assert marker.event is inbox._events[4]
+    assert marker.event.progress.kind == "outputs_ready"
+    assert tuple(event.progress.kind for event in inbox._authority_events) == (
+        "submission_started", "submitted", "remote_outputs_ready", "outputs_ready",
+    )
+    job = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    assert job["requests"][0]["state"] == "awaiting_host_registration"
+    assert job["requests"][0]["registered_count"] == 0
+    audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+        {"project": lifecycle._project_ref(),
+         "current_project_path": lifecycle._project_path},
+        0, characterization=True, disposable_opt_in=True,
+    )
+    assert audit.status == "outputs_ready_event_uncertain"
+    assert audit.accepted_event_kinds[-1] == "outputs_ready"
+    assert audit.profile_a_event_kinds == (
+        "submission_started", "submitted", "remote_outputs_ready",
+    )
+    assert audit.candidate_eligibility == "not_established"
+    assert _profile_a_executor_event_is_unresolved(lifecycle._worker_storage_integration)
+    duplicate = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert duplicate == (None, "protected_outputs_ready_evidence_unavailable")
+    assert len([event for event in inbox._authority_events
+                if event.progress.kind == "outputs_ready"]) == 1
+    assert attempt.promotion_publication_observation is publication
+    assert attempt.promotion_publication_state == "published_non_authoritative"
+    assert capacity._ledger._reservations[attempt.promotion_capacity_reservation][
+        "state"
+    ] == "completed"
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+
+
+@pytest.mark.parametrize("drift", ["content", "acl"])
+def test_profile_a_outputs_ready_native_drift_refuses_event_and_retains_promotion(
+        native_profile_a_dual_custody_worker_storage, drift):
+    roots, capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+        )
+    )
+    promoted = attempt.promotion_receipt.images[0].promoted_image
+    record = writer._files[("promoted_assets", promoted.storage_identity)]
+    if drift == "content":
+        record[0].write_bytes(b"changed after published promotion")
+    else:
+        from test_generation_windows_protected_storage import mutate_disposable_acl
+
+        mutate_disposable_acl(
+            record[0], roots["promoted_assets"]._api, "writable_principal",
+        )
+    result, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert result is None and status == "protected_outputs_ready_event_uncertain"
+    marker = lifecycle._worker_storage_integration._profile_a_outputs_ready_event_attempts[0]
+    assert marker.state == "retained_uncertain"
+    assert not any(event.progress.kind == "outputs_ready"
+                   for event in runtime._generation_executor_inbox._authority_events)
+    assert attempt.promotion_publication_observation is publication
+    assert attempt.promotion_publication_state == "published_non_authoritative"
+    assert attempt.promotion_preflight_state == "promoted_non_authoritative"
+    assert capacity._ledger._reservations[attempt.promotion_capacity_reservation][
+        "state"
+    ] == "completed"
+    if drift == "acl":
+        from test_generation_windows_protected_storage import mutate_disposable_acl
+
+        mutate_disposable_acl(record[0], roots["promoted_assets"]._api, "original")
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+
+
+def test_profile_a_outputs_ready_claim_serializes_duplicate_and_host_close(
+        native_profile_a_dual_custody_worker_storage, monkeypatch):
+    from core.generation_storage_admission import _profile_a_executor_event_is_unresolved
+
+    roots, capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+        )
+    )
+    entered, release = threading.Event(), threading.Event()
+    original = writer._observe
+    first = True
+    results, errors = [], []
+
+    def pause_native_observation(name, purpose, extension):
+        nonlocal first
+        if first:
+            first = False
+            entered.set()
+            assert release.wait(10)
+        return original(name, purpose, extension)
+
+    monkeypatch.setattr(writer, "_observe", pause_native_observation)
+
+    def publish():
+        try:
+            results.append(runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+                publication, characterization=True, disposable_opt_in=True,
+            ))
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=publish)
+    thread.start()
+    try:
+        assert entered.wait(10)
+        marker = lifecycle._worker_storage_integration._profile_a_outputs_ready_event_attempts[0]
+        assert marker.state == "claim_in_progress"
+        duplicate = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+            publication, characterization=True, disposable_opt_in=True,
+        )
+        assert duplicate == (None, "protected_outputs_ready_evidence_unavailable")
+        runtime.close()
+    finally:
+        release.set()
+        thread.join(20)
+
+    assert not thread.is_alive() and not errors
+    assert results == [(None, "protected_outputs_ready_event_uncertain")]
+    assert marker.state == "retained_uncertain"
+    assert not any(event.progress.kind == "outputs_ready"
+                   for event in runtime._generation_executor_inbox._authority_events)
+    assert attempt.promotion_publication_observation is publication
+    assert attempt.promotion_publication_state == "published_non_authoritative"
+    assert attempt.promotion_preflight_state == "promoted_non_authoritative"
+    assert capacity._ledger._reservations[attempt.promotion_capacity_reservation][
+        "state"
+    ] == "completed"
+    assert _profile_a_executor_event_is_unresolved(lifecycle._worker_storage_integration)
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+    assert capacity._scope_lease_retention_reason() == "uncertain"
+
+
+def test_profile_a_outputs_ready_audit_rejects_each_evicted_event_identity(
+        native_profile_a_dual_custody_worker_storage):
+    _roots, _capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, _attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+        )
+    )
+    try:
+        result, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+            publication, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_outputs_ready_event_accepted_non_authoritative"
+        assert result.output_count == 1
+        job_owner = runtime.generation_jobs
+        inbox = runtime._generation_executor_inbox
+        with job_owner._lock:
+            with inbox._lock:
+                job = job_owner._authorized_locked(lifecycle._job_id, lifecycle._claim_id)
+                originals = {
+                    event.progress.kind: event
+                    for event in inbox._authority_events
+                    if event.progress.kind in {
+                        "submission_started", "submitted",
+                        "remote_outputs_ready", "outputs_ready",
+                    }
+                }
+                assert set(originals) == {
+                    "submission_started", "submitted",
+                    "remote_outputs_ready", "outputs_ready",
+                }
+                for kind, event in originals.items():
+                    sequence = event.progress.sequence
+                    inbox._events.pop(sequence)
+                    audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+                        {"project": lifecycle._project_ref(),
+                         "current_project_path": lifecycle._project_path},
+                        0, characterization=True, disposable_opt_in=True,
+                    )
+                    assert audit.status == "event_chain_conflict", kind
+                    inbox._events[sequence] = event
+        final_audit = runtime.inspect_profile_a_worker_executor_event_chain_for_characterization(
+            {"project": lifecycle._project_ref(),
+             "current_project_path": lifecycle._project_path},
+            0, characterization=True, disposable_opt_in=True,
+        )
+        assert final_audit.status == "profile_a_outputs_ready_event_observed"
+        assert final_audit.candidate_eligibility == "not_established"
+    finally:
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
 
 
 def test_profile_a_original_host_promotion_publication_drift_retains_completed_evidence(

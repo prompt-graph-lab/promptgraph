@@ -704,44 +704,96 @@ class ProjectAgentSessionRuntime:
                     )
                     remote_event = (remote_attempt.event
                                     if remote_attempt is not None else None)
+                    outputs_attempt = integration._profile_a_outputs_ready_event_attempts.get(
+                        request_index,
+                    )
+                    outputs_event = (outputs_attempt.event
+                                     if outputs_attempt is not None else None)
                     storage_attempt = integration._storage_preadmission_attempts.get(
                         request_index,
                     )
-                    remote_bound = (
+                    outputs_poststate_observed = (
+                        submitted_bound
+                        and remote_attempt is not None
+                        and remote_attempt.state == "events_accepted"
+                        and remote_event is not None
+                        and any(item is remote_event for item in paired)
+                        and outputs_attempt is not None
+                        and outputs_event is not None
+                        and any(item is outputs_event for item in paired)
+                        and storage_attempt is not None
+                        and integration._profile_a_remote_outputs_ready_event_is_current_locked(
+                            lifecycle, storage_attempt, remote_attempt,
+                            outputs_marker=outputs_attempt,
+                        )
+                    )
+                    remote_prefix_bound = (
                         submitted_bound
                         and remote_attempt is not None
                         and remote_attempt.state == "events_accepted"
                         and remote_event is not None
                         and any(item is remote_event for item in paired)
                         and storage_attempt is not None
+                        and (outputs_poststate_observed or
+                             integration._profile_a_remote_outputs_ready_event_is_current_locked(
+                                 lifecycle, storage_attempt, remote_attempt,
+                             ))
+                    )
+                    remote_bound = (
+                        remote_prefix_bound
                         and integration._profile_a_remote_outputs_ready_event_is_current_locked(
                             lifecycle, storage_attempt, remote_attempt,
                         )
                     )
+                    outputs_bound = (
+                        remote_prefix_bound
+                        and outputs_attempt is not None
+                        and outputs_attempt.state == "events_accepted"
+                        and outputs_poststate_observed
+                    )
                     if (remote_attempt is not None
                             and remote_attempt.state == "events_accepted"
-                            and not remote_bound):
+                            and not remote_bound and not outputs_poststate_observed):
+                        conflict = True
+                    if (outputs_attempt is not None
+                            and outputs_attempt.state == "events_accepted"
+                            and not outputs_poststate_observed):
                         conflict = True
                     accepted_unbound_remote = (
                         any(event.progress.kind == "remote_outputs_ready" for event in paired)
-                        and not remote_bound
+                        and not remote_bound and not outputs_poststate_observed
+                    )
+                    accepted_unbound_outputs = (
+                        any(event.progress.kind == "outputs_ready" for event in paired)
+                        and not outputs_bound
                     )
                     source_kinds = (
+                        ("submission_started", "submitted", "remote_outputs_ready", "outputs_ready")
+                        if outputs_bound else
                         ("submission_started", "submitted", "remote_outputs_ready")
-                        if remote_bound else
+                        if remote_prefix_bound else
                         ("submission_started", "submitted") if submitted_bound else
                         ("submission_started",) if started_bound else ()
                     )
                     remote_marker_state = (remote_attempt.state
                                            if remote_attempt is not None else None)
+                    outputs_marker_state = (outputs_attempt.state
+                                            if outputs_attempt is not None else None)
                     blocked_states = {
                         "claim_in_progress", "event_acceptance_in_progress",
                         "retained_uncertain", "submission_rejected",
                     }
-                    if remote_bound:
+                    if outputs_bound:
+                        next_event = None
+                    elif remote_bound:
                         next_event = "outputs_ready"
-                    elif (accepted_unbound_remote or remote_marker_state in {
+                    elif (accepted_unbound_remote or accepted_unbound_outputs
+                          or remote_marker_state in {
                             "event_acceptance_in_progress", "retained_uncertain", "refused"}):
+                        next_event = None
+                    elif outputs_marker_state in {
+                            "claim_in_progress", "event_acceptance_in_progress",
+                            "retained_uncertain", "refused"}:
                         next_event = None
                     elif submitted_bound:
                         next_event = "remote_outputs_ready"
@@ -755,8 +807,18 @@ class ProjectAgentSessionRuntime:
                         next_event = None
                     if conflict:
                         audit_status = "event_chain_conflict"
+                    elif outputs_bound:
+                        audit_status = "profile_a_outputs_ready_event_observed"
                     elif remote_bound:
                         audit_status = "profile_a_remote_outputs_ready_event_observed"
+                    elif outputs_marker_state == "retained_uncertain":
+                        audit_status = "outputs_ready_event_uncertain"
+                    elif outputs_marker_state == "event_acceptance_in_progress":
+                        audit_status = "outputs_ready_event_pending"
+                    elif outputs_marker_state == "refused":
+                        audit_status = "outputs_ready_event_refused"
+                    elif accepted_unbound_outputs:
+                        audit_status = "outputs_ready_event_unbound"
                     elif remote_marker_state == "retained_uncertain":
                         audit_status = "remote_outputs_ready_event_uncertain"
                     elif remote_marker_state == "event_acceptance_in_progress":
@@ -2119,6 +2181,239 @@ class ProjectAgentSessionRuntime:
                 promotion_owner._finish_profile_a_original_host_publication_for_characterization(
                     publication_token,
                 )
+
+    def publish_generation_worker_protected_outputs_ready_for_characterization(
+            self, promotion_observation, *, characterization=False,
+            disposable_opt_in=False):
+        """Publish one genuine Job/Inbox event after protected Promotion.
+
+        The count-only Promotion observation is a locator only. The original
+        Profile A integration supplies the private receipt and retains the
+        accepted event object; this operation never calls Candidate admission.
+        """
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+        from core.generation_windows_protected_promotion import (
+            ProtectedDurablePromotionCharacterization,
+            VerifiedProtectedPromotionReceipt,
+        )
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedOutputsReadyObservation,
+            GenerationWorkerProtectedPromotionObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if type(promotion_observation) is not GenerationWorkerProtectedPromotionObservation:
+            return None, "protected_outputs_ready_observation_invalid"
+
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (
+            getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+            if lifecycle_snapshot is not None else None
+        )
+        if (type(integration_snapshot) is not OriginalHostWorkerStorageIntegration
+                or integration_snapshot._profile_a is not True
+                or type(integration_snapshot._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "protected_outputs_ready_unavailable"
+
+        captured = {}
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not lifecycle_snapshot):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_outputs_ready():
+                    started, status = integration_snapshot._begin_profile_a_outputs_ready_event_locked(
+                        lifecycle, promotion_observation,
+                    )
+                    if started is not None:
+                        captured.update(started)
+                        captured.update({
+                            "lifecycle": lifecycle,
+                            "project_reference": integration_snapshot._project_reference,
+                            "pairing_generation": lifecycle._pairing_generation,
+                        })
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation,
+                    on_current=begin_outputs_ready,
+                )
+                if not type(start_result) is tuple or start_result is False:
+                    return None, "host_evidence_unavailable"
+                started, status = start_result
+                if started is None:
+                    return None, status
+
+        integration = integration_snapshot
+        lifecycle = captured["lifecycle"]
+        attempt = captured["attempt"]
+        marker = captured["marker"]
+        writer = captured["writer"]
+        capacity = captured["capacity"]
+        acceptance = captured["acceptance"]
+        promotion_owner = captured["promotion_owner"]
+        receipt = captured["receipt"]
+        if (type(writer) is not WindowsProtectedAssetsCharacterization
+                or type(promotion_owner) is not ProtectedDurablePromotionCharacterization
+                or type(receipt) is not VerifiedProtectedPromotionReceipt):
+            integration._retain_profile_a_outputs_ready_event(attempt, marker, "refused")
+            return None, "protected_outputs_ready_event_refused"
+
+        try:
+            def with_current_host(callback):
+                with self._publication_gate:
+                    if (self._closed
+                            or self._generation_original_host_lifecycle is not lifecycle):
+                        return False
+                    with self._current_generation_original_host_lifecycle_locked() as current:
+                        if current is not lifecycle:
+                            return False
+                        return self._generation_original_host_evidence_current_locked(
+                            lifecycle, captured["pairing_generation"], on_current=callback,
+                        ) is True
+
+            def host_matches():
+                return integration._profile_a_outputs_ready_host_matches_locked(
+                    lifecycle, captured,
+                )
+
+            def host_freshness(envelope, remote):
+                return bool(envelope is captured["envelope"]
+                            and remote is captured["remote"]
+                            and with_current_host(host_matches))
+
+            # The human-reviewed source snapshot and selected Project JSON
+            # reference are independent host observations, never authority
+            # reconstructed from the remote event or Promotion receipt.
+            if (captured["publication_origin"].project
+                    != captured["publication_origin"].source_snapshot
+                    or not with_current_host(host_matches)):
+                raise ValueError("protected_outputs_ready_host_changed")
+            project_view = captured["project_reference"].readiness()
+            if project_view.get("status") != "read_only_reference_observed":
+                raise ValueError("protected_outputs_ready_project_reference_unavailable")
+
+            if promotion_owner._inspect_for_characterization(
+                    receipt, host_freshness) is not receipt:
+                raise ValueError("protected_outputs_ready_promotion_changed")
+            writer._check()
+            inventory, completed_delta, destination_records, source_records = (
+                capacity._inspect_profile_a_promotion_publication_for_characterization(
+                    captured["operation"], captured["reservation"], captured["write"],
+                    writer, promotion_owner, acceptance, captured["accepted"], receipt,
+                    captured["source_operation"], captured["source_write"],
+                    captured["observations"],
+                )
+            )
+
+            # Re-read the exact staged/promoted native observations outside all
+            # Host and owner commit locks. This reuses the published Promotion
+            # custody and does not create another receipt or Ledger write.
+            for source, row in zip(captured["observations"], receipt.images):
+                source_image, promoted_image = source.image, row.promoted_image
+                source_record = source_records.get((
+                    "temporary_containment", source_image.storage_identity,
+                ))
+                destination_record = destination_records.get((
+                    "promoted_assets", promoted_image.storage_identity,
+                ))
+                if (source_record is None or destination_record is None
+                        or source_image.content_sha256 != promoted_image.content_sha256
+                        or source_image.byte_count != promoted_image.byte_count
+                        or source_record[0].parent
+                            != writer._roots["temporary_containment"]._path
+                        or destination_record[0].parent
+                            != writer._roots["promoted_assets"]._path
+                        or writer._observe(
+                            source_image.storage_identity, "temporary_containment",
+                            source_record[0].suffix[1:],
+                        ) != source_image
+                        or writer._observe(
+                            promoted_image.storage_identity, "promoted_assets",
+                            destination_record[0].suffix[1:],
+                        ) != promoted_image):
+                    raise ValueError("protected_outputs_ready_image_changed")
+
+            writer._check()
+            if (capacity._scan() != inventory
+                    or captured["publication_origin"].project
+                        != captured["publication_origin"].source_snapshot
+                    or captured["project_reference"].readiness().get("status")
+                        != "read_only_reference_observed"
+                    or not with_current_host(host_matches)):
+                raise ValueError("protected_outputs_ready_host_or_inventory_changed")
+
+            result = GenerationWorkerProtectedOutputsReadyObservation(
+                status="protected_outputs_ready_event_accepted_non_authoritative",
+                request_index=attempt.lease.request_index,
+                output_count=len(receipt.images),
+            )
+
+            commit_result = {}
+
+            def commit_outputs_ready():
+                # Keep the final path short: identity/owner/ledger checks and
+                # the existing in-memory Job/Inbox event are the only work.
+                if not host_matches():
+                    return False
+                commit_result["value"] = integration._commit_profile_a_outputs_ready_event_locked(
+                    lifecycle, captured, inventory, completed_delta,
+                    destination_records, source_records, result,
+                )
+                # This boolean reports only that the guarded callback ran.
+                # The integration result below separately carries accepted,
+                # definite refusal, or ambiguous event-acceptance status.
+                return True
+
+            committed = with_current_host(commit_outputs_ready)
+            if committed is True:
+                outcome = commit_result.get("value")
+                if (type(outcome) is tuple and len(outcome) == 2
+                        and outcome[0] is result and outcome[1] == result.status):
+                    return outcome
+                if (type(outcome) is tuple and len(outcome) == 2
+                        and outcome[0] is None):
+                    outcome_status = outcome[1]
+                    if outcome_status == "protected_outputs_ready_event_uncertain":
+                        integration._retain_profile_a_outputs_ready_event(
+                            attempt, marker, "retained_uncertain",
+                        )
+                        return outcome
+                    if (outcome_status in {
+                            "protected_outputs_ready_event_refused",
+                            "protected_outputs_ready_event_commit_refused",
+                            "protected_outputs_ready_receipt_collision",
+                    }):
+                        integration._retain_profile_a_outputs_ready_event(
+                            attempt, marker, "refused",
+                        )
+                        return outcome
+                integration._retain_profile_a_outputs_ready_event(
+                    attempt, marker, "retained_uncertain",
+                )
+                return None, "protected_outputs_ready_event_uncertain"
+            if committed is False:
+                integration._retain_profile_a_outputs_ready_event(
+                    attempt, marker, "retained_uncertain",
+                )
+                return None, "protected_outputs_ready_event_uncertain"
+            return None, "protected_outputs_ready_event_refused"
+        except Exception:
+            # This is downstream event uncertainty only. Completed Promotion
+            # files and both completed Ledger deltas are deliberately retained.
+            integration._retain_profile_a_outputs_ready_event(
+                attempt, marker, "retained_uncertain",
+            )
+            return None, "protected_outputs_ready_event_uncertain"
 
     def preflight_generation_worker_protected_candidate_admission_for_characterization(
             self, promotion_observation, *, characterization=False,

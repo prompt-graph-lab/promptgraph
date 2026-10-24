@@ -2239,10 +2239,12 @@ history correlation following the source-bound start is withheld until this
 submitted event is source-bound, so an accepted Prompt ID alone cannot stand
 in for the event.
 
-This does not create `remote_outputs_ready` or `outputs_ready`, invoke protected
-Promotion or Candidate Admission, append Candidates, change the Project, or
-save. Candidate eligibility remains `not_established`; all production
-capability flags remain false and `authorship=unverified`.
+At the 19G-B boundary itself, no `remote_outputs_ready` or `outputs_ready`
+event is created, and no Candidate Admission, Candidate append, Project change
+or save occurs. The later 19G-C/D/E boundaries below provide subsequent source
+events without changing this pre-send contract. Candidate eligibility remains
+`not_established`; all production capability flags remain false and
+`authorship=unverified`.
 
 ## C2B-8D-19G-D Profile A verified remote outputs ready event
 
@@ -2277,3 +2279,37 @@ fails closed. This does not itself invoke a protected writer, Promotion,
 Candidate admission, Candidate append, Undo, Project save, Recovery, or
 execution; candidate eligibility remains `not_established`, all production
 capability flags remain false, and `authorship=unverified`.
+
+## C2B-8D-19G-E Profile A protected Promotion outputs-ready event
+
+After 19G-D has emitted and privately bound the exact `remote_outputs_ready`
+event, the original Host can publish one genuine `outputs_ready` event for the
+same request. The caller supplies only the exact count-only Promotion locator;
+the integration retrieves its private `VerifiedProtectedPromotionReceipt`
+and revalidates the issuing Promotion, acceptance and protected-assets owners,
+the exact envelope/prepared request/remote receipt, complete descriptor order,
+staging and promoted image observations, native identity/ACL/content, root
+inventory, completed capacity-ledger evidence, Project reference and original
+Host freshness.
+
+The existing Job Registry and Inbox must still agree on the source-bound
+`submission_started → submitted → remote_outputs_ready` prefix. Only then does
+the Host send one count-only `ExecutorEvent(kind="outputs_ready")` through
+those owners. Its opaque receipt ID is derived from the Promotion identity for
+correlation, while the original integration privately retains the exact event
+object and Promotion evidence. Success moves the Job to
+`awaiting_host_registration`, records equal remote/output counts, and leaves
+Candidate registration at zero. The event does not convert the protected
+receipt into legacy `LocalOutputReceipt`, `ContainedOutputStore` custody or
+`PromotedImage` custody.
+
+Native file, ACL, byte and full-inventory checks run outside final Host,
+Job/Inbox and protected-owner commit locks. Close/invalidation and competing
+calls are serialized at the final owner boundary. Any accepted-but-unbound or
+otherwise uncertain event is one-shot and retained; no replay, compensation,
+Candidate Admission, Candidate append, Undo, Project save, Recovery or
+execution follows. The source chain now reports all four event kinds only when
+each exact accepted event remains current. Candidate eligibility remains
+`not_established`; `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`, and
+`authorship=unverified` remain unchanged.
