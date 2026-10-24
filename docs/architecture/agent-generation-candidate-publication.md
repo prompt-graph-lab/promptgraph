@@ -279,14 +279,14 @@ Host/Job/Inbox commit locks.
 
 The returned `GenerationWorkerProtectedCandidateAdmissionPreflightObservation`
 is only count evidence and reports `candidate_eligibility="not_established"`.
-The Profile A path has not published the genuine, accepted
-`remote_outputs_ready` then `outputs_ready` pair required by the existing
-admission owner. The presence of a runtime `GenerationPublicationOrigin` or a
-matching count does not replace that event custody. The preflight therefore
-does not call `GenerationProtectedCandidateAdmission`, synthesize events or
-legacy receipts, invoke `GenerationCandidatePublication`, append Candidates,
-settle registration counts, mutate Undo history or save Project JSON. The
-existing single Candidate writer and its legacy validation remain unchanged.
+At this 19G-A preflight boundary, the Profile A path had not yet published the
+genuine accepted `remote_outputs_ready` then `outputs_ready` pair required by
+the existing admission owner. The later 19G-E bridge supplies the exact event
+custody, but this preflight itself still does not call
+`GenerationProtectedCandidateAdmission`, synthesize events or legacy receipts,
+invoke `GenerationCandidatePublication`, append Candidates, settle
+registration counts, mutate Undo history or save Project JSON. The existing
+single Candidate writer and its legacy validation remain unchanged.
 
 Preflight is one-shot. A copied or replayed Promotion observation is rejected;
 stale Project snapshot, Host, Claim, pairing, native file, ACL, inventory or
@@ -311,14 +311,15 @@ invalidated between Job/Inbox acceptance and Worker registration, the accepted
 event is retained but is not source-bound; the Worker lease is withheld and
 the one-shot integration is revoked.
 
-No later `submitted`, `remote_outputs_ready`, or `outputs_ready` source event
-is provided yet, so this does not satisfy the protected Candidate Admission's
-ordered event requirements. It never calls that admission or the Candidate
-writer; `candidate_eligibility="not_established"`. The event indicates a
-pre-send transition only, not an actual HTTP send or remote acceptance. The
-next bounded integration must source each later transition from its real
-original-Host Worker/result/Promotion boundary, then reuse the existing
-admission and single Candidate writer unchanged. All production gates remain
+At the 19G-B boundary, later `submitted`, `remote_outputs_ready`, and
+`outputs_ready` events were not yet source-bound, so that step alone did not
+satisfy protected Candidate Admission's ordered event requirements. The later
+19G-C/D/E sections now characterize those subsequent transitions from their
+original-Host Worker/result/Promotion boundaries. 19G-B still never calls
+Candidate Admission or the Candidate writer; `candidate_eligibility` remains
+`not_established`. Its event indicates a pre-send transition only, not an
+actual HTTP send or remote acceptance. Existing admission and the single
+Candidate writer remain separate and unchanged. All production gates remain
 false and `authorship=unverified`.
 
 ## C2B-8D-19G-C sources only accepted submission
@@ -360,3 +361,23 @@ keeps `candidate_eligibility="not_established"`. Candidate append, registration
 settlement, Undo publication and Project save remain separate host-owned
 transitions; all production capability flags remain false and
 `authorship=unverified`.
+
+## C2B-8D-19G-E protected Promotion event precedes Candidate admission
+
+The original Host now emits and retains one exact `outputs_ready` event only
+after the already-published protected Promotion batch is revalidated through
+its issuing owners. Together with the exact source-bound
+`remote_outputs_ready` event from 19G-D, this supplies the event-custody
+portion expected by the existing Candidate admission owner. The output event
+contains only the verified count and an opaque Promotion correlation ID; the
+Promotion receipt itself stays private and owner-issued.
+
+This bridge ends at Job state `awaiting_host_registration` with
+`registered=0`. Its public observation reports
+`candidate_eligibility="not_established"`; it does not call Candidate
+Admission, append a Candidate, alter Undo, or save Project JSON. Admission and
+publication remain separate host-owned transitions, and all production gates
+remain false with `authorship=unverified`. The event pair is usable only while
+the exact accepted event objects remain current in both Job Registry and Inbox;
+eviction, disagreement, stale host state or uncertain acknowledgment fails
+closed and cannot be replayed.
