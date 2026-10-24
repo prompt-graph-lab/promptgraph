@@ -41,6 +41,22 @@ def _dual_custody_ledger(*, inventory=None, available_free_bytes=1024 * 1024 * 1
     return ledger
 
 
+def test_profile_a_genuine_candidate_admission_retains_only_unresolved_scope_custody():
+    attempt = SimpleNamespace(
+        promotion_preflight_state="promoted_non_authoritative",
+        promotion_publication_state="published_non_authoritative",
+        candidate_admission_state="not_started",
+        protected_candidate_admission_state="in_progress",
+    )
+    assert admission._profile_a_promotion_is_unresolved(attempt)
+
+    attempt.protected_candidate_admission_state = "retained_uncertain"
+    assert admission._profile_a_promotion_is_unresolved(attempt)
+
+    attempt.protected_candidate_admission_state = "observed"
+    assert not admission._profile_a_promotion_is_unresolved(attempt)
+
+
 def test_profile_a_dual_custody_ledger_reserves_sixteen_per_purpose_and_thirty_two_total():
     ledger = _dual_custody_ledger()
     staging_first = ledger.begin_operation("staging-first-eight")

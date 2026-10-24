@@ -236,6 +236,22 @@ class GenerationWorkerProtectedCandidateAdmissionPreflightObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerProtectedCandidateAdmissionObservation:
+    """Count-only evidence that the protected Candidate admission owner observed eligibility."""
+
+    status: str
+    request_index: int
+    verified_promoted_image_count: int
+    candidate_eligibility: str = "evidence_observed"
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass(frozen=True)
 class GenerationWorkerExecutorEventChainObservation:
     """Read-only view of accepted and Profile A source-bound Job/Inbox events."""
 
@@ -294,6 +310,7 @@ class _ProfileAOutputsReadyEventAttempt:
     remote_receipt: object = field(repr=False)
     state: str = "claim_in_progress"
     event: object = field(default=None, repr=False)
+    observation: object = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -383,6 +400,11 @@ class _StoragePreAdmissionAttempt:
     candidate_admission_state: str = "not_started"
     candidate_admission_marker: object = None
     candidate_admission_observation: object = None
+    protected_candidate_admission_state: str = "not_started"
+    protected_candidate_admission_marker: object = None
+    protected_candidate_admission_owner: object = None
+    protected_candidate_admission_result: object = None
+    protected_candidate_admission_observation: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -1442,6 +1464,7 @@ class OriginalHostWorkerStorageIntegration:
             )
 
         output_event = outputs_marker.event
+        output_observation = outputs_marker.observation
         promotion_receipt = outputs_marker.promotion_receipt
         promotion_observation = outputs_marker.promotion_observation
         return bool(
@@ -1454,6 +1477,24 @@ class OriginalHostWorkerStorageIntegration:
             and outputs_marker.promotion_owner is attempt.promotion_owner
             and promotion_receipt is attempt.promotion_receipt
             and promotion_observation is attempt.promotion_publication_observation
+            and (
+                (outputs_marker.state == "retained_uncertain"
+                 and output_observation is None)
+                or (
+                    type(output_observation) is GenerationWorkerProtectedOutputsReadyObservation
+                    and output_observation.status
+                        == "protected_outputs_ready_event_accepted_non_authoritative"
+                    and output_observation.request_index == index
+                    and output_observation.output_count == len(remote.images)
+                    and output_observation.candidate_eligibility == "not_established"
+                    and output_observation.execution_available is False
+                    and output_observation.protected_storage_available is False
+                    and output_observation.promotion_available is False
+                    and output_observation.candidate_publication_allowed is False
+                    and output_observation.project_save_allowed is False
+                    and output_observation.authorship == "unverified"
+                )
+            )
             and attempt.promotion_publication_state == "published_non_authoritative"
             and attempt.promotion_preflight_state == "promoted_non_authoritative"
             and outputs_marker.state in {
@@ -2470,6 +2511,53 @@ class OriginalHostWorkerStorageIntegration:
                 return False
         except Exception:
             return False
+        if not self._profile_a_promotion_publication_host_matches_locked(
+            lifecycle, attempt, captured["promotion_marker"],
+            captured["preflight_observation"], captured["writer_marker"],
+            captured["preflight_marker"], captured["evidence"],
+            captured["writer_observation"], captured["acceptance_observation"],
+            captured["writer"], captured["capacity"], captured["operation"],
+            captured["reservation"], captured["estimate"], captured["write"],
+            captured["promotion_owner"], captured["receipt"],
+            settled_publication=True,
+            published_observation=captured["promotion_observation"],
+        ):
+            return False
+        try:
+            envelope = captured["envelope"]
+            index = attempt.lease.request_index
+            request = envelope.manifest.requests[index]
+            prepared, remote, receipt = (
+                captured["prepared"], captured["remote"], captured["receipt"],
+            )
+            descriptors = tuple(remote.images)
+            rows = tuple(receipt.images)
+            sources = tuple(captured["observations"])
+            return bool(
+                1 <= len(descriptors) <= _MAX_WRITER_IMAGES
+                and prepared.request_index == index
+                and (prepared.request_id, prepared.workflow_identity)
+                    == (request.request_id, request.workflow_identity)
+                and (remote.job_id, remote.claim_id, remote.manifest_identity,
+                     remote.request_id, remote.request_index, remote.workflow_identity)
+                    == (envelope.job_id, envelope.claim_id,
+                        envelope.manifest.manifest_identity, request.request_id,
+                        index, request.workflow_identity)
+                and (receipt.job_id, receipt.claim_id, receipt.manifest_identity,
+                     receipt.request_id, receipt.request_index, receipt.workflow_identity,
+                     receipt.prompt_id, receipt.remote_receipt_identity)
+                    == (envelope.job_id, envelope.claim_id,
+                        envelope.manifest.manifest_identity, request.request_id,
+                        index, request.workflow_identity, remote.prompt_id, remote.identity)
+                and captured["promotion_observation"].request_index == index
+                and captured["promotion_observation"].promoted_image_count == len(rows)
+                and tuple(item.identity for item in descriptors)
+                    == tuple(item.descriptor_identity for item in sources)
+                and tuple(item.identity for item in descriptors)
+                    == tuple(row.descriptor_identity for row in rows)
+            )
+        except Exception:
+            return False
 
     def _profile_a_outputs_ready_host_matches_locked(self, lifecycle, captured):
         """Recheck a claimed 19G-E locator against the live Host and Promotion."""
@@ -2548,6 +2636,251 @@ class OriginalHostWorkerStorageIntegration:
             )
         except Exception:
             return False
+
+    def _begin_profile_a_protected_candidate_admission_locked(self, lifecycle, locator):
+        """Claim the separate G-F admission bridge for one accepted 19G-E event."""
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.comfy_output_containment import ProtectedOutputAcceptanceCharacterization
+        from core.comfy_remote_output_receipts import RemoteOutputReceipt
+        from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+        from core.generation_windows_protected_promotion import (
+            ProtectedDurablePromotionCharacterization,
+            VerifiedProtectedPromotionReceipt,
+        )
+        from ui.agent_generation_executor_handoff import GenerationPublicationOrigin
+
+        if (type(locator) is not GenerationWorkerProtectedOutputsReadyObservation
+                or locator.status != "protected_outputs_ready_event_accepted_non_authoritative"
+                or locator.candidate_eligibility != "not_established"
+                or locator.execution_available is not False
+                or locator.protected_storage_available is not False
+                or locator.promotion_available is not False
+                or locator.candidate_publication_allowed is not False
+                or locator.project_save_allowed is not False
+                or locator.authorship != "unverified"
+                or type(locator.request_index) is not int):
+            return None, "protected_candidate_admission_locator_invalid"
+        index = locator.request_index
+        with lifecycle._lock:
+            if (lifecycle._state != "bound_non_executing"
+                    or lifecycle._worker_storage_integration is not self
+                    or not self._profile_a
+                    or not self._lifecycle_profile_binding_matches_locked(lifecycle)):
+                return None, "protected_candidate_admission_host_changed"
+            runtime = lifecycle._runtime_ref()
+            origin = getattr(runtime, "_generation_publication_origin", None)
+            project = lifecycle._project_ref()
+            if (runtime is None or type(origin) is not GenerationPublicationOrigin
+                    or origin.envelope is not lifecycle._envelope
+                    or origin.project is not project
+                    or origin.path != lifecycle._project_path
+                    or origin.source_snapshot is None
+                    or runtime._generation_host_state is None):
+                return None, "protected_candidate_admission_host_changed"
+            attempt = self._storage_preadmission_attempts.get(index)
+            remote_marker = self._profile_a_remote_outputs_ready_event_attempts.get(index)
+            outputs_marker = self._profile_a_outputs_ready_event_attempts.get(index)
+            if (attempt is None or remote_marker is None or outputs_marker is None
+                    or attempt.promotion_publication_state != "published_non_authoritative"
+                    or attempt.promotion_preflight_state != "promoted_non_authoritative"
+                    or attempt.cancel_requested
+                    or outputs_marker.state != "events_accepted"
+                    or outputs_marker.observation is not locator
+                    or not self._profile_a_remote_outputs_ready_event_is_current_locked(
+                        lifecycle, attempt, remote_marker, outputs_marker=outputs_marker,
+                    )):
+                return None, "protected_candidate_admission_evidence_unavailable"
+
+            writer, capacity = self._profile_a_writer_owner, self._capacity_owner
+            acceptance, promoter = attempt.acceptance_owner, attempt.promotion_owner
+            receipt, remote = attempt.promotion_receipt, attempt.remote_receipt
+            if (type(writer) is not WindowsProtectedAssetsCharacterization
+                    or type(capacity) is not WindowsProtectedStorageAdmissionCharacterization
+                    or type(acceptance) is not ProtectedOutputAcceptanceCharacterization
+                    or type(promoter) is not ProtectedDurablePromotionCharacterization
+                    or type(receipt) is not VerifiedProtectedPromotionReceipt
+                    or type(remote) is not RemoteOutputReceipt):
+                return None, "protected_candidate_admission_evidence_unavailable"
+
+            # The later Admission owner is the only authority for protected
+            # native checks. Claim this independent one-shot marker without
+            # taking protected-owner locks while Job/Inbox custody is held.
+            with self._lock:
+                state = attempt.protected_candidate_admission_state
+                if state != "not_started":
+                    if state == "in_progress":
+                        return None, "protected_candidate_admission_in_progress"
+                    if state == "observed":
+                        return None, "protected_candidate_admission_already_observed"
+                    if state == "retained_uncertain":
+                        return None, "protected_candidate_admission_uncertain"
+                    return None, "protected_candidate_admission_evidence_unavailable"
+                if (self._storage_preadmission_attempts.get(index) is not attempt
+                        or self._profile_a_outputs_ready_event_attempts.get(index)
+                            is not outputs_marker
+                        or attempt.protected_candidate_admission_marker is not None
+                        or attempt.protected_candidate_admission_owner is not None
+                        or attempt.protected_candidate_admission_result is not None
+                        or attempt.protected_candidate_admission_observation is not None
+                        or locator.output_count != len(remote.images)
+                        or not 1 <= len(remote.images) <= _MAX_WRITER_IMAGES
+                        or len(receipt.images) != len(remote.images)
+                        or tuple(item.identity for item in remote.images)
+                            != tuple(row.descriptor_identity for row in receipt.images)
+                        or len(attempt.acceptance_observations) != len(receipt.images)
+                        or any(row.source_observation is not source
+                               for row, source in zip(
+                                   receipt.images, attempt.acceptance_observations,
+                               ))
+                        or runtime._generation_original_host_lifecycle is not lifecycle
+                        or runtime._generation_publication_origin is not origin
+                        or lifecycle._job_id != lifecycle._envelope.job_id
+                        or lifecycle._claim_id != lifecycle._envelope.claim_id
+                        or lifecycle._manifest_identity
+                            != lifecycle._envelope.manifest.manifest_identity
+                        or lifecycle._pairing_generation
+                            != lifecycle._envelope.binding.pairing_generation):
+                    return None, "protected_candidate_admission_evidence_unavailable"
+                inbox = lifecycle._inbox
+                if (inbox._late_output_seen
+                        or any(
+                            getattr(item, "job_id", None) == lifecycle._job_id
+                            and getattr(item, "claim_id", None) == lifecycle._claim_id
+                            and getattr(getattr(item, "progress", None), "request_index", None)
+                                == index
+                            and getattr(getattr(item, "progress", None), "kind", None)
+                                in {"remote_outputs_ready", "outputs_ready"}
+                            for item in inbox._late
+                        )):
+                    return None, "protected_candidate_admission_late_event"
+                marker = object()
+                attempt.protected_candidate_admission_state = "in_progress"
+                attempt.protected_candidate_admission_marker = marker
+                return {
+                    "attempt": attempt,
+                    "marker": marker,
+                    "locator": locator,
+                    "outputs_marker": outputs_marker,
+                    "remote_marker": remote_marker,
+                    "writer": writer,
+                    "capacity": capacity,
+                    "acceptance": acceptance,
+                    "promotion_owner": promoter,
+                    "receipt": receipt,
+                    "remote": remote,
+                    "prepared": attempt.prepared,
+                    "accepted": attempt.accepted_batch,
+                    "envelope": lifecycle._envelope,
+                    "runtime": runtime,
+                    "origin": origin,
+                    "project": project,
+                    "host_state": runtime._generation_host_state,
+                    "project_reference": self._project_reference,
+                    "pairing_generation": lifecycle._pairing_generation,
+                }, "protected_candidate_admission_claimed"
+
+    def _commit_profile_a_protected_candidate_admission_locked(
+            self, lifecycle, captured, admission_owner, result, observation):
+        """Publish only a count-only view after exact owner evidence is rechecked."""
+        from ui.agent_generation_protected_candidate_admission import (
+            ProtectedCandidateAdmissionObservation,
+            ProtectedCandidateAdmissionResult,
+        )
+
+        attempt = captured["attempt"]
+        index = attempt.lease.request_index
+        owner_observation = getattr(result, "observation", None)
+        if (type(result) is not ProtectedCandidateAdmissionResult
+                or result.status != "evidence_observed"
+                or result.request_index != index
+                or type(owner_observation) is not ProtectedCandidateAdmissionObservation
+                or observation.status != "protected_candidate_admission_evidence_observed"
+                or observation.request_index != index
+                or observation.verified_promoted_image_count != len(captured["receipt"].images)):
+            return False
+        runtime = captured["runtime"]
+        origin = captured["origin"]
+        marker = captured["marker"]
+        outputs_marker = captured["outputs_marker"]
+        remote_marker = captured["remote_marker"]
+        if (owner_observation._runtime is not runtime
+                or owner_observation._origin is not origin
+                or owner_observation._envelope is not captured["envelope"]
+                or owner_observation._project is not captured["project"]
+                or owner_observation._promotion_owner is not captured["promotion_owner"]
+                or owner_observation._promotion_receipt is not captured["receipt"]
+                or owner_observation._remote_receipt is not captured["remote"]
+                or owner_observation._remote_event is not remote_marker.event
+                or owner_observation._outputs_ready_event is not outputs_marker.event):
+            return False
+
+        with lifecycle._lock:
+            if (lifecycle._state != "bound_non_executing"
+                    or lifecycle._worker_storage_integration is not self
+                    or lifecycle._runtime_ref() is not runtime
+                    or runtime._generation_original_host_lifecycle is not lifecycle
+                    or runtime._generation_publication_origin is not origin
+                    or runtime._generation_host_state is not captured["host_state"]
+                    or lifecycle._project_ref() is not captured["project"]
+                    or lifecycle._project_path != origin.path
+                    or lifecycle._envelope is not captured["envelope"]
+                    or lifecycle._pairing_generation != captured["pairing_generation"]
+                    or not self._lifecycle_profile_binding_matches_locked(lifecycle)):
+                return False
+            with self._lock:
+                if (self._storage_preadmission_attempts.get(index) is not attempt
+                        or attempt.protected_candidate_admission_state != "in_progress"
+                        or attempt.protected_candidate_admission_marker is not marker
+                        or attempt.protected_candidate_admission_owner is not admission_owner
+                        or attempt.protected_candidate_admission_result is not result
+                        or attempt.protected_candidate_admission_observation is not None
+                        or runtime._generation_protected_candidate_admission is not admission_owner
+                        or admission_owner._runtime is not runtime
+                        or admission_owner._state is not captured["host_state"]
+                        or admission_owner._origin is not origin
+                        or admission_owner._envelope is not captured["envelope"]
+                        or admission_owner._closed
+                        or lifecycle._inbox._late_output_seen
+                        or any(
+                            getattr(item, "job_id", None) == lifecycle._job_id
+                            and getattr(item, "claim_id", None) == lifecycle._claim_id
+                            and getattr(getattr(item, "progress", None), "request_index", None)
+                                == index
+                            and getattr(getattr(item, "progress", None), "kind", None)
+                                in {"remote_outputs_ready", "outputs_ready"}
+                            for item in lifecycle._inbox._late
+                        )
+                        or outputs_marker.observation is not captured["locator"]
+                        or outputs_marker.state != "events_accepted"
+                        or not self._profile_a_remote_outputs_ready_event_is_current_locked(
+                            lifecycle, attempt, remote_marker, outputs_marker=outputs_marker,
+                        )):
+                    return False
+                attempt.protected_candidate_admission_observation = observation
+                attempt.protected_candidate_admission_state = "observed"
+                return True
+
+    def _retain_profile_a_protected_candidate_admission_uncertain(
+            self, captured, *, admission_owner=None, result=None, mark_uncertain=True):
+        """Retain exact private evidence when post-native Host publication is uncertain."""
+        attempt = captured.get("attempt") if type(captured) is dict else None
+        marker = captured.get("marker") if type(captured) is dict else None
+        if attempt is None or marker is None:
+            return
+        index = attempt.lease.request_index
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(index) is not attempt
+                    or attempt.protected_candidate_admission_marker is not marker):
+                return
+            if admission_owner is not None:
+                attempt.protected_candidate_admission_owner = admission_owner
+            if result is not None:
+                attempt.protected_candidate_admission_result = result
+            if (mark_uncertain is True
+                    and attempt.protected_candidate_admission_state == "in_progress"):
+                attempt.protected_candidate_admission_state = "retained_uncertain"
 
     def _begin_profile_a_outputs_ready_event_locked(self, lifecycle, observation):
         """Claim an exact published Promotion locator once, without exposing it."""
@@ -2968,13 +3301,15 @@ class OriginalHostWorkerStorageIntegration:
                                     except Exception:
                                         marker.state = "retained_uncertain"
                                         return None, "protected_outputs_ready_event_uncertain"
-                                    if (accepted_event == "accepted"
-                                            and self._profile_a_remote_outputs_ready_event_is_current_locked(
+                                    if accepted_event == "accepted":
+                                        marker.observation = result
+                                        if self._profile_a_remote_outputs_ready_event_is_current_locked(
                                                 lifecycle, attempt, captured["remote_marker"],
                                                 outputs_marker=marker,
-                                            )):
-                                        marker.state = "events_accepted"
-                                        return result, result.status
+                                        ):
+                                            marker.state = "events_accepted"
+                                            return result, result.status
+                                        marker.observation = None
                                     marker.state = ("retained_uncertain"
                                                     if event_mutation_observed() else "refused")
                                     return None, (
@@ -2982,54 +3317,6 @@ class OriginalHostWorkerStorageIntegration:
                                         if marker.state == "retained_uncertain"
                                         else "protected_outputs_ready_event_refused"
                                     )
-        if not self._profile_a_promotion_publication_host_matches_locked(
-            lifecycle, attempt, captured["promotion_marker"],
-            captured["preflight_observation"], captured["writer_marker"],
-            captured["preflight_marker"], captured["evidence"],
-            captured["writer_observation"], captured["acceptance_observation"],
-            captured["writer"], captured["capacity"], captured["operation"],
-            captured["reservation"], captured["estimate"], captured["write"],
-            captured["promotion_owner"], captured["receipt"],
-            settled_publication=True,
-            published_observation=captured["promotion_observation"],
-        ):
-            return False
-        try:
-            envelope = captured["envelope"]
-            index = attempt.lease.request_index
-            request = envelope.manifest.requests[index]
-            prepared, remote, receipt = (
-                captured["prepared"], captured["remote"], captured["receipt"],
-            )
-            descriptors = tuple(remote.images)
-            rows = tuple(receipt.images)
-            sources = tuple(captured["observations"])
-            return bool(
-                1 <= len(descriptors) <= _MAX_WRITER_IMAGES
-                and prepared.request_index == index
-                and (prepared.request_id, prepared.workflow_identity)
-                    == (request.request_id, request.workflow_identity)
-                and (remote.job_id, remote.claim_id, remote.manifest_identity,
-                     remote.request_id, remote.request_index, remote.workflow_identity)
-                    == (envelope.job_id, envelope.claim_id,
-                        envelope.manifest.manifest_identity, request.request_id,
-                        index, request.workflow_identity)
-                and (receipt.job_id, receipt.claim_id, receipt.manifest_identity,
-                     receipt.request_id, receipt.request_index, receipt.workflow_identity,
-                     receipt.prompt_id, receipt.remote_receipt_identity)
-                    == (envelope.job_id, envelope.claim_id,
-                        envelope.manifest.manifest_identity, request.request_id,
-                        index, request.workflow_identity, remote.prompt_id, remote.identity)
-                and captured["promotion_observation"].request_index == index
-                and captured["promotion_observation"].promoted_image_count == len(rows)
-                and tuple(item.identity for item in descriptors)
-                    == tuple(item.descriptor_identity for item in sources)
-                and tuple(item.identity for item in descriptors)
-                    == tuple(row.descriptor_identity for row in rows)
-            )
-        except Exception:
-            return False
-
     def _begin_profile_a_candidate_admission_preflight_locked(
             self, lifecycle, promotion_observation):
         """Claim one exact post-Promotion read-only Host preflight."""
@@ -4415,6 +4702,15 @@ class OriginalHostWorkerStorageIntegration:
             # owner close/invalidation wins, that owner retains the estimate
             # as uncertain and the cancellation below remains fail-closed.
             for attempt in self._storage_preadmission_attempts.values():
+                admission_in_progress = (
+                    attempt.protected_candidate_admission_state == "in_progress"
+                )
+                if admission_in_progress:
+                    # The genuine Admission owner may be inside native
+                    # verification. Keep its exact private owner/result and
+                    # retain the settled protected Promotion; never compensate
+                    # or route this operation through staging cancellation.
+                    attempt.protected_candidate_admission_state = "retained_uncertain"
                 if attempt.candidate_admission_state == "in_progress":
                     # This is downstream eligibility uncertainty only. The
                     # already-published Promotion and its completed capacity
@@ -4424,6 +4720,8 @@ class OriginalHostWorkerStorageIntegration:
                     # This attempt has already crossed every staging and
                     # Promotion boundary. Do not route it through the older
                     # pre-admission cancellation branch below.
+                    continue
+                if admission_in_progress:
                     continue
                 if attempt.state in {"preparing", "reserved", "pre_admitted"}:
                     attempt.cancel_requested = True

@@ -499,6 +499,50 @@ class GenerationProtectedCandidateAdmission:
         with self._host_evidence(promotion_owner, receipt, remote, index) as evidence:
             return evidence is not None
 
+    @contextmanager
+    def _admission_result_current_for_characterization(self, result):
+        """Hold exact protected and Job/Inbox custody for a read-only Host bridge.
+
+        This guard deliberately does not create the later Candidate publication
+        token. The original Host may use the yielded exact event pair to bind a
+        count-only observation while Promotion and Job/Inbox custody remain
+        current.
+        """
+        if (type(result) is not ProtectedCandidateAdmissionResult
+                or result.status != "evidence_observed"
+                or type(result.request_index) is not int
+                or type(result.observation) is not ProtectedCandidateAdmissionObservation):
+            yield None
+            return
+        observation = result.observation
+        index = result.request_index
+        if (observation.request_index != index
+                or observation._runtime is not self._runtime
+                or observation._origin is not self._origin
+                or observation._envelope is not self._envelope):
+            yield None
+            return
+        with self._lock:
+            attempt = self._attempts.get(index)
+            owned = bool(
+                not self._closed and attempt is not None
+                and attempt.status == "observed" and attempt.result is result
+                and attempt.promotion_owner is observation._promotion_owner
+                and attempt.receipt is observation._promotion_receipt
+                and attempt.remote is observation._remote_receipt
+            )
+        if not owned:
+            yield None
+            return
+        with self._host_evidence(
+                observation._promotion_owner, observation._promotion_receipt,
+                observation._remote_receipt, index) as evidence:
+            if (evidence is None or evidence[0] is not observation._remote_event
+                    or evidence[1] is not observation._outputs_ready_event):
+                yield None
+                return
+            yield evidence
+
     def _close_under_runtime_gate(self):
         with self._lock:
             self._closed = True

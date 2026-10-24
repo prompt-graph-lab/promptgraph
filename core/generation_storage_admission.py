@@ -73,6 +73,8 @@ def _profile_a_promotion_is_unresolved(attempt):
             in _UNRESOLVED_PROFILE_A_PROMOTION_PUBLICATION_STATES
         or getattr(attempt, "candidate_admission_state", None)
             in _UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES
+        or getattr(attempt, "protected_candidate_admission_state", None)
+            in _UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES
     )
 
 

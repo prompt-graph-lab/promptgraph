@@ -138,6 +138,7 @@ def handoff_generation_for_characterization(state, runtime, provider, action, *,
                                                              claim.job_id, claim.claim_id)
                                 runtime._generation_publication_origin = GenerationPublicationOrigin(
                                     envelope, project, path, source_snapshot, held.review.projection_json)
+                                runtime._generation_host_state = state
                                 # Durable here means stored in the session job
                                 # owner before take, not disk/restart durability.
                                 committed = inbox._commit_locked(reservation, envelope)
