@@ -34,6 +34,53 @@ class PublicationReceipt:
     registered_count: int = 0
 
 
+_PROFILE_A_HOST_CALLBACK_ISSUER = object()
+
+
+@dataclass(frozen=True)
+class _ProfileAHostGalleryCallbacks:
+    """Opaque, app-issued references to the existing Gallery owners."""
+
+    runtime: object
+    state: object
+    candidate_factory: object
+    candidate_appender: object
+    save_project: object
+    _issuer: object
+
+
+def _issue_profile_a_host_gallery_callbacks_for_app(
+        runtime, state, *, candidate_factory, candidate_appender, save_project):
+    """Bind the fixed app-wrapper callbacks into an opaque host bundle.
+
+    Only the app-facing entry point calls this helper, with its lexical app
+    owners. Runtime publication accepts the resulting exact bundle, never a
+    caller-selected callback trio or a name-based substitute.
+    """
+    if (type(runtime) is not ProjectAgentSessionRuntime
+            or state is None
+            or not all(callable(callback) for callback in
+                       (candidate_factory, candidate_appender, save_project))):
+        raise ValueError("profile_a_host_callback_binding_required")
+    return _ProfileAHostGalleryCallbacks(
+        runtime, state, candidate_factory, candidate_appender, save_project,
+        _PROFILE_A_HOST_CALLBACK_ISSUER,
+    )
+
+
+def _profile_a_host_gallery_callbacks_are_valid(callbacks, runtime, state):
+    return bool(
+        type(callbacks) is _ProfileAHostGalleryCallbacks
+        and callbacks._issuer is _PROFILE_A_HOST_CALLBACK_ISSUER
+        and callbacks.runtime is runtime
+        and callbacks.state is state
+        and runtime._generation_host_state is state
+        and all(callable(callback) for callback in
+                (callbacks.candidate_factory, callbacks.candidate_appender,
+                 callbacks.save_project))
+    )
+
+
 @dataclass(frozen=True)
 class _ProtectedSettledEventEvidence:
     """Exact accepted output events retained after bounded logs evict them."""
@@ -68,7 +115,7 @@ class GenerationCandidatePublication:
     @classmethod
     def create_profile_a_protected_for_characterization(
             cls, state, runtime, envelope, admission_owner, admission_result, *,
-            candidate_factory, candidate_appender, save_project,
+            callback_bundle,
             characterization=False, disposable_opt_in=False):
         """Create the single Gallery writer under exact Profile A root custody.
 
@@ -101,11 +148,9 @@ class GenerationCandidatePublication:
                 or admission_result.status != "evidence_observed"
                 or type(admission_result.observation) is not ProtectedCandidateAdmissionObservation
                 or admission_result.observation.request_index != admission_result.request_index
-                or not all(callable(callback) for callback in
-                           (candidate_factory, candidate_appender, save_project))
-                or getattr(candidate_factory, "__name__", None) != "_make_generated_candidate_record"
-                or getattr(candidate_appender, "__name__", None) != "_append_line_generated_candidates"
-                or getattr(save_project, "__name__", None) != "save_agent_scene_module_swap_project"):
+                or not _profile_a_host_gallery_callbacks_are_valid(
+                    callback_bundle, runtime, state,
+                )):
             raise ValueError("profile_a_host_binding_required")
 
         origin = runtime._generation_publication_origin
@@ -163,8 +208,13 @@ class GenerationCandidatePublication:
         ):
             raise ValueError("profile_a_promoted_root_unavailable")
 
-        owner = cls(state, runtime, envelope, candidate_factory, candidate_appender, save_project,
+        owner = cls(
+                    state, runtime, envelope,
+                    callback_bundle.candidate_factory,
+                    callback_bundle.candidate_appender,
+                    callback_bundle.save_project,
                     approved_directory=None, mode="profile_a_protected", _factory=_FACTORY)
+        owner._profile_a_callback_bundle = callback_bundle
         owner._profile_a_capacity_owner = capacity
         owner._profile_a_protected_owner = protected_owner
         owner._profile_a_promoted_root = capacity._roots["promoted_assets"]
@@ -345,8 +395,25 @@ class GenerationCandidatePublication:
         self._profile_a_promoted_root = None
         self._profile_a_scope_identity = None
         self._profile_a_promoted_root_identity = None
+        self._profile_a_callback_bundle = None
         self._save_state = "not_attempted"
         self._save_callback_outcome = "not_attempted"
+
+    def _bind_profile_a_host_gallery_callbacks_for_characterization(self, callback_bundle):
+        """Refresh app-script identities only from an app-issued callback bundle."""
+        if (self._mode != "profile_a_protected"
+                or not _profile_a_host_gallery_callbacks_are_valid(
+                    callback_bundle, self._runtime, self._state,
+                )):
+            return False
+        with self._lock:
+            if self._busy or self._save_state != "not_attempted":
+                return False
+            self._factory = callback_bundle.candidate_factory
+            self._appender = callback_bundle.candidate_appender
+            self._save = callback_bundle.save_project
+            self._profile_a_callback_bundle = callback_bundle
+            return True
 
     @contextmanager
     def _authority(self, index=None, remote=None, local=None, *, source=True, _gate_held=False):

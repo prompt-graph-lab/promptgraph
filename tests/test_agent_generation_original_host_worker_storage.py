@@ -3599,6 +3599,37 @@ def test_profile_a_genuine_candidate_admission_uses_existing_gallery_writer_with
     owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
     assert owners["publish_profile_a_generation_candidates_for_characterization"].__code__.co_argcount == 1
 
+    # Runtime callers cannot replace the Gallery owners by supplying callable
+    # names that resemble the trusted app callbacks. The app wrapper below
+    # issues the opaque bundle from its actual owner references.
+    fake_callback_calls = []
+
+    def _make_generated_candidate_record(*args, **kwargs):
+        fake_callback_calls.append("factory")
+        return None
+
+    def _append_line_generated_candidates(*args, **kwargs):
+        fake_callback_calls.append("appender")
+
+    def save_agent_scene_module_swap_project(*args, **kwargs):
+        fake_callback_calls.append("save")
+        return True
+
+    with pytest.raises(TypeError):
+        runtime._publish_profile_a_generation_candidates_for_characterization(
+            admission, state=state,
+            candidate_factory=_make_generated_candidate_record,
+            candidate_appender=_append_line_generated_candidates,
+            save_project=save_agent_scene_module_swap_project,
+            characterization=True, disposable_opt_in=True,
+        )
+    assert fake_callback_calls == []
+    assert runtime._generation_candidate_publication is None
+    assert attempt.protected_candidate_publication_state == "not_started"
+    assert state["project"] == project_before
+    assert state["history"] == []
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id) == job_before
+
     # Equal-valued copies do not stand in for the exact G-F locator and do not
     # consume the one-shot Candidate publication attempt.
     copied, copied_status = owners[
@@ -3782,22 +3813,24 @@ def test_profile_a_candidate_publication_serializes_capacity_close_at_commit_bou
     owners = app_owners(state)
     owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
     capacity = runtime._generation_original_host_lifecycle._worker_storage_integration._capacity_owner
-    original_appender = owners["_append_line_generated_candidates"]
+    original_persistent_appender = owners["_append_persistent_line_candidates"]
     appender_entered, release_appender = threading.Event(), threading.Event()
     close_entered, close_done = threading.Event(), threading.Event()
     original_revoke = capacity._candidate_publication_boundary.revoke
     publication_result = []
 
-    def _append_line_generated_candidates(*args, **kwargs):
+    def blocked_persistent_appender(*args, **kwargs):
         appender_entered.set()
         assert release_appender.wait(5)
-        return original_appender(*args, **kwargs)
+        return original_persistent_appender(*args, **kwargs)
 
     def revoke_and_signal():
         close_entered.set()
         return original_revoke()
 
-    owners["_append_line_generated_candidates"] = _append_line_generated_candidates
+    # Keep the trusted app callback identity intact; pause at its lower-level
+    # in-memory Candidate append boundary instead.
+    owners["_append_persistent_line_candidates"] = blocked_persistent_appender
     capacity._candidate_publication_boundary.revoke = revoke_and_signal
 
     def publish():

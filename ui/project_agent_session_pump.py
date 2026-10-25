@@ -2811,14 +2811,15 @@ class ProjectAgentSessionRuntime:
             return None, "protected_candidate_admission_uncertain"
 
     def _publish_profile_a_generation_candidates_for_characterization(
-            self, locator, *, state, candidate_factory, candidate_appender,
-            save_project, characterization=False, disposable_opt_in=False):
+            self, locator, *, state, callback_bundle,
+            characterization=False, disposable_opt_in=False):
         """Use the existing Gallery publisher for one exact genuine G-F result."""
         from core.generation_storage_admission import (
             WindowsProtectedStorageAdmissionCharacterization,
         )
         from ui.agent_generation_candidate_publication import (
             GenerationCandidatePublication,
+            _profile_a_host_gallery_callbacks_are_valid,
         )
         from ui.agent_generation_original_host_lifecycle import OriginalHostGenerationLifecycle
         from ui.agent_generation_original_host_worker_storage import (
@@ -2859,6 +2860,8 @@ class ProjectAgentSessionRuntime:
             )
             if previous_status is not None:
                 return previous, previous_status
+        if not _profile_a_host_gallery_callbacks_are_valid(callback_bundle, self, state):
+            return None, "protected_candidate_publication_callbacks_unavailable"
         if (type(lifecycle_snapshot) is not OriginalHostGenerationLifecycle
                 or type(integration) is not OriginalHostWorkerStorageIntegration
                 or integration._profile_a is not True
@@ -2924,7 +2927,7 @@ class ProjectAgentSessionRuntime:
                     lifecycle, captured,
                 ))
 
-        def publisher_matches(candidate):
+        def publisher_owner_matches(candidate):
             return bool(
                 type(candidate) is GenerationCandidatePublication
                 and candidate._mode == "profile_a_protected"
@@ -2935,13 +2938,15 @@ class ProjectAgentSessionRuntime:
                 and candidate._profile_a_capacity_owner is integration._capacity_owner
                 and candidate._profile_a_protected_owner is integration._profile_a_writer_owner
                 and candidate._profile_a_promoted_root
-                    is integration._capacity_owner._roots.get("promoted_assets")
-                and getattr(candidate._factory, "__name__", None)
-                    == "_make_generated_candidate_record"
-                and getattr(candidate._appender, "__name__", None)
-                    == "_append_line_generated_candidates"
-                and getattr(candidate._save, "__name__", None)
-                    == "save_agent_scene_module_swap_project")
+                    is integration._capacity_owner._roots.get("promoted_assets"))
+
+        def publisher_matches(candidate):
+            return bool(
+                publisher_owner_matches(candidate)
+                and candidate._profile_a_callback_bundle is callback_bundle
+                and candidate._factory is callback_bundle.candidate_factory
+                and candidate._appender is callback_bundle.candidate_appender
+                and candidate._save is callback_bundle.save_project)
 
         try:
             if (origin.project != origin.source_snapshot
@@ -2967,9 +2972,7 @@ class ProjectAgentSessionRuntime:
                     publication_owner = GenerationCandidatePublication.create_profile_a_protected_for_characterization(
                         state, self, captured["origin"].envelope,
                         admission_owner, admission_result,
-                        candidate_factory=candidate_factory,
-                        candidate_appender=candidate_appender,
-                        save_project=save_project,
+                        callback_bundle=callback_bundle,
                         characterization=True, disposable_opt_in=True,
                     )
                 except ValueError as exc:
@@ -2977,9 +2980,16 @@ class ProjectAgentSessionRuntime:
                     # publisher installed by a concurrent first request.
                     existing = self._generation_candidate_publication
                     if (str(exc) != "publication_owner_exists"
-                            or not publisher_matches(existing)):
+                            or not publisher_owner_matches(existing)):
                         raise
                     publication_owner = existing
+            elif not publisher_owner_matches(publication_owner):
+                raise ValueError("protected_candidate_publication_owner_conflict")
+            if (not publisher_matches(publication_owner)
+                    and not publication_owner._bind_profile_a_host_gallery_callbacks_for_characterization(
+                        callback_bundle,
+                    )):
+                raise ValueError("protected_candidate_publication_owner_conflict")
             if not publisher_matches(publication_owner):
                 raise ValueError("protected_candidate_publication_owner_conflict")
             if not with_current_host(claim_current_locked):
