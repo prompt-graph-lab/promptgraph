@@ -64,6 +64,10 @@ class ProjectAgentSessionRuntime:
     # The exact live session mapping used to bind original-host inspection
     # owners. Kept private and never passed to the Worker.
     _generation_host_state: object = field(default=None, init=False, repr=False)
+    # Exact app.py callback identities captured from its executing host wrapper.
+    _generation_profile_a_host_callback_binding: object = field(
+        default=None, init=False, repr=False,
+    )
     _generation_candidate_publication: object = field(default=None, init=False, repr=False)
     _generation_protected_candidate_admission: object = field(default=None, init=False, repr=False)
     # Non-executing, exact original-host binding; never sent to a worker.
@@ -127,6 +131,7 @@ class ProjectAgentSessionRuntime:
     def _retire_generation_original_host_lifecycle_locked(self, reason):
         lifecycle = self._generation_original_host_lifecycle
         self._generation_original_host_lifecycle = None
+        self._generation_profile_a_host_callback_binding = None
         if lifecycle is not None:
             self._generation_host_state = None
             integration = lifecycle._worker_storage_integration
@@ -2810,6 +2815,203 @@ class ProjectAgentSessionRuntime:
             )
             return None, "protected_candidate_admission_uncertain"
 
+    def _publish_profile_a_generation_candidates_for_characterization(
+            self, locator, *, state,
+            characterization=False, disposable_opt_in=False):
+        """Use the existing Gallery publisher for one exact genuine G-F result."""
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from ui.agent_generation_candidate_publication import (
+            GenerationCandidatePublication,
+            _profile_a_host_gallery_callbacks_for_current_app_run,
+        )
+        from ui.agent_generation_original_host_lifecycle import OriginalHostGenerationLifecycle
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedCandidateAdmissionObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+        from ui.agent_generation_protected_candidate_admission import (
+            GenerationProtectedCandidateAdmission,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if (type(locator) is not GenerationWorkerProtectedCandidateAdmissionObservation
+                or locator.status != "protected_candidate_admission_evidence_observed"
+                or locator.candidate_eligibility != "evidence_observed"
+                or locator.execution_available is not False
+                or locator.protected_storage_available is not False
+                or locator.promotion_available is not False
+                or locator.candidate_publication_allowed is not False
+                or locator.project_save_allowed is not False
+                or locator.authorship != "unverified"):
+            return None, "protected_candidate_publication_locator_invalid"
+
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration = (getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+                       if lifecycle_snapshot is not None else None)
+        # A consumed locator may be queried again after its original lifecycle
+        # was retired. Return only that exact bounded historical count/result;
+        # never use a retired integration to start or authorize new work.
+        historical_integrations = list(self._retired_generation_worker_storage_integrations)
+        if integration is not None:
+            historical_integrations.append(integration)
+        for prior_integration in reversed(historical_integrations):
+            if type(prior_integration) is not OriginalHostWorkerStorageIntegration:
+                continue
+            previous, previous_status = prior_integration._profile_a_candidate_publication_replay(
+                locator,
+            )
+            if previous_status is not None:
+                return previous, previous_status
+        callback_bundle = _profile_a_host_gallery_callbacks_for_current_app_run(self, state)
+        if callback_bundle is None:
+            return None, "protected_candidate_publication_callbacks_unavailable"
+        if (type(lifecycle_snapshot) is not OriginalHostGenerationLifecycle
+                or type(integration) is not OriginalHostWorkerStorageIntegration
+                or integration._profile_a is not True
+                or type(integration._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "protected_candidate_publication_unavailable"
+
+        captured = {}
+        with self._publication_gate:
+            if (self._closed or self._generation_original_host_lifecycle is not lifecycle_snapshot
+                    or self._generation_host_state is not state):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_publication():
+                    started, status = integration._begin_profile_a_candidate_publication_locked(
+                        lifecycle, locator,
+                    )
+                    if started is not None:
+                        captured.update(started)
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation,
+                    on_current=begin_publication,
+                )
+                if type(start_result) is not tuple or start_result is False:
+                    return None, "host_evidence_unavailable"
+                started, status = start_result
+                if started is None:
+                    return None, status
+                if type(started) is dict and "historical" in started:
+                    return started["historical"], status
+
+        lifecycle = lifecycle_snapshot
+        origin = captured["origin"]
+        admission_owner = captured["admission_owner"]
+        admission_result = captured["admission_result"]
+        admission_observation = captured["admission_observation"]
+        project_reference = captured["project_reference"]
+        publication_owner = captured["publication_owner"]
+
+        def with_current_host(callback):
+            with self._publication_gate:
+                if (self._closed
+                        or self._generation_original_host_lifecycle is not lifecycle
+                        or self._generation_host_state is not state):
+                    return False
+                with self._current_generation_original_host_lifecycle_locked() as current:
+                    if current is not lifecycle:
+                        return False
+                    return self._generation_original_host_evidence_current_locked(
+                        lifecycle, captured["pairing_generation"], on_current=callback,
+                    ) is True
+
+        def claim_current_locked():
+            return bool(
+                self._generation_publication_origin is origin
+                and self._generation_protected_candidate_admission is admission_owner
+                and integration._profile_a_candidate_publication_claim_current_locked(
+                    lifecycle, captured,
+                ))
+
+        def publisher_owner_matches(candidate):
+            return bool(
+                type(candidate) is GenerationCandidatePublication
+                and candidate._mode == "profile_a_protected"
+                and candidate._runtime is self
+                and candidate._state is state
+                and candidate._origin is origin
+                and candidate._envelope is captured["origin"].envelope
+                and candidate._profile_a_capacity_owner is integration._capacity_owner
+                and candidate._profile_a_protected_owner is integration._profile_a_writer_owner
+                and candidate._profile_a_promoted_root
+                    is integration._capacity_owner._roots.get("promoted_assets"))
+
+        def publisher_matches(candidate):
+            return bool(
+                publisher_owner_matches(candidate)
+                and candidate._profile_a_callback_bundle is callback_bundle
+                and candidate._factory is callback_bundle.candidate_factory
+                and candidate._appender is callback_bundle.candidate_appender
+                and candidate._save is callback_bundle.save_project)
+
+        try:
+            if (origin.project != origin.source_snapshot
+                    or not with_current_host(claim_current_locked)):
+                raise ValueError("protected_candidate_publication_host_changed")
+            if (project_reference is None
+                    or project_reference.readiness().get("status")
+                        != "read_only_reference_observed"):
+                raise ValueError("protected_candidate_publication_project_reference_unavailable")
+
+            # This admission owner check is local and lock-bounded. Native
+            # Promotion verification remains inside the existing publisher,
+            # outside all Job/Inbox and original-Host gates.
+            with admission_owner._admission_result_current_for_characterization(
+                    admission_result) as events:
+                if (events is None
+                        or events[0] is not admission_observation._remote_event
+                        or events[1] is not admission_observation._outputs_ready_event):
+                    raise ValueError("protected_candidate_publication_admission_unavailable")
+
+            if publication_owner is None:
+                try:
+                    publication_owner = GenerationCandidatePublication.create_profile_a_protected_for_characterization(
+                        state, self, captured["origin"].envelope,
+                        admission_owner, admission_result,
+                        callback_bundle=callback_bundle,
+                        characterization=True, disposable_opt_in=True,
+                    )
+                except ValueError as exc:
+                    # A second sequential request may observe the single
+                    # publisher installed by a concurrent first request.
+                    existing = self._generation_candidate_publication
+                    if (str(exc) != "publication_owner_exists"
+                            or not publisher_owner_matches(existing)):
+                        raise
+                    publication_owner = existing
+            elif not publisher_owner_matches(publication_owner):
+                raise ValueError("protected_candidate_publication_owner_conflict")
+            if (not publisher_matches(publication_owner)
+                    and not publication_owner._bind_profile_a_host_gallery_callbacks_for_characterization(
+                        callback_bundle,
+                    )):
+                raise ValueError("protected_candidate_publication_owner_conflict")
+            if not publisher_matches(publication_owner):
+                raise ValueError("protected_candidate_publication_owner_conflict")
+            if not with_current_host(claim_current_locked):
+                raise ValueError("protected_candidate_publication_host_changed")
+
+            receipt = publication_owner.publish_protected_for_characterization(
+                admission_owner, admission_observation,
+            )
+            return integration._complete_profile_a_candidate_publication(
+                captured, publication_owner, receipt,
+            )
+        except Exception:
+            return integration._complete_profile_a_candidate_publication(
+                captured, publication_owner, None,
+            )
+
     def cancel_generation_worker_promotion_preflight_for_characterization(self, observation):
         """Release only this Host's exact pre-CREATE_NEW Promotion reservation."""
         from ui.agent_generation_original_host_worker_storage import (
@@ -4014,6 +4216,7 @@ class ProjectAgentSessionRuntime:
                 return
             self._closed = True
             self._clear_executable_review_locked()
+            self._generation_profile_a_host_callback_binding = None
             lifecycle = self._generation_original_host_lifecycle
             self._generation_original_host_lifecycle = None
             self._generation_original_host_lifecycle_reason = "runtime_closed"

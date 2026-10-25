@@ -5,6 +5,7 @@ import json
 import io
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -346,10 +347,12 @@ def _profile_a_history_observed(*, descriptor_count=1, estimate_bytes=32 * 1024 
 
 def _profile_a_prospective_history_observed(
         native_profile_a_worker_storage, *, descriptor_count=1,
-        include_status=True, completed=True):
+        include_status=True, completed=True, host_provider=None):
     """Run the genuine prospective 19G-B/C path on disposable native roots."""
     roots, capacity, reference, project_path = native_profile_a_worker_storage
-    runtime, _route, state, lifecycle = _ready_generation_at_project_path(project_path)
+    runtime, _route, state, lifecycle = _ready_generation_at_project_path(
+        project_path, host_provider=host_provider,
+    )
     prompt_id = str(uuid.uuid4())
     worker = _worker(prompt_id=prompt_id)
     assert runtime.bind_generation_profile_a_storage_for_characterization(
@@ -402,7 +405,7 @@ def _profile_a_prospective_history_observed(
             history_lease, history, history_json, observed_history_status)
 
 
-def _ready_generation_at_project_path(project_path, *, run_count=1):
+def _ready_generation_at_project_path(project_path, *, run_count=1, host_provider=None):
     from core import agent_facade
     from ui.agent_generation_executor_handoff import (
         capture_executor_human_start_for_characterization, handoff_generation_for_characterization,
@@ -425,7 +428,7 @@ def _ready_generation_at_project_path(project_path, *, run_count=1):
     runtime.generation_jobs = GenerationJobRegistry(characterization=True)
     runtime._generation_executor_inbox = GenerationExecutorInbox(characterization=True)
     epoch = runtime.synchronize_target(state["project"], state["current_project_path"])
-    provider = host_for()
+    provider = host_provider if host_provider is not None else host_for()
     binding = [
         agent_facade.candidate_observation_handles.project_identity(state["project"]),
         runtime._registration.route_id,
@@ -3452,7 +3455,8 @@ def _publish_profile_a_promotion_for_candidate_preflight(
 
 
 def _publish_profile_a_source_bound_promotion_for_outputs_ready(
-        native_profile_a_dual_custody_worker_storage, *, descriptor_count=1):
+        native_profile_a_dual_custody_worker_storage, *, descriptor_count=1,
+        host_provider=None):
     """Compose genuine 19G-B/C/D events with native staging and Promotion."""
     from core import generation_windows_protected_assets as assets
     from test_comfy_output_containment import image_bytes
@@ -3467,6 +3471,7 @@ def _publish_profile_a_source_bound_promotion_for_outputs_ready(
         _profile_a_prospective_history_observed(
             native_profile_a_dual_custody_worker_storage,
             descriptor_count=descriptor_count,
+            host_provider=host_provider,
         )
     )
     try:
@@ -3513,6 +3518,374 @@ def _publish_profile_a_source_bound_promotion_for_outputs_ready(
     except BaseException:
         runtime.close()
         raise
+
+
+def _profile_a_host_provider_with_output_directory(output_directory):
+    from test_agent_generation_executable_manifest import host_for
+
+    base = host_for()
+
+    def provider(project, run_count):
+        host = base(project, run_count)
+        host["generation_options"]["output_directory"] = str(output_directory)
+        return host
+
+    return provider
+
+
+def _prepare_profile_a_candidate_publication(
+        native_profile_a_dual_custody_worker_storage, output_directory,
+        *, descriptor_count=1):
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedCandidateAdmissionObservation,
+    )
+
+    output_directory.mkdir()
+    host_provider = _profile_a_host_provider_with_output_directory(output_directory)
+    (runtime, lifecycle, worker, _prepared, attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+            descriptor_count=descriptor_count,
+            host_provider=host_provider,
+        )
+    )
+    state = runtime._generation_host_state
+    state["history"] = []
+    outputs_ready, event_status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert event_status == "protected_outputs_ready_event_accepted_non_authoritative"
+    admission, admission_status = runtime.observe_generation_worker_protected_candidate_admission_for_characterization(
+        outputs_ready, characterization=True, disposable_opt_in=True,
+    )
+    assert admission_status == "protected_candidate_admission_evidence_observed"
+    assert type(admission) is GenerationWorkerProtectedCandidateAdmissionObservation
+    return runtime, lifecycle, worker, attempt, writer, state, output_directory, admission
+
+
+@pytest.mark.parametrize("descriptor_count", [1, 2, 16])
+def test_profile_a_genuine_candidate_admission_uses_existing_gallery_writer_without_save(
+        native_profile_a_dual_custody_worker_storage, tmp_path, descriptor_count):
+    from test_agent_generation_candidate_publication import app_owners
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedCandidatePublicationObservation,
+    )
+
+    (runtime, lifecycle, _worker, attempt, writer, state, output_directory,
+     admission) = _prepare_profile_a_candidate_publication(
+        native_profile_a_dual_custody_worker_storage,
+        tmp_path / "comfy-output",
+        descriptor_count=descriptor_count,
+    )
+    project = state["project"]
+    project_path = lifecycle._project_path
+    project_before = copy.deepcopy(project)
+    project_file_before = Path(project_path).read_bytes()
+    capacity = lifecycle._worker_storage_integration._capacity_owner
+    integration = lifecycle._worker_storage_integration
+    job_before = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    ledger_operations_before = set(capacity._ledger._operations)
+    ledger_reservations_before = set(capacity._ledger._reservations)
+    promoted_root = writer._roots["promoted_assets"]._path
+    promoted_files_before = set(promoted_root.iterdir())
+    assert json.loads(runtime._generation_publication_origin.envelope.manifest.host_config_json)[
+        "output_directory"
+    ] == str(output_directory)
+    assert Path(writer._roots["promoted_assets"]._path) != output_directory
+    assert not Path(writer._roots["promoted_assets"]._path).is_relative_to(output_directory)
+
+    owners = app_owners(state)
+    owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
+    assert owners["publish_profile_a_generation_candidates_for_characterization"].__code__.co_argcount == 1
+
+    # Runtime callers cannot replace the Gallery owners by supplying callable
+    # names that resemble the trusted app callbacks. The app wrapper below
+    # issues the opaque bundle from its actual owner references.
+    fake_callback_calls = []
+
+    def _make_generated_candidate_record(*args, **kwargs):
+        fake_callback_calls.append("factory")
+        return None
+
+    def _append_line_generated_candidates(*args, **kwargs):
+        fake_callback_calls.append("appender")
+
+    def save_agent_scene_module_swap_project(*args, **kwargs):
+        fake_callback_calls.append("save")
+        return True
+
+    from ui.agent_generation_candidate_publication import (
+        _profile_a_host_gallery_callbacks_for_current_app_run,
+    )
+
+    # The old generic issuer no longer exists. The current host capture path
+    # accepts no callback arguments and only succeeds while called by the
+    # actual app.py entrypoint, so same-named functions cannot mint a bundle.
+    with pytest.raises(TypeError):
+        _profile_a_host_gallery_callbacks_for_current_app_run(
+            runtime, state,
+            candidate_factory=_make_generated_candidate_record,
+            candidate_appender=_append_line_generated_candidates,
+            save_project=save_agent_scene_module_swap_project,
+        )
+    refused, refusal_status = runtime._publish_profile_a_generation_candidates_for_characterization(
+        admission, state=state,
+        characterization=True, disposable_opt_in=True,
+    )
+    assert refused is None
+    assert refusal_status == "protected_candidate_publication_callbacks_unavailable"
+    assert fake_callback_calls == []
+    assert runtime._generation_candidate_publication is None
+    assert attempt.protected_candidate_publication_state == "not_started"
+    assert state["project"] == project_before
+    assert state["history"] == []
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id) == job_before
+
+    # Equal-valued copies do not stand in for the exact G-F locator and do not
+    # consume the one-shot Candidate publication attempt.
+    copied, copied_status = owners[
+        "publish_profile_a_generation_candidates_for_characterization"
+    ](replace(admission))
+    assert copied is None
+    assert copied_status == "protected_candidate_publication_evidence_unavailable"
+    assert attempt.protected_candidate_publication_state == "not_started"
+    assert project == project_before
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id) == job_before
+
+    result, status = owners[
+        "publish_profile_a_generation_candidates_for_characterization"
+    ](admission)
+    assert status == "protected_candidate_publication_registered"
+    assert type(result) is GenerationWorkerProtectedCandidatePublicationObservation
+    assert result.status == "protected_candidate_publication_registered_non_authoritative"
+    assert result.request_index == 0
+    assert result.registered_candidate_count == descriptor_count
+    assert result.expected_candidate_count == descriptor_count
+    assert result.registration_state == "registered"
+    assert result.execution_available is False
+    assert result.protected_storage_available is False
+    assert result.promotion_available is False
+    assert result.candidate_publication_allowed is False
+    assert result.project_save_allowed is False
+    assert result.authorship == "unverified"
+
+    line = next(line for line in project.prompt_lines if line.id == "illustration-001")
+    candidates = line.generated_candidates
+    assert len(candidates) == descriptor_count
+    assert [item["generation_provenance"]["output_index"] for item in candidates] == list(
+        range(1, descriptor_count + 1)
+    )
+    for item in candidates:
+        candidate_path = Path(item["path"])
+        assert candidate_path.parent == promoted_root
+        assert candidate_path.is_file()
+        provenance = item["generation_provenance"]
+        assert provenance["protected_promotion_identity"] == attempt.promotion_receipt.identity
+        assert provenance["protected_candidate_admission_identity"] == (
+            attempt.protected_candidate_admission_result.observation.identity
+        )
+        assert provenance["descriptor_identity"] in {
+            descriptor.identity for descriptor in attempt.remote_receipt.images
+        }
+    assert owners["_append_line_generated_candidates"].__name__ == "_append_line_generated_candidates"
+
+    # Existing Undo/Job owners settle the in-memory Candidate append. The
+    # Profile A path never invokes Project JSON persistence.
+    assert len(state["history"]) == 1
+    assert state["history"][0] == project_before
+    job = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    assert job["requests"][0]["registered_count"] == descriptor_count
+    assert job["requests"][0]["state"] == "completed"
+    assert job["state"] == "completed"
+    assert attempt.protected_candidate_publication_state == "observed"
+    assert attempt.protected_candidate_publication_locator is admission
+    assert attempt.protected_candidate_publication_receipt.promotion_state == "protected_verified"
+    assert attempt.protected_candidate_publication_receipt.registration_state == "registered"
+    assert attempt.protected_candidate_publication_receipt.registered_count == descriptor_count
+    publication_owner = runtime._generation_candidate_publication
+    assert publication_owner._mode == "profile_a_protected"
+    assert publication_owner._save_state == "not_attempted"
+    assert publication_owner._save_callback_outcome == "not_attempted"
+    assert publication_owner.save_for_characterization() == "save_not_authorized"
+    assert Path(project_path).read_bytes() == project_file_before
+    assert list(output_directory.iterdir()) == []
+    assert set(promoted_root.iterdir()) == promoted_files_before
+    assert set(capacity._ledger._operations) == ledger_operations_before
+    assert set(capacity._ledger._reservations) == ledger_reservations_before
+    assert integration._profile_a_candidate_publication_replay(admission) == (
+        result, "protected_candidate_publication_already_observed",
+    )
+    duplicate, duplicate_status = owners[
+        "publish_profile_a_generation_candidates_for_characterization"
+    ](admission)
+    assert duplicate is result
+    assert duplicate_status == "protected_candidate_publication_already_observed"
+    assert len(line.generated_candidates) == descriptor_count
+    assert len(state["history"]) == 1
+
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_candidate_publication_rejects_comfy_output_inside_private_scope(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    from test_agent_generation_candidate_publication import app_owners
+
+    roots, capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    output_directory = Path(capacity._scope) / "comfy-output-overlap"
+    (runtime, lifecycle, _worker, attempt, writer, state, _output_directory,
+     admission) = _prepare_profile_a_candidate_publication(
+        native_profile_a_dual_custody_worker_storage, output_directory,
+    )
+    owners = app_owners(state)
+    owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
+    project_before = copy.deepcopy(state["project"])
+    job_before = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    result, status = owners[
+        "publish_profile_a_generation_candidates_for_characterization"
+    ](admission)
+
+    assert status == "protected_candidate_publication_uncertain"
+    assert result.status == "protected_candidate_publication_uncertain"
+    assert attempt.protected_candidate_publication_state == "retained_uncertain"
+    assert runtime._generation_candidate_publication is None
+    assert state["project"] == project_before
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id) == job_before
+    assert next(line for line in state["project"].prompt_lines
+                if line.id == "illustration-001").generated_candidates == []
+    assert list(output_directory.iterdir()) == []
+    assert all(not list(root._path.glob("*.tmp")) for root in roots.values())
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_candidate_publication_retains_uncertain_close_race(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    from test_agent_generation_candidate_publication import app_owners
+
+    (runtime, lifecycle, _worker, attempt, writer, state, _output_directory,
+     admission) = _prepare_profile_a_candidate_publication(
+        native_profile_a_dual_custody_worker_storage,
+        tmp_path / "comfy-output-race",
+    )
+    owners = app_owners(state)
+    owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
+    promoter = attempt.promotion_owner
+    original_inspect = promoter._inspect_for_candidate_admission_for_characterization
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked_inspect(receipt, freshness):
+        entered.set()
+        assert release.wait(5)
+        return original_inspect(receipt, freshness)
+
+    promoter._inspect_for_candidate_admission_for_characterization = blocked_inspect
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            owners["publish_profile_a_generation_candidates_for_characterization"], admission,
+        )
+        assert entered.wait(5)
+        runtime.close()
+        assert attempt.protected_candidate_publication_state == "retained_uncertain"
+        release.set()
+        result, status = future.result(timeout=10)
+
+    assert result is not None
+    assert result.status == "protected_candidate_publication_uncertain"
+    assert result.registration_state == "registration_uncertain"
+    assert status == "protected_candidate_publication_uncertain"
+    project = state["project"]
+    line = next(line for line in project.prompt_lines if line.id == "illustration-001")
+    assert line.generated_candidates == []
+    publisher = runtime._generation_candidate_publication
+    assert publisher._records[0].registered_count == 0
+    assert publisher._records[0].registration_state != "registered"
+    duplicate, duplicate_status = owners[
+        "publish_profile_a_generation_candidates_for_characterization"
+    ](admission)
+    assert duplicate is result
+    assert duplicate_status == "protected_candidate_publication_uncertain"
+    assert line.generated_candidates == []
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_candidate_publication_serializes_capacity_close_at_commit_boundary(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    from test_agent_generation_candidate_publication import app_owners
+
+    (runtime, _lifecycle, _worker, attempt, writer, state, _output_directory,
+     admission) = _prepare_profile_a_candidate_publication(
+        native_profile_a_dual_custody_worker_storage,
+        tmp_path / "comfy-output-capacity-close",
+    )
+    owners = app_owners(state)
+    owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
+    capacity = runtime._generation_original_host_lifecycle._worker_storage_integration._capacity_owner
+    original_persistent_appender = owners["_append_persistent_line_candidates"]
+    appender_entered, release_appender = threading.Event(), threading.Event()
+    close_entered, close_done = threading.Event(), threading.Event()
+    original_revoke = capacity._candidate_publication_boundary.revoke
+    publication_result = []
+
+    def blocked_persistent_appender(*args, **kwargs):
+        appender_entered.set()
+        assert release_appender.wait(5)
+        return original_persistent_appender(*args, **kwargs)
+
+    def revoke_and_signal():
+        close_entered.set()
+        return original_revoke()
+
+    # Keep the trusted app callback identity intact; pause at its lower-level
+    # in-memory Candidate append boundary instead.
+    owners["_append_persistent_line_candidates"] = blocked_persistent_appender
+    capacity._candidate_publication_boundary.revoke = revoke_and_signal
+
+    def publish():
+        publication_result.append(
+            owners["publish_profile_a_generation_candidates_for_characterization"](admission)
+        )
+
+    def close_capacity():
+        capacity.close()
+        close_done.set()
+
+    publish_thread = threading.Thread(target=publish)
+    close_thread = None
+    try:
+        publish_thread.start()
+        assert appender_entered.wait(10)
+        close_thread = threading.Thread(target=close_capacity)
+        close_thread.start()
+        assert close_entered.wait(5)
+        assert capacity._candidate_publication_revoking is True
+        assert close_done.is_set() is False
+        assert publish_thread.is_alive()
+        release_appender.set()
+        publish_thread.join(10)
+        close_thread.join(10)
+        assert not publish_thread.is_alive()
+        assert not close_thread.is_alive()
+        assert close_done.is_set()
+        assert capacity._closed is True
+        result, status = publication_result[0]
+        assert status == "protected_candidate_publication_registered"
+        assert result.registration_state == "registered"
+        assert attempt.protected_candidate_publication_state == "observed"
+        line = next(line for line in state["project"].prompt_lines if line.id == "illustration-001")
+        assert len(line.generated_candidates) == 1
+    finally:
+        release_appender.set()
+        publish_thread.join(10)
+        if close_thread is not None:
+            close_thread.join(10)
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
 
 
 def _assert_uncertain_promotion_prevents_profile_a_host_rebind(

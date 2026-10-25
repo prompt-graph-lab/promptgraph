@@ -50,7 +50,8 @@ def app_nodes():
     names = {"_make_generated_candidate_record", "_append_line_generated_candidates",
              "_get_persistent_line_candidates", "_append_persistent_line_candidates",
              "_sync_line_generated_candidates_to_session", "_line_candidate_key",
-             "save_agent_scene_module_swap_project"}
+             "save_agent_scene_module_swap_project",
+             "publish_profile_a_generation_candidates_for_characterization"}
     nodes = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(nodes) == len(names)
     return nodes
@@ -58,11 +59,12 @@ def app_nodes():
 
 def app_owners(state):
     """Compile the actual existing app owners, without running its UI."""
+    app_path = (Path(__file__).resolve().parents[1] / "app.py").resolve()
     namespace = dict(st=SimpleNamespace(session_state=state), datetime=datetime, timezone=timezone,
         _normalize_candidate_path=_normalize_candidate_path, _normalize_candidate_record=_normalize_candidate_record,
         _normalize_candidate_records=_normalize_candidate_records, _candidate_path=_candidate_path,
         save_project_to_json=save_project_to_json, ensure_project_folder_layout=lambda path: None)
-    exec(compile(ast.Module(body=app_nodes(), type_ignores=[]), "app.py", "exec"), namespace)
+    exec(compile(ast.Module(body=app_nodes(), type_ignores=[]), str(app_path), "exec"), namespace)
     return namespace
 
 

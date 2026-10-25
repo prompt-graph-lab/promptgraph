@@ -252,6 +252,23 @@ class GenerationWorkerProtectedCandidateAdmissionObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerProtectedCandidatePublicationObservation:
+    """Count-only result of one Profile A in-memory Gallery registration."""
+
+    status: str
+    request_index: int
+    registered_candidate_count: int
+    expected_candidate_count: int
+    registration_state: str
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass(frozen=True)
 class GenerationWorkerExecutorEventChainObservation:
     """Read-only view of accepted and Profile A source-bound Job/Inbox events."""
 
@@ -405,6 +422,12 @@ class _StoragePreAdmissionAttempt:
     protected_candidate_admission_owner: object = None
     protected_candidate_admission_result: object = None
     protected_candidate_admission_observation: object = None
+    protected_candidate_publication_state: str = "not_started"
+    protected_candidate_publication_marker: object = None
+    protected_candidate_publication_locator: object = None
+    protected_candidate_publication_owner: object = None
+    protected_candidate_publication_receipt: object = None
+    protected_candidate_publication_observation: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -2882,6 +2905,319 @@ class OriginalHostWorkerStorageIntegration:
                     and attempt.protected_candidate_admission_state == "in_progress"):
                 attempt.protected_candidate_admission_state = "retained_uncertain"
 
+    def _profile_a_candidate_publication_replay(self, locator):
+        """Return only an exact historical count or a bounded one-shot refusal."""
+        from ui.agent_generation_protected_candidate_admission import (
+            GenerationProtectedCandidateAdmission,
+        )
+
+        if type(locator) is not GenerationWorkerProtectedCandidateAdmissionObservation:
+            return None, "protected_candidate_publication_locator_invalid"
+        index = locator.request_index
+        with self._lock:
+            attempt = self._storage_preadmission_attempts.get(index)
+            if (attempt is None
+                    or attempt.protected_candidate_admission_observation is not locator):
+                # No already-consumed publication exists. The caller still
+                # needs to pass the normal exact Host/event begin boundary.
+                return None, None
+            state = attempt.protected_candidate_publication_state
+            if state == "not_started":
+                return None, None
+            if attempt.protected_candidate_publication_locator is not locator:
+                return None, "protected_candidate_publication_evidence_unavailable"
+            if state == "in_progress":
+                return None, "protected_candidate_publication_in_progress"
+            if state == "retained_uncertain":
+                return attempt.protected_candidate_publication_observation, (
+                    "protected_candidate_publication_uncertain"
+                )
+            if state == "observed":
+                result = attempt.protected_candidate_publication_observation
+                if (type(result) is not GenerationWorkerProtectedCandidatePublicationObservation
+                        or attempt.protected_candidate_publication_owner is None
+                        or attempt.protected_candidate_publication_receipt is None):
+                    return None, "protected_candidate_publication_uncertain"
+                return result, "protected_candidate_publication_already_observed"
+            return None, "protected_candidate_publication_evidence_unavailable"
+
+    def _begin_profile_a_candidate_publication_locked(self, lifecycle, locator):
+        """Claim one exact G-F locator while original Host/Job/Inbox gates are held."""
+        from core.comfy_remote_output_receipts import RemoteOutputReceipt
+        from core.generation_windows_protected_promotion import VerifiedProtectedPromotionReceipt
+        from ui.agent_generation_candidate_publication import GenerationCandidatePublication
+        from ui.agent_generation_protected_candidate_admission import (
+            GenerationProtectedCandidateAdmission,
+            ProtectedCandidateAdmissionObservation,
+            ProtectedCandidateAdmissionResult,
+        )
+        from ui.agent_generation_executor_handoff import GenerationPublicationOrigin
+
+        if (type(locator) is not GenerationWorkerProtectedCandidateAdmissionObservation
+                or locator.status != "protected_candidate_admission_evidence_observed"
+                or locator.candidate_eligibility != "evidence_observed"
+                or locator.execution_available is not False
+                or locator.protected_storage_available is not False
+                or locator.promotion_available is not False
+                or locator.candidate_publication_allowed is not False
+                or locator.project_save_allowed is not False
+                or locator.authorship != "unverified"
+                or type(locator.request_index) is not int):
+            return None, "protected_candidate_publication_locator_invalid"
+        index = locator.request_index
+        with lifecycle._lock:
+            if (lifecycle._state != "bound_non_executing"
+                    or lifecycle._worker_storage_integration is not self
+                    or self._profile_a is not True
+                    or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                    or not 0 <= index < lifecycle._request_count):
+                return None, "protected_candidate_publication_host_changed"
+            runtime = lifecycle._runtime_ref()
+            origin = getattr(runtime, "_generation_publication_origin", None)
+            project = lifecycle._project_ref()
+            if (runtime is None or type(origin) is not GenerationPublicationOrigin
+                    or origin.envelope is not lifecycle._envelope
+                    or origin.project is not project or origin.path != lifecycle._project_path
+                    or origin.source_snapshot is None
+                    or runtime._generation_host_state is None
+                    or runtime._generation_protected_candidate_admission is None):
+                return None, "protected_candidate_publication_host_changed"
+
+            attempt = self._storage_preadmission_attempts.get(index)
+            remote_marker = self._profile_a_remote_outputs_ready_event_attempts.get(index)
+            outputs_marker = self._profile_a_outputs_ready_event_attempts.get(index)
+            if (attempt is None or remote_marker is None or outputs_marker is None
+                    or attempt.protected_candidate_admission_state != "observed"
+                    or attempt.protected_candidate_admission_observation is not locator
+                    or outputs_marker.state != "events_accepted"
+                    or outputs_marker.observation is None
+                    or attempt.cancel_requested
+                    or not self._profile_a_remote_outputs_ready_event_is_current_locked(
+                        lifecycle, attempt, remote_marker, outputs_marker=outputs_marker,
+                    )):
+                return None, "protected_candidate_publication_evidence_unavailable"
+
+            admission_owner = attempt.protected_candidate_admission_owner
+            admission_result = attempt.protected_candidate_admission_result
+            admission_observation = getattr(admission_result, "observation", None)
+            remote = attempt.remote_receipt
+            promotion_receipt = attempt.promotion_receipt
+            if (type(admission_owner) is not GenerationProtectedCandidateAdmission
+                    or runtime._generation_protected_candidate_admission is not admission_owner
+                    or type(admission_result) is not ProtectedCandidateAdmissionResult
+                    or admission_result.status != "evidence_observed"
+                    or admission_result.request_index != index
+                    or type(admission_observation) is not ProtectedCandidateAdmissionObservation
+                    or admission_observation is None
+                    or type(remote) is not RemoteOutputReceipt
+                    or type(promotion_receipt) is not VerifiedProtectedPromotionReceipt):
+                return None, "protected_candidate_publication_evidence_unavailable"
+
+            descriptors = tuple(remote.images)
+            promoted = tuple(promotion_receipt.images)
+            if (not descriptors or len(descriptors) != locator.verified_promoted_image_count
+                    or len(descriptors) != len(promoted)
+                    or tuple(item.identity for item in descriptors)
+                        != tuple(item.descriptor_identity for item in promoted)
+                    or admission_observation._runtime is not runtime
+                    or admission_observation._origin is not origin
+                    or admission_observation._envelope is not lifecycle._envelope
+                    or admission_observation._project is not project
+                    or admission_observation._promotion_owner is not attempt.promotion_owner
+                    or admission_observation._promotion_receipt is not promotion_receipt
+                    or admission_observation._remote_receipt is not remote
+                    or admission_observation._remote_event is not remote_marker.event
+                    or admission_observation._outputs_ready_event is not outputs_marker.event):
+                return None, "protected_candidate_publication_evidence_unavailable"
+
+            publication_owner = runtime._generation_candidate_publication
+            if (publication_owner is not None
+                    and (type(publication_owner) is not GenerationCandidatePublication
+                         or publication_owner._mode != "profile_a_protected"
+                         or publication_owner._runtime is not runtime
+                         or publication_owner._origin is not origin
+                         or publication_owner._envelope is not lifecycle._envelope
+                         or publication_owner._profile_a_capacity_owner is not self._capacity_owner
+                         or publication_owner._profile_a_protected_owner is not attempt.writer_owner)):
+                return None, "protected_candidate_publication_owner_conflict"
+
+            with self._lock:
+                state = attempt.protected_candidate_publication_state
+                if state != "not_started":
+                    if state == "in_progress":
+                        return None, "protected_candidate_publication_in_progress"
+                    if state == "observed":
+                        if attempt.protected_candidate_publication_locator is locator:
+                            return {
+                                "historical": attempt.protected_candidate_publication_observation,
+                            }, "protected_candidate_publication_already_observed"
+                        return None, "protected_candidate_publication_evidence_unavailable"
+                    return None, "protected_candidate_publication_uncertain"
+                if (self._storage_preadmission_attempts.get(index) is not attempt
+                        or attempt.protected_candidate_publication_marker is not None
+                        or attempt.protected_candidate_publication_locator is not None
+                        or attempt.protected_candidate_publication_owner is not None
+                        or attempt.protected_candidate_publication_receipt is not None
+                        or attempt.protected_candidate_publication_observation is not None
+                        or attempt.protected_candidate_admission_observation is not locator
+                        or runtime._generation_original_host_lifecycle is not lifecycle
+                        or runtime._generation_publication_origin is not origin
+                        or lifecycle._job_id != lifecycle._envelope.job_id
+                        or lifecycle._claim_id != lifecycle._envelope.claim_id
+                        or lifecycle._manifest_identity
+                            != lifecycle._envelope.manifest.manifest_identity
+                        or lifecycle._pairing_generation
+                            != lifecycle._envelope.binding.pairing_generation
+                        or lifecycle._inbox._late_output_seen):
+                    return None, "protected_candidate_publication_evidence_unavailable"
+                request = lifecycle._envelope.manifest.requests[index]
+                if (attempt.prepared is None
+                        or attempt.prepared.request_index != index
+                        or attempt.prepared.request_id != request.request_id
+                        or attempt.prepared.workflow_identity != request.workflow_identity
+                        or remote.request_index != index
+                        or remote.request_id != request.request_id
+                        or remote.workflow_identity != request.workflow_identity
+                        or promotion_receipt.request_index != index
+                        or attempt.promotion_publication_state != "published_non_authoritative"
+                        or attempt.promotion_preflight_state != "promoted_non_authoritative"):
+                    return None, "protected_candidate_publication_evidence_unavailable"
+                marker = object()
+                attempt.protected_candidate_publication_state = "in_progress"
+                attempt.protected_candidate_publication_marker = marker
+                attempt.protected_candidate_publication_locator = locator
+                return {
+                    "attempt": attempt,
+                    "marker": marker,
+                    "locator": locator,
+                    "admission_owner": admission_owner,
+                    "admission_result": admission_result,
+                    "admission_observation": admission_observation,
+                    "remote": remote,
+                    "promotion_receipt": promotion_receipt,
+                    "publication_owner": publication_owner,
+                    "lifecycle": lifecycle,
+                    "runtime": runtime,
+                    "origin": origin,
+                    "project": project,
+                    "host_state": runtime._generation_host_state,
+                    "project_reference": self._project_reference,
+                    "pairing_generation": lifecycle._pairing_generation,
+                }, "protected_candidate_publication_claimed"
+
+    def _profile_a_candidate_publication_claim_current_locked(self, lifecycle, captured):
+        """Recheck the exact in-progress marker under original Host/Job/Inbox gates."""
+        attempt = captured["attempt"]
+        marker = captured["marker"]
+        index = attempt.lease.request_index
+        remote_marker = self._profile_a_remote_outputs_ready_event_attempts.get(index)
+        outputs_marker = self._profile_a_outputs_ready_event_attempts.get(index)
+        with lifecycle._lock:
+            with self._lock:
+                return bool(
+                    lifecycle._state == "bound_non_executing"
+                    and lifecycle._worker_storage_integration is self
+                    and lifecycle._runtime_ref() is captured["runtime"]
+                    and lifecycle._project_ref() is captured["project"]
+                    and lifecycle._envelope is captured["origin"].envelope
+                    and lifecycle._pairing_generation == captured["pairing_generation"]
+                    and self._storage_preadmission_attempts.get(index) is attempt
+                    and attempt.protected_candidate_publication_state == "in_progress"
+                    and attempt.protected_candidate_publication_marker is marker
+                    and attempt.protected_candidate_publication_locator is captured["locator"]
+                    and attempt.protected_candidate_admission_owner is captured["admission_owner"]
+                    and attempt.protected_candidate_admission_result is captured["admission_result"]
+                    and attempt.protected_candidate_admission_observation is captured["locator"]
+                    and outputs_marker is not None
+                    and outputs_marker.state == "events_accepted"
+                    and outputs_marker.observation is not None
+                    and remote_marker is not None
+                    and remote_marker.state == "events_accepted"
+                    and self._profile_a_remote_outputs_ready_event_is_current_locked(
+                        lifecycle, attempt, remote_marker, outputs_marker=outputs_marker,
+                    ))
+
+    def _complete_profile_a_candidate_publication(
+            self, captured, publication_owner, receipt):
+        """Retain the exact publisher receipt and publish only count-only evidence."""
+        from ui.agent_generation_candidate_publication import (
+            GenerationCandidatePublication, PublicationReceipt,
+        )
+
+        attempt = captured.get("attempt") if type(captured) is dict else None
+        marker = captured.get("marker") if type(captured) is dict else None
+        if attempt is None or marker is None:
+            return None, "protected_candidate_publication_uncertain"
+        index = attempt.lease.request_index
+        expected = len(captured["remote"].images)
+        if (type(publication_owner) is not GenerationCandidatePublication
+                or publication_owner._mode != "profile_a_protected"
+                or publication_owner._runtime is not captured["runtime"]
+                or publication_owner._origin is not captured["origin"]
+                or publication_owner._envelope is not captured["origin"].envelope
+                or type(receipt) is not PublicationReceipt
+                or receipt.request_index != index
+                or type(receipt.registered_count) is not int
+                or not 0 <= receipt.registered_count <= expected):
+            receipt = None
+        if receipt is not None:
+            with publication_owner._lock:
+                exact_record = (publication_owner._records.get(index) is receipt
+                                and publication_owner._protected_evidence.get(index)
+                                    == (captured["admission_owner"],
+                                        captured["admission_observation"]))
+            if not exact_record:
+                receipt = None
+
+        with self._lock:
+            if (self._storage_preadmission_attempts.get(index) is not attempt
+                    or attempt.protected_candidate_publication_marker is not marker
+                    or attempt.protected_candidate_publication_locator is not captured["locator"]):
+                return None, "protected_candidate_publication_uncertain"
+            if publication_owner is not None:
+                attempt.protected_candidate_publication_owner = publication_owner
+            if receipt is not None:
+                attempt.protected_candidate_publication_receipt = receipt
+
+            prior_state = attempt.protected_candidate_publication_state
+            if prior_state != "in_progress":
+                # Close/revocation crossed a possible mutation. Preserve the
+                # private exact result, but never convert uncertainty to success.
+                attempt.protected_candidate_publication_state = "retained_uncertain"
+                observation = GenerationWorkerProtectedCandidatePublicationObservation(
+                    "protected_candidate_publication_uncertain", index,
+                    receipt.registered_count if receipt is not None else 0,
+                    expected, "registration_uncertain",
+                )
+                attempt.protected_candidate_publication_observation = observation
+                return observation, "protected_candidate_publication_uncertain"
+
+            if (receipt is not None and receipt.registration_state == "registered"
+                    and receipt.registered_count == expected):
+                status = "protected_candidate_publication_registered_non_authoritative"
+                registration_state = "registered"
+                attempt.protected_candidate_publication_state = "observed"
+                outcome = "protected_candidate_publication_registered"
+            elif (receipt is not None and receipt.registration_state == "registration_failed"
+                    and receipt.registered_count == 0):
+                status = "protected_candidate_publication_not_registered_non_authoritative"
+                registration_state = "registration_failed"
+                attempt.protected_candidate_publication_state = "observed"
+                outcome = "protected_candidate_publication_not_registered"
+            else:
+                status = "protected_candidate_publication_uncertain"
+                registration_state = (
+                    receipt.registration_state if receipt is not None else "registration_uncertain"
+                )
+                attempt.protected_candidate_publication_state = "retained_uncertain"
+                outcome = "protected_candidate_publication_uncertain"
+            observation = GenerationWorkerProtectedCandidatePublicationObservation(
+                status, index, receipt.registered_count if receipt is not None else 0,
+                expected, registration_state,
+            )
+            attempt.protected_candidate_publication_observation = observation
+            return observation, outcome
+
     def _begin_profile_a_outputs_ready_event_locked(self, lifecycle, observation):
         """Claim an exact published Promotion locator once, without exposing it."""
         from core.comfy_output_containment import (
@@ -4705,12 +5041,20 @@ class OriginalHostWorkerStorageIntegration:
                 admission_in_progress = (
                     attempt.protected_candidate_admission_state == "in_progress"
                 )
+                candidate_publication_in_progress = (
+                    attempt.protected_candidate_publication_state == "in_progress"
+                )
                 if admission_in_progress:
                     # The genuine Admission owner may be inside native
                     # verification. Keep its exact private owner/result and
                     # retain the settled protected Promotion; never compensate
                     # or route this operation through staging cancellation.
                     attempt.protected_candidate_admission_state = "retained_uncertain"
+                if candidate_publication_in_progress:
+                    # Candidate append may be inside the existing publisher's
+                    # original-Host commit gate. Preserve that one-shot attempt
+                    # as uncertain; never issue a second Gallery writer call.
+                    attempt.protected_candidate_publication_state = "retained_uncertain"
                 if attempt.candidate_admission_state == "in_progress":
                     # This is downstream eligibility uncertainty only. The
                     # already-published Promotion and its completed capacity
@@ -4722,6 +5066,8 @@ class OriginalHostWorkerStorageIntegration:
                     # pre-admission cancellation branch below.
                     continue
                 if admission_in_progress:
+                    continue
+                if candidate_publication_in_progress:
                     continue
                 if attempt.state in {"preparing", "reserved", "pre_admitted"}:
                     attempt.cancel_requested = True
