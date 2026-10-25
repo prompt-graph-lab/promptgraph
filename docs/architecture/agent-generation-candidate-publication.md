@@ -415,3 +415,48 @@ new event, capacity reservation, ledger operation, image write or legacy
 receipt. Candidate publication and Project JSON save remain separate host
 owners. This remains offline characterization: all production capability
 flags remain false and `authorship=unverified`.
+
+## C2B-8D-19G-G Profile A in-memory Candidate publisher
+
+19G-G composes the exact 19G-F Candidate-admission observation with this
+existing Gallery Candidate publisher. The app-facing characterization entry
+point accepts only the count-only Host locator; it binds the real app Candidate
+factory, line appender and save callback internally. The publisher reuses the
+existing `GenerationCandidatePublication` owner and original Admission commit
+guard. It does not create a parallel Candidate writer or adapt protected
+evidence into legacy `LocalOutputReceipt`, `ContainedOutputStore`,
+`PromotedImage` or `DurableGenerationAssets` custody.
+
+The older protected-publication cases in
+`tests/test_agent_generation_protected_candidate_publication.py` retain their
+legacy/fake-adapter setup and do not independently prove the source-bound
+Profile A chain. The genuine 19G-B/C/D/E/F-to-19G-G composition is characterized
+by the Windows-native disposable cases in
+`tests/test_agent_generation_original_host_worker_storage.py`.
+
+Profile A authorizes paths through its exact four-root capacity owner, held
+scope-writer lease, promoted-assets root identity, protected-assets owner,
+Project JSON reference, active Host and retained Promotion/admission evidence.
+The frozen Comfy `output_directory` remains a distinct configuration value;
+its tree must be disjoint from the app-private Profile A scope. This is a
+separate Profile A authorization path and does not relax the existing strict
+approved-parent check for legacy/protected publication.
+
+Native Promotion, ACL, byte, capacity and root observations complete before
+the short Candidate commit. The existing Promotion/Admission commit boundary
+and a new capacity-owner publication lease order Candidate appending against
+Host, protected-owner and capacity close/invalidation. If capacity revocation
+wins first, no Candidate is appended; if the in-memory append already entered
+its lease, close waits for that bounded commit to settle. Uncertain or partial
+registration remains one-shot and retained; copied or late locators cannot
+replay it. Success updates only in-memory Gallery Candidates, the existing
+Undo history and Job registered count. The Project JSON save callback is not
+invoked, and the file remains unchanged. Save remains a separate future gate.
+
+Disposable native Windows compositions cover one, two and sixteen images,
+exact provenance and ordering, copied-locator refusal, unchanged Project JSON,
+and lifecycle/capacity close races. This does not activate production
+execution or Candidate publication: `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`,
+`candidate_publication_allowed=false`, `project_save_allowed=false`, and
+`authorship=unverified` remain in force.

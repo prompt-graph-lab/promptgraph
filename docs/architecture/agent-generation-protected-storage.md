@@ -2352,3 +2352,31 @@ This remains offline characterization. All production execution, protected
 storage, promotion and Candidate publication flags stay false, and
 `authorship=unverified`. Candidate writing, Gallery/Undo publication, Project
 save, restart/recovery, retention and discard remain separate gates.
+
+## C2B-8D-19G-G Profile A Candidate path and capacity custody
+
+The first Profile A Candidate writer now consumes only the exact 19G-F
+count-only admission locator retained by the original Host integration. Its
+private promoted image paths must still be backed by the same protected-assets
+owner and `promoted_assets` native root held by the exact four-root storage
+capacity owner, with the approved scope identity, Project JSON reference and
+scope-writer lease unchanged. Native root/file readiness is rechecked before
+the Gallery commit and is never inferred from Candidate paths or receipt
+strings.
+
+The frozen Comfy `output_directory` remains outside the app-private scope;
+the two directory trees must not overlap. The new Profile A check is distinct
+from the legacy approved-parent policy. It does not change Comfy configuration,
+permit writing into that output directory, modify an existing ACL, create a
+production root or enable protected storage. The capacity owner issues only a
+short in-memory Candidate-publication lease after native checks; it is not a
+filesystem write token or a disk-space guarantee. Capacity close or
+invalidation prevents a new commit and waits for a Candidate commit that has
+already crossed this boundary before finalizing revocation.
+
+The native disposable tests exercise one, two and sixteen promoted images plus
+capacity-close serialization. Files remain in the private promoted root and
+are not copied, adopted or cleaned up by this step. Project JSON save,
+restart/recovery, retention/discard policy and production root provisioning
+remain separate gates. All capability flags remain false and
+`authorship=unverified`.

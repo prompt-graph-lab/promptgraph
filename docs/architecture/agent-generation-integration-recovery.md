@@ -1512,3 +1512,32 @@ operations or writes. It remains offline characterization with all production
 capability flags false and `authorship=unverified`; Candidate registration,
 Gallery/Undo publication, Project save, restart recovery, cleanup and discard
 remain separate unimplemented or unauthorized gates.
+
+## C2B-8D-19G-G in-memory Profile A Candidate publication
+
+19G-G connects exact protected Candidate admission to the existing original-
+Host Gallery publisher. The app-facing entry point accepts one count-only
+19G-F locator. The original integration resolves its private promotion,
+admission, request, ordered descriptors, accepted event objects, active Job/
+Claim, Host binding, Project object/path and read-only Project reference; copied
+or substituted evidence is not sufficient. The existing Candidate factory,
+Gallery appender, Undo history and Job registration owners remain authoritative.
+
+Profile A resolves Candidate paths from its exact protected promoted-assets
+root and four-root capacity owner. The app-private scope is required to be
+disjoint from the frozen Comfy `output_directory`; the legacy approved-parent
+rule is unchanged. Native checks run before the commit. At commit, original
+Host/Admission/Promotion custody and a capacity-owner lease serialize the
+existing appender against Host/protected/capacity close. A close that wins
+before entry refuses without Candidate mutation; close after entry waits for
+the bounded in-memory commit. Duplicate exact calls return only the retained
+count-only result, and uncertain/partial outcomes are never replayed.
+
+The characterized success boundary is in-memory Candidate registration plus
+the existing Undo snapshot and Job registered count. Project JSON is unchanged
+and the save callback is not invoked. Project save remains a separate
+implementation gate. Native disposable Windows tests cover 1, 2 and 16 images,
+ordered exact provenance, copied locator refusal, Host close uncertainty and
+capacity close serialization. No result authorizes production Start, storage,
+promotion, Candidate publication, save or Recovery; all capability flags
+remain false and `authorship=unverified`.

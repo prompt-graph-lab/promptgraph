@@ -65,6 +65,42 @@ def _fail(code):
     raise ValueError(code)
 
 
+class _CapacityPublicationBoundary:
+    """Serialize bounded Gallery commits with capacity-owner revocation."""
+
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._active = {}
+        self._revoked = False
+
+    def begin(self):
+        with self._condition:
+            if self._revoked:
+                _fail("storage_owner_unavailable")
+            token = object()
+            self._active[token] = threading.get_ident()
+            return token
+
+    def finish(self, token):
+        with self._condition:
+            if token in self._active:
+                del self._active[token]
+                self._condition.notify_all()
+
+    def ensure_revocation_not_reentrant(self):
+        with self._condition:
+            if threading.get_ident() in self._active.values():
+                _fail("storage_publication_reentrant_close")
+
+    def revoke(self):
+        with self._condition:
+            if threading.get_ident() in self._active.values():
+                _fail("storage_publication_reentrant_close")
+            self._revoked = True
+            while self._active:
+                self._condition.wait()
+
+
 def _profile_a_promotion_is_unresolved(attempt):
     """Share unresolved downstream custody across lease and rebind checks."""
     return bool(
@@ -1146,6 +1182,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
         self._refresh_done = None
         self._closed = False
         self._invalid = False
+        self._candidate_publication_revoking = False
+        self._candidate_publication_boundary = _CapacityPublicationBoundary()
         # Retain associated lifecycles strongly so a retired runtime cannot
         # make a late Worker uncertainty invisible to lease-release checks.
         self._host_lifecycle_refs = []
@@ -2858,7 +2896,37 @@ class WindowsProtectedStorageAdmissionCharacterization:
                          "project_reference": "bound_separately" if self._profile_a_root_set else "legacy_selected_purpose"})
             return base
 
+    def _begin_profile_a_candidate_publication_for_characterization(
+            self, *, expected_scope_identity, expected_promoted_root):
+        """Lease an exact Profile A binding through one in-memory Gallery commit.
+
+        Native observations must be complete before entry. This lease is not a
+        storage write token or a filesystem authorization.
+        """
+        with self._lock:
+            roots = self._roots
+            lease = self._scope_lease
+            if (self._profile_a_root_set is not True
+                    or self._closed or self._invalid or self._candidate_publication_revoking
+                    or self._scope_identity != expected_scope_identity
+                    or type(roots) is not dict
+                    or roots.get("promoted_assets") is not expected_promoted_root
+                    or lease is None or lease._state != "held"):
+                _fail("profile_a_storage_unavailable")
+            return self._candidate_publication_boundary.begin()
+
+    def _finish_profile_a_candidate_publication_for_characterization(self, token):
+        self._candidate_publication_boundary.finish(token)
+
     def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self._candidate_publication_boundary.ensure_revocation_not_reentrant()
+            self._candidate_publication_revoking = True
+        # Do not hold the storage-owner lock while the bounded host Gallery
+        # appender completes. No later commit can start after this point.
+        self._candidate_publication_boundary.revoke()
         with self._lock:
             if self._closed:
                 return
@@ -3129,5 +3197,10 @@ class WindowsProtectedStorageAdmissionCharacterization:
             _fail("profile_a_capacity_policy_mismatch")
 
     def _invalidate(self):
+        self._candidate_publication_boundary.ensure_revocation_not_reentrant()
+        self._candidate_publication_revoking = True
         self._ledger.close()
         self._invalid = True
+        # An already-entered in-memory Candidate commit is ordered before this
+        # invalidation; no later commit may enter or outlive the barrier.
+        self._candidate_publication_boundary.revoke()

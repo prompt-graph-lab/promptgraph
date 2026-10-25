@@ -8843,6 +8843,22 @@ def service_project_agent_session_request(runtime, session_state, run_token):
         runtime, session_state, run_token, generation_context_provider=_prepare_agent_generation_context)
 
 
+def publish_profile_a_generation_candidates_for_characterization(locator):
+    """Publish one exact Profile A admission through the established Gallery writer.
+
+    This internal host entrypoint accepts only the count-only locator. The app
+    supplies its existing Candidate factory/appender and inert save callback;
+    the function is not wired to UI, Worker, MCP or production Start.
+    """
+    return _PROJECT_AGENT_SESSION_RUNTIME._publish_profile_a_generation_candidates_for_characterization(
+        locator, state=st.session_state,
+        candidate_factory=_make_generated_candidate_record,
+        candidate_appender=_append_line_generated_candidates,
+        save_project=save_agent_scene_module_swap_project,
+        characterization=True, disposable_opt_in=True,
+    )
+
+
 def _build_selected_routes_gallery_generation_plan(
     project,
     run_count: int,

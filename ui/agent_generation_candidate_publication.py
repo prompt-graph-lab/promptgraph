@@ -66,6 +66,223 @@ class GenerationCandidatePublication:
             save_project=save_project, characterization=characterization, protected_only=True)
 
     @classmethod
+    def create_profile_a_protected_for_characterization(
+            cls, state, runtime, envelope, admission_owner, admission_result, *,
+            candidate_factory, candidate_appender, save_project,
+            characterization=False, disposable_opt_in=False):
+        """Create the single Gallery writer under exact Profile A root custody.
+
+        Profile A's app-private promoted root is authorized by its original
+        four-root owner and held scope lease. It is not authorized by the
+        unrelated ComfyUI output_directory and this path never relaxes the
+        legacy/protected output-directory constructor.
+        """
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.generation_windows_protected_assets import WindowsProtectedAssetsCharacterization
+        from ui.agent_generation_original_host_lifecycle import OriginalHostGenerationLifecycle
+        from ui.agent_generation_original_host_worker_storage import OriginalHostWorkerStorageIntegration
+        from ui.agent_generation_protected_candidate_admission import (
+            GenerationProtectedCandidateAdmission,
+            ProtectedCandidateAdmissionObservation,
+            ProtectedCandidateAdmissionResult,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            raise ValueError("execution_unavailable")
+        if (state is None or not callable(getattr(state, "get", None))
+                or type(runtime) is not ProjectAgentSessionRuntime
+                or not runtime.generation_jobs._characterization
+                or not runtime._generation_executor_inbox._characterization
+                or type(envelope) is not ExecutionEnvelope
+                or type(admission_owner) is not GenerationProtectedCandidateAdmission
+                or type(admission_result) is not ProtectedCandidateAdmissionResult
+                or admission_result.status != "evidence_observed"
+                or type(admission_result.observation) is not ProtectedCandidateAdmissionObservation
+                or admission_result.observation.request_index != admission_result.request_index
+                or not all(callable(callback) for callback in
+                           (candidate_factory, candidate_appender, save_project))
+                or getattr(candidate_factory, "__name__", None) != "_make_generated_candidate_record"
+                or getattr(candidate_appender, "__name__", None) != "_append_line_generated_candidates"
+                or getattr(save_project, "__name__", None) != "save_agent_scene_module_swap_project"):
+            raise ValueError("profile_a_host_binding_required")
+
+        origin = runtime._generation_publication_origin
+        lifecycle = runtime._generation_original_host_lifecycle
+        integration = (getattr(lifecycle, "_worker_storage_integration", None)
+                       if lifecycle is not None else None)
+        observation = admission_result.observation
+        promotion_owner = observation._promotion_owner
+        protected_owner = getattr(promotion_owner, "_protected_owner", None)
+        capacity = getattr(integration, "_capacity_owner", None)
+        if (type(origin) is not GenerationPublicationOrigin
+                or origin.envelope is not envelope
+                or admission_owner._runtime is not runtime
+                or admission_owner._state is not state
+                or admission_owner._origin is not origin
+                or admission_owner._envelope is not envelope
+                or runtime._generation_protected_candidate_admission is not admission_owner
+                or runtime._generation_host_state is not state
+                or type(lifecycle) is not OriginalHostGenerationLifecycle
+                or lifecycle._worker_storage_integration is not integration
+                or type(integration) is not OriginalHostWorkerStorageIntegration
+                or integration._profile_a is not True
+                or type(capacity) is not WindowsProtectedStorageAdmissionCharacterization
+                or capacity._profile_a_root_set is not True
+                or type(protected_owner) is not WindowsProtectedAssetsCharacterization
+                or protected_owner._profile_a_capacity_owner is not capacity
+                or protected_owner._roots.get("promoted_assets")
+                    is not capacity._roots.get("promoted_assets")
+                or lifecycle._profile_a_storage_binding is None
+                or type(lifecycle._profile_a_storage_binding) is not tuple
+                or len(lifecycle._profile_a_storage_binding) != 2
+                or lifecycle._profile_a_storage_binding[0] is not capacity
+                or lifecycle._profile_a_storage_binding[1] is not integration._project_reference
+                or type(integration._purpose_roots) is not dict
+                or set(integration._purpose_roots) != set(capacity._roots)
+                or any(integration._purpose_roots.get(name) is not root
+                       for name, root in capacity._roots.items())
+                or state.get("project") is not origin.project
+                or state.get("current_project_path", "") != origin.path):
+            raise ValueError("profile_a_host_binding_required")
+
+        # The protected admission owner is the only authority for the exact
+        # receipt and its original-host/event freshness. This is a read-only
+        # check and performs native verification without holding host locks.
+        with admission_owner._admission_result_current_for_characterization(
+                admission_result) as events:
+            if (events is None or events[0] is not observation._remote_event
+                    or events[1] is not observation._outputs_ready_event):
+                raise ValueError("protected_admission_unavailable")
+
+        if not cls._profile_a_scope_authorizes_observation(
+                runtime, state, lifecycle, integration, capacity, observation,
+                protected_owner, expected_scope_identity=capacity._scope_identity,
+                expected_promoted_identity=protected_owner._roots["promoted_assets"]._identity,
+        ):
+            raise ValueError("profile_a_promoted_root_unavailable")
+
+        owner = cls(state, runtime, envelope, candidate_factory, candidate_appender, save_project,
+                    approved_directory=None, mode="profile_a_protected", _factory=_FACTORY)
+        owner._profile_a_capacity_owner = capacity
+        owner._profile_a_protected_owner = protected_owner
+        owner._profile_a_promoted_root = capacity._roots["promoted_assets"]
+        owner._profile_a_scope_identity = capacity._scope_identity
+        owner._profile_a_promoted_root_identity = owner._profile_a_promoted_root._identity
+        if not cls._profile_a_scope_authorizes_observation(
+                runtime, state, lifecycle, integration, capacity, observation,
+                protected_owner,
+                expected_scope_identity=owner._profile_a_scope_identity,
+                expected_promoted_identity=owner._profile_a_promoted_root_identity,
+        ):
+            raise ValueError("profile_a_promoted_root_unavailable")
+        with owner._authority() as current:
+            if not current:
+                raise ValueError("stale_original_host")
+            if getattr(runtime, "_generation_candidate_publication", None) is not None:
+                raise ValueError("publication_owner_exists")
+            runtime._generation_candidate_publication = owner
+        return owner
+
+    @staticmethod
+    def _profile_a_scope_authorizes_observation(
+            runtime, state, lifecycle, integration, capacity, observation,
+            protected_owner, *, expected_scope_identity=None,
+            expected_promoted_identity=None):
+        """Recheck Profile A's exact native root, Project reference and lease."""
+        try:
+            from pathlib import Path
+            import json
+            from ui.project_agent_session_mailbox import _normalize_target_path
+
+            roots = capacity._roots
+            promoted = roots.get("promoted_assets") if type(roots) is dict else None
+            reference = integration._project_reference
+            binding = lifecycle._profile_a_storage_binding
+            if (capacity._closed is not False or capacity._invalid is not False
+                    or capacity._scope_lease is None
+                    or capacity._scope_lease._state != "held"
+                    or set(roots) != {"private_journal", "temporary_containment",
+                                      "retained_uncertain", "promoted_assets"}
+                    or promoted is not protected_owner._roots.get("promoted_assets")
+                    or protected_owner._profile_a_capacity_owner is not capacity
+                    or protected_owner._roots.get("promoted_assets") is not promoted
+                    or type(integration._purpose_roots) is not dict
+                    or set(integration._purpose_roots) != set(roots)
+                    or any(integration._purpose_roots.get(name) is not root
+                           for name, root in roots.items())
+                    or promoted._closed is not False
+                    or promoted._purpose != "promoted_assets"
+                    or binding is None or type(binding) is not tuple or len(binding) != 2
+                    or binding[0] is not capacity or binding[1] is not reference
+                    or reference is None or reference._closed is not False
+                    or _normalize_target_path(str(reference._path))
+                        != _normalize_target_path(lifecycle._project_path)
+                    or runtime._generation_host_state is not state
+                    or state.get("project") is not runtime._generation_publication_origin.project
+                    or state.get("current_project_path", "")
+                        != runtime._generation_publication_origin.path
+                    or observation._runtime is not runtime
+                    or observation._origin is not runtime._generation_publication_origin):
+                return False
+
+            scope = Path(capacity._scope)
+            scope_identity = capacity._scope_identity
+            promoted_path = Path(promoted._path)
+            frozen_config = json.loads(
+                runtime._generation_publication_origin.envelope.manifest.host_config_json,
+            )
+            frozen_output = frozen_config.get("output_directory")
+            if type(frozen_output) is not str or not frozen_output:
+                return False
+            frozen_output_path = Path(frozen_output)
+            if not frozen_output_path.is_absolute():
+                return False
+            frozen_output_resolved = frozen_output_path.resolve(strict=False)
+
+            def contains(parent, child):
+                return parent == child or child.is_relative_to(parent)
+
+            if (not scope.is_absolute() or not promoted_path.is_absolute()
+                    or (expected_scope_identity is not None
+                        and scope_identity != expected_scope_identity)
+                    or (expected_promoted_identity is not None
+                        and promoted._identity != expected_promoted_identity)
+                    or promoted_path == scope or not promoted_path.is_relative_to(scope)
+                    or scope.resolve(strict=True) != scope
+                    or promoted_path.resolve(strict=True) != promoted_path):
+                return False
+            # Profile A deliberately uses a separate app-private root owner.
+            # Keep its root tree disjoint from the frozen Comfy output tree;
+            # the latter never becomes authorization for the private root.
+            resolved_scope = scope.resolve(strict=True)
+            if (contains(frozen_output_resolved, resolved_scope)
+                    or contains(resolved_scope, frozen_output_resolved)
+                    or contains(frozen_output_resolved, promoted_path.resolve(strict=True))):
+                return False
+            view = capacity.readiness()
+            root_view = promoted.readiness()
+            reference_view = reference.readiness()
+            return bool(
+                view.get("status") == "characterization_only"
+                and view.get("root_set_contract") == "profile_a_four_writable_roots"
+                and view.get("scope_writer_lease") == "held"
+                and view.get("filesystem") == "local_ntfs_observed"
+                and view.get("native_root_identity") == "observed_unchanged"
+                and view.get("approved_scope_identity") == "observed_unchanged"
+                and capacity._scope_identity == scope_identity
+                and capacity._scope_lease._state == "held"
+                and root_view.get("acl_verified") is True
+                and root_view.get("identity") == "handle_observed"
+                and reference_view.get("status") == "read_only_reference_observed"
+                and reference_view.get("identity") == "observed_unchanged"
+                and promoted._closed is False
+            )
+        except Exception:
+            return False
+
+    @classmethod
     def _create_for_characterization(cls, state, runtime, envelope, *, approved_directory,
                                      candidate_factory, candidate_appender, save_project,
                                      characterization, protected_only):
@@ -113,7 +330,7 @@ class GenerationCandidatePublication:
             raise ValueError("host_publication_factory_required")
         self._state, self._runtime, self._envelope = state, runtime, envelope
         self._factory, self._appender, self._save = factory, appender, save
-        self._approved_directory = Path(approved_directory)
+        self._approved_directory = Path(approved_directory) if approved_directory is not None else None
         self._mode = mode
         self._origin = runtime._generation_publication_origin
         self._expected = copy.deepcopy(self._origin.source_snapshot)
@@ -123,6 +340,11 @@ class GenerationCandidatePublication:
         self._records, self._evidence = {}, {}
         self._protected_evidence = {}
         self._protected_settled_event_evidence = {}
+        self._profile_a_capacity_owner = None
+        self._profile_a_protected_owner = None
+        self._profile_a_promoted_root = None
+        self._profile_a_scope_identity = None
+        self._profile_a_promoted_root_identity = None
         self._save_state = "not_attempted"
         self._save_callback_outcome = "not_attempted"
 
@@ -318,7 +540,7 @@ class GenerationCandidatePublication:
         This is a distinct characterization mode: protected receipts are never
         adapted into LocalOutputReceipt, ContainedOutputStore or PromotedImage.
         """
-        if self._mode != "protected":
+        if self._mode not in {"protected", "profile_a_protected"}:
             index = getattr(observation, "request_index", -1)
             return PublicationReceipt(index if type(index) is int else -1,
                                       "not_attempted", "writer_mode_mismatch")
@@ -432,7 +654,8 @@ class GenerationCandidatePublication:
             if self._protected_candidate_paths(observation) != paths:
                 raise ValueError("protected_path_changed")
 
-            with admission_owner._candidate_publication_commit_for_characterization(observation) as current_events:
+            with self._protected_candidate_publication_commit_guard(
+                    admission_owner, observation) as current_events:
                 if current_events is None:
                     receipt = PublicationReceipt(index, promotion_state, "stale_original_host")
                     return receipt
@@ -552,13 +775,56 @@ class GenerationCandidatePublication:
                     observation._promotion_owner, observation._promotion_receipt,
                     observation._remote_receipt, index))
 
+    @contextmanager
+    def _profile_a_candidate_publication_guard(self):
+        """Serialize the Profile A Gallery commit with capacity-owner close."""
+        if self._mode != "profile_a_protected":
+            yield
+            return
+        capacity = self._profile_a_capacity_owner
+        token = capacity._begin_profile_a_candidate_publication_for_characterization(
+            expected_scope_identity=self._profile_a_scope_identity,
+            expected_promoted_root=self._profile_a_promoted_root,
+        )
+        try:
+            yield
+        finally:
+            capacity._finish_profile_a_candidate_publication_for_characterization(token)
+
+    @contextmanager
+    def _protected_candidate_publication_commit_guard(self, admission_owner, observation):
+        """Enter the original admission guard, then the Profile A capacity lease."""
+        with admission_owner._candidate_publication_commit_for_characterization(
+                observation) as events:
+            if events is None:
+                yield None
+                return
+            with self._profile_a_candidate_publication_guard():
+                yield events
+
     def _protected_candidate_paths(self, observation):
         promotion_owner = observation._promotion_owner
         receipt = observation._promotion_receipt
         protected = promotion_owner._protected_owner
         root_owner = protected._roots.get("promoted_assets")
         root = Path(root_owner._path) if root_owner is not None else None
-        if (root is None or root == self._approved_directory
+        if self._mode == "profile_a_protected":
+            if (root is None
+                    or protected is not self._profile_a_protected_owner
+                    or root_owner is not self._profile_a_promoted_root
+                    or root_owner._identity != self._profile_a_promoted_root_identity
+                    or self._profile_a_capacity_owner is None
+                    or not self._profile_a_scope_authorizes_observation(
+                        self._runtime, self._state,
+                        self._runtime._generation_original_host_lifecycle,
+                        self._runtime._generation_original_host_lifecycle._worker_storage_integration,
+                        self._profile_a_capacity_owner, observation, protected,
+                        expected_scope_identity=self._profile_a_scope_identity,
+                        expected_promoted_identity=self._profile_a_promoted_root_identity,
+                    )):
+                raise ValueError("profile_a_promoted_root_unavailable")
+        elif (root is None or self._approved_directory is None
+                or root == self._approved_directory
                 or not _path_is_within_approved_destination(
                     root, self._approved_directory, strict=True)):
             raise ValueError("destination_not_approved")
@@ -575,7 +841,8 @@ class GenerationCandidatePublication:
                     or image.purpose != "promoted_assets"
                     or path is None or path.parent != root or path.name != image.storage_identity
                     or protected._images.get(key) is not image
-                    or not _path_is_within_approved_destination(path, self._approved_directory)):
+                    or (self._mode != "profile_a_protected"
+                        and not _path_is_within_approved_destination(path, self._approved_directory))):
                 raise ValueError("protected_path_unavailable")
             normalized = os.path.normcase(os.path.abspath(path))
             if normalized in seen:
@@ -957,6 +1224,8 @@ class GenerationCandidatePublication:
         return None
 
     def save_for_characterization(self):
+        if self._mode == "profile_a_protected":
+            return "save_not_authorized"
         if self._mode == "protected":
             return self._save_protected_for_characterization()
         with self._lock:
