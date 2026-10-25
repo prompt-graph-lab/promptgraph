@@ -2313,3 +2313,42 @@ each exact accepted event remains current. Candidate eligibility remains
 `not_established`; `execution_available=false`,
 `protected_storage_available=false`, `promotion_available=false`, and
 `authorship=unverified` remain unchanged.
+
+## C2B-8D-19G-F Profile A genuine protected Candidate Admission evidence
+
+The original Host can now accept only the exact 19G-E count-only
+`GenerationWorkerProtectedOutputsReadyObservation` retained by its integration.
+It verifies the source-bound `submission_started → submitted →
+remote_outputs_ready → outputs_ready` chain against the same active Host,
+Job/Claim, manifest, process/session, activation/epoch/pairing, Project
+object/path/source snapshot and read-only Project JSON reference. The exact
+accepted Inbox objects must still appear once in both the event index and
+authority list. The Job remains `awaiting_host_registration` with equal remote
+and output counts, `registered=0`, and one-to-sixteen ordered descriptors that
+match the privately retained Promotion rows. Late, copied, stale, replaced or
+uncertain evidence fails closed.
+
+The bridge reuses `GenerationProtectedCandidateAdmission` and calls its
+`admit_for_characterization` with only the original protected Promotion owner,
+owner-issued receipt, successful remote receipt and request index. The full
+`ProtectedCandidateAdmissionResult` and its private object-bearing observation
+remain held by the original Host/integration; callers receive a separate
+count-only result with `candidate_eligibility="evidence_observed"`. This
+records eligibility evidence only. No protected Candidate commit, Candidate
+writer, `registered` update, Gallery/Undo publication or Project save is
+invoked.
+
+The bridge is one-shot and keeps the existing 19G-A promotion preflight
+independent: 19G-A can be observed before or after G-F without consuming its
+attempt. Native verification stays in the existing Admission owner and outside
+Host/Job/Inbox locks. Final publication is guarded against Host close and
+invalidation, while Promotion and Job/Inbox custody remain current. Duplicate
+calls do not expose the private result. Uncertain evidence remains retained;
+the already-settled Promotion and capacity ledger entries are never rolled
+back. No new capacity record, protected file, receipt type coercion or legacy
+custody is produced.
+
+This remains offline characterization. All production execution, protected
+storage, promotion and Candidate publication flags stay false, and
+`authorship=unverified`. Candidate writing, Gallery/Undo publication, Project
+save, restart/recovery, retention and discard remain separate gates.

@@ -61,6 +61,9 @@ class ProjectAgentSessionRuntime:
     _generation_executor_inbox: GenerationExecutorInbox = field(default_factory=GenerationExecutorInbox, repr=False)
     # Private original-host publication evidence; never sent to the executor.
     _generation_publication_origin: object = field(default=None, init=False, repr=False)
+    # The exact live session mapping used to bind original-host inspection
+    # owners. Kept private and never passed to the Worker.
+    _generation_host_state: object = field(default=None, init=False, repr=False)
     _generation_candidate_publication: object = field(default=None, init=False, repr=False)
     _generation_protected_candidate_admission: object = field(default=None, init=False, repr=False)
     # Non-executing, exact original-host binding; never sent to a worker.
@@ -125,6 +128,7 @@ class ProjectAgentSessionRuntime:
         lifecycle = self._generation_original_host_lifecycle
         self._generation_original_host_lifecycle = None
         if lifecycle is not None:
+            self._generation_host_state = None
             integration = lifecycle._worker_storage_integration
             if (integration is not None
                     and integration not in self._retired_generation_worker_storage_integrations
@@ -2418,15 +2422,12 @@ class ProjectAgentSessionRuntime:
     def preflight_generation_worker_protected_candidate_admission_for_characterization(
             self, promotion_observation, *, characterization=False,
             disposable_opt_in=False):
-        """Reverify Profile A Promotion without claiming Candidate eligibility.
+        """Independently reverify Promotion without claiming Candidate eligibility.
 
-        The current Profile A path does not publish the genuine accepted
-        ``remote_outputs_ready`` / ``outputs_ready`` event pair that the
-        existing Candidate admission requires. A runtime-held legacy
-        ``GenerationPublicationOrigin`` alone is insufficient. This preflight
-        therefore returns count-only evidence with
-        ``candidate_eligibility=not_established``. It never synthesizes events
-        or calls a Candidate writer.
+        This legacy 19G-A preflight remains a separate count-only observation.
+        It neither supplies nor consumes the later 19G-F evidence bridge, and
+        continues to report ``candidate_eligibility=not_established``. It never
+        synthesizes events or calls a Candidate writer.
         """
         from core.generation_storage_admission import (
             WindowsProtectedStorageAdmissionCharacterization,
@@ -2608,6 +2609,206 @@ class ProjectAgentSessionRuntime:
                 captured,
             )
             return None, "protected_candidate_admission_preflight_uncertain"
+
+    def observe_generation_worker_protected_candidate_admission_for_characterization(
+            self, outputs_ready_observation, *, characterization=False,
+            disposable_opt_in=False):
+        """Observe genuine protected Candidate eligibility without publishing it."""
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedCandidateAdmissionObservation,
+            GenerationWorkerProtectedOutputsReadyObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+        from ui.agent_generation_protected_candidate_admission import (
+            GenerationProtectedCandidateAdmission,
+            ProtectedCandidateAdmissionObservation,
+            ProtectedCandidateAdmissionResult,
+        )
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if type(outputs_ready_observation) is not GenerationWorkerProtectedOutputsReadyObservation:
+            return None, "protected_candidate_admission_locator_invalid"
+
+        lifecycle_snapshot = self._generation_original_host_lifecycle
+        integration_snapshot = (
+            getattr(lifecycle_snapshot, "_worker_storage_integration", None)
+            if lifecycle_snapshot is not None else None
+        )
+        if (type(integration_snapshot) is not OriginalHostWorkerStorageIntegration
+                or integration_snapshot._profile_a is not True
+                or type(integration_snapshot._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization):
+            return None, "protected_candidate_admission_unavailable"
+
+        captured = {}
+        with self._publication_gate:
+            if (self._closed
+                    or self._generation_original_host_lifecycle is not lifecycle_snapshot):
+                return None, "stale_host_binding"
+            with self._current_generation_original_host_lifecycle_locked() as lifecycle:
+                if lifecycle is not lifecycle_snapshot:
+                    return None, "stale_host_binding"
+
+                def begin_admission():
+                    started, status = (
+                        integration_snapshot
+                        ._begin_profile_a_protected_candidate_admission_locked(
+                            lifecycle, outputs_ready_observation,
+                        )
+                    )
+                    if started is not None:
+                        captured.update(started)
+                        captured.update({
+                            "lifecycle": lifecycle,
+                            "project_reference": integration_snapshot._project_reference,
+                            "pairing_generation": lifecycle._pairing_generation,
+                        })
+                    return started, status
+
+                start_result = self._generation_original_host_evidence_current_locked(
+                    lifecycle, lifecycle._pairing_generation,
+                    on_current=begin_admission,
+                )
+                if type(start_result) is not tuple or start_result is False:
+                    return None, "host_evidence_unavailable"
+                started, status = start_result
+                if started is None:
+                    return None, status
+
+        integration = integration_snapshot
+        lifecycle = captured["lifecycle"]
+        state = captured["host_state"]
+        project_reference = captured["project_reference"]
+        admission_owner = None
+        result = None
+
+        def with_current_host(callback):
+            with self._publication_gate:
+                if (self._closed
+                        or self._generation_original_host_lifecycle is not lifecycle):
+                    return False
+                with self._current_generation_original_host_lifecycle_locked() as current:
+                    if current is not lifecycle:
+                        return False
+                    return self._generation_original_host_evidence_current_locked(
+                        lifecycle, captured["pairing_generation"], on_current=callback,
+                    ) is True
+
+        def host_matches_before_admission():
+            from ui.agent_generation_job import _PROCESS_INCARNATION
+            with lifecycle._lock:
+                with integration._lock:
+                    inbox = lifecycle._inbox
+                    checks = {
+                        "host_state": self._generation_host_state is state,
+                        "integration": lifecycle._worker_storage_integration is integration,
+                        "lifecycle_state": lifecycle._state == "bound_non_executing",
+                        "runtime": lifecycle._runtime_ref() is self,
+                        "envelope": lifecycle._envelope is captured["envelope"],
+                        "process": lifecycle._job_process_incarnation == _PROCESS_INCARNATION,
+                        "pairing": lifecycle._pairing_generation == captured["pairing_generation"],
+                        "origin": self._generation_publication_origin is captured["origin"],
+                        "attempt": integration._storage_preadmission_attempts.get(
+                            captured["attempt"].lease.request_index,
+                        ) is captured["attempt"],
+                        "attempt_state": captured["attempt"].protected_candidate_admission_state == "in_progress",
+                        "attempt_marker": captured["attempt"].protected_candidate_admission_marker is captured["marker"],
+                        "outputs_state": captured["outputs_marker"].state == "events_accepted",
+                        "outputs_locator": captured["outputs_marker"].observation is captured["locator"],
+                        "late": not inbox._late_output_seen,
+                        "events": integration._profile_a_remote_outputs_ready_event_is_current_locked(
+                            lifecycle, captured["attempt"], captured["remote_marker"],
+                            outputs_marker=captured["outputs_marker"],
+                        ),
+                    }
+                    return all(checks.values())
+
+        try:
+            first_host_current = with_current_host(host_matches_before_admission)
+            if (captured["origin"].project != captured["origin"].source_snapshot
+                    or not first_host_current):
+                raise ValueError("protected_candidate_admission_host_changed")
+            project_view = project_reference.readiness()
+            if project_view.get("status") != "read_only_reference_observed":
+                raise ValueError("protected_candidate_admission_project_reference_unavailable")
+
+            admission_owner = self._generation_protected_candidate_admission
+            if admission_owner is None:
+                admission_owner = GenerationProtectedCandidateAdmission.create_for_characterization(
+                    state, self, captured["envelope"],
+                    characterization=True, disposable_opt_in=True,
+                )
+            elif (type(admission_owner) is not GenerationProtectedCandidateAdmission
+                    or admission_owner._runtime is not self
+                    or admission_owner._state is not state
+                    or admission_owner._origin is not captured["origin"]
+                    or admission_owner._envelope is not captured["envelope"]
+                    or admission_owner._source_snapshot != captured["origin"].source_snapshot):
+                raise ValueError("protected_candidate_admission_owner_conflict")
+
+            integration._retain_profile_a_protected_candidate_admission_uncertain(
+                captured, admission_owner=admission_owner, mark_uncertain=False,
+            )
+            if not with_current_host(host_matches_before_admission):
+                raise ValueError("protected_candidate_admission_host_changed")
+
+            result = admission_owner.admit_for_characterization(
+                captured["promotion_owner"], captured["receipt"],
+                captured["remote"], captured["attempt"].lease.request_index,
+            )
+            integration._retain_profile_a_protected_candidate_admission_uncertain(
+                captured, admission_owner=admission_owner, result=result,
+                mark_uncertain=(getattr(result, "status", None) != "evidence_observed"),
+            )
+            if (type(result) is not ProtectedCandidateAdmissionResult
+                    or result.status != "evidence_observed"
+                    or result.request_index != captured["attempt"].lease.request_index
+                    or type(result.observation) is not ProtectedCandidateAdmissionObservation):
+                integration._retain_profile_a_protected_candidate_admission_uncertain(
+                    captured, admission_owner=admission_owner, result=result,
+                )
+                safe_status = (
+                    result.status if type(result) is ProtectedCandidateAdmissionResult
+                    and result.status in {
+                        "receipt_mismatch", "receipt_conflict", "admission_in_progress",
+                        "host_or_event_unavailable", "promotion_uncertain",
+                        "stale_original_host", "unavailable", "duplicate_observed",
+                        "duplicate_uncertain",
+                    } else "uncertain"
+                )
+                return None, f"protected_candidate_admission_{safe_status}"
+
+            if project_reference.readiness().get("status") != "read_only_reference_observed":
+                raise ValueError("protected_candidate_admission_project_reference_unavailable")
+            observation = GenerationWorkerProtectedCandidateAdmissionObservation(
+                status="protected_candidate_admission_evidence_observed",
+                request_index=result.request_index,
+                verified_promoted_image_count=len(captured["receipt"].images),
+            )
+            committed = False
+            with admission_owner._admission_result_current_for_characterization(
+                    result) as protected_events:
+                if (protected_events is not None
+                        and protected_events[0] is result.observation._remote_event
+                        and protected_events[1] is result.observation._outputs_ready_event):
+                    committed = integration._commit_profile_a_protected_candidate_admission_locked(
+                        lifecycle, captured, admission_owner, result, observation,
+                    )
+            if not committed:
+                integration._retain_profile_a_protected_candidate_admission_uncertain(
+                    captured, admission_owner=admission_owner, result=result,
+                )
+                return None, "protected_candidate_admission_uncertain"
+            return observation, observation.status
+        except Exception:
+            integration._retain_profile_a_protected_candidate_admission_uncertain(
+                captured, admission_owner=admission_owner, result=result,
+            )
+            return None, "protected_candidate_admission_uncertain"
 
     def cancel_generation_worker_promotion_preflight_for_characterization(self, observation):
         """Release only this Host's exact pre-CREATE_NEW Promotion reservation."""
@@ -3827,6 +4028,7 @@ class ProjectAgentSessionRuntime:
             admission = self._generation_protected_candidate_admission
             if admission is not None:
                 admission._close_under_runtime_gate()
+            self._generation_host_state = None
             # This shares the publication gate with final Apply commit, then
             # closes the mailbox/custodian under their fixed lock order.
             self.mailbox.close(review_custodian=self.review_custodian)

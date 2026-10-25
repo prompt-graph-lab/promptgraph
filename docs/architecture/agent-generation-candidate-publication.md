@@ -279,25 +279,24 @@ Host/Job/Inbox commit locks.
 
 The returned `GenerationWorkerProtectedCandidateAdmissionPreflightObservation`
 is only count evidence and reports `candidate_eligibility="not_established"`.
-At this 19G-A preflight boundary, the Profile A path had not yet published the
-genuine accepted `remote_outputs_ready` then `outputs_ready` pair required by
-the existing admission owner. The later 19G-E bridge supplies the exact event
-custody, but this preflight itself still does not call
-`GenerationProtectedCandidateAdmission`, synthesize events or legacy receipts,
-invoke `GenerationCandidatePublication`, append Candidates, settle
-registration counts, mutate Undo history or save Project JSON. The existing
-single Candidate writer and its legacy validation remain unchanged.
+The 19G-A preflight remains separate from event custody: it neither requires
+nor consumes the genuine accepted `remote_outputs_ready` / `outputs_ready`
+pair, and it does not call `GenerationProtectedCandidateAdmission`, synthesize
+events or legacy receipts, invoke `GenerationCandidatePublication`, append
+Candidates, settle registration counts, mutate Undo history or save Project
+JSON. The 19G-E transition can now supply the source-bound event pair; only the
+separate 19G-F bridge below passes that exact evidence to the existing
+admission owner. The existing single Candidate writer and its legacy
+validation remain unchanged.
 
 Preflight is one-shot. A copied or replayed Promotion observation is rejected;
 stale Project snapshot, Host, Claim, pairing, native file, ACL, inventory or
 ledger evidence withholds success and retains only the downstream preflight
 uncertainty. The already-published Promotion and completed capacity records
-remain intact. A later Profile A Candidate path requires a separately reviewed
-bridge that causes the original Host to accept the exact promotion through the
-existing Executor event owner and then reuses the existing admission and
-single-writer checks. This characterization is offline-only: all production
-capability flags remain false, no Candidate or Project state is changed, and
-`authorship=unverified`.
+remain intact. A valid 19G-A result may be observed before or after 19G-F; the
+two one-shot observations have separate attempt custody. This characterization
+is offline-only: all production capability flags remain false, no Candidate or
+Project state is changed, and `authorship=unverified`.
 
 ## C2B-8D-19G-B records only the original-Host pre-send event
 
@@ -381,3 +380,38 @@ remain false with `authorship=unverified`. The event pair is usable only while
 the exact accepted event objects remain current in both Job Registry and Inbox;
 eviction, disagreement, stale host state or uncertain acknowledgment fails
 closed and cannot be replayed.
+
+## C2B-8D-19G-F genuine protected Candidate Admission evidence bridge
+
+The original Host accepts only the exact 19G-E count-only `outputs_ready`
+observation retained by its Profile A integration. Before invoking the
+existing `GenerationProtectedCandidateAdmission`, the bridge verifies that
+`submission_started → submitted → remote_outputs_ready → outputs_ready` still
+forms the same source-bound Job/Inbox chain, including identity of each
+original Inbox event and authority-list entry. It also requires the exact
+active envelope, Claim, manifest, process/session, activation/epoch, pairing,
+request, original Project object/path/source snapshot, read-only Project JSON
+reference, ordered one-to-sixteen descriptors and Promotion rows,
+`awaiting_host_registration`, matching output counts and `registered=0`. Late,
+copied, stale, conflicting or uncertain evidence fails closed.
+
+The bridge reuses the existing protected Admission owner and passes it only the
+original private Promotion owner, receipt, successful remote receipt and
+request index. That owner revalidates protected native Promotion custody. Its
+`ProtectedCandidateAdmissionResult` and private observation remain retained by
+the original Host/integration; the bridge returns only a count-only
+`GenerationWorkerProtectedCandidateAdmissionObservation` with
+`candidate_eligibility="evidence_observed"`. The result means that existing
+admission evidence was observed for a possible separately reviewed later
+writer step. It is not permission to append a Candidate, alter Job registration,
+publish Gallery/Undo state or save the Project. The 19G-A count preflight stays
+independent and can be invoked before or after 19G-F without consuming its
+attempt.
+
+Admission is one-shot. Duplicate calls do not return the private observation;
+close, invalidation, event replacement, native drift or final Host mismatch
+withhold public success and retain uncertain evidence. The bridge creates no
+new event, capacity reservation, ledger operation, image write or legacy
+receipt. Candidate publication and Project JSON save remain separate host
+owners. This remains offline characterization: all production capability
+flags remain false and `authorship=unverified`.

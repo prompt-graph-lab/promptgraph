@@ -285,7 +285,7 @@ production Start, or background worker was exercised.
 | Accepted prompt -> history observation | `core/comfy_http_history.py`, `core/comfy_remote_output_receipts.py`, executor result gate; exact accepted UUID and frozen origin | Bounded pending/ready/unknown transport contract, strict metadata parsing and correlation tests; explicit later read does not resubmit | No polling scheduler, live history interoperability evidence, or durable restart association. Missing/timeout history is unknown, never proof of execution failure. |
 | Successful history -> `/view` stream -> protected staging | `core/comfy_http_view.py`, `core/comfy_output_containment.py`, `core/generation_windows_protected_assets.py`; exact remote descriptor, prompt/request binding, original-host freshness | Injected HTTP stream composed with real Windows disposable roots/files, incremental stream, native identity/DACL, decode/size/hash and retention checks | No production transport registration. No remote cancellation or cleanup, and no claim of constant-memory decode or hard end-to-end deadline. |
 | Complete protected staging batch -> acceptance -> promotion | Legacy path: `WindowsProtectedAssetsCharacterization`, protected acceptance owner and `ProtectedDurablePromotionCharacterization`; Profile A uses the exact 19F-B reservation through the 19F-D original-Host Writer | Windows-native disposable tests cover legacy and Profile A source/destination copying, native identity/ACL, exact batch inventory, one aggregate destination ledger commit, private receipt, and 1/2/16-image policy limits | No production root lifecycle, live transport or Candidate/Project authority is implied by the private receipt. |
-| Promotion -> `outputs_ready` -> Candidate admission | Profile A 19G-E original-Host bridge publishes one event through the existing Job Registry and Inbox; exact Promotion receipt remains privately owner-held and the opaque event ID is correlation only | Windows-native disposable tests compose source-bound 19G-B/C/D events, staging, acceptance, Promotion, native revalidation, and one 1/2/16-count `outputs_ready`; separate admission tests verify exact original Project/path/snapshot, activation/epoch/pairing, job/claim/request and event evidence | No production worker/event-loop delivery is wired. The event leaves `registered=0` and is not Candidate eligibility, human approval or a reusable capability. All publication gates remain disabled. |
+| Promotion -> `outputs_ready` -> read-only Candidate admission evidence | Profile A 19G-E original-Host bridge publishes one event through the existing Job Registry and Inbox; 19G-F passes the exact locator to the existing `GenerationProtectedCandidateAdmission` owner and privately retains its result. The opaque event ID remains correlation only. | Windows-native disposable tests compose source-bound 19G-B/C/D events, staging, acceptance, Promotion, native revalidation, and one 1/2/16-count `outputs_ready`; 19G-F verifies the current four-event chain, complete ordered Promotion evidence and original Project/Host binding before returning a count-only eligibility observation. | No production worker/event-loop delivery is wired. The Job remains `registered=0`; `candidate_eligibility="evidence_observed"` is not permission to append, human approval, or a reusable capability. Candidate writer, Undo/Gallery publication and Project save remain separate gates; all production flags stay disabled. |
 | Admission -> Candidate append through existing Gallery writer | `GenerationCandidatePublication.publish_protected_for_characterization`, existing Gallery candidate factory/appender and Undo snapshot | Windows-native disposable composition mutates only the exact in-memory fixture Project, records actual Candidate delta, checks path/provenance and one-shot settlement; partial append remains uncertain and is not replayed | No production entry point or enabled publication authority. No second writer or conversion to legacy receipt custody was introduced. |
 | Settled Candidate registration -> Project JSON save | Same publication owner and existing app save callback -> `core.io.save_project_to_json`; exact Project object/path and protected provenance | Disposable integration writes then reopens JSON with the normal loader; verifies Candidate lineage, prompt/seed/provenance, one-shot save and distinct save outcome | Does not establish crash/power-loss durability, cross-file atomicity, or permission to recover after restart. Save uncertainty is retained; no retry/rollback/cleanup. |
 
@@ -1309,24 +1309,25 @@ scans run outside the Job/Inbox/Host commit locks. A short final commit is
 serialized against close and invalidation.
 
 The result reports only the verified promoted-image count and
-`candidate_eligibility="not_established"`. The new Profile A worker-to-storage
-path has no genuine accepted `remote_outputs_ready` / `outputs_ready` event
-pair in the existing executor/inbox owners. A matching count, status string,
-or runtime `GenerationPublicationOrigin` cannot stand in for those events.
-19G-A creates no Executor event, legacy receipt, Candidate, Undo entry, save
-write or new capacity record, and does not invoke the existing Candidate
-admission or writer. Native/Host/source-snapshot drift returns no result and
-retains downstream preflight uncertainty while preserving the already
-published Promotion and its completed ledger evidence.
+`candidate_eligibility="not_established"`. 19G-A does not require or consume
+the accepted `remote_outputs_ready` / `outputs_ready` event pair; matching
+counts, status strings, or runtime `GenerationPublicationOrigin` values never
+stand in for source-bound events. 19G-A creates no Executor event, legacy
+receipt, Candidate, Undo entry, save write or new capacity record, and does
+not invoke the existing Candidate admission or writer. Native/Host/source-
+snapshot drift returns no result and retains downstream preflight uncertainty
+while preserving the already published Promotion and its completed ledger
+evidence.
 
-This closes a verification boundary only. A subsequent bounded integration
-must route an exact Profile A Promotion result through the original Host's
-existing event acceptance owner before Candidate admission can become
-eligible. It must keep event acceptance, Candidate registration and Project
-JSON persistence as distinct one-shot transitions. Production transport,
-Human Start, protected-root provisioning, durable restart/recovery, retention
-and discard remain unimplemented or unauthorized. All production capability
-flags remain false and `authorship=unverified`.
+This closes a verification boundary only. The later 19G-E transition now
+source-binds the exact protected `outputs_ready` event after the preceding
+three events. The separate 19G-F bridge below reuses the existing protected
+Candidate admission owner for read-only eligibility evidence. Event acceptance,
+Candidate registration and Project JSON persistence remain distinct one-shot
+transitions. Production transport, Human Start, protected-root provisioning,
+durable restart/recovery, retention and discard remain unimplemented or
+unauthorized. All production capability flags remain false and
+`authorship=unverified`.
 
 ## C2B-8D-19G-B Profile A genuine Executor event custody (first transition)
 
@@ -1478,3 +1479,36 @@ Candidate eligibility remains `not_established`, registration remains zero,
 and Candidate admission, append, Undo, Project save, Recovery and execution are
 not performed. Production capability flags remain false and
 `authorship=unverified`.
+
+## C2B-8D-19G-F Profile A genuine Candidate Admission evidence bridge
+
+The original Host can now pass one exact 19G-E `outputs_ready` locator to the
+existing `GenerationProtectedCandidateAdmission` owner. Before admission it
+requires the same privately source-bound four-event Job/Inbox chain, exact
+event-object identity in both Inbox indexes, current Claim/manifest and
+process/session/activation/epoch/pairing, original Project object/path/source
+snapshot and read-only Project JSON reference. The Job remains at
+`awaiting_host_registration`, output counts match the complete ordered
+one-to-sixteen descriptor and Promotion rows, and registration remains zero.
+Late or conflicting events, copied locators and stale or uncertain evidence
+do not authorize admission.
+
+The existing admission owner revalidates the exact original protected
+Promotion owner and receipt against the successful remote receipt and request.
+Its full result and private observation stay inside original Host/admission
+custody. The bridge returns only a count-only result with
+`candidate_eligibility="evidence_observed"`; this is evidence for a possible
+later writer review, not Candidate write authority. It calls no Candidate
+commit, writer, registration settlement, Undo or Project save. The earlier
+19G-A preflight remains a separate count-only one-shot and can run before or
+after this bridge without claiming its attempt.
+
+Native inspection runs outside Host/Job/Inbox locks. The final result is
+serialized with Host lifecycle close, protected Promotion custody and the
+existing Job/Inbox event guard. Duplicate, invalidated, stale, drifted or
+uncertain attempts remain one-shot; settled Promotion and capacity evidence
+are not compensated. The bridge adds no events, reservations, ledger
+operations or writes. It remains offline characterization with all production
+capability flags false and `authorship=unverified`; Candidate registration,
+Gallery/Undo publication, Project save, restart recovery, cleanup and discard
+remain separate unimplemented or unauthorized gates.

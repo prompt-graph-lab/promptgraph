@@ -4203,6 +4203,247 @@ def test_profile_a_outputs_ready_rejects_copied_locator_then_accepts_exact_obser
     runtime.finish_generation_worker_storage_close_for_characterization()
 
 
+@pytest.mark.parametrize("descriptor_count", [1, 2, 16])
+def test_profile_a_genuine_candidate_admission_is_read_only_and_one_shot(
+        native_profile_a_dual_custody_worker_storage, descriptor_count, monkeypatch):
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedCandidateAdmissionObservation,
+        GenerationWorkerProtectedCandidateAdmissionPreflightObservation,
+    )
+    from ui.agent_generation_protected_candidate_admission import (
+        GenerationProtectedCandidateAdmission,
+        ProtectedCandidateAdmissionObservation,
+        ProtectedCandidateAdmissionResult,
+    )
+
+    def forbidden_candidate_commit(*_args, **_kwargs):
+        raise AssertionError("G-F must not enter Candidate publication custody")
+
+    monkeypatch.setattr(
+        GenerationProtectedCandidateAdmission,
+        "_candidate_publication_commit_for_characterization",
+        forbidden_candidate_commit,
+    )
+
+    roots, capacity, _reference, project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+            descriptor_count=descriptor_count,
+        )
+    )
+    project = lifecycle._project_ref()
+    project_before = copy.deepcopy(project)
+    project_file_before = project_path.read_bytes()
+    candidates_before = tuple(tuple(line.generated_candidates) for line in project.prompt_lines)
+    job_before = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    integration = lifecycle._worker_storage_integration
+    inbox = runtime._generation_executor_inbox
+    inbox_events_before = tuple(inbox._events.items())
+    inbox_authority_before = tuple(inbox._authority_events)
+    ledger_operations_before = set(capacity._ledger._operations)
+    ledger_reservations_before = set(capacity._ledger._reservations)
+    writer_file_keys_before = set(writer._files)
+
+    outputs_ready, event_status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert event_status == "protected_outputs_ready_event_accepted_non_authoritative"
+    output_marker = integration._profile_a_outputs_ready_event_attempts[0]
+    assert output_marker.observation is outputs_ready
+
+    if descriptor_count == 1:
+        source_event = integration._profile_a_submission_started_events[0]
+        source_sequence = source_event.progress.sequence
+        inbox._events[source_sequence] = replace(source_event)
+        assert runtime.observe_generation_worker_protected_candidate_admission_for_characterization(
+            outputs_ready, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_candidate_admission_evidence_unavailable")
+        inbox._events[source_sequence] = source_event
+        source_position = next(
+            index for index, item in enumerate(inbox._authority_events)
+            if item is source_event
+        )
+        inbox._authority_events[source_position] = replace(source_event)
+        assert runtime.observe_generation_worker_protected_candidate_admission_for_characterization(
+            outputs_ready, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_candidate_admission_evidence_unavailable")
+        inbox._authority_events[source_position] = source_event
+        assert attempt.protected_candidate_admission_state == "not_started"
+
+    # Equal-valued copies do not consume the genuine one-shot bridge.
+    assert runtime.observe_generation_worker_protected_candidate_admission_for_characterization(
+        replace(outputs_ready), characterization=True, disposable_opt_in=True,
+    ) == (None, "protected_candidate_admission_evidence_unavailable")
+    assert attempt.protected_candidate_admission_state == "not_started"
+
+    # The older 19G-A preflight is an independent non-authoritative observation.
+    # Exercise it on both sides of G-F without letting it claim G-F's attempt.
+    run_legacy_preflight_before = descriptor_count == 1
+    if run_legacy_preflight_before:
+        legacy, legacy_status = runtime.preflight_generation_worker_protected_candidate_admission_for_characterization(
+            publication, characterization=True, disposable_opt_in=True,
+        )
+        assert legacy_status == "protected_candidate_admission_preflight_non_authoritative"
+        assert type(legacy) is GenerationWorkerProtectedCandidateAdmissionPreflightObservation
+        assert legacy.candidate_eligibility == "not_established"
+
+    project_before_gf = copy.deepcopy(project)
+    project_file_before_gf = project_path.read_bytes()
+    candidate_before_gf = tuple(tuple(line.generated_candidates) for line in project.prompt_lines)
+    job_before_gf = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    events_before_gf = tuple(inbox._events.items())
+    authority_before_gf = tuple(inbox._authority_events)
+    ledger_operations_gf = set(capacity._ledger._operations)
+    ledger_reservations_gf = set(capacity._ledger._reservations)
+    writer_file_keys_gf = set(writer._files)
+
+    result, status = runtime.observe_generation_worker_protected_candidate_admission_for_characterization(
+        outputs_ready, characterization=True, disposable_opt_in=True,
+    )
+
+    assert status == "protected_candidate_admission_evidence_observed"
+    assert type(result) is GenerationWorkerProtectedCandidateAdmissionObservation
+    assert result.status == status
+    assert result.request_index == 0
+    assert result.verified_promoted_image_count == descriptor_count
+    assert result.candidate_eligibility == "evidence_observed"
+    assert result.execution_available is False
+    assert result.protected_storage_available is False
+    assert result.promotion_available is False
+    assert result.candidate_publication_allowed is False
+    assert result.project_save_allowed is False
+    assert result.authorship == "unverified"
+    assert not ({"observation", "receipt", "remote", "images", "paths", "owner"}
+                & set(result.__dataclass_fields__))
+
+    owner = runtime._generation_protected_candidate_admission
+    assert type(owner) is GenerationProtectedCandidateAdmission
+    private_result = attempt.protected_candidate_admission_result
+    assert type(private_result) is ProtectedCandidateAdmissionResult
+    assert private_result.status == "evidence_observed"
+    assert private_result.request_index == 0
+    assert type(private_result.observation) is ProtectedCandidateAdmissionObservation
+    assert owner._attempts[0].result is private_result
+    assert attempt.protected_candidate_admission_owner is owner
+    assert attempt.protected_candidate_admission_observation is result
+    assert attempt.protected_candidate_admission_state == "observed"
+    private_observation = private_result.observation
+    assert private_observation._promotion_owner is attempt.promotion_owner
+    assert private_observation._promotion_receipt is attempt.promotion_receipt
+    assert private_observation._remote_receipt is attempt.remote_receipt
+    assert private_observation._remote_event is integration._profile_a_remote_outputs_ready_event_attempts[0].event
+    assert private_observation._outputs_ready_event is output_marker.event
+
+    if not run_legacy_preflight_before and descriptor_count == 2:
+        legacy, legacy_status = runtime.preflight_generation_worker_protected_candidate_admission_for_characterization(
+            publication, characterization=True, disposable_opt_in=True,
+        )
+        assert legacy_status == "protected_candidate_admission_preflight_non_authoritative"
+        assert type(legacy) is GenerationWorkerProtectedCandidateAdmissionPreflightObservation
+        assert legacy.candidate_eligibility == "not_established"
+        assert attempt.protected_candidate_admission_state == "observed"
+        assert attempt.protected_candidate_admission_observation is result
+
+    duplicate, duplicate_status = runtime.observe_generation_worker_protected_candidate_admission_for_characterization(
+        outputs_ready, characterization=True, disposable_opt_in=True,
+    )
+    assert duplicate is None
+    assert duplicate_status == "protected_candidate_admission_already_observed"
+    assert len(owner._attempts) == 1
+    assert owner._attempts[0].result is private_result
+
+    assert tuple(item.progress.kind for item in inbox._authority_events) == (
+        "submission_started", "submitted", "remote_outputs_ready", "outputs_ready",
+    )
+    assert tuple(inbox._events.items()) == events_before_gf
+    assert tuple(inbox._authority_events) == authority_before_gf
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id) == job_before_gf
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id)["requests"][0]["registered_count"] == 0
+    assert set(capacity._ledger._operations) == ledger_operations_gf
+    assert set(capacity._ledger._reservations) == ledger_reservations_gf
+    assert set(writer._files) == writer_file_keys_gf
+    assert project == project_before_gf == project_before
+    assert project_path.read_bytes() == project_file_before_gf == project_file_before
+    assert tuple(tuple(line.generated_candidates) for line in project.prompt_lines) == candidate_before_gf
+    assert candidates_before == candidate_before_gf
+    assert job_before != job_before_gf
+    assert ledger_operations_before == ledger_operations_gf
+    assert ledger_reservations_before == ledger_reservations_gf
+    assert writer_file_keys_before == writer_file_keys_gf
+    assert runtime._generation_protected_candidate_admission is owner
+
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_genuine_candidate_admission_retains_host_close_race(
+        native_profile_a_dual_custody_worker_storage, monkeypatch):
+    roots, capacity, _reference, _project_path = native_profile_a_dual_custody_worker_storage
+    (runtime, lifecycle, _worker, _prepared, attempt, writer, _accepted,
+     _promotion_preflight, publication, _provider, _data) = (
+        _publish_profile_a_source_bound_promotion_for_outputs_ready(
+            native_profile_a_dual_custody_worker_storage,
+            descriptor_count=1,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    outputs_ready, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+        publication, characterization=True, disposable_opt_in=True,
+    )
+    assert status == "protected_outputs_ready_event_accepted_non_authoritative"
+
+    inspect_entered, release_inspect = threading.Event(), threading.Event()
+    promotion_owner = attempt.promotion_owner
+    original_inspect = promotion_owner._inspect_for_candidate_admission_for_characterization
+
+    def paused_inspection(receipt, host_freshness):
+        inspect_entered.set()
+        assert release_inspect.wait(10)
+        return original_inspect(receipt, host_freshness)
+
+    monkeypatch.setattr(
+        promotion_owner, "_inspect_for_candidate_admission_for_characterization",
+        paused_inspection,
+    )
+    results = []
+    observer = threading.Thread(
+        target=lambda: results.append(
+            runtime.observe_generation_worker_protected_candidate_admission_for_characterization(
+                outputs_ready, characterization=True, disposable_opt_in=True,
+            )
+        ),
+        daemon=True,
+    )
+    observer.start()
+    try:
+        assert inspect_entered.wait(10)
+        # Native Admission verification has released the runtime/Job/Inbox and
+        # protected-owner locks. Host close must complete while it is paused.
+        runtime.close()
+        assert runtime._closed is True
+        assert runtime._generation_host_state is None
+    finally:
+        release_inspect.set()
+        observer.join(20)
+
+    assert not observer.is_alive()
+    assert len(results) == 1
+    assert results[0][0] is None
+    assert results[0][1] != "protected_candidate_admission_evidence_observed"
+    assert attempt.protected_candidate_admission_state == "retained_uncertain"
+    assert attempt.protected_candidate_admission_observation is None
+    assert integration._profile_a_outputs_ready_event_attempts[0].observation is outputs_ready
+    # The capacity owner is still live, so its cross-process lease stays held
+    # rather than being released after the uncertain Host close race.
+    assert capacity.readiness()["scope_writer_lease"] == "held"
+
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
 def test_profile_a_outputs_ready_known_inbox_refusal_is_not_retained_uncertain(
         native_profile_a_dual_custody_worker_storage, monkeypatch):
     from core.generation_storage_admission import _profile_a_executor_event_is_unresolved
