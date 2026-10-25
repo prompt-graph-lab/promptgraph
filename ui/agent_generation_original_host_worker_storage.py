@@ -12,6 +12,7 @@ promotion writer, or grants write or publication authority.
 from collections import deque
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+import os
 import threading
 import uuid
 import weakref
@@ -269,6 +270,46 @@ class GenerationWorkerProtectedCandidatePublicationObservation:
 
 
 @dataclass(frozen=True)
+class GenerationWorkerProtectedProjectSaveObservation:
+    """Count-only result for one original-Host Profile A Project save."""
+
+    status: str
+    request_count: int
+    registered_candidate_count: int
+    save_state: str
+    execution_available: bool = False
+    protected_storage_available: bool = False
+    promotion_available: bool = False
+    candidate_publication_allowed: bool = False
+    project_save_allowed: bool = False
+    authorship: str = "unverified"
+
+
+@dataclass(frozen=True)
+class _ProfileAProjectSaveAuthorization:
+    """Exact private Host authorization retained by the original integration."""
+
+    integration: object = field(repr=False, compare=False)
+    lifecycle: object = field(repr=False, compare=False)
+    runtime: object = field(repr=False, compare=False)
+    publication_owner: object = field(repr=False, compare=False)
+    locator: object = field(repr=False, compare=False)
+    attempt: object = field(repr=False, compare=False)
+    publication_receipt: object = field(repr=False, compare=False)
+    origin: object = field(repr=False, compare=False)
+    project: object = field(repr=False, compare=False)
+    project_path: str = field(repr=False, compare=False)
+    host_state: object = field(repr=False, compare=False)
+    project_reference: object = field(repr=False, compare=False)
+    capacity_owner: object = field(repr=False, compare=False)
+    capacity_save_token: object = field(repr=False, compare=False)
+    scope_identity: object = field(repr=False, compare=False)
+    promoted_root: object = field(repr=False, compare=False)
+    pairing_generation: int = field(repr=False, compare=False)
+    marker: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
 class GenerationWorkerExecutorEventChainObservation:
     """Read-only view of accepted and Profile A source-bound Job/Inbox events."""
 
@@ -428,6 +469,11 @@ class _StoragePreAdmissionAttempt:
     protected_candidate_publication_owner: object = None
     protected_candidate_publication_receipt: object = None
     protected_candidate_publication_observation: object = None
+    profile_a_project_save_state: str = "not_started"
+    profile_a_project_save_marker: object = None
+    profile_a_project_save_authorization: object = None
+    profile_a_project_save_callback_outcome: str = "not_attempted"
+    profile_a_project_save_observation: object = None
 
 
 def unavailable_observation(status="unavailable"):
@@ -594,6 +640,12 @@ class OriginalHostWorkerStorageIntegration:
         # event owner. It retains the exact event object; the public result
         # never carries the protected receipt or any Candidate authority.
         self._profile_a_outputs_ready_event_attempts = {}
+        self._profile_a_project_save_state = "not_started"
+        self._profile_a_project_save_marker = None
+        self._profile_a_project_save_authorization = None
+        self._profile_a_project_save_locator = None
+        self._profile_a_project_save_callback_outcome = "not_attempted"
+        self._profile_a_project_save_observation = None
         # One staging pre-admission attempt per manifest request. The entries
         # privately retain only the exact host lease and the existing
         # capacity owner's opaque reservation; neither is returned as a
@@ -2530,7 +2582,9 @@ class OriginalHostWorkerStorageIntegration:
                 or lifecycle._project_ref() is not project):
             return False
         try:
-            if origin.project != origin.source_snapshot:
+            expected_project_state = captured.get("project_state_snapshot")
+            if (expected_project_state is None
+                    or origin.project != expected_project_state):
                 return False
         except Exception:
             return False
@@ -2599,6 +2653,8 @@ class OriginalHostWorkerStorageIntegration:
                 or origin.path != lifecycle._project_path
                 or origin.source_snapshot is not captured["source_snapshot"]
                 or lifecycle._project_ref() is not project
+                or captured.get("project_state_snapshot") is None
+                or origin.project != captured.get("project_state_snapshot")
                 or marker.state not in {"claim_in_progress", "event_acceptance_in_progress"}
                 or self._profile_a_outputs_ready_event_attempts.get(
                     attempt.lease.request_index,
@@ -2940,6 +2996,262 @@ class OriginalHostWorkerStorageIntegration:
                     return None, "protected_candidate_publication_uncertain"
                 return result, "protected_candidate_publication_already_observed"
             return None, "protected_candidate_publication_evidence_unavailable"
+
+    def _profile_a_project_save_replay(self, locator):
+        """Replay only a count-only result for the exact held G-G locator."""
+        if type(locator) is not GenerationWorkerProtectedCandidatePublicationObservation:
+            return None, "profile_a_project_save_locator_invalid"
+        with self._lock:
+            attempt = self._storage_preadmission_attempts.get(locator.request_index)
+            if (attempt is None
+                    or attempt.protected_candidate_publication_observation is not locator
+                    or attempt.protected_candidate_publication_state != "observed"
+                    or locator.status != "protected_candidate_publication_registered_non_authoritative"
+                    or locator.registration_state != "registered"):
+                return None, None
+            state = self._profile_a_project_save_state
+            if state == "not_started":
+                return None, None
+            if state in {"claim_in_progress", "saving"}:
+                request_count = len(self._lifecycle_ref()._envelope.manifest.requests)
+                registered_count = sum(
+                    item.protected_candidate_publication_receipt.registered_count
+                    for item in self._storage_preadmission_attempts.values()
+                    if item.protected_candidate_publication_receipt is not None
+                    and item.protected_candidate_publication_state == "observed"
+                    and item.protected_candidate_publication_receipt.registration_state == "registered"
+                )
+                return GenerationWorkerProtectedProjectSaveObservation(
+                    "profile_a_project_save_in_progress", request_count,
+                    registered_count, "saving",
+                ), "profile_a_project_save_in_progress"
+            if self._profile_a_project_save_locator is not locator:
+                return None, "profile_a_project_save_already_claimed"
+            observation = self._profile_a_project_save_observation
+            if observation is None and state == "retained_uncertain":
+                lifecycle = self._lifecycle_ref()
+                request_count = len(lifecycle._envelope.manifest.requests) if lifecycle else 0
+                registered_count = sum(
+                    item.protected_candidate_publication_receipt.registered_count
+                    for item in self._storage_preadmission_attempts.values()
+                    if item.protected_candidate_publication_receipt is not None
+                )
+                observation = GenerationWorkerProtectedProjectSaveObservation(
+                    "profile_a_project_save_uncertain", request_count,
+                    registered_count, "save_uncertain",
+                )
+                self._profile_a_project_save_observation = observation
+            if observation is None:
+                return None, "profile_a_project_save_evidence_unavailable"
+            return observation, "profile_a_project_save_already_observed"
+
+    def _begin_profile_a_project_save_locked(
+            self, lifecycle, locator, publication_owner, publication_receipt,
+            capacity_save_token):
+        """Claim one exact job-level save while original Host/lifecycle gates hold."""
+        from ui.agent_generation_candidate_publication import (
+            GenerationCandidatePublication, PublicationReceipt,
+        )
+        from ui.agent_generation_executor_handoff import GenerationPublicationOrigin
+
+        if (self._profile_a is not True or lifecycle._state != "bound_non_executing"
+                or lifecycle._worker_storage_integration is not self
+                or not self._lifecycle_profile_binding_matches_locked(lifecycle)
+                or type(locator) is not GenerationWorkerProtectedCandidatePublicationObservation
+                or type(publication_owner) is not GenerationCandidatePublication
+                or publication_owner._mode != "profile_a_protected"
+                or type(publication_receipt) is not PublicationReceipt
+                or locator.status != "protected_candidate_publication_registered_non_authoritative"
+                or locator.registration_state != "registered"
+                or locator.execution_available is not False
+                or locator.protected_storage_available is not False
+                or locator.promotion_available is not False
+                or locator.candidate_publication_allowed is not False
+                or locator.project_save_allowed is not False
+                or locator.authorship != "unverified"
+                or type(locator.request_index) is not int):
+            return None, "profile_a_project_save_host_changed"
+        runtime = lifecycle._runtime_ref()
+        origin = getattr(runtime, "_generation_publication_origin", None)
+        project = lifecycle._project_ref()
+        index = locator.request_index
+        attempt = self._storage_preadmission_attempts.get(index)
+        if (runtime is None or type(origin) is not GenerationPublicationOrigin
+                or origin.envelope is not lifecycle._envelope
+                or origin.project is not project or origin.path != lifecycle._project_path
+                or runtime._generation_host_state is None
+                or runtime._generation_candidate_publication is not publication_owner
+                or publication_owner._runtime is not runtime
+                or publication_owner._origin is not origin
+                or publication_owner._envelope is not lifecycle._envelope
+                or attempt is None
+                or attempt.protected_candidate_publication_state != "observed"
+                or attempt.protected_candidate_publication_observation is not locator
+                or attempt.protected_candidate_publication_owner is not publication_owner
+                or attempt.protected_candidate_publication_receipt is not publication_receipt
+                or publication_receipt.request_index != index
+                or publication_receipt.registration_state != "registered"
+                or publication_receipt.promotion_state != "protected_verified"
+                or publication_receipt.registered_count != locator.registered_candidate_count
+                or locator.registered_candidate_count != locator.expected_candidate_count
+                or index not in publication_owner._protected_settled_event_evidence
+                or self._project_reference is None
+                or self._state != "bound_non_executing"
+                or not self._capacity_owner._project_save_boundary.is_current(
+                    capacity_save_token)
+                or self._profile_a_project_save_state != "not_started"):
+            if self._profile_a_project_save_state != "not_started":
+                return None, "profile_a_project_save_already_claimed"
+            return None, "profile_a_project_save_evidence_unavailable"
+
+        marker = object()
+        authorization = _ProfileAProjectSaveAuthorization(
+            self, lifecycle, runtime, publication_owner, locator, attempt,
+            publication_receipt, origin, project, origin.path,
+            runtime._generation_host_state, self._project_reference,
+            self._capacity_owner, capacity_save_token,
+            self._capacity_owner._scope_identity,
+            self._capacity_owner._roots.get("promoted_assets"),
+            lifecycle._pairing_generation, marker,
+        )
+        self._profile_a_project_save_state = "claim_in_progress"
+        self._profile_a_project_save_marker = marker
+        self._profile_a_project_save_authorization = authorization
+        self._profile_a_project_save_locator = locator
+        attempt.profile_a_project_save_state = "claim_in_progress"
+        attempt.profile_a_project_save_marker = marker
+        attempt.profile_a_project_save_authorization = authorization
+        return authorization, "profile_a_project_save_claimed"
+
+    def _profile_a_project_save_claim_current_locked(
+            self, authorization, *, replacement_reference=None):
+        from core.generation_windows_protected_storage import (
+            WindowsProjectJsonReferenceCharacterization,
+        )
+
+        lifecycle = authorization.lifecycle
+        attempt = authorization.attempt
+        capacity = authorization.capacity_owner
+        with lifecycle._lock:
+            with capacity._lock:
+                with self._lock:
+                    runtime = authorization.runtime
+                    return bool(
+                        self._profile_a is True
+                        and self._state == "bound_non_executing"
+                        and self._profile_a_project_save_authorization is authorization
+                        and self._profile_a_project_save_marker is authorization.marker
+                        and self._profile_a_project_save_state in {"claim_in_progress", "saving"}
+                        and attempt.profile_a_project_save_authorization is authorization
+                        and attempt.profile_a_project_save_marker is authorization.marker
+                        and attempt.profile_a_project_save_state in {"claim_in_progress", "saving"}
+                        and self._storage_preadmission_attempts.get(
+                            authorization.locator.request_index) is attempt
+                        and attempt.protected_candidate_publication_observation
+                            is authorization.locator
+                        and attempt.protected_candidate_publication_receipt
+                            is authorization.publication_receipt
+                        and lifecycle._state == "bound_non_executing"
+                        and lifecycle._worker_storage_integration is self
+                        and lifecycle._runtime_ref() is runtime
+                        and lifecycle._project_ref() is authorization.project
+                        and lifecycle._project_path == authorization.project_path
+                        and lifecycle._envelope is authorization.origin.envelope
+                        and lifecycle._pairing_generation == authorization.pairing_generation
+                        and runtime._generation_host_state is authorization.host_state
+                        and runtime._generation_original_host_lifecycle is lifecycle
+                        and runtime._generation_publication_origin is authorization.origin
+                        and runtime._generation_candidate_publication is authorization.publication_owner
+                        and capacity is self._capacity_owner
+                        and capacity._closed is False and capacity._invalid is False
+                        and capacity._project_save_revoking is False
+                        and capacity._scope_identity == authorization.scope_identity
+                        and capacity._scope_lease is not None
+                        and capacity._scope_lease._state == "held"
+                        and capacity._project_save_boundary.is_current(
+                            authorization.capacity_save_token)
+                        and capacity._roots.get("promoted_assets") is authorization.promoted_root
+                        and self._project_reference is authorization.project_reference
+                        and (
+                            (replacement_reference is None
+                             and authorization.project_reference._closed is False)
+                            or (
+                                replacement_reference is not None
+                                and type(replacement_reference)
+                                    is WindowsProjectJsonReferenceCharacterization
+                                and authorization.project_reference._closed is True
+                                and replacement_reference._closed is False
+                                and os.path.normcase(os.path.abspath(os.fspath(
+                                    replacement_reference._path,
+                                ))) == os.path.normcase(os.path.abspath(
+                                    authorization.project_path,
+                                ))
+                            )
+                        )
+                    )
+
+    def _abort_profile_a_project_save_before_write(self, authorization):
+        """Forget only an exact claim that is still provably before disk I/O."""
+        if type(authorization) is not _ProfileAProjectSaveAuthorization:
+            return False
+        with self._lock:
+            if (self._profile_a_project_save_authorization is not authorization
+                    or self._profile_a_project_save_marker is not authorization.marker
+                    or self._profile_a_project_save_state != "claim_in_progress"
+                    or authorization.attempt.profile_a_project_save_state != "claim_in_progress"):
+                return False
+            self._profile_a_project_save_state = "not_started"
+            self._profile_a_project_save_marker = None
+            self._profile_a_project_save_authorization = None
+            self._profile_a_project_save_locator = None
+            self._profile_a_project_save_callback_outcome = "not_attempted"
+            authorization.attempt.profile_a_project_save_state = "not_started"
+            authorization.attempt.profile_a_project_save_marker = None
+            authorization.attempt.profile_a_project_save_authorization = None
+            authorization.attempt.profile_a_project_save_callback_outcome = "not_attempted"
+            authorization.attempt.profile_a_project_save_observation = None
+            return True
+
+    def _complete_profile_a_project_save(self, authorization, outcome, callback_outcome):
+        """Retain exact terminal status; revocation can only downgrade to uncertain."""
+        if type(authorization) is not _ProfileAProjectSaveAuthorization:
+            return None, "profile_a_project_save_uncertain"
+        if outcome not in {"saved", "save_failed", "save_uncertain", "save_not_authorized"}:
+            outcome = "save_uncertain"
+        with self._lock:
+            if (self._profile_a_project_save_authorization is not authorization
+                    or self._profile_a_project_save_marker is not authorization.marker):
+                return None, "profile_a_project_save_uncertain"
+            attempt = authorization.attempt
+            attempt.profile_a_project_save_callback_outcome = callback_outcome
+            self._profile_a_project_save_callback_outcome = callback_outcome
+            if (self._profile_a_project_save_state not in {"claim_in_progress", "saving"}
+                    or attempt.profile_a_project_save_state not in {"claim_in_progress", "saving"}):
+                outcome = "save_uncertain"
+            if outcome == "saved":
+                state, public = "saved", "profile_a_project_saved"
+            elif outcome == "save_failed":
+                state, public = "save_failed", "profile_a_project_save_failed"
+            elif outcome == "save_not_authorized":
+                state, public = "not_authorized", "profile_a_project_save_not_authorized"
+            else:
+                state, public = "retained_uncertain", "profile_a_project_save_uncertain"
+            self._profile_a_project_save_state = state
+            attempt.profile_a_project_save_state = state
+            registered_count = sum(
+                item.protected_candidate_publication_receipt.registered_count
+                for item in self._storage_preadmission_attempts.values()
+                if item.protected_candidate_publication_receipt is not None
+                and item.protected_candidate_publication_state == "observed"
+                and item.protected_candidate_publication_receipt.registration_state == "registered"
+            )
+            observation = GenerationWorkerProtectedProjectSaveObservation(
+                public, len(authorization.origin.envelope.manifest.requests),
+                registered_count, state,
+            )
+            self._profile_a_project_save_observation = observation
+            attempt.profile_a_project_save_observation = observation
+            return observation, public
 
     def _begin_profile_a_candidate_publication_locked(self, lifecycle, locator):
         """Claim one exact G-F locator while original Host/Job/Inbox gates are held."""
@@ -3639,10 +3951,11 @@ class OriginalHostWorkerStorageIntegration:
                                         return None, "protected_outputs_ready_event_uncertain"
                                     if accepted_event == "accepted":
                                         marker.observation = result
-                                        if self._profile_a_remote_outputs_ready_event_is_current_locked(
+                                        current_event_state = self._profile_a_remote_outputs_ready_event_is_current_locked(
                                                 lifecycle, attempt, captured["remote_marker"],
                                                 outputs_marker=marker,
-                                        ):
+                                        )
+                                        if current_event_state:
                                             marker.state = "events_accepted"
                                             return result, result.status
                                         marker.observation = None
@@ -5033,6 +5346,14 @@ class OriginalHostWorkerStorageIntegration:
                     self._active = None
                     self._state = "uncertain"
                 worker = self._worker
+            if self._profile_a_project_save_state in {"claim_in_progress", "saving"}:
+                # The app callback may already be about to replace the JSON.
+                # Retain the one-shot save as uncertain; never reset it or
+                # permit a second writer call after Host revocation.
+                self._profile_a_project_save_state = "retained_uncertain"
+                if self._profile_a_project_save_authorization is not None:
+                    save_attempt = self._profile_a_project_save_authorization.attempt
+                    save_attempt.profile_a_project_save_state = "retained_uncertain"
             # A pre-admission has never produced a write token. It is safe to
             # release only its exact still-reserved capacity token. If native
             # owner close/invalidation wins, that owner retains the estimate

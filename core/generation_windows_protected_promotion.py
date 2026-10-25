@@ -64,6 +64,11 @@ class _PromotionEventBoundary:
                 self._active_thread = None
                 self._condition.notify_all()
 
+    def is_current(self, token):
+        with self._condition:
+            return (not self._revoked and self._active
+                    and token is self._active_token)
+
     def revoke(self):
         with self._condition:
             if self._active and self._active_thread == threading.get_ident():
@@ -874,6 +879,16 @@ class ProtectedDurablePromotionCharacterization:
 
     def finish_project_save_for_characterization(self, token):
         self._project_save_boundary.finish(token)
+
+    def project_save_lease_current_for_characterization(self, receipt, token):
+        """Check the exact save lease without doing native image verification."""
+        if type(receipt) is not VerifiedProtectedPromotionReceipt:
+            return False
+        with self._lock:
+            return bool(not self._closed and not self._revoking
+                        and self._receipt is receipt
+                        and receipt._promotion_owner is self
+                        and self._project_save_boundary.is_current(token))
 
     def _revoke_candidate_publication_for_characterization(self):
         self._candidate_publication_boundary.revoke()

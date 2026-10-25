@@ -2380,3 +2380,35 @@ are not copied, adopted or cleaned up by this step. Project JSON save,
 restart/recovery, retention/discard policy and production root provisioning
 remain separate gates. All capability flags remain false and
 `authorship=unverified`.
+
+## C2B-8D-19G-H read-only Project reference across the app JSON writer
+
+The Profile A Project JSON reference remains a pinned, read-only native handle
+through normal readiness and freshness checks. The selected file is still
+required to be an ordinary in-scope NTFS JSON file with the original observed
+ACL, path and revision. The existing atomic `os.replace` writer cannot replace
+the file while this reference is open, so 19G-H permits a narrow, exact
+Host-owned close/reopen sequence after the one-shot save claim and all
+pre-write checks have succeeded.
+
+The close is bound to the private save authorization issued by the original
+Host integration, Publication owner, lifecycle and capacity owner. It is not
+available as a public method for arbitrary callers or destinations. The exact
+app callback executes once with the already-bound Project object and path. The
+reference is then reopened only for that same path, and the owner rechecks NTFS,
+ACL, no-reparse/path identity and the newly observed file identity/revision.
+An identity change is expected after successful atomic replacement; the new
+identity is adopted only for this live one-shot save and is never treated as
+cryptographic authorship or as restart authority. If reopen or any post-write
+check is uncertain, the save evidence remains `retained_uncertain` and the
+callback cannot be retried.
+
+No existing ACL or directory is modified, and no Project writer was added.
+The underlying callback remains the established `app.py` writer and
+`core.io.save_project_to_json`. The selected Project reference still reports
+`project_save_allowed=false`; it observes identity and protection but does not
+grant filesystem write capability. This characterization does not establish
+power-loss durability, cross-process serialization outside the held Profile A
+scope lease, restart recovery, author authentication or production save
+authorization. All production capability flags remain false and
+`authorship=unverified`.

@@ -51,7 +51,8 @@ def app_nodes():
              "_get_persistent_line_candidates", "_append_persistent_line_candidates",
              "_sync_line_generated_candidates_to_session", "_line_candidate_key",
              "save_agent_scene_module_swap_project",
-             "publish_profile_a_generation_candidates_for_characterization"}
+              "publish_profile_a_generation_candidates_for_characterization",
+             "save_profile_a_generation_project_for_characterization"}
     nodes = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(nodes) == len(names)
     return nodes

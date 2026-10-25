@@ -246,6 +246,7 @@ class OriginalHostGenerationLifecycle:
         self._reason = None
         self._lock = threading.Lock()
         self._active_observations = 0
+        self._project_save_tokens = set()
         self._close_requested = False
         self._worker_observations = deque(maxlen=_MAX_OBSERVATIONS)
         self._dependencies = _empty_dependencies()
@@ -486,6 +487,44 @@ class OriginalHostGenerationLifecycle:
             if integration is not None:
                 integration.revoke("host_evidence_unavailable")
         return outcome
+
+    def _begin_profile_a_project_save_for_characterization(
+            self, integration, project, project_path):
+        """Retain exact original-Host references across one bounded save call."""
+        with self._lock:
+            return self._begin_profile_a_project_save_locked(
+                integration, project, project_path,
+            )
+
+    def _begin_profile_a_project_save_locked(self, integration, project, project_path):
+        """Locked form used at the original-Host save claim boundary."""
+        if (self._state != "bound_non_executing"
+                or self._worker_storage_integration is not integration
+                or self._runtime_ref() is None
+                or self._project_ref() is not project
+                or type(project_path) is not str
+                or project_path != self._project_path
+                or self._close_requested):
+            return None
+        token = object()
+        self._project_save_tokens.add(token)
+        self._active_observations += 1
+        return token
+
+    def _finish_profile_a_project_save_for_characterization(self, token):
+        """Release one exact Host reference lease after its save classification."""
+        if token is None:
+            return False
+        with self._lock:
+            if token not in self._project_save_tokens:
+                return False
+            self._project_save_tokens.remove(token)
+            self._active_observations -= 1
+            if self._active_observations == 0 and self._close_requested:
+                if self._state == "revocation_requested":
+                    self._state = "closed"
+                self._release_live_references_locked()
+            return True
 
     def worker_correlation_for_characterization(self):
         """Return bounded correlation only; not a worker task or capability."""

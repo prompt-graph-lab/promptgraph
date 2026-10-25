@@ -52,6 +52,9 @@ _UNRESOLVED_PROFILE_A_REMOTE_OUTPUT_EVENT_STATES = frozenset({
 _UNRESOLVED_PROFILE_A_OUTPUTS_READY_EVENT_STATES = frozenset({
     "claim_in_progress", "event_acceptance_in_progress", "retained_uncertain",
 })
+_UNRESOLVED_PROFILE_A_PROJECT_SAVE_STATES = frozenset({
+    "claim_in_progress", "saving", "retained_uncertain",
+})
 
 # Successful captures leave a process-local claim until process exit, even
 # after close/invalidation, so uncertain reservations cannot be forgotten by
@@ -87,6 +90,10 @@ class _CapacityPublicationBoundary:
                 del self._active[token]
                 self._condition.notify_all()
 
+    def is_current(self, token):
+        with self._condition:
+            return not self._revoked and token in self._active
+
     def ensure_revocation_not_reentrant(self):
         with self._condition:
             if threading.get_ident() in self._active.values():
@@ -111,6 +118,12 @@ def _profile_a_promotion_is_unresolved(attempt):
             in _UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES
         or getattr(attempt, "protected_candidate_admission_state", None)
             in _UNRESOLVED_PROFILE_A_CANDIDATE_ADMISSION_STATES
+    )
+
+
+def _profile_a_project_save_is_unresolved(attempt):
+    return getattr(attempt, "profile_a_project_save_state", None) in (
+        _UNRESOLVED_PROFILE_A_PROJECT_SAVE_STATES
     )
 
 
@@ -1184,6 +1197,8 @@ class WindowsProtectedStorageAdmissionCharacterization:
         self._invalid = False
         self._candidate_publication_revoking = False
         self._candidate_publication_boundary = _CapacityPublicationBoundary()
+        self._project_save_revoking = False
+        self._project_save_boundary = _CapacityPublicationBoundary()
         # Retain associated lifecycles strongly so a retired runtime cannot
         # make a late Worker uncertainty invisible to lease-release checks.
         self._host_lifecycle_refs = []
@@ -2918,15 +2933,36 @@ class WindowsProtectedStorageAdmissionCharacterization:
     def _finish_profile_a_candidate_publication_for_characterization(self, token):
         self._candidate_publication_boundary.finish(token)
 
+    def _begin_profile_a_project_save_for_characterization(
+            self, *, expected_scope_identity, expected_promoted_root):
+        """Lease the exact Profile A scope across one bounded Project save."""
+        with self._lock:
+            lease = self._scope_lease
+            roots = self._roots
+            if (self._profile_a_root_set is not True
+                    or self._closed or self._invalid or self._project_save_revoking
+                    or self._scope_identity != expected_scope_identity
+                    or type(roots) is not dict
+                    or roots.get("promoted_assets") is not expected_promoted_root
+                    or lease is None or lease._state != "held"):
+                _fail("profile_a_storage_unavailable")
+            return self._project_save_boundary.begin()
+
+    def _finish_profile_a_project_save_for_characterization(self, token):
+        self._project_save_boundary.finish(token)
+
     def close(self):
         with self._lock:
             if self._closed:
                 return
             self._candidate_publication_boundary.ensure_revocation_not_reentrant()
+            self._project_save_boundary.ensure_revocation_not_reentrant()
             self._candidate_publication_revoking = True
+            self._project_save_revoking = True
         # Do not hold the storage-owner lock while the bounded host Gallery
-        # appender completes. No later commit can start after this point.
+        # appender or save callback completes. No later operation can start.
         self._candidate_publication_boundary.revoke()
+        self._project_save_boundary.revoke()
         with self._lock:
             if self._closed:
                 return
@@ -2967,6 +3003,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                             "in_progress", "retained_uncertain",
                         }
                         or _profile_a_promotion_is_unresolved(attempt)
+                        or _profile_a_project_save_is_unresolved(attempt)
                         for attempt in integration._storage_preadmission_attempts.values()
                     ) or _profile_a_executor_event_is_unresolved(integration)
                     if integration._uncertain_leases:
@@ -3025,6 +3062,7 @@ class WindowsProtectedStorageAdmissionCharacterization:
                                 "in_progress", "retained_uncertain",
                             }
                             or _profile_a_promotion_is_unresolved(attempt)
+                            or _profile_a_project_save_is_unresolved(attempt)
                             for attempt in integration._storage_preadmission_attempts.values()
                         )
                         or _profile_a_executor_event_is_unresolved(integration)
@@ -3198,9 +3236,12 @@ class WindowsProtectedStorageAdmissionCharacterization:
 
     def _invalidate(self):
         self._candidate_publication_boundary.ensure_revocation_not_reentrant()
+        self._project_save_boundary.ensure_revocation_not_reentrant()
         self._candidate_publication_revoking = True
+        self._project_save_revoking = True
         self._ledger.close()
         self._invalid = True
         # An already-entered in-memory Candidate commit is ordered before this
         # invalidation; no later commit may enter or outlive the barrier.
         self._candidate_publication_boundary.revoke()
+        self._project_save_boundary.revoke()

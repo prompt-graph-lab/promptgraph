@@ -1330,7 +1330,7 @@ def save_agent_scene_module_swap_project(project, project_path: str, reason: str
         if (st.session_state.get("project") is project
                 and type(current_path) is str
                 and current_path == project_path):
-            st.session_state.autosave_feedback = (
+            st.session_state["autosave_feedback"] = (
                 "Agent Scene Module Swap applied; autosave failed. Save manually."
             )
         return False
@@ -8853,6 +8853,21 @@ def publish_profile_a_generation_candidates_for_characterization(locator):
     runtime = _PROJECT_AGENT_SESSION_RUNTIME
     state = st.session_state
     return runtime._publish_profile_a_generation_candidates_for_characterization(
+        locator, state=state,
+        characterization=True, disposable_opt_in=True,
+    )
+
+
+def save_profile_a_generation_project_for_characterization(locator):
+    """Save one exact Profile A Gallery result through the normal app writer.
+
+    This is an offline characterization entrypoint only. It accepts the
+    count-only locator issued by the original-host Candidate publication
+    owner and does not expose a caller-selected Project, path or callback.
+    """
+    runtime = _PROJECT_AGENT_SESSION_RUNTIME
+    state = st.session_state
+    return runtime._save_profile_a_generation_project_for_characterization(
         locator, state=state,
         characterization=True, disposable_opt_in=True,
     )
