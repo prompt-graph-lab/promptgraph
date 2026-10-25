@@ -64,6 +64,10 @@ class ProjectAgentSessionRuntime:
     # The exact live session mapping used to bind original-host inspection
     # owners. Kept private and never passed to the Worker.
     _generation_host_state: object = field(default=None, init=False, repr=False)
+    # Exact app.py callback identities captured from its executing host wrapper.
+    _generation_profile_a_host_callback_binding: object = field(
+        default=None, init=False, repr=False,
+    )
     _generation_candidate_publication: object = field(default=None, init=False, repr=False)
     _generation_protected_candidate_admission: object = field(default=None, init=False, repr=False)
     # Non-executing, exact original-host binding; never sent to a worker.
@@ -127,6 +131,7 @@ class ProjectAgentSessionRuntime:
     def _retire_generation_original_host_lifecycle_locked(self, reason):
         lifecycle = self._generation_original_host_lifecycle
         self._generation_original_host_lifecycle = None
+        self._generation_profile_a_host_callback_binding = None
         if lifecycle is not None:
             self._generation_host_state = None
             integration = lifecycle._worker_storage_integration
@@ -2811,7 +2816,7 @@ class ProjectAgentSessionRuntime:
             return None, "protected_candidate_admission_uncertain"
 
     def _publish_profile_a_generation_candidates_for_characterization(
-            self, locator, *, state, callback_bundle,
+            self, locator, *, state,
             characterization=False, disposable_opt_in=False):
         """Use the existing Gallery publisher for one exact genuine G-F result."""
         from core.generation_storage_admission import (
@@ -2819,7 +2824,7 @@ class ProjectAgentSessionRuntime:
         )
         from ui.agent_generation_candidate_publication import (
             GenerationCandidatePublication,
-            _profile_a_host_gallery_callbacks_are_valid,
+            _profile_a_host_gallery_callbacks_for_current_app_run,
         )
         from ui.agent_generation_original_host_lifecycle import OriginalHostGenerationLifecycle
         from ui.agent_generation_original_host_worker_storage import (
@@ -2860,7 +2865,8 @@ class ProjectAgentSessionRuntime:
             )
             if previous_status is not None:
                 return previous, previous_status
-        if not _profile_a_host_gallery_callbacks_are_valid(callback_bundle, self, state):
+        callback_bundle = _profile_a_host_gallery_callbacks_for_current_app_run(self, state)
+        if callback_bundle is None:
             return None, "protected_candidate_publication_callbacks_unavailable"
         if (type(lifecycle_snapshot) is not OriginalHostGenerationLifecycle
                 or type(integration) is not OriginalHostWorkerStorageIntegration
@@ -4210,6 +4216,7 @@ class ProjectAgentSessionRuntime:
                 return
             self._closed = True
             self._clear_executable_review_locked()
+            self._generation_profile_a_host_callback_binding = None
             lifecycle = self._generation_original_host_lifecycle
             self._generation_original_host_lifecycle = None
             self._generation_original_host_lifecycle_reason = "runtime_closed"

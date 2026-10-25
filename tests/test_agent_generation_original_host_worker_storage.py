@@ -3615,14 +3615,26 @@ def test_profile_a_genuine_candidate_admission_uses_existing_gallery_writer_with
         fake_callback_calls.append("save")
         return True
 
+    from ui.agent_generation_candidate_publication import (
+        _profile_a_host_gallery_callbacks_for_current_app_run,
+    )
+
+    # The old generic issuer no longer exists. The current host capture path
+    # accepts no callback arguments and only succeeds while called by the
+    # actual app.py entrypoint, so same-named functions cannot mint a bundle.
     with pytest.raises(TypeError):
-        runtime._publish_profile_a_generation_candidates_for_characterization(
-            admission, state=state,
+        _profile_a_host_gallery_callbacks_for_current_app_run(
+            runtime, state,
             candidate_factory=_make_generated_candidate_record,
             candidate_appender=_append_line_generated_candidates,
             save_project=save_agent_scene_module_swap_project,
-            characterization=True, disposable_opt_in=True,
         )
+    refused, refusal_status = runtime._publish_profile_a_generation_candidates_for_characterization(
+        admission, state=state,
+        characterization=True, disposable_opt_in=True,
+    )
+    assert refused is None
+    assert refusal_status == "protected_candidate_publication_callbacks_unavailable"
     assert fake_callback_calls == []
     assert runtime._generation_candidate_publication is None
     assert attempt.protected_candidate_publication_state == "not_started"

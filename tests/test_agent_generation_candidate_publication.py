@@ -59,11 +59,12 @@ def app_nodes():
 
 def app_owners(state):
     """Compile the actual existing app owners, without running its UI."""
+    app_path = (Path(__file__).resolve().parents[1] / "app.py").resolve()
     namespace = dict(st=SimpleNamespace(session_state=state), datetime=datetime, timezone=timezone,
         _normalize_candidate_path=_normalize_candidate_path, _normalize_candidate_record=_normalize_candidate_record,
         _normalize_candidate_records=_normalize_candidate_records, _candidate_path=_candidate_path,
         save_project_to_json=save_project_to_json, ensure_project_folder_layout=lambda path: None)
-    exec(compile(ast.Module(body=app_nodes(), type_ignores=[]), "app.py", "exec"), namespace)
+    exec(compile(ast.Module(body=app_nodes(), type_ignores=[]), str(app_path), "exec"), namespace)
     return namespace
 
 

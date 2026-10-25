@@ -8850,20 +8850,10 @@ def publish_profile_a_generation_candidates_for_characterization(locator):
     supplies its existing Candidate factory/appender and inert save callback;
     the function is not wired to UI, Worker, MCP or production Start.
     """
-    from ui.agent_generation_candidate_publication import (
-        _issue_profile_a_host_gallery_callbacks_for_app,
-    )
-
     runtime = _PROJECT_AGENT_SESSION_RUNTIME
     state = st.session_state
-    callback_bundle = _issue_profile_a_host_gallery_callbacks_for_app(
-        runtime, state,
-        candidate_factory=_make_generated_candidate_record,
-        candidate_appender=_append_line_generated_candidates,
-        save_project=save_agent_scene_module_swap_project,
-    )
     return runtime._publish_profile_a_generation_candidates_for_characterization(
-        locator, state=state, callback_bundle=callback_bundle,
+        locator, state=state,
         characterization=True, disposable_opt_in=True,
     )
 

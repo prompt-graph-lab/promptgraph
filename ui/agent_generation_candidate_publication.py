@@ -10,7 +10,9 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import sys
 import threading
+from types import FunctionType
 
 from core.candidate_record_normalization import _normalize_candidate_records
 from core.gallery_generation import ingest_gallery_generation_outputs, resolve_gallery_generation_result_target
@@ -34,50 +36,92 @@ class PublicationReceipt:
     registered_count: int = 0
 
 
-_PROFILE_A_HOST_CALLBACK_ISSUER = object()
-
-
 @dataclass(frozen=True)
 class _ProfileAHostGalleryCallbacks:
-    """Opaque, app-issued references to the existing Gallery owners."""
+    """Current app-run references captured from the executing host wrapper."""
 
     runtime: object
     state: object
+    app_namespace: object
+    app_entrypoint: object
     candidate_factory: object
     candidate_appender: object
     save_project: object
-    _issuer: object
 
 
-def _issue_profile_a_host_gallery_callbacks_for_app(
-        runtime, state, *, candidate_factory, candidate_appender, save_project):
-    """Bind the fixed app-wrapper callbacks into an opaque host bundle.
+def _profile_a_host_gallery_callbacks_for_current_app_run(runtime, state):
+    """Capture callbacks only from the actual app wrapper on the call stack.
 
-    Only the app-facing entry point calls this helper, with its lexical app
-    owners. Runtime publication accepts the resulting exact bundle, never a
-    caller-selected callback trio or a name-based substitute.
+    The callback values are read from the globals of the executing app.py
+    entrypoint, never from caller-supplied arguments or an issuer API that can
+    stamp arbitrary callables. Direct characterization callers therefore
+    cannot manufacture an app callback binding.
     """
-    if (type(runtime) is not ProjectAgentSessionRuntime
-            or state is None
-            or not all(callable(callback) for callback in
-                       (candidate_factory, candidate_appender, save_project))):
-        raise ValueError("profile_a_host_callback_binding_required")
-    return _ProfileAHostGalleryCallbacks(
-        runtime, state, candidate_factory, candidate_appender, save_project,
-        _PROFILE_A_HOST_CALLBACK_ISSUER,
-    )
+    app_frame = None
+    try:
+        if type(runtime) is not ProjectAgentSessionRuntime or state is None:
+            return None
+        # This helper is called by the runtime publisher: frame 1 is that
+        # method, frame 2 must be the app's fixed characterization wrapper.
+        app_frame = sys._getframe(2)
+        expected_app_path = (Path(__file__).resolve().parents[1] / "app.py")
+        expected_app_path = os.path.normcase(os.path.realpath(expected_app_path))
+        if os.path.normcase(os.path.realpath(app_frame.f_code.co_filename)) != expected_app_path:
+            return None
+        namespace = app_frame.f_globals
+        entrypoint = namespace.get("publish_profile_a_generation_candidates_for_characterization")
+        if (type(entrypoint) is not FunctionType
+                or entrypoint.__code__ is not app_frame.f_code
+                or entrypoint.__globals__ is not namespace):
+            return None
+        names = (
+            "_make_generated_candidate_record",
+            "_append_line_generated_candidates",
+            "save_agent_scene_module_swap_project",
+        )
+        callbacks = tuple(namespace.get(name) for name in names)
+        if any(
+                type(callback) is not FunctionType
+                or callback.__globals__ is not namespace
+                or os.path.normcase(os.path.realpath(callback.__code__.co_filename))
+                    != expected_app_path
+                for callback in callbacks):
+            return None
+        binding = _ProfileAHostGalleryCallbacks(
+            runtime, state, namespace, entrypoint, *callbacks,
+        )
+        # Publish this per-run identity under the runtime gate. A later host
+        # change/close clears it; reuse accepts only this exact object.
+        with runtime._publication_gate:
+            if runtime._closed or runtime._generation_host_state is not state:
+                return None
+            runtime._generation_profile_a_host_callback_binding = binding
+        return binding
+    except Exception:
+        return None
+    finally:
+        del app_frame
 
 
 def _profile_a_host_gallery_callbacks_are_valid(callbacks, runtime, state):
+    namespace = getattr(callbacks, "app_namespace", None)
+    entrypoint = getattr(callbacks, "app_entrypoint", None)
     return bool(
         type(callbacks) is _ProfileAHostGalleryCallbacks
-        and callbacks._issuer is _PROFILE_A_HOST_CALLBACK_ISSUER
+        and callbacks is getattr(runtime, "_generation_profile_a_host_callback_binding", None)
         and callbacks.runtime is runtime
         and callbacks.state is state
         and runtime._generation_host_state is state
+        and type(namespace) is dict
+        and type(entrypoint) is FunctionType
+        and namespace.get("publish_profile_a_generation_candidates_for_characterization")
+            is entrypoint
         and all(callable(callback) for callback in
                 (callbacks.candidate_factory, callbacks.candidate_appender,
                  callbacks.save_project))
+        and namespace.get("_make_generated_candidate_record") is callbacks.candidate_factory
+        and namespace.get("_append_line_generated_candidates") is callbacks.candidate_appender
+        and namespace.get("save_agent_scene_module_swap_project") is callbacks.save_project
     )
 
 
