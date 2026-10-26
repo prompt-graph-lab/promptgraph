@@ -69,7 +69,7 @@ def _fail(code):
 
 
 class _CapacityPublicationBoundary:
-    """Serialize bounded Gallery commits with capacity-owner revocation."""
+    """Serialize bounded Host publications with capacity-owner revocation."""
 
     def __init__(self):
         self._condition = threading.Condition()
@@ -106,6 +106,23 @@ class _CapacityPublicationBoundary:
             self._revoked = True
             while self._active:
                 self._condition.wait()
+
+    def revoke_or_defer(self):
+        """Revoke immediately and wait only when the caller owns no token.
+
+        Native refresh failure can be discovered by an operation that itself
+        holds a publication token. In that case the caller must observe the
+        revoked state and settle uncertain rather than waiting for itself.
+        Other callers may wait for active operations, but only after the
+        capacity owner lock and refresh slot have been released.
+        """
+        with self._condition:
+            self._revoked = True
+            if threading.get_ident() in self._active.values():
+                return False
+            while self._active:
+                self._condition.wait()
+            return True
 
 
 def _profile_a_promotion_is_unresolved(attempt):
@@ -3137,18 +3154,18 @@ class WindowsProtectedStorageAdmissionCharacterization:
             if str(error) == "storage_write_in_progress":
                 raise
             with self._lock:
-                self._invalidate()
+                self._mark_invalid_locked()
             _fail("protected_storage_observation_unavailable")
         except Exception:
             with self._lock:
-                self._invalidate()
+                self._mark_invalid_locked()
             _fail("protected_storage_observation_unavailable")
         with self._lock:
             self._require_live()
             try:
                 self._ledger.observe_inventory(inventory, free_bytes)
             except ValueError:
-                self._invalidate()
+                self._mark_invalid_locked()
                 raise
 
     def _refresh(self):
@@ -3157,6 +3174,25 @@ class WindowsProtectedStorageAdmissionCharacterization:
             self._refresh_observation()
         finally:
             self._release_refresh_slot(token)
+            with self._lock:
+                invalid = self._invalid
+            if invalid:
+                # Invalidation may drain active Host publications only after
+                # both the owner mutex and serialized native-refresh slot are
+                # released. A token-owning refresh thread defers its own drain.
+                self._drain_invalidated_publications()
+
+    def _mark_invalid_locked(self):
+        """Make all readiness fail closed without waiting for active work."""
+        self._invalid = True
+        self._candidate_publication_revoking = True
+        self._project_save_revoking = True
+        self._ledger.close()
+
+    def _drain_invalidated_publications(self):
+        """Drain invalidated Host work outside storage and refresh locks."""
+        self._candidate_publication_boundary.revoke_or_defer()
+        self._project_save_boundary.revoke_or_defer()
 
     def _check_roots(self):
         if self._closed or self._invalid:
@@ -3233,15 +3269,3 @@ class WindowsProtectedStorageAdmissionCharacterization:
             _fail("storage_owner_unavailable")
         if not self._capacity_policy_binding_matches():
             _fail("profile_a_capacity_policy_mismatch")
-
-    def _invalidate(self):
-        self._candidate_publication_boundary.ensure_revocation_not_reentrant()
-        self._project_save_boundary.ensure_revocation_not_reentrant()
-        self._candidate_publication_revoking = True
-        self._project_save_revoking = True
-        self._ledger.close()
-        self._invalid = True
-        # An already-entered in-memory Candidate commit is ordered before this
-        # invalidation; no later commit may enter or outlive the barrier.
-        self._candidate_publication_boundary.revoke()
-        self._project_save_boundary.revoke()

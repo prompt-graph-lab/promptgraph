@@ -2412,3 +2412,15 @@ power-loss durability, cross-process serialization outside the held Profile A
 scope lease, restart recovery, author authentication or production save
 authorization. All production capability flags remain false and
 `authorship=unverified`.
+
+If native root or inventory refresh fails during an active Host publication or
+save, the capacity owner marks itself invalid and closes accounting while
+holding its owner lock, but does not wait for active publication tokens there.
+It releases both the owner lock and serialized refresh slot before draining
+those tokens. A refresh failure detected by the token-owning thread revokes
+new admissions and defers its own drain instead of waiting for itself;
+`readiness()` then reports unavailable/unsafe native evidence, and an
+in-progress Project save settles as `save_uncertain`. The ordinary explicit
+`close()` still waits for admitted work after releasing the owner lock. This
+ordering prevents a refresh-slot/owner-lock/token cycle and prevents a failed
+same-thread native observation from being reported as `observed_unchanged`.

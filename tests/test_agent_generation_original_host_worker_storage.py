@@ -4240,6 +4240,184 @@ def test_profile_a_project_save_owner_close_during_writer_is_one_shot_uncertain(
         runtime.finish_generation_worker_storage_close_for_characterization()
 
 
+def test_profile_a_capacity_invalidation_during_save_does_not_deadlock_or_confirm_save(
+        native_profile_a_dual_custody_worker_storage, tmp_path, monkeypatch):
+    callback_entered = threading.Event()
+    continue_callback = threading.Event()
+    native_check_failed = threading.Event()
+    drain_started = threading.Event()
+    calls = []
+
+    def writer_hook_factory(original_writer, _runtime):
+        def write_then_pause(project, project_path):
+            calls.append("called")
+            original_writer(project, project_path)
+            callback_entered.set()
+            assert continue_callback.wait(5)
+            return True
+        return write_then_pause
+
+    runtime, lifecycle, writer, state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=writer_hook_factory,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    capacity = integration._capacity_owner
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    project = state["project"]
+    line = next(row for row in project.prompt_lines if row.id == "illustration-001")
+    candidate_count = len(line.generated_candidates)
+    history_count = len(state["history"])
+    publisher = runtime._generation_candidate_publication
+
+    def fail_native_root_check():
+        native_check_failed.set()
+        raise ValueError("native_root_changed")
+
+    save_boundary = capacity._project_save_boundary
+    original_drain = save_boundary.revoke_or_defer
+
+    def observed_drain():
+        drain_started.set()
+        return original_drain()
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        saving = pool.submit(
+            owners["save_profile_a_generation_project_for_characterization"], locator,
+        )
+        assert callback_entered.wait(5)
+        # Force a real readiness refresh failure only after the save has crossed
+        # the actual app writer boundary and is holding its capacity save lease.
+        monkeypatch.setattr(capacity, "_check_roots", fail_native_root_check)
+        monkeypatch.setattr(save_boundary, "revoke_or_defer", observed_drain)
+        invalidating = pool.submit(capacity.readiness)
+        assert native_check_failed.wait(5)
+        assert drain_started.wait(5)
+        assert not invalidating.done()
+
+        continue_callback.set()
+        observation, status = saving.result(timeout=10)
+        invalidated_readiness = invalidating.result(timeout=10)
+
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert publisher._save_state == "save_uncertain"
+        assert publisher._save_callback_outcome == "saved"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() != original_json
+        assert capacity._invalid is True
+        assert invalidated_readiness["native_root_identity"] == "unsafe_or_unavailable"
+        assert invalidated_readiness["filesystem"] == "unverified"
+        assert len(line.generated_candidates) == candidate_count
+        assert len(state["history"]) == history_count
+
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+
+        runtime.close()
+        capacity.close()
+        assert capacity._scope_lease.readiness()["status"] == "retained_uncertain"
+        assert Path(capacity._scope_lease._path).exists()
+    finally:
+        continue_callback.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        runtime.close()
+        capacity.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_save_thread_native_drift_readiness_is_unverified_and_uncertain(
+        native_profile_a_dual_custody_worker_storage, tmp_path, monkeypatch):
+    callback_returned = threading.Event()
+    native_check_failed = threading.Event()
+    calls = []
+
+    def writer_hook_factory(original_writer, _runtime):
+        def write_then_mark(project, project_path):
+            calls.append("called")
+            result = original_writer(project, project_path)
+            callback_returned.set()
+            return result
+        return write_then_mark
+
+    runtime, lifecycle, writer, state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=writer_hook_factory,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    capacity = integration._capacity_owner
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    project = state["project"]
+    line = next(row for row in project.prompt_lines if row.id == "illustration-001")
+    candidate_count = len(line.generated_candidates)
+    history_count = len(state["history"])
+    publisher = runtime._generation_candidate_publication
+    original_check = capacity._check_roots
+    original_readiness = capacity.readiness
+    post_callback_views = []
+
+    def fail_after_save_callback():
+        if callback_returned.is_set():
+            native_check_failed.set()
+            raise ValueError("native_root_changed")
+        return original_check()
+
+    def capture_readiness():
+        result = original_readiness()
+        if callback_returned.is_set():
+            post_callback_views.append(result)
+        return result
+
+    monkeypatch.setattr(capacity, "_check_roots", fail_after_save_callback)
+    monkeypatch.setattr(capacity, "readiness", capture_readiness)
+    try:
+        observation, status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert native_check_failed.is_set()
+        assert post_callback_views
+        assert all(view["native_root_identity"] == "unsafe_or_unavailable"
+                   and view["filesystem"] == "unverified"
+                   for view in post_callback_views)
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert publisher._save_state == "save_uncertain"
+        assert publisher._save_callback_outcome == "saved"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() != original_json
+        assert len(line.generated_candidates) == candidate_count
+        assert len(state["history"]) == history_count
+
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+
+        runtime.close()
+        capacity.close()
+        assert capacity._scope_lease.readiness()["status"] == "retained_uncertain"
+        assert Path(capacity._scope_lease._path).exists()
+    finally:
+        runtime.close()
+        capacity.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
 def test_profile_a_project_save_job_ack_loss_after_replace_is_uncertain_and_not_retried(
         native_profile_a_dual_custody_worker_storage, tmp_path, monkeypatch):
     calls = []
