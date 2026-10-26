@@ -7,6 +7,7 @@ may release its zero-byte coordination marker; existing roots, Projects and evid
 from contextlib import ExitStack
 import ctypes
 import hashlib
+import threading
 from ctypes import wintypes
 import sys
 import uuid
@@ -142,12 +143,18 @@ def _acl(handle, api, user):
     return tuple(snapshot)
 
 
-def _open(path, directory, api):
+def _open(path, directory, api, *, share_delete=False):
     _, c, f, _, n, _ = api
     # Metadata-only desired access does not establish the tested delete-sharing
     # fence. GENERIC_READ participates in sharing checks; no content is read.
+    sharing = c.FILE_SHARE_READ | c.FILE_SHARE_WRITE
+    if share_delete:
+        # DELETE sharing is recorded for compatibility with ordinary readers.
+        # The standard Project writer's os.replace still requires this pinned
+        # handle to be closed around its one atomic replacement.
+        sharing |= c.FILE_SHARE_DELETE
     handle = f.CreateFile(str(path), c.READ_CONTROL | c.GENERIC_READ,
-        c.FILE_SHARE_READ | c.FILE_SHARE_WRITE, None, c.OPEN_EXISTING,
+        sharing, None, c.OPEN_EXISTING,
         c.FILE_FLAG_BACKUP_SEMANTICS | 0x00200000, None)  # OPEN_REPARSE_POINT
     try:
         info = f.GetFileInformationByHandle(handle)
@@ -393,7 +400,7 @@ class WindowsProjectJsonReferenceCharacterization:
         if path.suffix.lower() != ".json":
             _fail("selected_json_required")
         api = _api()
-        handle = _open(path, False, api)
+        handle = _open(path, False, api, share_delete=True)
         try:
             filesystem = _filesystem(handle)
             identity = _identity(handle)
@@ -416,18 +423,117 @@ class WindowsProjectJsonReferenceCharacterization:
         self._identity, self._filesystem, self._acl, self._revision = identity, filesystem, acl, revision
         self._api = api
         self._closed = False
+        self._lock = threading.RLock()
+        self._replacement_authorization = None
+
+    def _profile_a_save_authorization_is_current(self, authorization):
+        from ui.agent_generation_original_host_worker_storage import (
+            _ProfileAProjectSaveAuthorization,
+        )
+
+        if (type(authorization) is not _ProfileAProjectSaveAuthorization
+                or authorization.project_reference is not self):
+            return False
+        integration = authorization.integration
+        lifecycle = authorization.lifecycle
+        publication = authorization.publication_owner
+        return bool(
+            integration._project_reference is self
+            and integration._profile_a_project_save_authorization is authorization
+            and integration._profile_a_project_save_marker is authorization.marker
+            and integration._profile_a_project_save_state in {"claim_in_progress", "saving"}
+            and lifecycle._state == "bound_non_executing"
+            and lifecycle._worker_storage_integration is integration
+            and lifecycle._profile_a_storage_binding is not None
+            and lifecycle._profile_a_storage_binding[0] is authorization.capacity_owner
+            and lifecycle._profile_a_storage_binding[1] is self
+            and publication._save_state == "saving"
+            and publication._busy is True
+        )
+
+    def close_for_profile_a_save_for_characterization(
+            self, authorization, *, characterization=False, disposable_opt_in=False):
+        """Close this exact read-only reference for its one authorized app save.
+
+        Windows denies ``os.replace`` while the selected Project handle is open.
+        This consumes no write authority; it only records a one-shot Host save
+        authorization before releasing the existing read-only handle.
+        """
+        if characterization is not True or disposable_opt_in is not True:
+            _fail("execution_unavailable")
+        if not self._profile_a_save_authorization_is_current(authorization):
+            _fail("profile_a_project_save_not_authorized")
+        with self._lock:
+            if self._closed or self._handle is None or self._replacement_authorization is not None:
+                _fail("project_reference_closed")
+            self._replacement_authorization = authorization
+            self._closed = True
+            handle, self._handle = self._handle, None
+        try:
+            handle.Close()
+        except Exception:
+            _fail("project_reference_close_uncertain")
+        return "closed_for_profile_a_save"
+
+    def reopen_after_profile_a_save_for_characterization(
+            self, authorization, *, characterization=False, disposable_opt_in=False):
+        """Re-pin the same selected path after the exact app-owned JSON writer.
+
+        The replacement must remain on the same NTFS path with the same
+        observed file ACL. File identity and revision are refreshed only for
+        this one save authorization; they are never treated as author proof.
+        """
+        if characterization is not True or disposable_opt_in is not True:
+            _fail("execution_unavailable")
+        with self._lock:
+            if (not self._closed or self._handle is not None
+                    or self._replacement_authorization is not authorization):
+                _fail("project_reference_reopen_not_authorized")
+            old_filesystem, old_acl = self._filesystem, self._acl
+        if not self._profile_a_save_authorization_is_current(authorization):
+            _fail("profile_a_project_save_invalidated")
+
+        handle = _open(self._path, False, self._api, share_delete=True)
+        try:
+            filesystem = _filesystem(handle)
+            identity = _identity(handle)
+            acl = _project_reference_acl(handle, self._api)
+            revision = _project_reference_revision(handle, self._api)
+            if (filesystem != old_filesystem or filesystem != "local_ntfs_observed"
+                    or acl != old_acl or identity != _ordinary(self._path, directory=False)
+                    or self._path.resolve() != self._path):
+                _fail("project_reference_replacement_changed")
+            if not self._profile_a_save_authorization_is_current(authorization):
+                _fail("profile_a_project_save_invalidated")
+            with self._lock:
+                if (not self._closed or self._handle is not None
+                        or self._replacement_authorization is not authorization):
+                    _fail("project_reference_reopen_not_authorized")
+                self._handle = handle
+                self._identity = identity
+                self._filesystem = filesystem
+                self._acl = acl
+                self._revision = revision
+                self._closed = False
+                self._replacement_authorization = None
+            handle = None
+            return "reopened_after_profile_a_save"
+        finally:
+            if handle is not None:
+                handle.Close()
 
     def _revalidate(self):
-        if self._closed or self._handle is None:
-            _fail("project_reference_closed")
-        if (_filesystem(self._handle) != "local_ntfs_observed"
-                or self._filesystem != "local_ntfs_observed"
-                or _identity(self._handle) != self._identity
-                or _ordinary(self._path, directory=False) != self._identity
-                or self._path.resolve() != self._path
-                or _project_reference_acl(self._handle, self._api) != self._acl
-                or _project_reference_revision(self._handle, self._api) != self._revision):
-            _fail("project_reference_changed")
+        with self._lock:
+            if self._closed or self._handle is None:
+                _fail("project_reference_closed")
+            if (_filesystem(self._handle) != "local_ntfs_observed"
+                    or self._filesystem != "local_ntfs_observed"
+                    or _identity(self._handle) != self._identity
+                    or _ordinary(self._path, directory=False) != self._identity
+                    or self._path.resolve() != self._path
+                    or _project_reference_acl(self._handle, self._api) != self._acl
+                    or _project_reference_revision(self._handle, self._api) != self._revision):
+                _fail("project_reference_changed")
 
     def readiness(self):
         try:
@@ -444,10 +550,11 @@ class WindowsProjectJsonReferenceCharacterization:
                 "project_save_allowed": False, "authorship": "unverified"}
 
     def close(self):
-        if self._closed:
-            return "closed"
-        self._closed = True
-        handle, self._handle = self._handle, None
+        with self._lock:
+            if self._closed:
+                return "closed"
+            self._closed = True
+            handle, self._handle = self._handle, None
         if handle is not None:
             handle.Close()
         return "closed"

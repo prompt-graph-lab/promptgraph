@@ -17,7 +17,9 @@ from types import FunctionType
 from core.candidate_record_normalization import _normalize_candidate_records
 from core.gallery_generation import ingest_gallery_generation_outputs, resolve_gallery_generation_result_target
 from core.generation_output_promotion import DurableGenerationAssets
-from core.io import _project_to_serializable_data
+from core.io import (
+    _project_to_serializable_data, load_project_from_json, resolve_project_asset_path,
+)
 from ui.agent_generation_executor_inbox import ExecutionEnvelope, ExecutorEvent, OutputReceipt
 from ui.agent_generation_executor_handoff import GenerationPublicationOrigin
 from ui.agent_generation_job import JobRequest, WorkerEvent, _PROCESS_INCARNATION
@@ -44,32 +46,55 @@ class _ProfileAHostGalleryCallbacks:
     state: object
     app_namespace: object
     app_entrypoint: object
+    app_entrypoint_name: str
     candidate_factory: object
     candidate_appender: object
     save_project: object
 
 
 def _profile_a_host_gallery_callbacks_for_current_app_run(runtime, state):
-    """Capture callbacks only from the actual app wrapper on the call stack.
+    """Capture callbacks only from the actual Gallery wrapper on the call stack.
 
     The callback values are read from the globals of the executing app.py
     entrypoint, never from caller-supplied arguments or an issuer API that can
     stamp arbitrary callables. Direct characterization callers therefore
     cannot manufacture an app callback binding.
     """
-    app_frame = None
+    return _profile_a_host_callbacks_for_current_app_run(
+        runtime, state, "publish_profile_a_generation_candidates_for_characterization",
+        app_frame=sys._getframe(2),
+    )
+
+
+def _profile_a_host_project_save_callbacks_for_current_app_run(runtime, state):
+    """Capture the existing app Project writer from its fixed save wrapper."""
+    return _profile_a_host_callbacks_for_current_app_run(
+        runtime, state, "save_profile_a_generation_project_for_characterization",
+        app_frame=sys._getframe(2),
+    )
+
+
+def _profile_a_host_callbacks_for_current_app_run(
+        runtime, state, app_entrypoint_name, *, app_frame=None):
+    """Capture app-owned callbacks only from an exact fixed app.py frame."""
     try:
-        if type(runtime) is not ProjectAgentSessionRuntime or state is None:
+        if (type(runtime) is not ProjectAgentSessionRuntime or state is None
+                or app_entrypoint_name not in {
+                    "publish_profile_a_generation_candidates_for_characterization",
+                    "save_profile_a_generation_project_for_characterization",
+                }):
             return None
-        # This helper is called by the runtime publisher: frame 1 is that
-        # method, frame 2 must be the app's fixed characterization wrapper.
-        app_frame = sys._getframe(2)
+        # The thin route helper captures its caller before delegating here.
+        # This prevents a changed helper stack from mistaking runtime code or
+        # a same-named test function for the actual app entrypoint.
+        if app_frame is None:
+            return None
         expected_app_path = (Path(__file__).resolve().parents[1] / "app.py")
         expected_app_path = os.path.normcase(os.path.realpath(expected_app_path))
         if os.path.normcase(os.path.realpath(app_frame.f_code.co_filename)) != expected_app_path:
             return None
         namespace = app_frame.f_globals
-        entrypoint = namespace.get("publish_profile_a_generation_candidates_for_characterization")
+        entrypoint = namespace.get(app_entrypoint_name)
         if (type(entrypoint) is not FunctionType
                 or entrypoint.__code__ is not app_frame.f_code
                 or entrypoint.__globals__ is not namespace):
@@ -88,7 +113,7 @@ def _profile_a_host_gallery_callbacks_for_current_app_run(runtime, state):
                 for callback in callbacks):
             return None
         binding = _ProfileAHostGalleryCallbacks(
-            runtime, state, namespace, entrypoint, *callbacks,
+            runtime, state, namespace, entrypoint, app_entrypoint_name, *callbacks,
         )
         # Publish this per-run identity under the runtime gate. A later host
         # change/close clears it; reuse accepts only this exact object.
@@ -100,7 +125,7 @@ def _profile_a_host_gallery_callbacks_for_current_app_run(runtime, state):
     except Exception:
         return None
     finally:
-        del app_frame
+        app_frame = None
 
 
 def _profile_a_host_gallery_callbacks_are_valid(callbacks, runtime, state):
@@ -114,8 +139,7 @@ def _profile_a_host_gallery_callbacks_are_valid(callbacks, runtime, state):
         and runtime._generation_host_state is state
         and type(namespace) is dict
         and type(entrypoint) is FunctionType
-        and namespace.get("publish_profile_a_generation_candidates_for_characterization")
-            is entrypoint
+        and namespace.get(callbacks.app_entrypoint_name) is entrypoint
         and all(callable(callback) for callback in
                 (callbacks.candidate_factory, callbacks.candidate_appender,
                  callbacks.save_project))
@@ -458,6 +482,112 @@ class GenerationCandidatePublication:
             self._save = callback_bundle.save_project
             self._profile_a_callback_bundle = callback_bundle
             return True
+
+    def _begin_profile_a_project_save_for_characterization(
+            self, authorization, callback_bundle):
+        """Claim the single Profile A save only from an integration-issued proof."""
+        from ui.agent_generation_original_host_worker_storage import (
+            _ProfileAProjectSaveAuthorization,
+        )
+
+        if (self._mode != "profile_a_protected"
+                or type(authorization) is not _ProfileAProjectSaveAuthorization
+                or authorization.publication_owner is not self
+                or authorization.integration._profile_a_project_save_authorization
+                    is not authorization
+                or not _profile_a_host_gallery_callbacks_are_valid(
+                    callback_bundle, self._runtime, self._state,
+                )):
+            return "save_not_authorized"
+        with self._lock:
+            previous_bundle = self._profile_a_callback_bundle
+            if (self._busy or self._save_state != "not_attempted"
+                    or type(previous_bundle) is not _ProfileAHostGalleryCallbacks
+                    or callback_bundle.candidate_factory is not previous_bundle.candidate_factory
+                    or callback_bundle.candidate_appender is not previous_bundle.candidate_appender
+                    or callback_bundle.save_project is not previous_bundle.save_project
+                    or self._factory is not previous_bundle.candidate_factory
+                    or self._appender is not previous_bundle.candidate_appender
+                    or self._save is not previous_bundle.save_project):
+                return "save_not_authorized"
+            self._profile_a_callback_bundle = callback_bundle
+            self._save_state = "saving"
+            self._busy = True
+            return "saving"
+
+    def _finish_profile_a_project_save_for_characterization(
+            self, authorization, outcome, callback_outcome):
+        from ui.agent_generation_original_host_worker_storage import (
+            _ProfileAProjectSaveAuthorization,
+        )
+
+        if (type(authorization) is not _ProfileAProjectSaveAuthorization
+                or authorization.publication_owner is not self
+                or outcome not in {"saved", "save_failed", "save_uncertain", "save_not_authorized"}):
+            return False
+        with self._lock:
+            if not self._busy or self._save_state != "saving":
+                return False
+            self._save_callback_outcome = callback_outcome
+            self._save_state = outcome
+            self._busy = False
+            return True
+
+    def _abort_profile_a_project_save_before_write_for_characterization(self, authorization):
+        """Release only a proven pre-write refusal; never reset a possible save."""
+        from ui.agent_generation_original_host_worker_storage import (
+            _ProfileAProjectSaveAuthorization,
+        )
+
+        if (type(authorization) is not _ProfileAProjectSaveAuthorization
+                or authorization.publication_owner is not self):
+            return False
+        with self._lock:
+            if not self._busy or self._save_state != "saving":
+                return False
+            self._save_state = "not_attempted"
+            self._busy = False
+            return True
+
+    def _profile_a_saved_candidate_paths_match(self, evidence, serialized_project):
+        """Bind reloaded Project-relative Candidate paths to exact Promotions."""
+        try:
+            lines = serialized_project.get("prompt_lines")
+            if type(lines) is not list:
+                return False
+            for index, (_admission, observation) in evidence.items():
+                request = self._envelope.manifest.requests[index]
+                promoted_paths = self._protected_candidate_paths(observation)
+                matches = [line for line in lines
+                           if type(line) is dict and line.get("id") == request.illustration_id
+                           and line.get("line_type") != "separator"]
+                if len(matches) != 1:
+                    return False
+                candidates = matches[0].get("generated_candidates")
+                if type(candidates) is not list:
+                    return False
+                rows = []
+                for candidate in candidates:
+                    provenance = candidate.get("generation_provenance") if type(candidate) is dict else None
+                    if (type(provenance) is dict
+                            and provenance.get("job_id") == self._envelope.job_id
+                            and provenance.get("request_id") == request.request_id
+                            and provenance.get("request_index") == index):
+                        rows.append(candidate)
+                if len(rows) != len(promoted_paths):
+                    return False
+                for candidate, promoted_path in zip(rows, promoted_paths):
+                    saved_path = candidate.get("path")
+                    if type(saved_path) is not str or not saved_path:
+                        return False
+                    resolved = resolve_project_asset_path(saved_path, self._origin.path)
+                    if (os.path.normcase(os.path.abspath(resolved))
+                            != os.path.normcase(os.path.abspath(promoted_path))
+                            or not os.path.isfile(resolved)):
+                        return False
+            return True
+        except Exception:
+            return False
 
     @contextmanager
     def _authority(self, index=None, remote=None, local=None, *, source=True, _gate_held=False):
@@ -885,6 +1015,82 @@ class GenerationCandidatePublication:
                 and admission_owner._receipt_binding(
                     observation._promotion_owner, observation._promotion_receipt,
                     observation._remote_receipt, index))
+
+    def _profile_a_registered_prefix_snapshot_for_characterization(
+            self, project, request_index):
+        """Return the exact Project state after a fully registered request prefix.
+
+        Profile A appends Candidates to the original Project before the next
+        sequential request can be published. The original review snapshot
+        remains immutable; this owner separately retains the exact expected
+        Project state advanced only by observed Candidate registration.
+        """
+        if (self._mode != "profile_a_protected"
+                or type(request_index) is not int
+                or not 0 <= request_index <= len(self._envelope.manifest.requests)
+                or project is not self._origin.project
+                or self._runtime._generation_publication_origin is not self._origin
+                or self._runtime._generation_candidate_publication is not self):
+            return None
+        with self._lock:
+            if self._busy or self._save_state != "not_attempted":
+                return None
+            expected = copy.deepcopy(self._expected)
+            records = dict(self._records)
+            evidence = dict(self._protected_evidence)
+            settled = dict(self._protected_settled_event_evidence)
+        try:
+            if project != expected:
+                return None
+        except Exception:
+            return None
+
+        jobs, inbox = self._runtime.generation_jobs, self._runtime._generation_executor_inbox
+        owned_observations = []
+        try:
+            with jobs._lock:
+                with inbox._lock:
+                    job = jobs._authorized_locked(
+                        self._envelope.job_id, self._envelope.claim_id,
+                    )
+                    if (jobs._closed or inbox._closed or inbox._state != "accepted"
+                            or inbox._envelope is not self._envelope
+                            or inbox._late_output_seen or job is None
+                            or job.binding != self._envelope.binding
+                            or len(job.request_states) != len(self._envelope.manifest.requests)):
+                        return None
+                    for index in range(request_index):
+                        request = self._envelope.manifest.requests[index]
+                        record = records.get(index)
+                        pair = evidence.get(index)
+                        if (job.request_states[index] != "completed"
+                                or job.outputs[index] <= 0
+                                or job.remote_outputs[index] != job.outputs[index]
+                                or job.registered[index] != job.outputs[index]
+                                or record is None
+                                or record.registration_state != "registered"
+                                or record.promotion_state != "protected_verified"
+                                or record.registered_count != job.registered[index]
+                                or type(pair) is not tuple or len(pair) != 2
+                                or settled.get(index) is None
+                                or job.requests[index].request_id != request.request_id
+                                or job.requests[index].illustration_id != request.illustration_id
+                                or job.requests[index].run_index != request.run_index
+                                or job.requests[index].workflow_identity != request.workflow_identity
+                                or not self._protected_save_event_current(
+                                    index, job, inbox, pair[1], settled[index],
+                                )):
+                            return None
+                        owned_observations.append(pair)
+        except Exception:
+            return None
+
+        for admission_owner, observation in owned_observations:
+            if (admission_owner is None
+                    or not self._protected_observation_is_owned(
+                        admission_owner, observation)):
+                return None
+        return expected
 
     @contextmanager
     def _profile_a_candidate_publication_guard(self):

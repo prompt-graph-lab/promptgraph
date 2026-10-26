@@ -2230,6 +2230,22 @@ class ProjectAgentSessionRuntime:
                     is not WindowsProtectedStorageAdmissionCharacterization):
             return None, "protected_outputs_ready_unavailable"
 
+        from ui.agent_generation_candidate_publication import GenerationCandidatePublication
+        publication_owner = getattr(self, "_generation_candidate_publication", None)
+        origin = getattr(self, "_generation_publication_origin", None)
+        if origin is None:
+            return None, "protected_outputs_ready_host_changed"
+        if origin.project == origin.source_snapshot:
+            project_state_snapshot = origin.source_snapshot
+        elif type(publication_owner) is GenerationCandidatePublication:
+            project_state_snapshot = publication_owner._profile_a_registered_prefix_snapshot_for_characterization(
+                origin.project, promotion_observation.request_index,
+            )
+        else:
+            project_state_snapshot = None
+        if project_state_snapshot is None:
+            return None, "protected_outputs_ready_host_changed"
+
         captured = {}
         with self._publication_gate:
             if (self._closed
@@ -2249,6 +2265,7 @@ class ProjectAgentSessionRuntime:
                             "lifecycle": lifecycle,
                             "project_reference": integration_snapshot._project_reference,
                             "pairing_generation": lifecycle._pairing_generation,
+                            "project_state_snapshot": project_state_snapshot,
                         })
                     return started, status
 
@@ -2304,7 +2321,7 @@ class ProjectAgentSessionRuntime:
             # reference are independent host observations, never authority
             # reconstructed from the remote event or Promotion receipt.
             if (captured["publication_origin"].project
-                    != captured["publication_origin"].source_snapshot
+                    != captured["project_state_snapshot"]
                     or not with_current_host(host_matches)):
                 raise ValueError("protected_outputs_ready_host_changed")
             project_view = captured["project_reference"].readiness()
@@ -2355,7 +2372,7 @@ class ProjectAgentSessionRuntime:
             writer._check()
             if (capacity._scan() != inventory
                     or captured["publication_origin"].project
-                        != captured["publication_origin"].source_snapshot
+                        != captured["project_state_snapshot"]
                     or captured["project_reference"].readiness().get("status")
                         != "read_only_reference_observed"
                     or not with_current_host(host_matches)):
@@ -2467,6 +2484,22 @@ class ProjectAgentSessionRuntime:
                     is not WindowsProtectedStorageAdmissionCharacterization):
             return None, "protected_candidate_admission_unavailable"
 
+        from ui.agent_generation_candidate_publication import GenerationCandidatePublication
+        publication_owner = getattr(self, "_generation_candidate_publication", None)
+        origin = getattr(self, "_generation_publication_origin", None)
+        if origin is None:
+            return None, "protected_candidate_admission_host_changed"
+        if origin.project == origin.source_snapshot:
+            project_state_snapshot = origin.source_snapshot
+        elif type(publication_owner) is GenerationCandidatePublication:
+            project_state_snapshot = publication_owner._profile_a_registered_prefix_snapshot_for_characterization(
+                origin.project, promotion_observation.request_index,
+            )
+        else:
+            project_state_snapshot = None
+        if project_state_snapshot is None:
+            return None, "protected_candidate_admission_host_changed"
+
         captured = {}
         with self._publication_gate:
             if (self._closed
@@ -2488,6 +2521,7 @@ class ProjectAgentSessionRuntime:
                         captured.update({
                             "lifecycle": lifecycle,
                             "project_reference": integration_snapshot._project_reference,
+                            "project_state_snapshot": project_state_snapshot,
                         })
                     return started, status
 
@@ -2649,6 +2683,22 @@ class ProjectAgentSessionRuntime:
                     is not WindowsProtectedStorageAdmissionCharacterization):
             return None, "protected_candidate_admission_unavailable"
 
+        from ui.agent_generation_candidate_publication import GenerationCandidatePublication
+        origin_snapshot = getattr(self, "_generation_publication_origin", None)
+        publication_owner_snapshot = getattr(self, "_generation_candidate_publication", None)
+        if origin_snapshot is None:
+            return None, "protected_candidate_admission_host_changed"
+        if origin_snapshot.project == origin_snapshot.source_snapshot:
+            project_state_snapshot = origin_snapshot.source_snapshot
+        elif type(publication_owner_snapshot) is GenerationCandidatePublication:
+            project_state_snapshot = publication_owner_snapshot._profile_a_registered_prefix_snapshot_for_characterization(
+                origin_snapshot.project, outputs_ready_observation.request_index,
+            )
+        else:
+            project_state_snapshot = None
+        if project_state_snapshot is None:
+            return None, "protected_candidate_admission_host_changed"
+
         captured = {}
         with self._publication_gate:
             if (self._closed
@@ -2671,6 +2721,7 @@ class ProjectAgentSessionRuntime:
                             "lifecycle": lifecycle,
                             "project_reference": integration_snapshot._project_reference,
                             "pairing_generation": lifecycle._pairing_generation,
+                            "project_state_snapshot": project_state_snapshot,
                         })
                     return started, status
 
@@ -2717,6 +2768,8 @@ class ProjectAgentSessionRuntime:
                         "process": lifecycle._job_process_incarnation == _PROCESS_INCARNATION,
                         "pairing": lifecycle._pairing_generation == captured["pairing_generation"],
                         "origin": self._generation_publication_origin is captured["origin"],
+                        "project": captured["origin"].project
+                            == captured["project_state_snapshot"],
                         "attempt": integration._storage_preadmission_attempts.get(
                             captured["attempt"].lease.request_index,
                         ) is captured["attempt"],
@@ -2734,7 +2787,7 @@ class ProjectAgentSessionRuntime:
 
         try:
             first_host_current = with_current_host(host_matches_before_admission)
-            if (captured["origin"].project != captured["origin"].source_snapshot
+            if (captured["origin"].project != captured["project_state_snapshot"]
                     or not first_host_current):
                 raise ValueError("protected_candidate_admission_host_changed")
             project_view = project_reference.readiness()
@@ -2911,6 +2964,17 @@ class ProjectAgentSessionRuntime:
         admission_observation = captured["admission_observation"]
         project_reference = captured["project_reference"]
         publication_owner = captured["publication_owner"]
+        project_state_snapshot = origin.source_snapshot
+        if origin.project != project_state_snapshot:
+            if type(publication_owner) is not GenerationCandidatePublication:
+                return None, "protected_candidate_publication_host_changed"
+            project_state_snapshot = (
+                publication_owner._profile_a_registered_prefix_snapshot_for_characterization(
+                    origin.project, locator.request_index,
+                )
+            )
+            if project_state_snapshot is None:
+                return None, "protected_candidate_publication_host_changed"
 
         def with_current_host(callback):
             with self._publication_gate:
@@ -2927,7 +2991,8 @@ class ProjectAgentSessionRuntime:
 
         def claim_current_locked():
             return bool(
-                self._generation_publication_origin is origin
+                origin.project == project_state_snapshot
+                and self._generation_publication_origin is origin
                 and self._generation_protected_candidate_admission is admission_owner
                 and integration._profile_a_candidate_publication_claim_current_locked(
                     lifecycle, captured,
@@ -2955,7 +3020,7 @@ class ProjectAgentSessionRuntime:
                 and candidate._save is callback_bundle.save_project)
 
         try:
-            if (origin.project != origin.source_snapshot
+            if (origin.project != project_state_snapshot
                     or not with_current_host(claim_current_locked)):
                 raise ValueError("protected_candidate_publication_host_changed")
             if (project_reference is None
@@ -3011,6 +3076,551 @@ class ProjectAgentSessionRuntime:
             return integration._complete_profile_a_candidate_publication(
                 captured, publication_owner, None,
             )
+
+    def _save_profile_a_generation_project_for_characterization(
+            self, locator, *, state,
+            characterization=False, disposable_opt_in=False):
+        """Persist one exact settled Profile A Gallery result through app.py."""
+        import copy
+        import json
+        import os
+
+        from core.generation_storage_admission import (
+            WindowsProtectedStorageAdmissionCharacterization,
+        )
+        from core.generation_windows_protected_storage import (
+            WindowsProjectJsonReferenceCharacterization,
+        )
+        from core.io import SetEncoder, _project_to_serializable_data, load_project_from_json
+        from ui.agent_generation_candidate_publication import (
+            GenerationCandidatePublication,
+            PublicationReceipt,
+            _profile_a_host_project_save_callbacks_for_current_app_run,
+        )
+        from ui.agent_generation_job import JobRequest
+        from ui.agent_generation_original_host_lifecycle import OriginalHostGenerationLifecycle
+        from ui.agent_generation_original_host_worker_storage import (
+            GenerationWorkerProtectedCandidatePublicationObservation,
+            OriginalHostWorkerStorageIntegration,
+        )
+        from ui.project_agent_session_mailbox import _normalize_target_path
+
+        if characterization is not True or disposable_opt_in is not True:
+            return None, "execution_unavailable"
+        if (type(locator) is not GenerationWorkerProtectedCandidatePublicationObservation
+                or locator.status != "protected_candidate_publication_registered_non_authoritative"
+                or locator.registration_state != "registered"
+                or locator.execution_available is not False
+                or locator.protected_storage_available is not False
+                or locator.promotion_available is not False
+                or locator.candidate_publication_allowed is not False
+                or locator.project_save_allowed is not False
+                or locator.authorship != "unverified"):
+            return None, "profile_a_project_save_locator_invalid"
+
+        lifecycle = self._generation_original_host_lifecycle
+        integration = (getattr(lifecycle, "_worker_storage_integration", None)
+                       if lifecycle is not None else None)
+        historical = list(self._retired_generation_worker_storage_integrations)
+        if integration is not None:
+            historical.append(integration)
+        for previous in reversed(historical):
+            if type(previous) is not OriginalHostWorkerStorageIntegration:
+                continue
+            observation, previous_status = previous._profile_a_project_save_replay(locator)
+            if previous_status is not None:
+                return observation, previous_status
+
+        if (type(lifecycle) is not OriginalHostGenerationLifecycle
+                or type(integration) is not OriginalHostWorkerStorageIntegration
+                or integration._profile_a is not True
+                or type(integration._capacity_owner)
+                    is not WindowsProtectedStorageAdmissionCharacterization
+                or type(integration._project_reference)
+                    is not WindowsProjectJsonReferenceCharacterization):
+            return None, "profile_a_project_save_unavailable"
+
+        # The fixed app wrapper is the only source of the actual app Project
+        # writer. This helper refuses callers outside that wrapper's frame.
+        callback_bundle = _profile_a_host_project_save_callbacks_for_current_app_run(
+            self, state,
+        )
+        if callback_bundle is None:
+            return None, "profile_a_project_save_callbacks_unavailable"
+
+        publication = self._generation_candidate_publication
+        if (type(publication) is not GenerationCandidatePublication
+                or publication._mode != "profile_a_protected"
+                or publication._runtime is not self
+                or publication._state is not state
+                or publication._origin is not self._generation_publication_origin
+                or publication._envelope is not lifecycle._envelope):
+            return None, "profile_a_project_save_publication_unavailable"
+        readiness_refusal = publication._protected_save_readiness()
+        if readiness_refusal is not None:
+            return None, readiness_refusal
+        with publication._lock:
+            if publication._busy or publication._save_state != "not_attempted":
+                return None, "profile_a_project_save_already_claimed"
+            receipt = publication._records.get(locator.request_index)
+            evidence = dict(publication._protected_evidence)
+        if (type(receipt) is not PublicationReceipt
+                or receipt.request_index != locator.request_index
+                or receipt.registration_state != "registered"
+                or receipt.promotion_state != "protected_verified"
+                or receipt.registered_count != locator.registered_candidate_count):
+            return None, "profile_a_project_save_evidence_unavailable"
+
+        origin = publication._origin
+        envelope = publication._envelope
+        capacity = integration._capacity_owner
+        project_reference = integration._project_reference
+        project = origin.project
+        project_path = origin.path
+        if (project is None or type(project_path) is not str or not project_path
+                or state.get("project") is not project
+                or state.get("current_project_path", "") != project_path
+                or os.path.normcase(os.path.abspath(os.fspath(project_reference._path)))
+                    != os.path.normcase(os.path.abspath(project_path))):
+            return None, "profile_a_project_save_target_mismatch"
+        if (type(locator.request_index) is not int
+                or not 0 <= locator.request_index < len(envelope.manifest.requests)):
+            return None, "profile_a_project_save_locator_invalid"
+
+        capacity_token = None
+        lifecycle_token = None
+        authorization = None
+        promotion_tokens = []
+        publisher_started = False
+        callback_attempted = False
+        callback_outcome = "not_attempted"
+        outcome = None
+        prewrite_blocker = None
+        saved_project = None
+        expected_serialized = None
+        post_reference = None
+        original_project_reference_identity = project_reference._identity
+        original_project_reference_revision = project_reference._revision
+
+        # Bind one original-Host save claim before native revalidation. This
+        # short gate checks every terminal request and retains the exact G-G
+        # receipt. No native observation or file I/O occurs under these locks.
+        try:
+            with self._publication_gate:
+                if (self._closed
+                        or self._generation_original_host_lifecycle is not lifecycle
+                        or self._generation_host_state is not state
+                        or self._generation_candidate_publication is not publication
+                        or self._generation_publication_origin is not origin
+                        or state.get("project") is not project
+                        or state.get("current_project_path", "") != project_path):
+                    return None, "stale_host_binding"
+                with self.target_tracker._lock:
+                    tracker_matches = bool(
+                        self.target_tracker._initialized
+                        and self.target_tracker._had_project
+                        and self.target_tracker._project_ref is not None
+                        and self.target_tracker._project_ref() is project
+                        and self.target_tracker._project_path == _normalize_target_path(project_path)
+                        and self.target_tracker._epoch == envelope.binding.target_epoch
+                    )
+                if not tracker_matches:
+                    return None, "stale_target"
+
+                with self._current_generation_original_host_lifecycle_locked() as current_lifecycle:
+                    if current_lifecycle is not lifecycle:
+                        return None, "stale_host_binding"
+                    available, pairing = self._registration.inspect_pairing_generation()
+                    jobs, inbox = self.generation_jobs, self._generation_executor_inbox
+                    with jobs._lock:
+                        jobs._cleanup_locked(jobs._clock())
+                        job = jobs._authorized_locked(envelope.job_id, envelope.claim_id)
+                        with inbox._lock:
+                            if (not available or job is None or inbox._closed
+                                    or inbox._state != "accepted"
+                                    or inbox._envelope is not envelope
+                                    or inbox._manifest is not envelope.manifest
+                                    or inbox._late_output_seen
+                                    or job.state not in {"completed", "partially_failed"}
+                                    or job.binding != envelope.binding
+                                    or job.binding.pairing_generation != pairing
+                                    or job.binding.target_epoch != envelope.binding.target_epoch
+                                    or job.binding.activation_id != envelope.binding.activation_id
+                                    or job.binding.plan_identity != envelope.manifest.manifest_identity
+                                    or job.save_state != "not_attempted"
+                                    or len(job.requests) != len(envelope.manifest.requests)
+                                    or len(job.request_states) != len(envelope.manifest.requests)):
+                                return None, "profile_a_project_save_job_unsettled"
+                            for index, request in enumerate(envelope.manifest.requests):
+                                expected_request = JobRequest(
+                                    request.request_id, request.illustration_id,
+                                    request.run_index, request.workflow_identity,
+                                )
+                                if job.requests[index] != expected_request:
+                                    return None, "profile_a_project_save_job_conflict"
+                                request_state = job.request_states[index]
+                                output_count = job.outputs[index]
+                                remote_count = job.remote_outputs[index]
+                                registered_count = job.registered[index]
+                                current_receipt = publication._records.get(index)
+                                if request_state == "completed":
+                                    if (output_count <= 0 or remote_count != output_count
+                                            or registered_count != output_count
+                                            or type(current_receipt) is not type(receipt)
+                                            or current_receipt.registration_state != "registered"
+                                            or current_receipt.promotion_state != "protected_verified"
+                                            or current_receipt.registered_count != output_count):
+                                        return None, "profile_a_project_save_job_unsettled"
+                                elif (request_state != "failed" or output_count != 0
+                                      or remote_count != 0 or registered_count != 0
+                                      or current_receipt is not None
+                                      or index in publication._protected_evidence):
+                                    return None, "profile_a_project_save_job_unsettled"
+
+                            with lifecycle._lock:
+                                if (lifecycle._state != "bound_non_executing"
+                                        or lifecycle._runtime_ref() is not self
+                                        or lifecycle._worker_storage_integration is not integration
+                                        or lifecycle._project_ref() is not project
+                                        or lifecycle._project_path != project_path
+                                        or lifecycle._envelope is not envelope
+                                        or lifecycle._pairing_generation != pairing
+                                        or self._generation_host_state is not state):
+                                    return None, "stale_host_binding"
+                                with capacity._lock:
+                                    capacity_token = capacity._begin_profile_a_project_save_for_characterization(
+                                        expected_scope_identity=publication._profile_a_scope_identity,
+                                        expected_promoted_root=publication._profile_a_promoted_root,
+                                    )
+                                    with integration._lock:
+                                        authorization, claim_status = integration._begin_profile_a_project_save_locked(
+                                            lifecycle, locator, publication, receipt, capacity_token,
+                                        )
+                                        if authorization is not None:
+                                            lifecycle_token = lifecycle._begin_profile_a_project_save_locked(
+                                                integration, project, project_path,
+                                            )
+                                            if lifecycle_token is None:
+                                                integration._abort_profile_a_project_save_before_write(
+                                                    authorization,
+                                                )
+                                                authorization = None
+                                                claim_status = "stale_host_binding"
+            if authorization is None:
+                if capacity_token is not None:
+                    capacity._finish_profile_a_project_save_for_characterization(capacity_token)
+                    capacity_token = None
+                return None, claim_status
+
+            begin_status = publication._begin_profile_a_project_save_for_characterization(
+                authorization, callback_bundle,
+            )
+            if begin_status != "saving":
+                if (integration._abort_profile_a_project_save_before_write(authorization)
+                        and publication._abort_profile_a_project_save_before_write_for_characterization(
+                            authorization)):
+                    lifecycle._finish_profile_a_project_save_for_characterization(lifecycle_token)
+                    lifecycle_token = None
+                    capacity._finish_profile_a_project_save_for_characterization(capacity_token)
+                    capacity_token = None
+                    return None, "profile_a_project_save_not_authorized"
+                outcome = "save_uncertain"
+                prewrite_blocker = "profile_a_project_save_owner_changed"
+                return self._finish_profile_a_project_save_attempt(
+                    authorization, publication, integration, outcome, callback_outcome,
+                    None, None, evidence, lifecycle_token, capacity_token,
+                    promotion_tokens, post_reference,
+                )
+            publisher_started = True
+
+            # Bind lifecycle, capacity, and each distinct Promotion owner for
+            # the bounded I/O window. These leases retain custody without
+            # holding their mutexes across native inspection or os.replace.
+            if not integration._profile_a_project_save_claim_current_locked(authorization):
+                raise ValueError("profile_a_project_save_host_changed")
+            seen_promoters = set()
+            for _admission, observation in evidence.values():
+                owner = observation._promotion_owner
+                if owner in seen_promoters:
+                    continue
+                seen_promoters.add(owner)
+                token = owner.begin_project_save_for_characterization(
+                    observation._promotion_receipt,
+                )
+                promotion_tokens.append((owner, observation._promotion_receipt, token))
+
+            if project_reference.readiness().get("status") != "read_only_reference_observed":
+                raise ValueError("project_reference_changed")
+            if (os.path.normcase(os.path.abspath(os.fspath(project_reference._path)))
+                    != os.path.normcase(os.path.abspath(project_path))):
+                raise ValueError("project_reference_path_changed")
+
+            capacity_view = capacity.readiness()
+            promoted_root = capacity._roots.get("promoted_assets")
+            promoted_view = promoted_root.readiness() if promoted_root is not None else {}
+            if (capacity_view.get("root_set_contract") != "profile_a_four_writable_roots"
+                    or capacity_view.get("scope_writer_lease") != "held"
+                    or capacity_view.get("filesystem") != "local_ntfs_observed"
+                    or capacity_view.get("native_root_identity") != "observed_unchanged"
+                    or capacity_view.get("approved_scope_identity") != "observed_unchanged"
+                    or capacity_view.get("project_save_allowed") is not False
+                    or capacity._scope_identity != authorization.scope_identity
+                    or capacity._roots.get("promoted_assets") is not authorization.promoted_root
+                    or promoted_view.get("acl_verified") is not True
+                    or promoted_view.get("identity") != "handle_observed"):
+                raise ValueError("profile_a_capacity_or_root_changed")
+
+            saved_project = copy.deepcopy(publication._expected)
+            expected_serialized = _project_to_serializable_data(saved_project, project_path)
+            if project != publication._expected:
+                raise ValueError("candidate_project_changed")
+            if not self._profile_a_project_save_host_current(
+                    authorization, publication, integration, evidence,
+                    allowed_project_states=(publication._expected,)):
+                raise ValueError("profile_a_project_save_host_changed")
+
+            def promotion_fresh(envelope_value, remote_value, *, allowed_project_states=None):
+                return publication._protected_save_freshness(
+                    envelope_value, remote_value, evidence,
+                    allowed_project_states=allowed_project_states,
+                )
+
+            for _admission, observation in evidence.values():
+                owner = observation._promotion_owner
+                if (owner._inspect_for_project_save_for_characterization(
+                        observation._promotion_receipt, promotion_fresh,
+                ) is not observation._promotion_receipt):
+                    raise ValueError("protected_promotion_unavailable")
+            if (project_reference.readiness().get("status") != "read_only_reference_observed"
+                    or not self._profile_a_project_save_host_current(
+                        authorization, publication, integration, evidence,
+                        allowed_project_states=(publication._expected,))):
+                raise ValueError("profile_a_project_save_prewrite_stale")
+
+            # Crossing the exact reference-replacement boundary consumes this
+            # one-shot save, even if closing or the writer later becomes
+            # uncertain. This prevents a second writer call after any failure.
+            callback_attempted = True
+            if project_reference.close_for_profile_a_save_for_characterization(
+                    authorization, characterization=True, disposable_opt_in=True,
+            ) != "closed_for_profile_a_save":
+                raise ValueError("project_reference_close_failed")
+
+            # The app callback validates the already-bound Project object/path
+            # and delegates to the standard atomic Project JSON writer. No
+            # caller-supplied callback or path is accepted by this operation.
+            try:
+                callback_result = callback_bundle.save_project(
+                    project, project_path, "Agent generation Candidates registered",
+                )
+            except Exception:
+                callback_outcome = "save_uncertain"
+            else:
+                callback_outcome = (
+                    "saved" if callback_result is True else
+                    "save_failed" if callback_result is False else "save_uncertain"
+                )
+
+            allowed_project_states = (publication._expected, saved_project)
+            post_native_current = True
+            try:
+                project_reference.reopen_after_profile_a_save_for_characterization(
+                    authorization, characterization=True, disposable_opt_in=True,
+                )
+                post_reference = project_reference
+                if callback_outcome == "saved":
+                    if (post_reference.readiness().get("status")
+                            != "read_only_reference_observed"):
+                        post_native_current = False
+                    if project != saved_project:
+                        post_native_current = False
+                    loaded_project = load_project_from_json(project_path)
+                    loaded_serialized = _project_to_serializable_data(
+                        loaded_project, project_path,
+                    )
+                    with open(project_path, "r", encoding="utf-8") as saved_file:
+                        persisted_data = json.load(saved_file)
+                    expected_persisted_data = json.loads(json.dumps(
+                        expected_serialized, cls=SetEncoder,
+                    ))
+                    if (persisted_data != expected_persisted_data
+                            or not publication._profile_a_saved_candidate_paths_match(
+                                evidence, loaded_serialized,
+                            )
+                            or post_reference.readiness().get("status")
+                                != "read_only_reference_observed"):
+                        post_native_current = False
+                else:
+                    # A fresh read-only handle records current path/ACL state
+                    # after a failed or ambiguous writer call. False is
+                    # definitive only when the original file identity and
+                    # revision remain unchanged.
+                    if project not in (publication._expected, saved_project):
+                        post_native_current = False
+                    else:
+                        if (post_reference.readiness().get("status")
+                                != "read_only_reference_observed"):
+                            post_native_current = False
+                        if (callback_outcome == "save_failed"
+                                and (post_reference._identity != original_project_reference_identity
+                                     or post_reference._revision != original_project_reference_revision)):
+                            post_native_current = False
+
+                capacity_view = capacity.readiness()
+                if (capacity_view.get("scope_writer_lease") != "held"
+                        or capacity_view.get("native_root_identity") != "observed_unchanged"
+                        or capacity_view.get("approved_scope_identity") != "observed_unchanged"):
+                    post_native_current = False
+                for _admission, observation in evidence.values():
+                    owner = observation._promotion_owner
+                    inspected = owner._inspect_for_project_save_for_characterization(
+                            observation._promotion_receipt,
+                            lambda env, remote: promotion_fresh(
+                                env, remote, allowed_project_states=allowed_project_states,
+                            ),
+                    )
+                    if (inspected is not observation._promotion_receipt):
+                        post_native_current = False
+                for owner, promoted_receipt, token in promotion_tokens:
+                    if not owner.project_save_lease_current_for_characterization(
+                            promoted_receipt, token):
+                        post_native_current = False
+            except Exception:
+                post_native_current = False
+
+            if (callback_outcome == "saved" and post_native_current):
+                outcome = "saved"
+            elif callback_outcome == "save_failed" and post_native_current:
+                outcome = "save_failed"
+            else:
+                outcome = "save_uncertain"
+
+            return self._finish_profile_a_project_save_attempt(
+                authorization, publication, integration, outcome, callback_outcome,
+                saved_project, expected_serialized, evidence,
+                lifecycle_token, capacity_token, promotion_tokens, post_reference,
+                callback_attempted=callback_attempted,
+                allowed_project_states=allowed_project_states,
+            )
+        except Exception as exc:
+            # Preserve only a short safe blocker identifier. Any exception
+            # after the callback might have begun is an uncertain disk result.
+            blocker = str(exc)
+            import re
+            if re.fullmatch(r"[a-z][a-z0-9_]{0,79}", blocker) is None:
+                blocker = "profile_a_project_save_prewrite_refused"
+            if not callback_attempted:
+                prewrite_blocker = blocker
+                if (authorization is not None
+                        and integration._abort_profile_a_project_save_before_write(authorization)
+                        and publisher_started
+                        and publication._abort_profile_a_project_save_before_write_for_characterization(
+                            authorization)):
+                    if post_reference is not None:
+                        post_reference.close()
+                    for owner, _receipt, token in reversed(promotion_tokens):
+                        owner.finish_project_save_for_characterization(token)
+                    if lifecycle_token is not None:
+                        lifecycle._finish_profile_a_project_save_for_characterization(lifecycle_token)
+                    if capacity_token is not None:
+                        capacity._finish_profile_a_project_save_for_characterization(capacity_token)
+                    return None, f"profile_a_project_save_refused:{blocker}"
+                if authorization is None:
+                    return None, f"profile_a_project_save_refused:{blocker}"
+                outcome = "save_uncertain"
+                callback_outcome = "not_attempted"
+            else:
+                outcome = "save_uncertain"
+                callback_outcome = callback_outcome or "save_uncertain"
+
+            if authorization is not None:
+                return self._finish_profile_a_project_save_attempt(
+                    authorization, publication, integration, outcome, callback_outcome,
+                    saved_project, expected_serialized, evidence,
+                    lifecycle_token, capacity_token, promotion_tokens, post_reference,
+                    callback_attempted=callback_attempted,
+                    allowed_project_states=(publication._expected, saved_project)
+                        if saved_project is not None else (publication._expected,),
+                )
+            return None, f"profile_a_project_save_refused:{blocker}"
+
+    def _profile_a_project_save_host_current(
+            self, authorization, publication, integration, evidence, *,
+            allowed_project_states):
+        """Revalidate Job/Inbox/Project and exact save claim under Host gates."""
+        try:
+            with publication._protected_save_authority(
+                    evidence, allowed_project_states=allowed_project_states) as current:
+                return bool(current and integration._profile_a_project_save_claim_current_locked(
+                    authorization,
+                ))
+        except Exception:
+            return False
+
+    def _finish_profile_a_project_save_attempt(
+            self, authorization, publication, integration, outcome, callback_outcome,
+            saved_project, expected_serialized, evidence, lifecycle_token,
+            capacity_token, promotion_tokens, post_reference, *,
+            callback_attempted=True, allowed_project_states=None):
+        """Settle one result and Job save receipt under the final Host gate."""
+        try:
+            with publication._protected_save_authority(
+                    evidence,
+                    allowed_project_states=(
+                        allowed_project_states if allowed_project_states is not None
+                        else (publication._expected, saved_project)
+                    ),
+            ) as current:
+                claim_current = bool(
+                    current and integration._profile_a_project_save_claim_current_locked(
+                        authorization,
+                    )
+                )
+                if not claim_current:
+                    outcome = "save_uncertain"
+                if callback_attempted and current:
+                    status = self.generation_jobs.save_for_characterization(
+                        authorization.origin.envelope.job_id,
+                        authorization.origin.envelope.claim_id,
+                        binding=authorization.origin.envelope.binding,
+                        outcome=outcome if outcome in {"saved", "save_failed", "save_uncertain"}
+                            else "save_uncertain",
+                    )
+                    if status != "accepted":
+                        outcome = "save_uncertain"
+                elif callback_attempted:
+                    outcome = "save_uncertain"
+                observation, public_status = integration._complete_profile_a_project_save(
+                    authorization, outcome, callback_outcome,
+                )
+                if observation is None or public_status == "profile_a_project_save_uncertain":
+                    outcome = "save_uncertain"
+                publication._finish_profile_a_project_save_for_characterization(
+                    authorization, outcome, callback_outcome,
+                )
+        except Exception:
+            outcome = "save_uncertain"
+            observation, public_status = integration._complete_profile_a_project_save(
+                authorization, outcome, callback_outcome,
+            )
+            publication._finish_profile_a_project_save_for_characterization(
+                authorization, outcome, callback_outcome,
+            )
+        finally:
+            if (post_reference is not None
+                    and post_reference is not authorization.project_reference):
+                post_reference.close()
+            for owner, _receipt, token in reversed(promotion_tokens):
+                owner.finish_project_save_for_characterization(token)
+            if lifecycle_token is not None:
+                authorization.lifecycle._finish_profile_a_project_save_for_characterization(
+                    lifecycle_token,
+                )
+            if capacity_token is not None:
+                authorization.capacity_owner._finish_profile_a_project_save_for_characterization(
+                    capacity_token,
+                )
+        return observation, public_status
 
     def cancel_generation_worker_promotion_preflight_for_characterization(self, observation):
         """Release only this Host's exact pre-CREATE_NEW Promotion reservation."""

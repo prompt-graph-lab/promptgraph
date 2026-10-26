@@ -451,7 +451,8 @@ its lease, close waits for that bounded commit to settle. Uncertain or partial
 registration remains one-shot and retained; copied or late locators cannot
 replay it. Success updates only in-memory Gallery Candidates, the existing
 Undo history and Job registered count. The Project JSON save callback is not
-invoked, and the file remains unchanged. Save remains a separate future gate.
+invoked at the 19G-G checkpoint; the subsequent 19G-H section adds a distinct
+Job-level save after all requests have settled.
 
 Disposable native Windows compositions cover one, two and sixteen images,
 exact provenance and ordering, copied-locator refusal, unchanged Project JSON,
@@ -460,3 +461,65 @@ execution or Candidate publication: `execution_available=false`,
 `protected_storage_available=false`, `promotion_available=false`,
 `candidate_publication_allowed=false`, `project_save_allowed=false`, and
 `authorship=unverified` remain in force.
+
+## C2B-8D-19G-H Profile A original-Host Project JSON save
+
+19G-H adds one offline characterization boundary after genuine 19G-G Gallery
+registration. It accepts only the exact count-only locator retained by the
+same original Host integration and uses the Host-captured app callback bundle
+from `app.py`'s fixed save entry point. The callback accepts no caller-supplied
+Project, path, serializer or writer. It delegates to the established
+`save_agent_scene_module_swap_project` callback, which uses the normal
+`core.io.save_project_to_json` atomic Project JSON writer.
+
+Save is Job-wide, not a per-request partial save. Before beginning, the Host
+requires the exact active envelope, Job/Claim, Inbox, Project object/path,
+source/review identity, activation/epoch/pairing, one count-only locator for a
+registered request, and a settled record for every manifest request. Each
+completed request must have matching remote-output, output and registered
+Candidate counts plus its exact retained G-G receipt and protected evidence.
+Definitively failed requests must have zero outputs/registration and no
+protected publication evidence. A request still unsent, in progress, uncertain
+or incompletely registered blocks save without consuming the one-shot save.
+
+Sequential multi-request registration keeps the original immutable source
+snapshot as the review baseline. After each accepted G-G append, the same
+Publisher records an exact registered-prefix Project snapshot. The next
+request may use only that verified prefix as its current Project state; an
+unrelated Project edit, different Publisher or altered Candidate prefix is
+not accepted. The save then serializes the final Publisher-owned Project state
+and verifies the reloaded JSON and Candidate provenance/path mapping against
+the retained Promotion evidence.
+
+Before the writer boundary, the Host rechecks its tracker and current state,
+Job/Inbox chain, read-only Project reference, four-root capacity owner,
+promoted-root identity and each protected Promotion. Capacity, lifecycle,
+Publisher and Promotion save leases serialize close/invalidation with the
+single save attempt. Native inspection and the app writer callback run outside
+Job/Inbox and owner mutexes. On Windows, the selected Project reference handle
+is closed only for the exact callback because atomic replacement cannot proceed
+while that handle is open; the reference is immediately reopened and its path,
+NTFS, ACL and current file identity/revision are revalidated. The new file
+identity is expected to differ after replacement and is recorded as the new
+read-only reference. This handle transition does not grant a second or
+caller-selected writer.
+
+The one-shot save is consumed when execution crosses that reference-replacement
+boundary. A callback `False` is a definitive `save_failed` only if the original
+file identity and revision remain unchanged. An exception, malformed result,
+lost acknowledgment, post-write mismatch or Host close after the callback may
+have started becomes retained `save_uncertain`; it never authorizes retry.
+If save fails after G-G, already appended in-memory Candidates and the existing
+Undo entry remain in place. The save boundary does not roll them back or create
+a second Undo record. Exact replays return only retained count/status
+observations.
+
+Windows-native disposable tests cover one, two and sixteen Candidate images,
+two sequential requests saved once after both registrations, early save refusal
+without consuming the later save, exact Project JSON reload/provenance, copied
+locator refusal, pre-write path drift, definitive writer refusal, write-then-
+lost-ack uncertainty, Host close during the callback, concurrent replay and
+one-shot behavior. This proves only the characterized local callback path. It
+does not activate UI Start, production Candidate publication, protected
+storage, production Project saving, restart recovery or discard. All
+capability flags remain false and `authorship=unverified`.

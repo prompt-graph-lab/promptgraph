@@ -77,7 +77,8 @@ class _Connection:
         if self.entered is not None:
             self.entered.set()
             assert self.release.wait(3)
-        return _Response((f'{{"prompt_id":"{self.prompt_id}"}}').encode("ascii"))
+        prompt_id = self.prompt_id() if callable(self.prompt_id) else self.prompt_id
+        return _Response((f'{{"prompt_id":"{prompt_id}"}}').encode("ascii"))
 
     def get_history(self, _prompt_id, _timeout):
         return _Response(self.history_body_ref[0])
@@ -347,7 +348,8 @@ def _profile_a_history_observed(*, descriptor_count=1, estimate_bytes=32 * 1024 
 
 def _profile_a_prospective_history_observed(
         native_profile_a_worker_storage, *, descriptor_count=1,
-        include_status=True, completed=True, host_provider=None):
+        include_status=True, completed=True, host_provider=None,
+        estimate_bytes=32 * 1024 * 1024, estimate_entries=1):
     """Run the genuine prospective 19G-B/C path on disposable native roots."""
     roots, capacity, reference, project_path = native_profile_a_worker_storage
     runtime, _route, state, lifecycle = _ready_generation_at_project_path(
@@ -369,7 +371,7 @@ def _profile_a_prospective_history_observed(
     )
     assert status == "admitted_with_submission_started"
     preadmission, status = runtime.pre_admit_generation_worker_staging_for_characterization(
-        submission_lease, CapacityEstimate(128 * 1024 * 1024, 16),
+            submission_lease, CapacityEstimate(estimate_bytes, estimate_entries),
     )
     assert status == "pre_admitted_non_authoritative"
 
@@ -3472,6 +3474,9 @@ def _publish_profile_a_source_bound_promotion_for_outputs_ready(
             native_profile_a_dual_custody_worker_storage,
             descriptor_count=descriptor_count,
             host_provider=host_provider,
+            estimate_bytes=min(32 * 1024 * 1024 * descriptor_count,
+                               128 * 1024 * 1024),
+            estimate_entries=descriptor_count,
         )
     )
     try:
@@ -3562,6 +3567,129 @@ def _prepare_profile_a_candidate_publication(
     assert admission_status == "protected_candidate_admission_evidence_observed"
     assert type(admission) is GenerationWorkerProtectedCandidateAdmissionObservation
     return runtime, lifecycle, worker, attempt, writer, state, output_directory, admission
+
+
+def _prepare_profile_a_two_request_candidate_publications(
+        native_profile_a_dual_custody_worker_storage, output_directory,
+        *, after_request=None):
+    """Compose two genuine sequential requests through the same Host/Worker."""
+    from core import generation_windows_protected_assets as assets
+    from test_comfy_output_containment import image_bytes
+    from test_agent_generation_candidate_publication import app_owners
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedCandidateAdmissionObservation,
+    )
+
+    roots, capacity, reference, project_path = native_profile_a_dual_custody_worker_storage
+    output_directory.mkdir()
+    host_provider = _profile_a_host_provider_with_output_directory(output_directory)
+    runtime, _route, state, lifecycle = _ready_generation_at_project_path(
+        project_path, run_count=2, host_provider=host_provider,
+    )
+    requests = lifecycle._envelope.manifest.requests
+    assert len(requests) == 2
+    assert runtime.bind_generation_profile_a_storage_for_characterization(
+        capacity, reference,
+    ) == "matched_reference_only"
+    prompt_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    pending_prompt_ids = list(prompt_ids)
+    worker = _worker(prompt_id=lambda: pending_prompt_ids.pop(0))
+    assert runtime.bind_generation_profile_a_worker_storage_for_characterization(
+        worker, roots, capacity, reference,
+    ) == "bound_non_executing"
+    assert worker.start_for_characterization().state == "running"
+    writer = assets.WindowsProtectedAssetsCharacterization.borrow_profile_a_writer_for_characterization(
+        capacity, characterization=True, disposable_opt_in=True,
+    )
+    state["history"] = []
+    owners = app_owners(state)
+    owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
+    locators, attempts = [], []
+    data = image_bytes()
+
+    for request_index, request in enumerate(requests):
+        prepared = _prepared(lifecycle, request_index)
+        submission_lease, status = runtime.begin_profile_a_worker_submission_with_executor_event_for_characterization(
+            state, prepared, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "admitted_with_submission_started"
+        preadmission, status = runtime.pre_admit_generation_worker_staging_for_characterization(
+            submission_lease, CapacityEstimate(32 * 1024 * 1024, 1),
+        )
+        assert status == "pre_admitted_non_authoritative"
+        submission = worker.perform_for_characterization(
+            "submission", prepared, None, submission_lease.correlation,
+        )
+        assert submission.outcome.status == "accepted"
+        assert runtime.observe_generation_worker_http_result_for_characterization(
+            submission_lease, submission,
+        ) == "submitted_event_accepted_non_authoritative"
+
+        prompt_id = prompt_ids[request_index]
+        worker._test_history_body_ref[0] = _history_json_for(prepared, prompt_id)
+        history_correlation = runtime.generation_worker_http_correlation_for_characterization(
+            request_index, kind="history", prompt_id=prompt_id,
+        )
+        history_lease, status = runtime.begin_generation_worker_http_operation_for_characterization(
+            "history", prepared, prompt_id, history_correlation,
+        )
+        assert status == "admitted_non_executing"
+        history = worker.perform_for_characterization(
+            "history", prepared, prompt_id, history_correlation,
+        )
+        assert runtime.observe_generation_worker_http_result_for_characterization(
+            history_lease, history,
+        ) == "observed_non_authoritative"
+        evidence, status = runtime.observe_generation_worker_remote_output_writer_evidence_for_characterization(
+            preadmission,
+        )
+        assert status == "remote_output_writer_evidence_observed_non_authoritative"
+        provider = _WriterDownloadStream(data)
+        staged, status = runtime.stage_generation_worker_remote_output_with_protected_writer_for_characterization(
+            evidence, writer, stream_provider=provider,
+            characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_image_staged_non_authoritative"
+        accepted, status = runtime.accept_generation_worker_staged_output_for_characterization(
+            staged, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_image_batch_accepted_non_authoritative"
+        preflight, status = runtime.preflight_generation_worker_accepted_output_promotion_for_characterization(
+            accepted, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_promotion_preflight_non_authoritative"
+        assert runtime.promote_generation_worker_accepted_output_for_characterization(
+            preflight, characterization=True, disposable_opt_in=True,
+        ) == (None, "protected_promotion_host_publication_deferred")
+        promotion, status = runtime.publish_generation_worker_accepted_output_promotion_for_characterization(
+            preflight, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_promotion_published_non_authoritative"
+        outputs_ready, status = runtime.publish_generation_worker_protected_outputs_ready_for_characterization(
+            promotion, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_outputs_ready_event_accepted_non_authoritative"
+        admission, status = runtime.observe_generation_worker_protected_candidate_admission_for_characterization(
+            outputs_ready, characterization=True, disposable_opt_in=True,
+        )
+        assert status == "protected_candidate_admission_evidence_observed"
+        assert type(admission) is GenerationWorkerProtectedCandidateAdmissionObservation
+        locator, status = owners[
+            "publish_profile_a_generation_candidates_for_characterization"
+        ](admission)
+        assert status == "protected_candidate_publication_registered"
+        locators.append(locator)
+        attempts.append(lifecycle._worker_storage_integration._storage_preadmission_attempts[
+            request_index
+        ])
+        if after_request is not None:
+            after_request(request_index, locator, runtime, lifecycle, state, owners)
+        if request_index == 0:
+            snapshot = runtime.generation_jobs.snapshot(lifecycle._job_id)
+            assert snapshot["requests"][0]["state"] == "completed"
+            assert snapshot["requests"][1]["state"] == "unsent"
+
+    return runtime, lifecycle, worker, writer, state, output_directory, owners, locators, attempts
 
 
 @pytest.mark.parametrize("descriptor_count", [1, 2, 16])
@@ -3725,6 +3853,856 @@ def test_profile_a_genuine_candidate_admission_uses_existing_gallery_writer_with
     assert len(state["history"]) == 1
 
     runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+@pytest.mark.parametrize("descriptor_count", [1, 2, 16])
+def test_profile_a_genuine_registered_candidates_save_once_through_existing_project_writer(
+        native_profile_a_dual_custody_worker_storage, tmp_path, descriptor_count):
+    from core.io import load_project_from_json, resolve_project_asset_path
+    from test_agent_generation_candidate_publication import app_owners
+    from ui.agent_generation_original_host_worker_storage import (
+        GenerationWorkerProtectedCandidatePublicationObservation,
+        GenerationWorkerProtectedProjectSaveObservation,
+    )
+
+    (runtime, lifecycle, _worker, attempt, writer, state, output_directory,
+     admission) = _prepare_profile_a_candidate_publication(
+        native_profile_a_dual_custody_worker_storage,
+        tmp_path / "comfy-output",
+        descriptor_count=descriptor_count,
+    )
+    project = state["project"]
+    project_path = lifecycle._project_path
+    project_identity = id(project)
+    original_json = Path(project_path).read_bytes()
+    capacity = lifecycle._worker_storage_integration._capacity_owner
+    integration = lifecycle._worker_storage_integration
+    ledger_operations = set(capacity._ledger._operations)
+    ledger_reservations = set(capacity._ledger._reservations)
+    promoted_root = writer._roots["promoted_assets"]._path
+    promoted_files = set(promoted_root.iterdir())
+    history_before = copy.deepcopy(state["history"])
+
+    owners = app_owners(state)
+    owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
+    locator, publication_status = owners[
+        "publish_profile_a_generation_candidates_for_characterization"
+    ](admission)
+    assert publication_status == "protected_candidate_publication_registered"
+    assert type(locator) is GenerationWorkerProtectedCandidatePublicationObservation
+    assert len(state["history"]) == len(history_before) + 1
+    publisher = runtime._generation_candidate_publication
+    assert publisher._save_state == "not_attempted"
+    assert publisher.save_for_characterization() == "save_not_authorized"
+    from ui.agent_generation_candidate_publication import PublicationReceipt
+    publication_receipt = publisher._records.get(locator.request_index)
+    assert type(publication_receipt) is PublicationReceipt
+    assert publication_receipt.request_index == locator.request_index
+    assert publication_receipt.registration_state == "registered"
+    assert publication_receipt.promotion_state == "protected_verified"
+    assert publication_receipt.registered_count == locator.registered_candidate_count
+
+    copied, copied_status = owners[
+        "save_profile_a_generation_project_for_characterization"
+    ](replace(locator))
+    assert copied is None
+    assert copied_status == "profile_a_project_save_evidence_unavailable"
+    assert publisher._save_state == "not_attempted"
+    assert integration._profile_a_project_save_state == "not_started"
+    assert Path(project_path).read_bytes() == original_json
+
+    saved, save_status = owners[
+        "save_profile_a_generation_project_for_characterization"
+    ](locator)
+    assert save_status == "profile_a_project_saved"
+    assert type(saved) is GenerationWorkerProtectedProjectSaveObservation
+    assert saved.request_count == 1
+    assert saved.registered_candidate_count == descriptor_count
+    assert saved.save_state == "saved"
+    assert saved.execution_available is False
+    assert saved.protected_storage_available is False
+    assert saved.promotion_available is False
+    assert saved.candidate_publication_allowed is False
+    assert saved.project_save_allowed is False
+    assert saved.authorship == "unverified"
+    assert id(state["project"]) == project_identity
+
+    line = next(line for line in state["project"].prompt_lines
+                if line.id == "illustration-001")
+    in_memory_candidates = copy.deepcopy(line.generated_candidates)
+    assert len(in_memory_candidates) == descriptor_count
+    assert len(state["history"]) == len(history_before) + 1
+    job = runtime.generation_jobs.snapshot(lifecycle._job_id)
+    assert job["save_state"] == "saved"
+    assert job["requests"][0]["registered_count"] == descriptor_count
+    assert job["requests"][0]["state"] == "completed"
+    assert len(list(output_directory.iterdir())) == 0
+    assert set(promoted_root.iterdir()) == promoted_files
+    assert set(capacity._ledger._operations) == ledger_operations
+    assert set(capacity._ledger._reservations) == ledger_reservations
+
+    reopened = load_project_from_json(project_path)
+    reopened_line = next(line for line in reopened.prompt_lines
+                         if line.id == "illustration-001")
+    reopened_candidates = reopened_line.generated_candidates
+    assert len(reopened_candidates) == descriptor_count
+    assert [row["generation_provenance"]["output_index"]
+            for row in reopened_candidates] == list(range(1, descriptor_count + 1))
+    for row, original in zip(reopened_candidates, in_memory_candidates):
+        assert row["generation_provenance"] == original["generation_provenance"]
+        resolved = Path(resolve_project_asset_path(row["path"], project_path))
+        assert resolved == Path(original["path"])
+        assert resolved.parent == promoted_root
+        assert resolved.is_file()
+    assert integration._project_reference.readiness()["status"] == "read_only_reference_observed"
+
+    replay, replay_status = owners[
+        "save_profile_a_generation_project_for_characterization"
+    ](locator)
+    assert replay is saved
+    assert replay_status == "profile_a_project_save_already_observed"
+    assert Path(project_path).read_bytes() != original_json
+
+    written_json = Path(project_path).read_bytes()
+    replay, replay_status = owners[
+        "save_profile_a_generation_project_for_characterization"
+    ](locator)
+    assert replay is saved
+    assert replay_status == "profile_a_project_save_already_observed"
+    assert Path(project_path).read_bytes() == written_json
+    assert len(state["history"]) == len(history_before) + 1
+    assert len(line.generated_candidates) == descriptor_count
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id)["save_state"] == "saved"
+
+    runtime.close()
+    writer.close()
+    runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def _profile_a_registered_candidate_save_locator(
+        native_profile_a_dual_custody_worker_storage, tmp_path, *,
+        writer_hook_factory=None):
+    """Prepare a genuine G-G locator and optionally fault the existing JSON writer."""
+    (runtime, lifecycle, _worker, _attempt, writer, state, output_directory,
+     admission) = _prepare_profile_a_candidate_publication(
+        native_profile_a_dual_custody_worker_storage,
+        tmp_path / "comfy-output",
+    )
+    from test_agent_generation_candidate_publication import app_owners
+
+    owners = app_owners(state)
+    owners["_PROJECT_AGENT_SESSION_RUNTIME"] = runtime
+    if writer_hook_factory is not None:
+        original_writer = owners["save_project_to_json"]
+        owners["_issue222_original_json_writer"] = original_writer
+        owners["save_project_to_json"] = writer_hook_factory(
+            original_writer, runtime,
+        )
+    locator, status = owners[
+        "publish_profile_a_generation_candidates_for_characterization"
+    ](admission)
+    assert status == "protected_candidate_publication_registered"
+    return runtime, lifecycle, writer, state, output_directory, owners, locator
+
+
+def test_profile_a_project_save_definitive_writer_refusal_is_one_shot_and_keeps_json_unchanged(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    calls = []
+
+    def callback_factory(_original_writer, _runtime):
+        def refuse_before_write(_project, _project_path):
+            calls.append("called")
+            raise OSError("injected refusal before Project JSON write")
+        return refuse_before_write
+
+    runtime, lifecycle, writer, state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=callback_factory,
+        )
+    )
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    publisher = runtime._generation_candidate_publication
+    integration = lifecycle._worker_storage_integration
+    try:
+        observation, status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert status == "profile_a_project_save_failed"
+        assert observation.save_state == "save_failed"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() == original_json
+        assert publisher._save_state == "save_failed"
+        assert integration._profile_a_project_save_state == "save_failed"
+        assert runtime.generation_jobs.snapshot(lifecycle._job_id)["save_state"] == "save_failed"
+
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() == original_json
+    finally:
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_project_save_write_then_lost_ack_is_retained_uncertain_without_retry(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    calls = []
+
+    def callback_factory(original_writer, _runtime):
+        def write_then_lose_ack(project, project_path):
+            calls.append("called")
+            original_writer(project, project_path)
+            raise OSError("lost save acknowledgement")
+        return write_then_lose_ack
+
+    runtime, lifecycle, writer, _state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=callback_factory,
+        )
+    )
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    publisher = runtime._generation_candidate_publication
+    integration = lifecycle._worker_storage_integration
+    try:
+        observation, status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() != original_json
+        assert publisher._save_state == "save_uncertain"
+        assert integration._profile_a_project_save_state == "retained_uncertain"
+
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+    finally:
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_project_save_host_close_during_writer_retains_uncertain_evidence(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    calls = []
+
+    def callback_factory(original_writer, runtime):
+        def write_then_close_host(project, project_path):
+            calls.append("called")
+            result = original_writer(project, project_path)
+            runtime.close()
+            return result
+        return write_then_close_host
+
+    runtime, lifecycle, writer, _state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=callback_factory,
+        )
+    )
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    integration = lifecycle._worker_storage_integration
+    try:
+        observation, status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() != original_json
+        assert integration._profile_a_project_save_state == "retained_uncertain"
+
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay.save_state == "retained_uncertain"
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+    finally:
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+@pytest.mark.parametrize("owner_kind", ["capacity", "promotion", "admission"])
+def test_profile_a_project_save_owner_close_during_writer_is_one_shot_uncertain(
+        native_profile_a_dual_custody_worker_storage, tmp_path, monkeypatch, owner_kind):
+    entered = threading.Event()
+    continue_write = threading.Event()
+    close_entered = threading.Event()
+    calls = []
+
+    def writer_hook_factory(original_writer, _runtime):
+        def pause_after_write(project, project_path):
+            calls.append("called")
+            original_writer(project, project_path)
+            entered.set()
+            assert continue_write.wait(5)
+        return pause_after_write
+
+    runtime, lifecycle, writer, _state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=writer_hook_factory,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    capacity = integration._capacity_owner
+    attempt = integration._storage_preadmission_attempts[locator.request_index]
+    if owner_kind == "capacity":
+        terminal_owner = capacity
+        boundary = capacity._project_save_boundary
+        original_terminal = boundary.revoke
+
+        def close_after_save_lease():
+            close_entered.set()
+            return original_terminal()
+
+        monkeypatch.setattr(boundary, "revoke", close_after_save_lease)
+        close_owner = terminal_owner.close
+    elif owner_kind == "promotion":
+        terminal_owner = attempt.promotion_owner
+        original_terminal = terminal_owner._revoke_project_save_for_characterization
+
+        def close_after_save_lease():
+            close_entered.set()
+            return original_terminal()
+
+        monkeypatch.setattr(
+            terminal_owner, "_revoke_project_save_for_characterization",
+            close_after_save_lease,
+        )
+        close_owner = terminal_owner.close
+    else:
+        terminal_owner = runtime._generation_protected_candidate_admission
+        original_terminal = terminal_owner._close_under_runtime_gate
+
+        def close_admission():
+            close_entered.set()
+            return original_terminal()
+
+        monkeypatch.setattr(terminal_owner, "_close_under_runtime_gate", close_admission)
+        close_owner = terminal_owner.close
+
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    publisher = runtime._generation_candidate_publication
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        saving = pool.submit(
+            owners["save_profile_a_generation_project_for_characterization"], locator,
+        )
+        assert entered.wait(5)
+        closing = pool.submit(close_owner)
+        assert close_entered.wait(5)
+        if owner_kind != "admission":
+            # Capacity and Promotion close wait at their exact save lease.
+            assert not closing.done()
+        else:
+            # Admission close is host-gated but does not wait for file I/O.
+            closing.result(timeout=5)
+        continue_write.set()
+        observation, status = saving.result(timeout=10)
+        closing.result(timeout=10)
+
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() != original_json
+        assert publisher._save_state == "save_uncertain"
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+    finally:
+        continue_write.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_capacity_invalidation_during_save_does_not_deadlock_or_confirm_save(
+        native_profile_a_dual_custody_worker_storage, tmp_path, monkeypatch):
+    callback_entered = threading.Event()
+    continue_callback = threading.Event()
+    native_check_failed = threading.Event()
+    drain_started = threading.Event()
+    calls = []
+
+    def writer_hook_factory(original_writer, _runtime):
+        def write_then_pause(project, project_path):
+            calls.append("called")
+            original_writer(project, project_path)
+            callback_entered.set()
+            assert continue_callback.wait(5)
+            return True
+        return write_then_pause
+
+    runtime, lifecycle, writer, state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=writer_hook_factory,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    capacity = integration._capacity_owner
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    project = state["project"]
+    line = next(row for row in project.prompt_lines if row.id == "illustration-001")
+    candidate_count = len(line.generated_candidates)
+    history_count = len(state["history"])
+    publisher = runtime._generation_candidate_publication
+
+    def fail_native_root_check():
+        native_check_failed.set()
+        raise ValueError("native_root_changed")
+
+    save_boundary = capacity._project_save_boundary
+    original_drain = save_boundary.revoke_or_defer
+
+    def observed_drain():
+        drain_started.set()
+        return original_drain()
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        saving = pool.submit(
+            owners["save_profile_a_generation_project_for_characterization"], locator,
+        )
+        assert callback_entered.wait(5)
+        # Force a real readiness refresh failure only after the save has crossed
+        # the actual app writer boundary and is holding its capacity save lease.
+        monkeypatch.setattr(capacity, "_check_roots", fail_native_root_check)
+        monkeypatch.setattr(save_boundary, "revoke_or_defer", observed_drain)
+        invalidating = pool.submit(capacity.readiness)
+        assert native_check_failed.wait(5)
+        assert drain_started.wait(5)
+        assert not invalidating.done()
+
+        continue_callback.set()
+        observation, status = saving.result(timeout=10)
+        invalidated_readiness = invalidating.result(timeout=10)
+
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert publisher._save_state == "save_uncertain"
+        assert publisher._save_callback_outcome == "saved"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() != original_json
+        assert capacity._invalid is True
+        assert invalidated_readiness["native_root_identity"] == "unsafe_or_unavailable"
+        assert invalidated_readiness["filesystem"] == "unverified"
+        assert len(line.generated_candidates) == candidate_count
+        assert len(state["history"]) == history_count
+
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+
+        runtime.close()
+        capacity.close()
+        assert capacity._scope_lease.readiness()["status"] == "retained_uncertain"
+        assert Path(capacity._scope_lease._path).exists()
+    finally:
+        continue_callback.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        runtime.close()
+        capacity.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_save_thread_native_drift_readiness_is_unverified_and_uncertain(
+        native_profile_a_dual_custody_worker_storage, tmp_path, monkeypatch):
+    callback_returned = threading.Event()
+    native_check_failed = threading.Event()
+    calls = []
+
+    def writer_hook_factory(original_writer, _runtime):
+        def write_then_mark(project, project_path):
+            calls.append("called")
+            result = original_writer(project, project_path)
+            callback_returned.set()
+            return result
+        return write_then_mark
+
+    runtime, lifecycle, writer, state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=writer_hook_factory,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    capacity = integration._capacity_owner
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    project = state["project"]
+    line = next(row for row in project.prompt_lines if row.id == "illustration-001")
+    candidate_count = len(line.generated_candidates)
+    history_count = len(state["history"])
+    publisher = runtime._generation_candidate_publication
+    original_check = capacity._check_roots
+    original_readiness = capacity.readiness
+    post_callback_views = []
+
+    def fail_after_save_callback():
+        if callback_returned.is_set():
+            native_check_failed.set()
+            raise ValueError("native_root_changed")
+        return original_check()
+
+    def capture_readiness():
+        result = original_readiness()
+        if callback_returned.is_set():
+            post_callback_views.append(result)
+        return result
+
+    monkeypatch.setattr(capacity, "_check_roots", fail_after_save_callback)
+    monkeypatch.setattr(capacity, "readiness", capture_readiness)
+    try:
+        observation, status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert native_check_failed.is_set()
+        assert post_callback_views
+        assert all(view["native_root_identity"] == "unsafe_or_unavailable"
+                   and view["filesystem"] == "unverified"
+                   for view in post_callback_views)
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert publisher._save_state == "save_uncertain"
+        assert publisher._save_callback_outcome == "saved"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() != original_json
+        assert len(line.generated_candidates) == candidate_count
+        assert len(state["history"]) == history_count
+
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+
+        runtime.close()
+        capacity.close()
+        assert capacity._scope_lease.readiness()["status"] == "retained_uncertain"
+        assert Path(capacity._scope_lease._path).exists()
+    finally:
+        runtime.close()
+        capacity.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_project_save_job_ack_loss_after_replace_is_uncertain_and_not_retried(
+        native_profile_a_dual_custody_worker_storage, tmp_path, monkeypatch):
+    calls = []
+
+    def callback_factory(original_writer, _runtime):
+        def counted_writer(project, project_path):
+            calls.append("called")
+            return original_writer(project, project_path)
+        return counted_writer
+
+    runtime, lifecycle, writer, _state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=callback_factory,
+        )
+    )
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    publisher = runtime._generation_candidate_publication
+    integration = lifecycle._worker_storage_integration
+    monkeypatch.setattr(
+        runtime.generation_jobs, "save_for_characterization",
+        lambda *_args, **_kwargs: "acknowledgement_unknown",
+    )
+    try:
+        observation, status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert calls == ["called"]
+        assert Path(project_path).read_bytes() != original_json
+        assert publisher._save_state == "save_uncertain"
+        assert integration._profile_a_project_save_state == "retained_uncertain"
+
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay is observation
+        assert replay_status == "profile_a_project_save_already_observed"
+        assert calls == ["called"]
+    finally:
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_project_save_host_close_during_native_revalidation_is_uncertain_without_write(
+        native_profile_a_dual_custody_worker_storage, tmp_path, monkeypatch):
+    entered = threading.Event()
+    continue_readiness = threading.Event()
+    calls = []
+
+    def callback_factory(original_writer, _runtime):
+        def counted_writer(project, project_path):
+            calls.append("called")
+            return original_writer(project, project_path)
+        return counted_writer
+
+    runtime, lifecycle, writer, _state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=callback_factory,
+        )
+    )
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    publisher = runtime._generation_candidate_publication
+    integration = lifecycle._worker_storage_integration
+    project_reference = integration._project_reference
+    original_readiness = project_reference.readiness
+
+    def pause_native_readiness():
+        entered.set()
+        assert continue_readiness.wait(5)
+        return original_readiness()
+
+    monkeypatch.setattr(project_reference, "readiness", pause_native_readiness)
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        saving = pool.submit(
+            owners["save_profile_a_generation_project_for_characterization"], locator,
+        )
+        assert entered.wait(5)
+        assert publisher._save_state == "saving"
+        runtime.close()
+        continue_readiness.set()
+        observation, status = saving.result(timeout=5)
+        assert status == "profile_a_project_save_uncertain"
+        assert observation.save_state == "retained_uncertain"
+        assert calls == []
+        assert Path(project_path).read_bytes() == original_json
+        assert publisher._save_state == "save_uncertain"
+        assert integration._profile_a_project_save_state == "retained_uncertain"
+    finally:
+        continue_readiness.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_project_save_concurrent_replay_cannot_call_writer_twice(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    entered = threading.Event()
+    continue_write = threading.Event()
+    calls = []
+
+    def callback_factory(original_writer, _runtime):
+        def pause_after_write(project, project_path):
+            calls.append("called")
+            result = original_writer(project, project_path)
+            entered.set()
+            assert continue_write.wait(5)
+            return result
+        return pause_after_write
+
+    runtime, lifecycle, writer, _state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=callback_factory,
+        )
+    )
+    integration = lifecycle._worker_storage_integration
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        first = pool.submit(
+            owners["save_profile_a_generation_project_for_characterization"], locator,
+        )
+        assert entered.wait(5)
+        replay, replay_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert replay_status == "profile_a_project_save_in_progress"
+        assert replay.save_state == "saving"
+        assert calls == ["called"]
+        continue_write.set()
+        observation, status = first.result(timeout=5)
+        assert status == "profile_a_project_saved"
+        assert observation.save_state == "saved"
+        assert calls == ["called"]
+    finally:
+        continue_write.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_project_save_prewrite_path_drift_does_not_consume_one_shot_attempt(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    calls = []
+
+    def callback_factory(original_writer, _runtime):
+        def counted_writer(project, project_path):
+            calls.append("called")
+            return original_writer(project, project_path)
+        return counted_writer
+
+    runtime, lifecycle, writer, state, _output, owners, locator = (
+        _profile_a_registered_candidate_save_locator(
+            native_profile_a_dual_custody_worker_storage, tmp_path,
+            writer_hook_factory=callback_factory,
+        )
+    )
+    project_path = lifecycle._project_path
+    original_json = Path(project_path).read_bytes()
+    publisher = runtime._generation_candidate_publication
+    integration = lifecycle._worker_storage_integration
+    try:
+        state["current_project_path"] = project_path + ".changed"
+        refused, refusal_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert refused is None
+        assert refusal_status == "profile_a_project_save_target_mismatch"
+        assert calls == []
+        assert publisher._save_state == "not_attempted"
+        assert integration._profile_a_project_save_state == "not_started"
+        assert Path(project_path).read_bytes() == original_json
+
+        state["current_project_path"] = project_path
+        saved, save_status = owners[
+            "save_profile_a_generation_project_for_characterization"
+        ](locator)
+        assert save_status == "profile_a_project_saved"
+        assert saved.save_state == "saved"
+        assert calls == ["called"]
+    finally:
+        runtime.close()
+        writer.close()
+        runtime.finish_generation_worker_storage_close_for_characterization()
+
+
+def test_profile_a_two_sequential_candidate_requests_share_one_job_save_after_complete_registration(
+        native_profile_a_dual_custody_worker_storage, tmp_path):
+    from core.io import load_project_from_json, resolve_project_asset_path
+
+    partial_save_attempts = []
+
+    def attempt_partial_save_after_first(index, locator, _runtime, _lifecycle, _state, owners):
+        if index == 0:
+            partial_save_attempts.append(owners[
+                "save_profile_a_generation_project_for_characterization"
+            ](locator))
+
+    (runtime, lifecycle, worker, writer, state, output_directory,
+     owners, locators, attempts) = _prepare_profile_a_two_request_candidate_publications(
+        native_profile_a_dual_custody_worker_storage,
+        tmp_path / "comfy-output",
+        after_request=attempt_partial_save_after_first,
+    )
+    project_path = lifecycle._project_path
+    project_before_save = copy.deepcopy(state["project"])
+    original_json = Path(project_path).read_bytes()
+    publisher = runtime._generation_candidate_publication
+    integration = lifecycle._worker_storage_integration
+    assert len(locators) == 2
+    assert [item.request_index for item in locators] == [0, 1]
+    assert publisher._save_state == "not_attempted"
+    assert len(state["history"]) == 2
+
+    # The exact request-0 locator cannot authorize a Job save while request 1
+    # is still unsent. That refusal does not consume the later exact save.
+    assert len(partial_save_attempts) == 1
+    refused, refusal_status = partial_save_attempts[0]
+    assert refused is None
+    assert refusal_status == "registration_incomplete"
+    assert publisher._save_state == "not_attempted"
+    assert integration._profile_a_project_save_state == "not_started"
+    assert Path(project_path).read_bytes() == original_json
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id)["requests"][1]["state"] == "completed"
+
+    # Diagnostic event maps are bounded. The Publisher retains the exact
+    # accepted event pair for request 0, so an evicted diagnostic copy does
+    # not erase its privately held save evidence.
+    job = runtime.generation_jobs._jobs[lifecycle._job_id]
+    inbox = runtime._generation_executor_inbox
+    request_zero_sequences = [
+        sequence for sequence, event in inbox._events.items()
+        if event.progress.request_index == 0
+        and event.progress.kind in {"remote_outputs_ready", "outputs_ready"}
+    ]
+    assert len(request_zero_sequences) == 2
+    with runtime.generation_jobs._lock:
+        for sequence in request_zero_sequences:
+            job.events.pop(sequence, None)
+    with inbox._lock:
+        for sequence in request_zero_sequences:
+            inbox._events.pop(sequence, None)
+
+    history_before_save = copy.deepcopy(state["history"])
+    capacity = integration._capacity_owner
+    ledger_operations = set(capacity._ledger._operations)
+    ledger_reservations = set(capacity._ledger._reservations)
+    saved, save_status = owners[
+        "save_profile_a_generation_project_for_characterization"
+    ](locators[1])
+    assert save_status == "profile_a_project_saved"
+    assert saved.request_count == 2
+    assert saved.registered_candidate_count == 2
+    assert saved.save_state == "saved"
+    assert state["history"] == history_before_save
+    assert state["project"] is not None
+    assert runtime.generation_jobs.snapshot(lifecycle._job_id)["save_state"] == "saved"
+    assert set(capacity._ledger._operations) == ledger_operations
+    assert set(capacity._ledger._reservations) == ledger_reservations
+
+    in_memory = next(line for line in state["project"].prompt_lines
+                     if line.id == "illustration-001").generated_candidates
+    assert [item["generation_provenance"]["request_index"] for item in in_memory] == [0, 1]
+    assert [item["run_index"] for item in in_memory] == [1, 2]
+    reopened = load_project_from_json(project_path)
+    persisted = next(line for line in reopened.prompt_lines
+                     if line.id == "illustration-001").generated_candidates
+    assert [item["generation_provenance"]["request_index"] for item in persisted] == [0, 1]
+    for item in persisted:
+        path = Path(resolve_project_asset_path(item["path"], project_path))
+        assert path.is_file()
+        assert path.parent == writer._roots["promoted_assets"]._path
+    assert len(next(line for line in project_before_save.prompt_lines
+                    if line.id == "illustration-001").generated_candidates) == 2
+
+    runtime.close()
+    worker.close_for_characterization()
     writer.close()
     runtime.finish_generation_worker_storage_close_for_characterization()
 

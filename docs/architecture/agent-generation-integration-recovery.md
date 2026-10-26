@@ -1535,9 +1535,66 @@ count-only result, and uncertain/partial outcomes are never replayed.
 
 The characterized success boundary is in-memory Candidate registration plus
 the existing Undo snapshot and Job registered count. Project JSON is unchanged
-and the save callback is not invoked. Project save remains a separate
-implementation gate. Native disposable Windows tests cover 1, 2 and 16 images,
-ordered exact provenance, copied locator refusal, Host close uncertainty and
-capacity close serialization. No result authorizes production Start, storage,
-promotion, Candidate publication, save or Recovery; all capability flags
-remain false and `authorship=unverified`.
+and the save callback is not invoked at the 19G-G checkpoint; the following
+19G-H section adds a separate Job-level save after all requests have settled.
+Native disposable Windows tests cover 1, 2 and 16 images, ordered exact
+provenance, copied locator refusal, Host close uncertainty and capacity close
+serialization. No result authorizes production Start, storage, promotion,
+Candidate publication, save or Recovery; all capability flags remain false
+and `authorship=unverified`.
+
+## C2B-8D-19G-H Profile A original-Host Project save
+
+19G-H adds the next host-owned transition after in-memory 19G-G Candidate
+registration. The exact registered Candidate locator is a content/correlation
+handle only; the runtime resolves and revalidates its private Publisher
+receipt, protected Admission and Promotion evidence, source request, accepted
+Job/Inbox events, current Host/Claim, original Project object/path, immutable
+source/review baseline, pairing/activation/epoch and read-only Project JSON
+reference. The save is allowed only when every Job request is settled and each
+successful request has exact matching remote/output/registered counts and a
+registered G-G receipt. An unsent, in-progress, uncertain or partially
+registered request refuses before consuming the save. A failed request is
+settled only with zero outputs, zero registrations and no protected publication
+evidence.
+
+The app's fixed `save_profile_a_generation_project_for_characterization`
+wrapper is the only entry point. Its Host callback bundle is captured from the
+exact current `app.py` frame and retains the existing
+`save_agent_scene_module_swap_project` callback, which uses
+`core.io.save_project_to_json`. The callback receives only the already-bound
+Project object/path. The current Publisher's exact G-G registered-prefix
+snapshots support sequential requests while preserving the original source
+snapshot as the review baseline. After all requests settle, the final expected
+Project serialization is compared with the existing Project object, then the
+normal writer runs once and the saved JSON is reloaded and checked against
+exact Candidate provenance and protected promoted paths.
+
+Capacity, lifecycle, Publisher and Promotion save leases serialize close and
+invalidation against this bounded operation. Host/native verification and the
+writer callback run outside Job/Inbox and owner mutexes. Because Windows will
+not allow `os.replace` with the selected Project reference handle open, the
+exact read-only reference is closed only after the save claim crosses its
+one-shot boundary. It is reopened on the same path and its NTFS, ACL, ordinary
+path identity and resulting file identity/revision are verified. A successful
+replacement is expected to change file identity; this live update is not
+author authentication or restart authority.
+
+Save outcomes are distinct: an unchanged original file plus callback `False`
+is `save_failed`; a verified callback success plus reloaded expected JSON is
+`saved`; exception, lost acknowledgment, Host close, or post-write mismatch is
+retained `save_uncertain`. The save is never automatically retried. A save
+failure does not roll back already registered in-memory Candidates or their
+Undo entry. Concurrent calls and exact replays expose only the retained
+count/status result, never invoke another writer.
+
+This is native Windows disposable characterization of a local existing writer,
+not production activation. It does not provide a production Start surface,
+cross-process or power-loss durability guarantee, restart-time save authority,
+Candidate recovery, cleanup or discard. `execution_available=false`,
+`protected_storage_available=false`, `promotion_available=false`,
+`candidate_publication_allowed=false`, `project_save_allowed=false`, and
+`authorship=unverified` remain unchanged. Production still requires explicit
+UI/Start design, production root provisioning and capacity policy, real
+ComfyUI/HTTP interoperability, durable intent-before-send and a separately
+reviewed restart/Recovery/retention policy.
