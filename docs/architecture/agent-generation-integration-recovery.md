@@ -52,15 +52,15 @@ Decision audit refreshed 2026-10-27 against Public main `0adcf5ba10a54a4a80db15d
 
 Desktop's [README](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/README.md), [roadmap](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/roadmap.md), [Phase 3 generation plan](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/phase-3-generation-plan.md), and [Prompt Graph analysis contract](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/project-prompt-graph-analysis.md) document existing local Generate Once/Batch, Candidate-first capture and explicit Save. Its queue is process-local and lost on backend restart; generated files remain for manual inspection. Phase 5 LLM/MCP is deferred. The [Desktop architecture note](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/desktop-architecture.md) is planning material, not a complete implementation inventory. No Desktop files are changed. Public product boundaries are in [Pro / Exp](product-boundaries.md).
 
-Public's one-Scene Module Swap is a working review/apply example, not the broader existing-set story. Its review request uses Public's session mailbox and its Apply remains tied to the original Streamlit host; Desktop has not consumed this API. The current MCP Batch Replace tool returns Preview only and has no MCP Apply. Treat the handoff below as a proposed portable boundary, not an existing cross-app integration.
+Public's one-Scene Module Swap is a working review/apply example, not the broader existing-set story. Its review request uses Public's session mailbox and its Apply remains tied to the original Streamlit host; Desktop has not consumed this API. The current MCP Batch Replace tool returns Preview only and has no MCP Apply. The existing single-Scene JSON envelope is now recorded below as a portable proposal/observation sample, not as an existing cross-app integration or an answer to the broader set-level proposal gap.
 
 ### Existing-set edit and Public-to-Desktop transfer
 
 | Decision point | Current evidence and proposed owner boundary |
 | --- | --- |
 | **Works today** | `promptgraph_request_scene_module_swap_review` recomputes and queues one explicit Scene Module Swap for human review in the original Public host. `promptgraph_preview_batch_replace` previews explicit Illustration IDs but cannot Apply through MCP. Neither is a set-wide structured change proposal. |
-| **Missing minimum** | A versioned detached proposal bound to the selected Project baseline/freshness fingerprint, exact target Scene/Illustration IDs, Before→After values, intended unchanged scope and expected operation/image counts. The app must build a fresh diff, require human approval, then call existing Apply/Undo/Save owners. IDs, fingerprints and proposal content are identity/evidence, never authorization. |
-| **Next owner** | Use a bounded Desktop handoff for the broader set-level composition; do not add a generic agent writer or broaden Public MCP Apply. Public's one-Scene path remains a narrow example from which to derive the data contract. Desktop must revalidate and apply through its own owners. |
+| **Missing minimum** | For broader set-level editing, a proposal bound to the selected Project baseline/freshness fingerprint, exact target Scene/Illustration IDs, Before→After values, intended unchanged scope and expected operation/image counts is still missing. The app must build a fresh diff, require human approval, then call existing Apply/Undo/Save owners. IDs, fingerprints and proposal content are identity/evidence, never authorization. |
+| **Next owner** | Use a bounded Desktop handoff for the broader set-level composition; do not add a generic agent writer or broaden Public MCP Apply. The existing single-Scene envelope is the narrow producer sample documented below. Desktop must revalidate and apply through its own owners. |
 | **Acceptance to freeze Public v1** | Desktop consumes the versioned T0/T1 contract without Streamlit state, binds it to its selected Project baseline and exact targets, presents the fresh editable diff, requires explicit approval, and applies through existing owners with Undo and explicit Save. Until this is demonstrated, the Public-to-Desktop exit is not complete; after acceptance, recommend Public v1 maintenance. |
 
 The storyboard story also needs an actual vision input. Public's Candidate observation declares image bytes unavailable and availability unknown; `get_illustration` returns prompt/metadata/references, not image content. The minimal first path is for the user to attach the anchor image to the vision-capable LLM conversation while the app separately binds the proposal to the selected Project baseline and Illustration ID; the human confirms that the attachment is that selected Illustration. This input/consent bridge is Desktop-owned for v2. A future bounded, host-authorized selected-image resource is another option, with explicit consent. Do not expose arbitrary disk paths or let the model choose an image URL. The reviewable draft must contain the ordered Scene/Illustration outline and prompt candidates, retain reference identity, and be editable/approvable in an app-owned preview before existing creation/apply/save operations.
@@ -120,6 +120,77 @@ Any first real ComfyUI smoke is optional and separately human-approved: use a di
 Parent [#210](https://github.com/prompt-graph-lab/promptgraph/issues/210) and child Issues [#196](https://github.com/prompt-graph-lab/promptgraph/issues/196), [#198](https://github.com/prompt-graph-lab/promptgraph/issues/198), [#200](https://github.com/prompt-graph-lab/promptgraph/issues/200), [#202](https://github.com/prompt-graph-lab/promptgraph/issues/202), [#204](https://github.com/prompt-graph-lab/promptgraph/issues/204), [#206](https://github.com/prompt-graph-lab/promptgraph/issues/206), [#212](https://github.com/prompt-graph-lab/promptgraph/issues/212), and [#214](https://github.com/prompt-graph-lab/promptgraph/issues/214) remain OPEN in the audited state despite the merged implementation PR chain. Issue state is not evidence of missing behavior; reconcile with completion links, but change none of those issues here.
 
 **Stop rule:** add no further security abstraction, state machine, Journal schema or broad end-to-end suite without an explicit T2/T3 capability, user data-loss scenario, observed failure/race or adopted threat requirement. Prior investment is evidence, not a reason to extend it.
+
+### MCP-H1 Public-to-Desktop single-Scene proposal observation
+
+The existing `core.agent_facade.preview_scene_module_swap(project, request)`
+output is sufficient as a **single-Scene proposal/preview observation sample**;
+no wrapper, new version, or schema layer is added. The MCP producer is
+`promptgraph_preview_scene_module_swap`. The separate
+`promptgraph_request_scene_module_swap_review` asks the original Public host to
+recompute and retain a review proposal; it does not turn the JSON response
+into approval. Public review and Apply remain owned by its Streamlit host.
+
+The executable producer fixture and boundedness/privacy characterization are
+in [`tests/test_agent_facade.py`](../../tests/test_agent_facade.py):
+`test_scene_module_swap_preview_reuses_core_planner_and_is_deterministic`,
+`test_scene_module_swap_preview_is_a_standalone_json_observation`,
+`test_scene_module_swap_digest_covers_non_visible_targets_and_bounds_rows_and_text`,
+and `test_scene_module_swap_never_exposes_module_metadata_paths_or_exception_text`.
+They generate a one-Scene envelope from an in-memory Project, inspect its
+Before/After, JSON-round-trip it, and exercise omitted rows, truncated text,
+and private-data non-disclosure. The standalone test runs in a fresh Python
+process and verifies that the facade producer imports neither Streamlit nor
+the `ui` package. The test-created envelope is the example; no checked-in JSON
+sample is needed.
+
+| Envelope fields | Interpretation at the handoff boundary |
+| --- | --- |
+| `contract_version`, `operation`, `request` | `promptgraph.agent-facade.v1`, `scene_module_swap`, and the normalized explicit Scene ID, source/target Module names, and `strict`/`loose` mode. This describes the proposed operation; a consumer still validates its own allowlist and local model. |
+| `scene_id`, `scene_label`, `target_ids`, `target_count`, change/skip/block/drift counts, `prompt_only`, `negative_prompt_semantics`, `review_rows` | Public-origin Scene/Illustration identity plus a bounded, human-readable positive-prompt Before/After observation. The negative prompt is declared unchanged but is not included as a portable prompt value. IDs and labels are correlation/display data, not Desktop object handles. |
+| `valid`, `reason`, `diagnostics` | Public producer's result only. A consumer validates the received structure and recomputes rather than trusting asserted status. |
+| `source_fingerprint`, `projection_digest`, `plan_id` | Public-origin content identities. They are not a Desktop Project revision, signature, authorization, approval, or reusable Apply instruction. |
+
+This is a deliberately lossy observation. Public refuses a Scene with more
+than `MAX_TARGETS=1000` targets. For accepted previews, `review_rows` is capped
+at `MAX_ITEMS=100` and accompanied by `review_rows_truncated` and
+`review_rows_omitted`. Each `_text` value carries `text`, `truncated`, and
+`length`, with at most `MAX_TEXT=4000` displayed characters; added/removed
+token lists are capped at 100 with their own counts and truncation flags.
+Any invalid or incomplete envelope, omitted target, truncated row/text/token
+delta, or target-set mismatch must be refused for direct application. A
+receiving app must bind the requested intent to its explicitly selected local
+Project and revision, resolve and validate the exact local target set, then
+recompute a **complete local Before/After preview** and obtain fresh approval
+through its own owners. It must never apply a subset or treat Public's
+`review_rows` as mutation instructions. This observation does not establish
+full Public/Desktop Project or Module schema compatibility or Desktop parity.
+
+#### Desktop consumer checklist
+
+1. Consume the existing producer function/tool and the fields above at the
+   existing Desktop FastAPI service/API boundary, not through Public's
+   Streamlit mailbox. The fixture and contract evidence live in the linked
+   Public test file; no private Desktop code or fixture is copied here.
+2. Validate the exact contract version, allowlisted operation, request shape,
+   local Project/revision, and exact resolved target set. Test invalid version,
+   malformed or stale identity, missing/extra targets, invalid status, and all
+   truncation/omission cases as refusals. Treat incoming fingerprints and
+   IDs only as Public-side evidence; never infer local freshness or authority
+   from them.
+3. For one disposable Desktop Project, deserialize a producer envelope,
+   validate it, recompute the equivalent small local change preview, show the
+   app-owned review and obtain new human approval, then use existing Desktop
+   Apply/Undo/explicit Save owners. This acceptance demo is future Desktop
+   work and has **not** been run or verified by this Public change.
+
+The single-Scene contract does not provide multi-Scene or multi-operation
+natural-language editing. An image-anchored storyboard still requires user-
+supplied vision input or a separate host-authorized image resource; current
+Public MCP supplies no image bytes. Optional T2 generation is not a Public v1
+exit gate. Keep Public v1 in maintenance only after a Desktop consumer has
+actually completed and accepted the handoff demo above.
+
 ## C2B-8D-16A injected HTTP and Journal composition
 
 `ui.agent_generation_http_executor.compose_http_executor_for_characterization`

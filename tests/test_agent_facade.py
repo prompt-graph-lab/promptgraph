@@ -4,6 +4,8 @@ import copy
 import hashlib
 import importlib
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -636,6 +638,57 @@ def test_scene_module_swap_preview_reuses_core_planner_and_is_deterministic(monk
                                                if key != "plan_id"})
     json_only(first)
     assert proj == before and identities(proj) == identity
+
+
+def test_scene_module_swap_preview_is_a_standalone_json_observation():
+    script = r'''
+import json
+import sys
+
+from core.agent_facade import preview_scene_module_swap
+from core.graph_builder import build_graph
+from core.parser import parse_prompt
+from core.project import Project, PromptLine
+
+def line(line_id, text, *, index, line_type=None, label=None):
+    return PromptLine(
+        id=line_id, original_file_name=f"{line_id}.png", original_index=index,
+        current_index=index, original_text=text, current_text=text,
+        tokens=parse_prompt(text), line_type=line_type, separator_label=label,
+    )
+
+project = Project(
+    source_directory=r"C:\private\source-project",
+    prompt_lines=[
+        line("scene-1", "Sample Scene", index=0, line_type="separator", label="Sample Scene"),
+        line("illustration-1", "red, blue", index=1),
+    ],
+    module_library={"source": {"body": "red, blue"}, "target": {"body": "gold, green"}},
+)
+build_graph(project)
+envelope = preview_scene_module_swap(project, {
+    "scene_id": "scene-1", "source_module_name": "source",
+    "target_module_name": "target",
+})
+encoded = json.dumps(envelope, allow_nan=False)
+assert json.loads(encoded) == envelope
+assert envelope["contract_version"] == "promptgraph.agent-facade.v1"
+assert envelope["operation"] == "scene_module_swap"
+assert envelope["valid"] is True
+assert envelope["target_ids"] == ["illustration-1"]
+assert envelope["review_rows"][0]["before_positive_prompt"]["text"] == "red, blue"
+assert envelope["review_rows"][0]["after_positive_prompt"]["text"] == "gold, green"
+assert "source-project" not in encoded
+assert not any(name == "streamlit" or name.startswith("streamlit.") for name in sys.modules)
+assert not any(name == "ui" or name.startswith("ui.") for name in sys.modules)
+assert "app" not in sys.modules
+print(encoded)
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", script], check=True, capture_output=True, text=True,
+    )
+    envelope = json.loads(completed.stdout)
+    json_only(envelope)
 
 
 def test_scene_module_swap_loose_mode_allows_partial_core_match():
