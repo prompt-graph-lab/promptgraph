@@ -42,6 +42,69 @@ delivery and production authorization remain separate gates. Profile A,
 `execution_available=false`, `protected_storage_available=false` and
 `promotion_available=false` are unchanged.
 
+## C2B-8D-20A minimum viable Agent/MCP integration decision
+
+Decision audit refreshed 2026-10-27 against Public main `0adcf5ba10a54a4a80db15d8e714882bfcd2a2c2` (PR #223) and Desktop main `ca2baaeea2c380684264686a0a7cad2938e0daa7`.
+
+### Decision summary
+
+**Ship useful LLM assistance by reusing the existing product owners, not by completing the protected-generation chain first.** Start with bounded, read-only Desktop Project Prompt Graph analysis (T0), then define a detached, reviewable storyboard/draft proposal (T1). Public already has 13 bounded MCP tools and an end-to-end human-reviewed single-Scene Module Swap proposal/apply path. Its Agent Generation review remains Start-disabled; the protected 19G path is offline characterization.
+
+Desktop's [README](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/README.md), [roadmap](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/roadmap.md), [Phase 3 generation plan](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/phase-3-generation-plan.md), and [Prompt Graph analysis contract](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/project-prompt-graph-analysis.md) document existing local Generate Once/Batch, Candidate-first capture and explicit Save. Its queue is process-local and lost on backend restart; generated files remain for manual inspection. Phase 5 LLM/MCP is deferred. The [Desktop architecture note](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/desktop-architecture.md) is planning material, not a complete implementation inventory. No Desktop files are changed. Public product boundaries are in [Pro / Exp](product-boundaries.md).
+
+Public v1's reviewed Module Swap is the existing change-proposal example. Its bounded JSON proposal/content identity is useful contract material, but the review request still travels through Public's session mailbox and its approval/apply are Streamlit-host-owned; Desktop has not consumed this API. Treat portability as a design seam, not a demonstrated integration. A storyboard/draft proposal is the narrow missing workflow; preserve it as detached versioned JSON, not more Public protected-generation work. **Recommend freezing Public v1 to maintenance once Desktop accepts this portable T0/T1 boundary. Do not call v2 release-ready until Desktop consumes it and demonstrates review/edit of the storyboard/draft.** T2 generation and autonomous T3 are not Public v1 gates.
+
+Profile A excludes isolation from a hostile process running as the same Windows user. It does not relax validation of untrusted LLM/MCP arguments, active-Project identity, bounded/redacted observations, path safety, freshness, human approval, no arbitrary writes, or truthful uncertain outcomes.
+
+| Tier | Minimum user capability and controls | Defer |
+| --- | --- | --- |
+| **T0 read-only** | Bounded Project/graph evidence tied to the explicitly selected Project; distinguish evidence from model suggestions; no mutation. | Worker, protected roots, Journal, Candidate publication, Recovery. |
+| **T1 review-first** | Detached scoped proposal; app-owned fresh diff; explicit approval through existing Apply/Undo/Save owners. | Separate Agent writer, durable Worker Journal, cross-process lease, cryptographic authorship. |
+| **T2 approved generation** | Reuse local service with one-shot Start for exact Project, Illustration, workflow and run count; bounded endpoint/outputs; Candidate-first and explicit Save; truthful `not_sent / in_flight / accepted / failed / outcome_unknown`; never retry ambiguous sends. | Restart resume and 19G evidence chain absent a demonstrated need. |
+| **T3 autonomous/restart-resumable** | Future separately approved unattended work; durable intent, latest-head reconciliation, retention/Discard and audit. | Not a T0–T2 prerequisite. |
+
+### Paths and necessity verdict
+
+**Minimal reuse (recommended; low-to-medium complexity):** expose existing read-only Desktop graph results through a bounded LLM/MCP adapter, then add the detached T1 storyboard proposal. If T2 is later approved, adapt Desktop's existing `GenerationJobService`; do not build a second engine or port Public's Streamlit mailbox/session lifecycle.
+
+**Full protected-generation path (optional; high complexity):** native roots, capacity ledger, protected Journal, event custody and Recovery address loss of whether an external send occurred, which could otherwise cause an unsafe resend or result misattribution after a crash. They matter for approved unattended/restart-resumable T3, not T0/T1. T2 can first accept process-local loss by exposing unknown state, retaining files, requiring manual inspection after restart, and never retrying or auto-adopting. Promote a heavier control only for a named user-facing requirement or observed failure.
+
+| Existing boundary | T0/T1 decision | Promotion trigger |
+| --- | --- | --- |
+| Four native roots, pinned Project JSON handle, ACL/reparse checks | **Unnecessary** for Profile A T0/T1; substitute explicit selected-Project identity and ordinary freshness checks. | Observed live-operation Project replacement/overwrite risk in an approved T2 flow. |
+| 16+16 / 256 MiB ledger, cross-process lease, native inventory | **Defer**; substitute bounded results and no arbitrary destination address. | Measured disk exhaustion or concurrent-process retention failure. |
+| Protected Journal, double event custody, intent-before-send | **Unnecessary** for T0/T1; persisted records must never authorize replay. | T3, or evidence that T2 cannot prevent an ambiguous resend with in-memory one-shot state. |
+| Latest-head, restart Recovery, retention/Discard | **Defer**; T2 restart loses job state and leaves files for manual inspection. | Approved restart-resumable T3. |
+| Public Streamlit host/rerun lifecycle | **Reuse as-is** inside Public; substitute Desktop service/API owners rather than porting Streamlit. | No trigger to copy it. |
+| Profile B keys or cryptographic authorship | **Unnecessary** under Profile A; retain `authorship=unverified`. | Separately adopted multi-user/service threat model. |
+| Existing Candidate/Gallery writer, Undo and ordinary Project save | **Reuse as-is; essential** for T1/T2 mutation and generation. Do not create an Agent-only writer. |
+| Human Start | **Unnecessary** for read-only analysis/review; **essential** before every T2 submission for the exact current scope/configuration. |
+
+These verdicts preserve existing code and safeguards; they do not claim the characterized 19G path is production-ready.
+
+### Current owners and reuse boundary
+
+| Owner | Verified responsibility and recommendation |
+| --- | --- |
+| Public `core/agent_facade.py` + `agent_adapters/mcp_adapter.py` | 13 bounded observation/search/preview/review-request tools; no MCP Apply. Reuse safe JSON contracts and pure helpers where compatible. |
+| Public `app.py`, `ui/project_agent_session_pump.py`, `ui/agent_scene_module_swap_review_panel.py`, `ui/agent_scene_module_swap_approval_lifecycle.py`, `ui/agent_scene_module_swap_apply_lifecycle.py`, and `core/module_swap_selected_routes.py` | Own paired-session synchronization and exact human-reviewed Module Swap Apply through existing Undo/Save callbacks. This is a T1 example; its Streamlit state is not portable. |
+| Public `ui/agent_generation_review_panel.py` | Shows frozen request details but has no Start; protected C2B-8D code is offline characterization. Do not make it a T0/T1 prerequisite. |
+| Desktop `backend/promptgraph_backend/services/generation_jobs.py`, `backend/promptgraph_backend/services/generation_batches.py`, `backend/promptgraph_backend/api/generation.py`, `backend/promptgraph_backend/api/jobs_ws.py` | Existing process-local Generate Once/Batch, Candidate-first capture, targeted cancel and explicit Save; WebSocket observes but does not own jobs. Preferred T2 reuse; no restart resume. |
+| Desktop Prompt Graph track | Existing deterministic PG analysis is the T0 source. Expose detached bounded evidence; keep model suggestions separate and add no graph write. |
+
+Share only small framework-independent functions and validated data contracts. Do not create a `Common Agent Generation Core` containing Streamlit state, process ownership, Project/OS handles, or service lifecycle. Desktop should recompute freshness and authorization through its own working-session/API/service owners.
+
+### Revised order and stop rule
+
+1. **T0 read-only assistance:** bounded/redacted selected-Project graph evidence; suggestions labeled as model output; no filesystem paths, mutation or generation.
+2. **T1 storyboard/draft:** versioned JSON for reference identity, ordered Scene/Illustration outline and prompt candidates; app-owned validation/diff; human edits and approves; apply through existing Project/Scene/Illustration owners, Undo and explicit Save. No arbitrary model paths or file creation.
+3. **Optional T2 bridge:** only after separate approval, route one bounded Generate Once/Batch through Desktop's existing job service with exact-scope Human Start, truthful unknown state, no retry, Candidate-first and explicit Save.
+
+Any first real ComfyUI smoke is optional and separately human-approved: use a disposable Project copy, one Illustration and one run; show the exact endpoint, workflow and target before Start; stop after timeout/ambiguous submission without retry; let the human decide whether to Save. This audit performs no network call.
+
+Parent [#210](https://github.com/prompt-graph-lab/promptgraph/issues/210) and child Issues [#196](https://github.com/prompt-graph-lab/promptgraph/issues/196), [#198](https://github.com/prompt-graph-lab/promptgraph/issues/198), [#200](https://github.com/prompt-graph-lab/promptgraph/issues/200), [#202](https://github.com/prompt-graph-lab/promptgraph/issues/202), [#204](https://github.com/prompt-graph-lab/promptgraph/issues/204), [#206](https://github.com/prompt-graph-lab/promptgraph/issues/206), [#212](https://github.com/prompt-graph-lab/promptgraph/issues/212), and [#214](https://github.com/prompt-graph-lab/promptgraph/issues/214) remain OPEN in the audited state despite the merged implementation PR chain. Issue state is not evidence of missing behavior; reconcile with completion links, but change none of those issues here.
+
+**Stop rule:** add no further security abstraction, state machine, Journal schema or broad end-to-end suite without an explicit T2/T3 capability, user data-loss scenario, observed failure/race or adopted threat requirement. Prior investment is evidence, not a reason to extend it.
 ## C2B-8D-16A injected HTTP and Journal composition
 
 `ui.agent_generation_http_executor.compose_http_executor_for_characterization`
