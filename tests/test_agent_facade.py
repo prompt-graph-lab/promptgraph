@@ -678,7 +678,7 @@ assert envelope["valid"] is True
 assert envelope["target_ids"] == ["illustration-1"]
 assert envelope["review_rows"][0]["before_positive_prompt"]["text"] == "red, blue"
 assert envelope["review_rows"][0]["after_positive_prompt"]["text"] == "gold, green"
-assert r"C:\private\source-project" not in encoded
+assert "source-project" not in encoded
 assert not any(name == "streamlit" or name.startswith("streamlit.") for name in sys.modules)
 assert not any(name == "ui" or name.startswith("ui.") for name in sys.modules)
 assert "app" not in sys.modules
