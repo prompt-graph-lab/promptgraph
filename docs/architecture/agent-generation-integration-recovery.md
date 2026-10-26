@@ -52,7 +52,20 @@ Decision audit refreshed 2026-10-27 against Public main `0adcf5ba10a54a4a80db15d
 
 Desktop's [README](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/README.md), [roadmap](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/roadmap.md), [Phase 3 generation plan](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/phase-3-generation-plan.md), and [Prompt Graph analysis contract](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/project-prompt-graph-analysis.md) document existing local Generate Once/Batch, Candidate-first capture and explicit Save. Its queue is process-local and lost on backend restart; generated files remain for manual inspection. Phase 5 LLM/MCP is deferred. The [Desktop architecture note](https://github.com/prompt-graph-lab/promptgraph-desktop/blob/main/docs/desktop-architecture.md) is planning material, not a complete implementation inventory. No Desktop files are changed. Public product boundaries are in [Pro / Exp](product-boundaries.md).
 
-Public v1's reviewed Module Swap is the existing change-proposal example. Its bounded JSON proposal/content identity is useful contract material, but the review request still travels through Public's session mailbox and its approval/apply are Streamlit-host-owned; Desktop has not consumed this API. Treat portability as a design seam, not a demonstrated integration. A storyboard/draft proposal is the narrow missing workflow; preserve it as detached versioned JSON, not more Public protected-generation work. **Recommend freezing Public v1 to maintenance once Desktop accepts this portable T0/T1 boundary. Do not call v2 release-ready until Desktop consumes it and demonstrates review/edit of the storyboard/draft.** T2 generation and autonomous T3 are not Public v1 gates.
+Public's one-Scene Module Swap is a working review/apply example, not the broader existing-set story. Its review request uses Public's session mailbox and its Apply remains tied to the original Streamlit host; Desktop has not consumed this API. The current MCP Batch Replace tool returns Preview only and has no MCP Apply. Treat the handoff below as a proposed portable boundary, not an existing cross-app integration.
+
+### Existing-set edit and Public-to-Desktop transfer
+
+| Decision point | Current evidence and proposed owner boundary |
+| --- | --- |
+| **Works today** | `promptgraph_request_scene_module_swap_review` recomputes and queues one explicit Scene Module Swap for human review in the original Public host. `promptgraph_preview_batch_replace` previews explicit Illustration IDs but cannot Apply through MCP. Neither is a set-wide structured change proposal. |
+| **Missing minimum** | A versioned detached proposal bound to the selected Project baseline/freshness fingerprint, exact target Scene/Illustration IDs, Before→After values, intended unchanged scope and expected operation/image counts. The app must build a fresh diff, require human approval, then call existing Apply/Undo/Save owners. IDs, fingerprints and proposal content are identity/evidence, never authorization. |
+| **Next owner** | Use a bounded Desktop handoff for the broader set-level composition; do not add a generic agent writer or broaden Public MCP Apply. Public's one-Scene path remains a narrow example from which to derive the data contract. Desktop must revalidate and apply through its own owners. |
+| **Acceptance to freeze Public v1** | Desktop consumes the versioned T0/T1 contract without Streamlit state, binds it to its selected Project baseline and exact targets, presents the fresh editable diff, requires explicit approval, and applies through existing owners with Undo and explicit Save. Until this is demonstrated, the Public-to-Desktop exit is not complete; after acceptance, recommend Public v1 maintenance. |
+
+The storyboard story also needs an actual vision input. Public's Candidate observation declares image bytes unavailable and availability unknown; `get_illustration` returns prompt/metadata/references, not image content. The minimal first path is for the user to attach the anchor image to the vision-capable LLM conversation while the app separately binds the proposal to the selected Project baseline and Illustration ID; the human confirms that the attachment is that selected Illustration. This input/consent bridge is Desktop-owned for v2. A future bounded, host-authorized selected-image resource is another option, with explicit consent. Do not expose arbitrary disk paths or let the model choose an image URL. The reviewable draft must contain the ordered Scene/Illustration outline and prompt candidates, retain reference identity, and be editable/approvable in an app-owned preview before existing creation/apply/save operations.
+
+Public v1's reviewed Module Swap is therefore only a narrow proof point; the broader set edit and storyboard remain Desktop-owned gaps. Under Issue #224's explicit handoff option, Public v1 may enter maintenance after Desktop accepts the portable contract and the missing workflows have named owners and acceptance criteria. That records a bounded handoff, not completion of both product stories. **Do not call the two-story outcome complete or v2 release-ready until Desktop consumes the detached T0/T1 contract and demonstrates both review flows.** T2 generation and autonomous T3 are not Public v1 gates.
 
 Profile A excludes isolation from a hostile process running as the same Windows user. It does not relax validation of untrusted LLM/MCP arguments, active-Project identity, bounded/redacted observations, path safety, freshness, human approval, no arbitrary writes, or truthful uncertain outcomes.
 
@@ -60,7 +73,7 @@ Profile A excludes isolation from a hostile process running as the same Windows 
 | --- | --- | --- |
 | **T0 read-only** | Bounded Project/graph evidence tied to the explicitly selected Project; distinguish evidence from model suggestions; no mutation. | Worker, protected roots, Journal, Candidate publication, Recovery. |
 | **T1 review-first** | Detached scoped proposal; app-owned fresh diff; explicit approval through existing Apply/Undo/Save owners. | Separate Agent writer, durable Worker Journal, cross-process lease, cryptographic authorship. |
-| **T2 approved generation** | Reuse local service with one-shot Start for exact Project, Illustration, workflow and run count; bounded endpoint/outputs; Candidate-first and explicit Save; truthful `not_sent / in_flight / accepted / failed / outcome_unknown`; never retry ambiguous sends. | Restart resume and 19G evidence chain absent a demonstrated need. |
+| **T2 approved generation** | Future adapter target: one-shot Start for exact Project, Illustration, workflow and run count; bounded endpoint/outputs; Candidate-first and explicit Save; truthful `not_sent / in_flight / accepted / failed / outcome_unknown`; never retry ambiguous sends. | Restart resume and 19G evidence chain absent a demonstrated need. |
 | **T3 autonomous/restart-resumable** | Future separately approved unattended work; durable intent, latest-head reconciliation, retention/Discard and audit. | Not a T0–T2 prerequisite. |
 
 ### Paths and necessity verdict
@@ -82,6 +95,8 @@ Profile A excludes isolation from a hostile process running as the same Windows 
 
 These verdicts preserve existing code and safeguards; they do not claim the characterized 19G path is production-ready.
 
+At the audited Desktop main, `GenerationJobService.JobState` is `connecting/submitting/queued/running/capturing/completed/failed/cancelled`; transport errors map to `failed`, with no distinct `outcome_unknown` state. The T2 states in the tier table are a future adapter requirement, not observed Desktop behavior. Any later T2 bridge must resolve that gap before claiming truthful unknown outcomes; this PR does not implement it.
+
 ### Current owners and reuse boundary
 
 | Owner | Verified responsibility and recommendation |
@@ -96,9 +111,9 @@ Share only small framework-independent functions and validated data contracts. D
 
 ### Revised order and stop rule
 
-1. **T0 read-only assistance:** bounded/redacted selected-Project graph evidence; suggestions labeled as model output; no filesystem paths, mutation or generation.
-2. **T1 storyboard/draft:** versioned JSON for reference identity, ordered Scene/Illustration outline and prompt candidates; app-owned validation/diff; human edits and approves; apply through existing Project/Scene/Illustration owners, Undo and explicit Save. No arbitrary model paths or file creation.
-3. **Optional T2 bridge:** only after separate approval, route one bounded Generate Once/Batch through Desktop's existing job service with exact-scope Human Start, truthful unknown state, no retry, Candidate-first and explicit Save.
+1. **Public v1 transfer acceptance:** freeze a detached versioned proposal contract from the existing one-Scene review example and have Desktop consume it without Public's Streamlit mailbox. Acceptance is the selected-baseline/target-bound fresh diff, explicit review, existing Apply/Undo/Save owners, plus a documented narrow owner for the still-missing broader set edit.
+2. **Desktop T0/T1 workflows:** expose bounded read-only graph evidence, then implement the vision-input and editable storyboard/draft review path. Keep evidence separate from model suggestions; no arbitrary paths, file creation or graph writes.
+3. **Optional T2 bridge:** only after separate approval, route one bounded Generate Once/Batch through Desktop's existing job service with exact-scope Human Start, a newly defined truthful unknown outcome, no retry, Candidate-first and explicit Save. This outcome classification is not in the current JobState enum.
 
 Any first real ComfyUI smoke is optional and separately human-approved: use a disposable Project copy, one Illustration and one run; show the exact endpoint, workflow and target before Start; stop after timeout/ambiguous submission without retry; let the human decide whether to Save. This audit performs no network call.
 
