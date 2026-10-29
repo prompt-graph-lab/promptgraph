@@ -190,10 +190,53 @@ def test_scene_row_cap_and_utf8_byte_limit_fail_closed():
     assert h1_export._serialize_complete_observation(over_row_cap, _request()) == ("incomplete", None)
 
     oversized = preview_scene_module_swap(_project(), _request())
-    oversized["future_canonical_field"] = "x" * h1_export.SCENE_MODULE_SWAP_H1_MAX_BYTES
+    oversized["future_canonical_field"] = "x" * h1_export.SCENE_MODULE_SWAP_H1_D1_REQUEST_LIMIT_BYTES
     status, payload = h1_export._serialize_complete_observation(oversized, _request())
     assert status == "oversized"
     assert payload is None
+
+
+def test_file_under_d1_limit_is_refused_when_request_wrapper_would_exceed_limit(monkeypatch):
+    observation = preview_scene_module_swap(_project(), _request())
+    empty_field = deepcopy(observation)
+    empty_field["boundary_padding"] = ""
+    empty_payload = json.dumps(
+        empty_field, ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    one_char_field = deepcopy(empty_field)
+    one_char_field["boundary_padding"] = "x"
+    fixed_field_overhead = len(json.dumps(
+        one_char_field, ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")) - len(empty_payload) - 1
+    target_size = h1_export.SCENE_MODULE_SWAP_H1_D1_REQUEST_LIMIT_BYTES - 1
+    padding_length = target_size - len(empty_payload) - fixed_field_overhead
+    near_limit = deepcopy(empty_field)
+    near_limit["boundary_padding"] = "x" * padding_length
+    near_limit_bytes = json.dumps(
+        near_limit, ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    assert len(near_limit_bytes) == target_size
+    assert len(near_limit_bytes) < h1_export.SCENE_MODULE_SWAP_H1_D1_REQUEST_LIMIT_BYTES
+
+    wrapper = json.dumps(
+        {"workingRevision": "0" * 64, "observation": {}},
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    wrapper_overhead = len(wrapper) - len(b"{}")
+    assert wrapper_overhead <= h1_export.SCENE_MODULE_SWAP_H1_D1_WRAPPER_HEADROOM_BYTES
+
+    state = {"current_project_path": "active.json"}
+    fake = _render(
+        monkeypatch,
+        _project(),
+        state,
+        clicks={"scene_module_swap_h1_generate"},
+        preview_func=lambda *_args, **_kwargs: near_limit,
+    )
+
+    assert fake.downloads == []
+    assert any("Desktopのサイズ上限" in message for message in fake.messages)
 
 
 def test_text_truncation_and_zero_change_do_not_offer_a_download():

@@ -17,7 +17,15 @@ from core.operations import get_module_swap_route_options
 
 SCENE_MODULE_SWAP_H1_SNAPSHOT_KEY = "_scene_module_swap_h1_export_snapshot"
 SCENE_MODULE_SWAP_H1_MAX_ROWS = 100
-SCENE_MODULE_SWAP_H1_MAX_BYTES = 4 * 1024 * 1024
+SCENE_MODULE_SWAP_H1_D1_REQUEST_LIMIT_BYTES = 4 * 1024 * 1024
+# D1 receives the observation inside a request object with a 64-character
+# workingRevision. This exceeds the measured JSON wrapper overhead so the
+# complete Desktop request stays below D1's body limit.
+SCENE_MODULE_SWAP_H1_D1_WRAPPER_HEADROOM_BYTES = 256
+SCENE_MODULE_SWAP_H1_MAX_BYTES = (
+    SCENE_MODULE_SWAP_H1_D1_REQUEST_LIMIT_BYTES
+    - SCENE_MODULE_SWAP_H1_D1_WRAPPER_HEADROOM_BYTES
+)
 _REQUEST_KEYS = {
     "scene_id",
     "source_module_name",
