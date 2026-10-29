@@ -14,6 +14,7 @@ from ui.agent_scene_module_swap_review_panel import (
     render_agent_review_navigation,
     render_agent_scene_module_swap_review_panel,
 )
+from ui.scene_module_swap_h1_export import render_scene_module_swap_h1_export
 from ui.agent_scene_module_swap_apply_lifecycle import (
     apply_agent_scene_module_swap_approval,
 )
@@ -11861,6 +11862,7 @@ def render_gallery_active_operation_panel(project) -> None:
         _render_gallery_operation_scope_capability(active_operation)
         if active_operation == "module_swap":
             render_module_swap_section(project)
+            render_scene_module_swap_h1_export(project, is_free=is_free)
         elif active_operation == "attribute_group_swap":
             render_gallery_attribute_group_swap_section(project)
         elif active_operation == "batch_edit":
