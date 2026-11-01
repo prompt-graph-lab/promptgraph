@@ -118,3 +118,36 @@ class ModuleSwapConfirmationRoundTripTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_more_than_forty_period_swap_rows_are_fully_reviewable():
+    import copy
+    # Execute the actual extracted production renderers in Streamlit, with the
+    # existing rendering seam recording every full prompt as a code element.
+    script = _app_script().replace(
+        'def render_batch_preview_text(*_args, **_kwargs):\n    pass',
+        'def render_batch_preview_text(*_args, **_kwargs):\n    st.code(_args[0], language=None)',
+    )
+    at = AppTest.from_string(script, default_timeout=30).run(timeout=30)
+    project = at.session_state['project']
+    template = project.prompt_lines[1]
+    for index in range(45):
+        line = copy.copy(template)
+        line.id = f'period-{index}'
+        line.original_index = line.current_index = index + 1
+        line.current_text = f'pose phrase. source hair, source eyes, detail {index}'
+        line.tokens = [f'pose phrase. source hair', 'source eyes', f'detail {index}']
+        if index == 0:
+            project.prompt_lines[1] = line
+        else:
+            project.prompt_lines.append(line)
+    at.run(timeout=30)
+    at.button(key='module_swap_preview_btn').click().run(timeout=30)
+    assert not at.exception
+    preview = at.session_state['module_swap_preview']['preview']
+    assert preview['changed_line_count'] == 45
+    assert len(at.code) == 90
+    assert at.code[-2].value == 'pose phrase. source hair, source eyes, detail 44'
+    assert at.code[-1].value == 'pose phrase. target hair, target eyes, detail 44'
+    at.checkbox(key='module_swap_selected_routes_confirm').set_value(True).run(timeout=30)
+    assert not at.button(key='module_swap_selected_routes_apply_btn').disabled

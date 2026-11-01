@@ -1,3 +1,4 @@
+from core.module_period_projection import projected_tokens, rewrite_projected_tokens
 from typing import List, Set, Dict, Any, Optional
 from core.project import Project
 from core.graph_builder import build_graph
@@ -667,10 +668,42 @@ def get_attribute_group_rows(project: Project, group_name: str) -> List[Dict[str
         })
     return rows
 
+def module_operation_tokens(text: str) -> List[str]:
+    """Read-only Module projection; never use this for persisted line.tokens."""
+    return projected_tokens(text or "", _parse_prompt_for_module_preset(text or ""))
+
+
+def module_candidate_line_tokens(line, *, fallback_to_prompt=False) -> List[str]:
+    text = getattr(line, "current_text", "") or ""
+    legacy = _parse_prompt_for_module_preset(text)
+    projected = projected_tokens(text, legacy)
+    if projected != legacy:
+        stored = getattr(line, "tokens", None) or parse_prompt(text)
+        return list(dict.fromkeys(stored + projected))
+    stored = getattr(line, "tokens", [])
+    return (stored or parse_prompt(text)) if fallback_to_prompt else stored
+
+
+def _rewrite_module_operation_tokens(text, after_tokens, before_tokens=None):
+    legacy = _parse_prompt_for_module_preset(text)
+    return rewrite_projected_tokens(text, legacy, after_tokens,
+                                    whole_tokens=before_tokens == legacy)
+
+
+def _module_matching_tokens(text, targets):
+    legacy = _parse_prompt_for_module_preset(text)
+    projected = module_operation_tokens(text)
+    # Existing whole-token rules/selection retain priority over a new fragment.
+    keys = {_token_match_key(token) for token in targets}
+    if any(token not in projected and _token_match_key(token) in keys for token in legacy):
+        return legacy
+    return projected
+
+
 def _module_rule_tokens(module_body: str) -> List[str]:
     tokens = []
     seen_bases = set()
-    for token in parse_prompt(module_body or ""):
+    for token in projected_tokens(module_body or "", parse_prompt(module_body or "")):
         if is_structural_mod_marker(token):
             continue
         token_text = str(token).strip()
@@ -933,7 +966,7 @@ def preview_module_candidates(
             continue
         line_keys = {
             _token_match_key(token)
-            for token in getattr(line, "tokens", [])
+            for token in module_candidate_line_tokens(line)
             if not is_structural_mod_marker(token) and _token_match_key(token)
         }
         if core_keys and not core_keys.issubset(line_keys):
@@ -999,7 +1032,7 @@ def scan_global_module_candidates(
     ]
     line_rows = []
     for line in lines:
-        tokens = getattr(line, "tokens", None) or parse_prompt(getattr(line, "current_text", "") or "")
+        tokens = module_candidate_line_tokens(line, fallback_to_prompt=True)
         token_keys = {
             _token_match_key(token)
             for token in tokens
@@ -1153,7 +1186,7 @@ def _replace_module_candidate_tokens_in_text(
     module_reference: str,
     module_tokens: List[str],
 ) -> tuple[str, bool, bool, bool]:
-    tokens = _parse_prompt_for_module_preset(text or "")
+    tokens = _module_matching_tokens(text or "", module_tokens)
     if any(extract_mod_info(token)["type"] in ("open", "close") for token in tokens):
         return text, False, False, True
     if module_reference in [token.strip() for token in tokens]:
@@ -1179,7 +1212,8 @@ def _replace_module_candidate_tokens_in_text(
 
     if not replaced_any:
         return text, False, False, False
-    return ", ".join(result_tokens), True, False, False
+    after = _rewrite_module_operation_tokens(text, result_tokens, tokens)
+    return (after, True, False, False) if after is not None else (text, False, False, True)
 
 def preview_apply_module_candidates(
     project: Project,
@@ -1295,7 +1329,7 @@ def _module_reference_replacement_preview(
     module_reference: str,
     module_tokens: List[str],
 ) -> Dict[str, Any]:
-    tokens = _parse_prompt_for_module_preset(text or "")
+    tokens = _module_matching_tokens(text or "", module_tokens)
     if any(extract_mod_info(token)["type"] in ("open", "close") for token in tokens):
         return {
             "after": text,
@@ -1345,8 +1379,12 @@ def _module_reference_replacement_preview(
             "skipped_existing_module_block": False,
             "removed_tokens": [],
         }
+    after = _rewrite_module_operation_tokens(text, result_tokens, tokens)
+    if after is None:
+        return {"after": text, "changed": False, "skipped_existing_reference": False,
+                "skipped_existing_module_block": True, "removed_tokens": []}
     return {
-        "after": ", ".join(result_tokens),
+        "after": after,
         "changed": True,
         "skipped_existing_reference": False,
         "skipped_existing_module_block": False,
@@ -1571,7 +1609,7 @@ def _module_swap_line_preview(
     source_module_name: str = "",
     target_module_name: str = "",
 ) -> Dict[str, Any] | None:
-    tokens = _parse_prompt_for_module_preset(getattr(line, "current_text", "") or "")
+    tokens = _module_matching_tokens(getattr(line, "current_text", "") or "", source_tokens)
     reference_preview = _module_reference_swap_line_preview(
         line,
         tokens,
@@ -1580,6 +1618,11 @@ def _module_swap_line_preview(
     )
     if reference_preview:
         return reference_preview
+    # An explicit reference owns this operation, even when its lossless edit
+    # refuses. Never reinterpret that refusal as permission for a body swap.
+    if any(extract_mod_info(token)["type"] == "open"
+           and extract_mod_info(token)["name"] == source_module_name for token in tokens):
+        return None
 
     source_by_key = {
         _token_match_key(token): token
@@ -1637,8 +1680,8 @@ def _module_swap_line_preview(
         + remaining_tokens[insert_at:]
     )
     before = getattr(line, "current_text", "") or ""
-    after = ", ".join(after_tokens)
-    if after == before:
+    after = _rewrite_module_operation_tokens(before, after_tokens, tokens)
+    if after is None or after == before:
         return None
 
     source_token_count = len(source_tokens)
@@ -1661,7 +1704,9 @@ def _module_swap_line_preview(
         "match_ratio": match_ratio,
         "before": before,
         "after": after,
-        "after_tokens": after_tokens,
+        "after_tokens": (_parse_prompt_for_module_preset(after)
+                         if module_operation_tokens(before) != _parse_prompt_for_module_preset(before)
+                         else after_tokens),
     }
 
 def _module_reference_swap_line_preview(
@@ -1702,8 +1747,8 @@ def _module_reference_swap_line_preview(
         replaced_target = True
 
     before = getattr(line, "current_text", "") or ""
-    after = ", ".join(after_tokens)
-    if after == before:
+    after = _rewrite_module_operation_tokens(before, after_tokens, tokens)
+    if after is None or after == before:
         return None
 
     return {
@@ -1724,7 +1769,9 @@ def _module_reference_swap_line_preview(
         "match_ratio": 1.0,
         "before": before,
         "after": after,
-        "after_tokens": after_tokens,
+        "after_tokens": (_parse_prompt_for_module_preset(after)
+                         if module_operation_tokens(before) != _parse_prompt_for_module_preset(before)
+                         else after_tokens),
     }
 
 def preview_module_swap(
@@ -4407,7 +4454,12 @@ def _replace_create_module_targets_in_text(
     module_targets: Set[str],
     module_library: Dict[str, Any] = None,
 ) -> tuple[str, bool, bool]:
-    tokens = _parse_prompt_for_module_preset(text)
+    tokens = _module_matching_tokens(text, token_targets)
+    projected = module_operation_tokens(text)
+    if any(target in projected and target not in tokens for target in token_targets):
+        # A whole legacy target selected the atomic representation, hiding
+        # another explicitly selected fragment. Refuse instead of subset Apply.
+        return text, False, True
     module_library = normalize_module_library(module_library or {})
     result_tokens = []
     changed = False
@@ -4487,7 +4539,8 @@ def _replace_create_module_targets_in_text(
 
     if not changed:
         return text, False, False
-    return ", ".join(result_tokens), True, False
+    after = _rewrite_module_operation_tokens(text, result_tokens, tokens)
+    return (after, True, False) if after is not None else (text, False, True)
 
 def preview_create_module_replace(
     project: Project,

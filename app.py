@@ -6886,6 +6886,8 @@ def is_valid_new_module_name(module_name: str) -> bool:
 
 def module_replace_target_options(project):
     from core.parser import extract_mod_info
+    from core.operations import _parse_prompt_for_module_preset
+    from core.module_period_projection import projected_selection_tokens
 
     token_options = {}
     module_library = get_project_module_library(project)
@@ -6903,10 +6905,12 @@ def module_replace_target_options(project):
         if getattr(line, "deleted", False):
             continue
         mod_stack = []
-        for token_idx, token in enumerate(line.tokens):
+        legacy_tokens = _parse_prompt_for_module_preset(line.current_text)
+        tokens = projected_selection_tokens(line.current_text, legacy_tokens, line.tokens)
+        for token_idx, token in enumerate(tokens):
             info = extract_mod_info(token)
             if info["type"] == "open":
-                if is_library_reference(line.tokens, token_idx, info["name"]):
+                if is_library_reference(tokens, token_idx, info["name"]):
                     continue
                 mod_stack.append(info["name"])
                 continue
@@ -15610,9 +15614,9 @@ def _render_selected_routes_module_swap_preview(preview, source_module, target_m
     elif preview.get("changed_line_count", 0) == 0:
         st.info("Module Swapで変更されるイラストはありません。")
 
+    st.caption("Unchanged rows may have no source Module match or an unsafe punctuation rewrite that was refused.")
     st.markdown("**Scene / Illustration diff**")
     entries = list(preview.get("entries") or [])
-    max_line_previews = 40
     rendered_count = 0
     for route_summary in preview.get("route_summaries") or []:
         route_id = route_summary.get("route_id", "")
@@ -15631,8 +15635,6 @@ def _render_selected_routes_module_swap_preview(preview, source_module, target_m
                 f"drift: {route_summary.get('drift_count', 0)}"
             )
             for entry in route_entries:
-                if rendered_count >= max_line_previews:
-                    continue
                 rendered_count += 1
                 st.markdown(f"**{entry.get('line_label') or entry.get('line_id')}**")
                 st.caption(
@@ -15642,7 +15644,7 @@ def _render_selected_routes_module_swap_preview(preview, source_module, target_m
                     f"result: {entry.get('operation')}"
                 )
                 if entry.get("skip_reason"):
-                    st.caption(f"Reason: {format_core_message_for_display(entry['skip_reason'])}")
+                    st.caption("Reason: no source Module match, or unsafe punctuation rewrite refused.")
                 st.caption(
                     f"Positive removed: {_short_preview(', '.join(entry.get('positive_removed_tokens') or []) or '(none)', 180)}"
                 )
@@ -15679,7 +15681,7 @@ def _render_selected_routes_module_swap_preview(preview, source_module, target_m
                 st.caption(f"Drift risk: {entry.get('drift_risk')}")
     hidden_count = max(0, len(entries) - rendered_count)
     if hidden_count:
-        st.caption(f"{hidden_count} additional Illustration previews are hidden.")
+        st.warning(f"{hidden_count} Illustration previews could not be rendered. Apply is disabled.")
 
     st.markdown("**Final confirmation**")
     st.caption(
@@ -15698,6 +15700,7 @@ def _render_selected_routes_module_swap_preview(preview, source_module, target_m
             not preview.get("valid")
             or preview.get("changed_line_count", 0) == 0
             or not confirmed
+            or hidden_count > 0
         ),
         key="module_swap_selected_routes_apply_btn",
     ):
@@ -15943,6 +15946,7 @@ def render_module_swap_section(project):
                         target_module,
                         target_line_ids=target_line_ids,
                         match_mode=match_mode,
+                        example_limit=len(project.prompt_lines),
                     ),
                     "selected_routes": False,
                 }
@@ -15973,7 +15977,7 @@ def render_module_swap_section(project):
         summary_cols = st.columns(4)
         summary_cols[0].metric("対象イラスト", preview["target_line_count"])
         summary_cols[1].metric("変更予定イラスト", preview["affected_line_count"])
-        summary_cols[2].metric("一致なしスキップ", preview["skipped_no_match_count"])
+        summary_cols[2].metric("No match / unsafe rewrite skipped", preview["skipped_no_match_count"])
         summary_cols[3].metric("対象範囲", scope_options.get(scope_key, scope_key))
         st.caption(f"対象範囲: {scope_options.get(scope_key, scope_key)}")
         st.caption(f"選択: {', '.join(selection_labels) if selection_labels else '(全イラスト)'}")
@@ -15984,6 +15988,8 @@ def render_module_swap_section(project):
         st.caption(f"Module B tokens: {_short_preview(', '.join(preview['target_tokens']), 180)}")
         st.caption(f"Strict core tokens: {_short_preview(', '.join(preview['core_tokens']), 180)}")
 
+        if preview["skipped_no_match_count"]:
+            st.caption("Skipped rows had no source Module match or an unsafe punctuation rewrite that was refused.")
         if preview["affected_line_count"] == 0:
             st.info("変更されるイラストはありません。")
         if preview["match_mode"] == "loose" and preview["affected_line_count"]:
@@ -16222,6 +16228,7 @@ def render_global_module_candidate_scanner_section(project):
                 global_library,
                 selected_apply_names,
                 min_core_match_lines=int(min_core_match_lines),
+                example_limit=len(project.prompt_lines),
             )
             st.session_state.global_module_candidate_apply_preview = {
                 "signature": apply_signature,
@@ -16265,7 +16272,7 @@ def render_global_module_candidate_scanner_section(project):
                 )
             if apply_preview["skipped_existing_module_block_count"]:
                 st.warning(
-                    f"{apply_preview['skipped_existing_module_block_count']} candidate(s) were skipped because the Illustration already contains structural module markers."
+                    f"{apply_preview['skipped_existing_module_block_count']} candidate(s) were skipped because of structural module markers or an unsafe punctuation rewrite."
                 )
             if apply_preview["skipped_no_change_count"]:
                 st.caption(f"Skipped no-change candidates: {apply_preview['skipped_no_change_count']}")
@@ -17483,6 +17490,7 @@ def render_create_module_from_scratch_section(project):
                     module_body,
                     token_targets=token_targets,
                     module_targets=module_targets,
+                    example_limit=len(project.prompt_lines),
                 ),
             }
 
@@ -17511,12 +17519,14 @@ def render_create_module_from_scratch_section(project):
             if preview["affected_line_count"] == 0:
                 st.info("No Illustrations will change. Applying will still save the module to the project library.")
             if preview["skipped_malformed_count"]:
-                st.warning("Some module ranges were skipped because they were malformed or nested.")
+                st.warning("Some module ranges or unsafe punctuation rewrites were skipped.")
 
             for example in preview["examples"]:
                 st.caption(f"{example['file']}:{example['line_number']}")
-                st.caption(f"Before: {_short_preview(example['before'], 140)}")
-                st.caption(f"After: {_short_preview(example['after'], 140)}")
+                st.caption("Before")
+                st.code(example["before"], language=None)
+                st.caption("After")
+                st.code(example["after"], language=None)
 
             if st.button(
                 "Apply Module Creation",
@@ -17587,6 +17597,7 @@ def render_create_module_from_scratch_section(project):
                     replacement_module,
                     token_targets=replace_token_targets,
                     module_targets=replace_module_targets,
+                    example_limit=len(project.prompt_lines),
                 ),
             }
 
@@ -17613,12 +17624,14 @@ def render_create_module_from_scratch_section(project):
             if replace_preview["affected_line_count"] == 0:
                 st.info("No Illustrations will change.")
             if replace_preview["skipped_malformed_count"]:
-                st.warning("Some module ranges were skipped because they were malformed or nested.")
+                st.warning("Some module ranges or unsafe punctuation rewrites were skipped.")
 
             for example in replace_preview["examples"]:
                 st.caption(f"{example['file']}:{example['line_number']}")
-                st.caption(f"Before: {_short_preview(example['before'], 140)}")
-                st.caption(f"After: {_short_preview(example['after'], 140)}")
+                st.caption("Before")
+                st.code(example["before"], language=None)
+                st.caption("After")
+                st.code(example["after"], language=None)
 
             if st.button(
                 "Apply Replace With Module",
@@ -19752,6 +19765,7 @@ def render_module_candidate_selection_section(project):
                 module_name,
                 core_tokens=core_tokens,
                 min_match_tokens=int(min_match_tokens),
+                example_limit=len(project.prompt_lines),
             )
             st.session_state.module_candidate_apply_preview = {
                 "signature": preview_signature,
@@ -19775,7 +19789,7 @@ def render_module_candidate_selection_section(project):
         apply_cols[0].metric("Candidates", apply_preview["candidate_line_count"])
         apply_cols[1].metric("Will change", apply_preview["affected_line_count"])
         apply_cols[2].metric("Already referenced", apply_preview["skipped_existing_reference_count"])
-        apply_cols[3].metric("Module blocks skipped", apply_preview["skipped_existing_module_block_count"])
+        apply_cols[3].metric("Module blocks / unsafe edits skipped", apply_preview["skipped_existing_module_block_count"])
         st.caption(f"Reference: `{apply_preview['module_reference']}`")
 
         if apply_preview["affected_line_count"] == 0:
@@ -19789,8 +19803,10 @@ def render_module_candidate_selection_section(project):
             st.caption(f"Matched to replace: {_short_preview(', '.join(example['matched_tokens']), 160)}")
             if example["missing_tokens"]:
                 st.caption(f"Missing, not inserted: {_short_preview(', '.join(example['missing_tokens']), 160)}")
-            st.caption(f"Before: {_short_preview(example['before'], 180)}")
-            st.caption(f"After: {_short_preview(example['after'], 180)}")
+            st.caption("Before")
+            st.code(example["before"], language=None)
+            st.caption("After")
+            st.code(example["after"], language=None)
 
         if st.button(
             "Confirm Apply Candidates",

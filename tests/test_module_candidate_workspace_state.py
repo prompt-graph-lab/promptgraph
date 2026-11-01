@@ -153,6 +153,9 @@ class _StreamlitStub:
     def columns(self, count):
         return [_Container(self.events) for _ in range(count)]
 
+    def code(self, message, **kwargs):
+        self.events.append(("code", message))
+
     def caption(self, message):
         self.events.append(("caption", message))
 
@@ -1010,6 +1013,38 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
             1,
         )
         self.assertEqual(st.rerun_count, 1)
+
+    def test_real_period_candidate_preview_renders_complete_literal_prompts(self):
+        namespace, st, calls, project, _ = self._runtime(
+            module_library={"Module A": {
+                "body": "red hair", "core_tokens": ["red hair"],
+                "min_match_tokens": 1,
+            }},
+            state={
+                "module_candidate_core_tokens_Module A": ["red hair"],
+                "module_candidate_min_match_tokens_Module A": 1,
+            },
+        )
+        before = ("  pose phrase. red hair,  " + "scene detail, " * 40
+                  + "<literal>&#x20;  ")
+        after = before.replace("red hair", "<mod:Module A>")
+        project.prompt_lines = [_line("line-1", before, 0)]
+        namespace["preview_project_module_candidates"] = preview_project_module_candidates
+        namespace["build_module_candidate_apply_plan"] = build_module_candidate_apply_plan
+        render = namespace[self.renderer_name]
+        st.button_clicks = {"module_candidate_preview_btn"}
+        render(project)
+        st.events.clear()
+        st.button_clicks = {"module_candidate_apply_preview_btn"}
+        render(project)
+        preview_state = st.session_state.module_candidate_apply_preview
+        self.assertEqual(preview_state["preview"]["affected_line_count"], 1)
+        self.assertEqual(preview_state["plan"].replacements[0][2:], (before, after))
+        literal_prompts = [event[1] for event in st.events if event[0] == "code"]
+        self.assertEqual(literal_prompts, [before, after])
+        self.assertGreater(len(before), 500)
+        self.assertEqual(project.prompt_lines[0].current_text, before)
+        self.assertEqual(calls["history"], 0)
 
     def test_real_apply_gate_invalidates_stale_preview_and_requires_new_review(self):
         namespace, st, calls, project, _ = self._runtime(
