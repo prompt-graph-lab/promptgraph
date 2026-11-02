@@ -95,6 +95,21 @@ class AppModuleTokenRulesIntegrationTests(unittest.TestCase):
         self.assertEqual(self.project, before)
         self.history.assert_not_called()
 
+    def test_period_fragment_inspector_actions_refuse_punctuation_normalization(self):
+        for action in ("update", "add"):
+            with self.subTest(action=action):
+                self.state.update(body="pose phrase. fictional character name, red eyes", core="pose phrase")
+                before = copy.deepcopy((self.project, self.state))
+                self.st.text_input.return_value = "clouds"
+                key = f"qa_module_inspector_{action}_face"
+                self.st.button.side_effect = lambda _label, **kwargs: kwargs["key"] == key
+                try:
+                    self.namespace["render_module_token_inspector"](self.project, "qa", "face", "body", "core")
+                except _Rerun:
+                    pass
+                self.assertEqual((self.project, self.state), before)
+                self.assertTrue(any("Advanced" in str(call) for call in self.st.info.call_args_list))
+
     def test_preview_matches_weights_but_does_not_highlight_structural_markers(self):
         self.namespace["render_module_match_prompt_preview"](
             "<mod:face>, (Smile:1.2), sky, </mod:face>",

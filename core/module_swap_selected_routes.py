@@ -418,6 +418,14 @@ def build_selected_routes_module_swap_plan(
             "Source or replacement Module is empty",
         )
 
+    if preview.get("rule_conflict"):
+        diagnostics.append("incompatible_module_core_rules")
+        if not preview.get("affected_line_count"):
+            return _empty_plan(
+                signature, resolution, source_module_name, target_module_name,
+                match_mode, diagnostics, "incompatible_module_core_rules",
+            )
+
     example_by_id = {
         _clean_id(example.get("line_id")): example
         for example in preview.get("examples") or []
@@ -465,7 +473,9 @@ def build_selected_routes_module_swap_plan(
             "negative_changed": negative_changed,
             "no_op": not positive_changed and not negative_changed,
             "operation": "change" if positive_changed or negative_changed else "no_op",
-            "skip_reason": "" if positive_changed or negative_changed else "source Module not matched",
+            "skip_reason": ("" if positive_changed or negative_changed else
+                            "incompatible_module_core_rules" if preview.get("rule_conflict") else
+                            "source Module not matched"),
             "match_count": int(example.get("matched_count", 0) or 0) if example else 0,
             "swap_kind": example.get("swap_kind", "") if example else "",
             "main_image_field": image.get("field", ""),

@@ -250,6 +250,75 @@ class ProjectModuleInspectorWorkspaceStateTests(unittest.TestCase):
             namespace=namespace,
         )
 
+    def test_period_module_save_preserves_authored_and_legacy_rules(self):
+        from core.operations import create_library_module, set_module_entry
+        whole = "pose phrase. fictional character name"
+        body = whole + ", red eyes"
+        for authored in (False, True):
+            with self.subTest(authored=authored):
+                project = Project(prompt_lines=[])
+                if authored:
+                    self.assertTrue(create_library_module(project, "Period", body))
+                else:
+                    project.module_library = {"Period": {"body": body, "core_tokens": [whole]}}
+                get_project_module_library(project)
+                before = copy.deepcopy(project.module_library["Period"])
+                state = _SessionState(project=project)
+                st = _RenderStub(state, pressed_keys={"project_module_inspector_save_Period"})
+                namespace = self._renderer_namespace(st, calls=[], token_capture=[])
+                namespace["set_module_entry"] = set_module_entry
+                namespace["render_project_module_inspector_section"](project)
+                self.assertEqual(project.module_library["Period"]["core_tokens"], before["core_tokens"])
+                self.assertEqual(project.module_library["Period"]["min_match_tokens"], before["min_match_tokens"])
+                self.assertEqual(project.module_library["Period"]["body"], before["body"])
+
+    def test_global_period_module_save_preserves_effective_rules(self):
+        from core import operations
+        whole = "pose phrase. fictional character name"
+        body = whole + ", red eyes"
+        class GlobalStub(_RenderStub):
+            def caption(self, *args): pass
+            def text_input(self, label, key, value="", **kwargs): return self.session_state.get(key, value)
+            def number_input(self, label, key, **kwargs): return kwargs["value"]
+            def columns(self, count): return [_Context() for _ in range(count)]
+        for authored in (False, True):
+            with self.subTest(authored=authored):
+                fixture = Project(prompt_lines=[])
+                if authored:
+                    operations.create_library_module(fixture, "Period", body)
+                else:
+                    fixture.module_library = {"Period": {"body": body, "core_tokens": [whole]}}
+                library = get_project_module_library(fixture)
+                before = copy.deepcopy(library["Period"])
+                state = _SessionState()
+                st = GlobalStub(state, pressed_keys={"global_module_manager_save_Period"})
+                saved = []
+                def save(update):
+                    saved.append(update(copy.deepcopy(library)))
+                    return "disposable-in-memory", None
+                namespace = dict(st=st, profiled_render=lambda label: lambda fn: fn,
+                    parse_prompt=parse_prompt, MODULE_TYPES=MODULE_TYPES,
+                    GLOBAL_MODULE_CATEGORIES=operations.GLOBAL_MODULE_CATEGORIES,
+                    get_module_body=get_module_body, get_module_type=get_module_type,
+                    get_module_category=operations.get_module_category,
+                    get_module_core_tokens=get_module_core_tokens,
+                    get_module_min_match_tokens=get_module_min_match_tokens,
+                    render_module_token_inspector=lambda *args: None,
+                    prepare_global_module_search_selection_state=lambda *args: None,
+                    _short_preview=lambda text, limit: text,
+                    is_valid_new_module_name=lambda name: True,
+                    validate_library_module_body=validate_library_module_body,
+                    update_module_entry_preserving_metadata=operations.update_module_entry_preserving_metadata,
+                    save_and_cache_global_module_library=save,
+                    GlobalModuleLibraryWriteConflict=RuntimeError)
+                namespace = self._load_functions("render_global_module_manager_section", namespace=namespace)
+                namespace["render_global_module_manager_section"](None, library,
+                    dict(all_names=["Period"], matched_names=["Period"], matched_count=1))
+                self.assertEqual(len(saved), 1)
+                self.assertEqual(saved[0]["Period"]["body"], before["body"])
+                self.assertEqual(saved[0]["Period"]["core_tokens"], before["core_tokens"])
+                self.assertEqual(saved[0]["Period"]["min_match_tokens"], before["min_match_tokens"])
+
     def test_empty_selection_fails_without_clearing_existing_state(self):
         state = _SessionState(project_module_inspector_name="old")
         namespace = self._helper_namespace(state)

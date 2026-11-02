@@ -136,6 +136,25 @@ def _reviewed_state(project, global_library):
 
 
 class GlobalModuleCandidateApplyWorkspaceTests(unittest.TestCase):
+    def test_persisted_mixed_period_rules_warn_and_never_apply_subset(self):
+        from core.parser import parse_prompt
+        whole = "pose phrase. fictional character name"
+        library = {"X": {"body": whole + ", outfit pose. colored dress, red eyes",
+                         "core_tokens": [whole, "colored dress"], "min_match_tokens": 2}}
+        project = _project()
+        text = whole + ", different outfit. colored dress, red eyes, background"
+        project.prompt_lines[0].current_text = text
+        project.prompt_lines[0].tokens = parse_prompt(text)
+        ui = _reviewed_state(project, library)
+        ui.warning = lambda message: ui.messages.append(str(message))
+        ui.button_clicks = {"global_module_candidate_apply_btn"}
+        history = []
+        _render(ui, [library], history)
+        self.assertTrue(any("incompatible" in message for message in ui.messages))
+        self.assertEqual(project.prompt_lines[0].current_text, text)
+        self.assertNotIn("X", project.module_library)
+        self.assertEqual(history, [])
+
     def test_undo_snapshot_contains_an_independent_reference_assets_copy(self):
         project = _project()
         refs = {
