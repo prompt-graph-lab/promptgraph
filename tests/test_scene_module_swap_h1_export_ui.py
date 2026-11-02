@@ -354,3 +354,38 @@ def test_h1_export_is_wired_only_to_the_normal_gallery_module_swap_operation():
     assert "render_module_swap_section(project)" in branch
     assert "render_scene_module_swap_h1_export(project, is_free=is_free)" in branch
     assert "render_agent_scene_module_swap_review_panel" not in branch
+
+def test_valid_reference_preview_with_rule_diagnostic_has_no_export_or_approval_authority(monkeypatch):
+    from ui.agent_scene_module_swap_approval_lifecycle import (
+        AgentSceneModuleSwapApprovalCustodian, _valid_preview_envelope,
+    )
+    whole = 'pose phrase. fictional character name'
+    project = _project(prompt=whole + ', different outfit. colored dress, red eyes, <mod:source>, background')
+    project.module_library['source'] = {
+        'body': whole + ', outfit pose. colored dress, red eyes',
+        'core_tokens': [whole, 'colored dress'], 'min_match_tokens': 2,
+    }
+    before = deepcopy(project)
+    request = _request()
+    observation = preview_scene_module_swap(project, request)
+    assert observation['valid'] is True and observation['reason'] == ''
+    assert observation['changed_count'] == 1
+    assert observation['diagnostics'] == [{'code': 'incompatible_module_core_rules'}]
+    assert observation['review_rows'][0]['after_positive_prompt']['text'].endswith('<mod:target>, background')
+    assert h1_export._serialize_complete_observation(observation, request) == ('incomplete', None)
+    ui = _render(monkeypatch, project, clicks={'scene_module_swap_h1_generate'})
+    assert ui.downloads == []
+    snapshot = ui.session_state[h1_export.SCENE_MODULE_SWAP_H1_SNAPSHOT_KEY]
+    assert snapshot['status'] == 'incomplete' and snapshot['payload'] is None
+    assert not _valid_preview_envelope(observation)
+    custodian = AgentSceneModuleSwapApprovalCustodian()
+    custodian.synchronize_target_epoch('synthetic-epoch')
+    intent = {**request, 'expected_plan_id': observation['plan_id']}
+    decision = custodian.check_request('diagnostic-preview', 1, 'synthetic-epoch', intent)
+    assert decision.status == 'new'
+    prepared = custodian.prepare('diagnostic-preview', 1, 'synthetic-epoch', intent,
+                                 decision.revision, observation)
+    assert prepared.status == 'invalid_preview'
+    assert prepared.token is None and prepared.result is None
+    assert custodian.inspect()['state'] == 'absent'
+    assert project == before

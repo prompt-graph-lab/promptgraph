@@ -1820,8 +1820,12 @@ def _module_inspector_row_records(edited_rows):
 
 def render_module_token_inspector(project, namespace: str, module_name: str, body_key: str, core_key: str):
     st.markdown("**Module Inspector**")
-    body_tokens = _module_tokens_from_body(st.session_state.get(body_key, ""))
+    from core.operations import module_editor_tokens
     core_tokens = _parse_module_rule_text(st.session_state.get(core_key, ""))
+    body_tokens = module_editor_tokens(st.session_state.get(body_key, ""), core_tokens)
+    if body_tokens != _module_tokens_from_body(st.session_state.get(body_key, "")):
+        st.info("Period fragment rules are active. Use Module Body (Advanced) to edit the literal body or core rules; Inspector actions are unavailable because they would normalize period punctuation.")
+        return
     core_keys = _prompt_token_match_key_set(core_tokens)
 
     if body_tokens:
@@ -15978,6 +15982,8 @@ def render_module_swap_section(project):
         summary_cols[0].metric("対象イラスト", preview["target_line_count"])
         summary_cols[1].metric("変更予定イラスト", preview["affected_line_count"])
         summary_cols[2].metric("No match / unsafe rewrite skipped", preview["skipped_no_match_count"])
+        if preview.get("rule_conflict"):
+            st.warning("Body-token Swap is refused because the saved core rules mix incompatible whole-token and fragment interpretations. Edit Core Tokens to choose one interpretation.")
         summary_cols[3].metric("対象範囲", scope_options.get(scope_key, scope_key))
         st.caption(f"対象範囲: {scope_options.get(scope_key, scope_key)}")
         st.caption(f"選択: {', '.join(selection_labels) if selection_labels else '(全イラスト)'}")
@@ -16131,6 +16137,8 @@ def render_global_module_candidate_scanner_section(project):
             return
 
         scan = scan_state["scan"]
+        if scan.get("rule_conflicts"):
+            st.warning(f"Skipped {len(scan['rule_conflicts'])} Module(s) with incompatible whole-token and fragment core rules. Edit Core Tokens to choose one interpretation.")
         metric_cols = st.columns(5)
         metric_cols[0].metric("Illustrations", scan["line_count"])
         metric_cols[1].metric("Global modules", scan["scanned_module_count"])
@@ -16849,7 +16857,8 @@ def render_global_module_manager_section(
     current_category = get_module_category(global_library, selected_name)
     current_core_tokens = get_module_core_tokens(global_library, selected_name)
     current_min_match = get_module_min_match_tokens(global_library, selected_name)
-    module_tokens = [token for token in parse_prompt(current_body) if str(token).strip()]
+    from core.operations import module_editor_tokens
+    module_tokens = module_editor_tokens(current_body, current_core_tokens)
     max_match_tokens = max(1, len(module_tokens))
     current_min_match = max(1, min(current_min_match or max_match_tokens, max_match_tokens))
 
@@ -16899,6 +16908,7 @@ def render_global_module_manager_section(
             key=core_key,
         )
     edited_core_tokens = _parse_module_rule_text(edited_core_text)
+    edited_body_tokens = module_editor_tokens(edited_body, edited_core_tokens)
     if edited_core_tokens:
         st.caption(f"Core: {_short_preview(', '.join(edited_core_tokens), 180)}")
     else:
@@ -18094,7 +18104,8 @@ def render_project_module_inspector_section(project):
             module_library,
             module_name,
         )
-        edited_body_tokens = _module_tokens_from_body(edited_body)
+        from core.operations import module_editor_tokens
+        edited_body_tokens = module_editor_tokens(edited_body, _parse_module_rule_text(edited_core_text))
         edited_min_match = (
             prepare_project_module_inspector_min_match_widget_state(
                 module_library,
@@ -18132,6 +18143,9 @@ def render_project_module_inspector_section(project):
             )
             edited_core_text = st.session_state[core_key]
         edited_core_tokens = _parse_module_rule_text(edited_core_text)
+        edited_body_tokens = module_editor_tokens(edited_body, edited_core_tokens)
+        prepare_project_module_inspector_min_match_widget_state(
+            module_library, module_name, edited_body_tokens)
         st.number_input(
             "Minimum Matched Tokens",
             min_value=1,
@@ -19646,7 +19660,11 @@ def render_module_candidate_selection_section(project):
         )
         module_library = project_module_candidate_prompt_library(project, module_name)
         module_body = get_module_body(module_library, module_name)
-        module_tokens = [token for token in parse_prompt(module_body) if token.strip()]
+        from core.operations import module_editor_tokens, _token_match_key
+        module_tokens = module_editor_tokens(module_body, [])
+        legacy_options = [token for token in parse_prompt(module_body) if token.strip()]
+        if module_tokens != legacy_options:
+            module_tokens = list(dict.fromkeys(legacy_options + module_tokens))
         if not module_tokens:
             st.info("This module has no tokens to match.")
             return
@@ -19674,15 +19692,20 @@ def render_module_candidate_selection_section(project):
             on_change=sync_module_candidate_core_tokens_widget_state,
             args=(module_name,),
         )
+        effective_tokens = module_editor_tokens(module_body, core_tokens)
+        effective_keys = {_token_match_key(token) for token in effective_tokens}
+        if any(_token_match_key(token) not in effective_keys for token in core_tokens):
+            st.warning("Whole-token and fragment core rules cannot be combined for this body. Choose one interpretation before Preview or Save Rules.")
+            return
         prepare_module_candidate_min_match_widget_state(
             module_name,
-            module_tokens,
+            effective_tokens,
             current_min_match,
         )
         min_match_tokens = st.number_input(
             "Minimum Matched Tokens",
             min_value=1,
-            max_value=len(module_tokens),
+            max_value=len(effective_tokens),
             step=1,
             key=f"_module_candidate_min_match_tokens_widget_{module_name}",
             on_change=sync_module_candidate_min_match_widget_state,

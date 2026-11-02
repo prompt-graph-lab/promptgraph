@@ -1014,6 +1014,60 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
         )
         self.assertEqual(st.rerun_count, 1)
 
+    def test_real_period_rule_workspace_preserves_legacy_and_authored_cores(self):
+        from core.operations import create_library_module, get_module_body, get_module_core_tokens, get_module_min_match_tokens
+        whole = "pose phrase. fictional character name"
+        body = whole + ", red eyes"
+        for authored in (False, True):
+            with self.subTest(authored=authored):
+                fixture = Project(prompt_lines=[])
+                if authored:
+                    self.assertTrue(create_library_module(fixture, "Module A", body))
+                else:
+                    fixture.module_library = {"Module A": {"body": body, "core_tokens": [whole]}}
+                namespace, st, calls, project, _ = self._runtime(module_library=fixture.module_library)
+                project.prompt_lines = [_line("line-1", body + ", background", 0)]
+                namespace.update(get_module_body=get_module_body, get_module_core_tokens=get_module_core_tokens,
+                                 get_module_min_match_tokens=get_module_min_match_tokens,
+                                 preview_project_module_candidates=preview_project_module_candidates)
+                st.button_clicks = {"module_candidate_preview_btn"}
+                namespace[self.renderer_name](project)
+                expected = ["pose phrase"] if authored else [whole]
+                self.assertEqual(st.session_state["module_candidate_core_tokens_Module A"], expected)
+                preview = st.session_state.module_candidate_preview["preview"]
+                self.assertEqual(preview["core_tokens"], expected)
+                self.assertEqual(preview["module_tokens"], ["pose phrase", "fictional character name", "red eyes"] if authored else [whole, "red eyes"])
+                bound = next(event[3] for event in st.events if event[0] == "number_input")
+                self.assertEqual(bound, 3 if authored else 2)
+                self.assertEqual(fixture.module_library["Module A"]["core_tokens"], expected)
+
+    def test_period_rule_workspace_accepts_weighted_equivalent_core(self):
+        namespace, st, calls, project, _ = self._runtime(
+            module_library={"Module A": {
+                "body": "pose phrase. fictional character name, red hair, (red hair:1.2)",
+                "core_tokens": ["pose phrase"]}},
+            widget_values={"_module_candidate_core_tokens_widget_Module A": ["(red hair:1.2)"]},
+            button_clicks={"module_candidate_preview_btn"})
+        namespace["preview_project_module_candidates"] = preview_project_module_candidates
+        project.prompt_lines = [_line("line-1", "pose phrase. fictional character name, red hair, background", 0)]
+        namespace[self.renderer_name](project)
+        self.assertFalse(any(event[0] == "warning" and "whole-token" in event[1].lower() for event in st.events))
+        preview = st.session_state.module_candidate_preview["preview"]
+        self.assertEqual(preview["core_tokens"], ["(red hair:1.2)"])
+        self.assertEqual(preview["total_candidate_count"], 1)
+
+    def test_period_rule_workspace_refuses_mixed_core_interpretations(self):
+        whole = "pose phrase. fictional character name"
+        namespace, st, calls, project, _ = self._runtime(
+            module_library={"Module A": {"body": whole + ", red eyes", "core_tokens": [whole]}},
+            widget_values={"_module_candidate_core_tokens_widget_Module A": [whole, "fictional character name"]},
+            button_clicks={"module_candidate_save_rules_btn", "module_candidate_preview_btn"})
+        namespace[self.renderer_name](project)
+        self.assertTrue(any(event[0] == "warning" and "whole-token" in event[1].lower() for event in st.events))
+        self.assertEqual(calls["set_rules"], [])
+        self.assertEqual(calls["candidate_preview"], [])
+        self.assertNotIn("module_candidate_preview", st.session_state)
+
     def test_real_period_candidate_preview_renders_complete_literal_prompts(self):
         namespace, st, calls, project, _ = self._runtime(
             module_library={"Module A": {
@@ -1027,7 +1081,7 @@ class ModuleCandidateWorkspaceStateTests(unittest.TestCase):
         )
         before = ("  pose phrase. red hair,  " + "scene detail, " * 40
                   + "<literal>&#x20;  ")
-        after = before.replace("red hair", "<mod:Module A>")
+        after = before.replace("pose phrase. red hair", "pose phrase, <mod:Module A>")
         project.prompt_lines = [_line("line-1", before, 0)]
         namespace["preview_project_module_candidates"] = preview_project_module_candidates
         namespace["build_module_candidate_apply_plan"] = build_module_candidate_apply_plan

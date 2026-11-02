@@ -1,4 +1,4 @@
-"""Lossless, operation-only projection for a deliberately small tag grammar.
+"""Source-preserving, operation-only projection for a deliberately small tag grammar.
 
 The persisted parser is intentionally not used or changed here. A boundary is
 accepted only in a comma-bearing prompt, between short lowercase ASCII word
@@ -101,7 +101,9 @@ def projected_tokens(text, legacy_tokens):
 
 
 def rewrite_projected_tokens(text, legacy_tokens, after_tokens, *, whole_tokens=False):
-    """Replay token edits into original spans. Refuse lossy period deletion.
+    """Replay token edits, converting only reference-adjacent period boundaries.
+
+    Refuse other lossy period deletion.
 
     None means an unsafe edit; callers must retain the original prompt.
     Legacy comma-only operations keep their established serializer.
@@ -118,6 +120,7 @@ def rewrite_projected_tokens(text, legacy_tokens, after_tokens, *, whole_tokens=
             cursor = start + len(token)
     before_tokens = [text[start:end] for start, end in spans]
     edits = []
+    reference_gaps = set()
     for kind, a, b, c, d in difflib.SequenceMatcher(a=before_tokens, b=after_tokens, autojunk=False).get_opcodes():
         if kind == 'equal':
             continue
@@ -128,6 +131,15 @@ def rewrite_projected_tokens(text, legacy_tokens, after_tokens, *, whole_tokens=
         if b - a > 1 and any('.' in text[spans[i][1]:spans[i+1][0]] for i in range(a, b-1)):
             return None
         replacement = ', '.join(after_tokens[c:d])
+        # A standalone binding must also be standalone in the unchanged
+        # persisted comma parser. Only delimiters directly touching a new
+        # reference belong to this edit; other period boundaries survive.
+        if c < d and _REFERENCE.fullmatch(after_tokens[c]):
+            if a > 0:
+                reference_gaps.add((spans[a - 1][1], start))
+        if c < d and _REFERENCE.fullmatch(after_tokens[d - 1]):
+            if b < len(spans):
+                reference_gaps.add((end, spans[b][0]))
         if not replacement:
             if b < len(spans):
                 gap = text[end:spans[b][0]]
@@ -140,7 +152,11 @@ def rewrite_projected_tokens(text, legacy_tokens, after_tokens, *, whole_tokens=
                     return None
                 start = spans[a-1][1]
         edits.append((start, end, replacement))
-    for start, end, replacement in reversed(edits):
+    for start, end in reference_gaps:
+        gap = text[start:end]
+        if re.fullmatch(r'\.\s+', gap):
+            edits.append((start, end, ',' + gap[1:]))
+    for start, end, replacement in sorted(edits, reverse=True):
         text = text[:start] + replacement + text[end:]
     return text
 

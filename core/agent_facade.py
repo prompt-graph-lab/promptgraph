@@ -994,6 +994,8 @@ def _preview_scene_module_swap_for_host_review(project: Project, request):
             raise _Invalid("module_swap_preview_failed")
         if plan.get("valid") is not True:
             planner_reason = plan.get("reason")
+            if planner_reason == "incompatible_module_core_rules":
+                raise _Invalid("incompatible_module_core_rules")
             if planner_reason == "Source or replacement Module is empty":
                 raise _Invalid("module_without_usable_tokens")
             if planner_reason == "Selected Routes have no Module Swap target Lines":
@@ -1027,7 +1029,8 @@ def _preview_scene_module_swap_for_host_review(project: Project, request):
             "operation": SCENE_MODULE_SWAP_OPERATION,
             "valid": True,
             "reason": "",
-            "diagnostics": [],
+            "diagnostics": ([{"code": "incompatible_module_core_rules"}]
+                            if "incompatible_module_core_rules" in plan.get("diagnostics", []) else []),
             "request": normalized,
             "source_fingerprint": source_fingerprint,
             "projection_digest": projection_digest,

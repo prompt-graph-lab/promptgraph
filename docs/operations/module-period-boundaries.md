@@ -26,17 +26,48 @@ The supported lexical context is deliberately narrow:
 
 For example, the exact synthetic positive prompt
 `  pose phrase. fictional character name,  scene detail,  ` can match the
-`fictional character name` Module. Binding changes only that phrase to
-`<mod:Source>`; body Swap changes only that phrase to `replacement character`.
-The original leading spaces, period-space delimiter, doubled comma spacing and
-trailing comma/spaces survive. Negative prompts, image references, Candidates and
+`fictional character name` Module. Binding produces
+`  pose phrase, <mod:Source>,  scene detail,  `: the period directly touching
+the inserted reference becomes a comma so the unchanged persisted parser sees
+an independent, expandable and toggleable Module token. When a reference has
+period boundaries on both sides, both adjacent delimiters become commas. Body
+Swap changes only that phrase to `replacement character` and retains the period.
+The original leading spaces, delimiter whitespace, doubled comma spacing and
+trailing comma/spaces survive. Full Before/After previews show these bounded
+punctuation changes; other period delimiters are preserved. Negative prompts,
+image references, Candidates and
 unrelated Module metadata use their existing owners. Existing exact whole-token
 rules and whole-token creation selections remain usable alongside new fragments.
+An explicitly saved whole-token core rule retains the legacy comma-token
+interpretation, including Module bodies containing other commas. Missing saved
+core/minimum fields retain their legacy defaults; inspection does not replace
+those defaults with fragment rules. Newly authored Modules still receive
+fragment rules, and explicitly editing the rules changes the interpretation
+without changing the Module body. Candidate planning, freshness checks, counters
+and strict Swap use that same effective rule interpretation. Candidate rule
+choices retain whole and fragment options; mixing incompatible interpretations
+shows a warning and blocks Preview/Save Rules. The shared core guard also
+refuses persisted mixed rules reached through local or Global scanning and
+Apply APIs, including zero scan thresholds. Conflicting Modules are not imported
+as a side effect of applying other candidates. Body Swap refuses incompatible
+source or target rule interpretations in both strict and loose modes; explicit
+reference Swap retains precedence because it does not materialize body tokens.
+Selected Scenes and H1 use the existing reason/diagnostics fields to report
+`incompatible_module_core_rules`. A body-only H1 refusal has `valid=false` and
+`changed_count=0`; a valid explicit-reference change can retain `valid=true`
+while carrying that bounded diagnostic for refused body matching. No H1 fields
+or version are added. Project and Global Module editors
+retain the effective core and minimum bound on Save, including newly authored
+fragment rules. When fragment projection would change literal body punctuation,
+the token Inspector explains that its row-based Update/Add actions are
+unavailable; the Module Body (Advanced) literal editor remains available.
+Comma-only editor spelling, ordering and duplicates are retained.
 Activating a period boundary also retains bracket/brace groups as original whole
 source spans; it does not expose the persistence-oriented Module parser's partial
 `[red` / `blue]` tokens to candidate detection or the target selector.
 
-Rewrites replay edits against original source spans. If removing multiple
+Rewrites replay edits against original source spans. Apart from the
+reference-adjacent delimiter conversion above, if removing multiple
 projected fragments would consume a period delimiter or require an ambiguous
 insertion, the operation refuses the rewrite rather than normalizing the prompt.
 Prompts containing ambiguous period-space text still replay separately matched
@@ -67,9 +98,18 @@ does not establish whether the reported entity was raw data or presentation.
 H1 keeps `promptgraph.agent-facade.v1`, `scene_module_swap`, exact target order,
 legacy after-token shape, canonical digests, bounds and read-only status. Its
 period-bearing fixture now reflects this Public operation grammar. Desktop
-Issue #227 is independently owned and still requires its own implementation and
-focused compatibility validation. Public/Desktop parity is unverified; Desktop
-D1 may correctly report these previews incompatible until its grammar agrees.
+PR #228 is merged at Desktop main commit
+`a107eb025f028e44e8a091e16fcaf629efd12778`. The coordinator independently compared
+synthetic Public H1 observations with Desktop D1 against an archived copy of that
+commit using direct core calls. Lowercase, legacy-whole-core and standalone
+reference cases matched. A capitalized grammar case was incompatible with a
+row/projection mismatch. A valid reference preview carrying mixed-core
+diagnostics was refused as `handoff-producer-refused`. Both synthetic Projects
+remained unchanged.
+
+This is bounded offline compatibility evidence, not full Public/Desktop parity:
+the capitalized grammar mismatch remains unresolved. It does not establish HTTP
+transport, live Project behavior or a Windows/Tauri cross-app smoke result.
 Do not weaken D1 or treat Public `plan_id` as Desktop Apply authority.
 
 Validation uses synthetic Projects and temporary JSON only. No real Project,
@@ -92,7 +132,10 @@ whole-token behavior remains available, and no stored tokens are migrated.
 Explicit source-reference Swap retains precedence over body-token matching,
 including when a whole legacy period token is also present. If the reference
 rewrite is refused, the operation remains unchanged; it never falls through to
-an unrelated body replacement. H1 uses the same planner behavior.
+an unrelated body replacement. A preexisting `<mod:Source>. literal` token
+that cannot be safely projected is refused rather than replacing the entire
+legacy token and swallowing its literal suffix. Newly bound independent comma
+references can be swapped normally. H1 uses the same planner behavior.
 
 Create/Bind and Replace With Module conservatively refuse a line when a mixed
 whole-token/fragment selection requires incompatible representations of that

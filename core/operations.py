@@ -700,10 +700,17 @@ def _module_matching_tokens(text, targets):
     return projected
 
 
-def _module_rule_tokens(module_body: str) -> List[str]:
+def _module_rule_tokens(module_body: str, core_tokens=None, *, legacy=False) -> List[str]:
     tokens = []
     seen_bases = set()
-    for token in projected_tokens(module_body or "", parse_prompt(module_body or "")):
+    original = parse_prompt(module_body or "")
+    projected = projected_tokens(module_body or "", original)
+    core_keys = {_token_match_key(token) for token in core_tokens or []}
+    # A saved whole-token core rule owns its original interpretation. Newly
+    # authored fragment rules still use the bounded period projection.
+    preserve_whole = any(token not in projected and _token_match_key(token) in core_keys
+                         for token in original)
+    for token in original if legacy or preserve_whole else projected:
         if is_structural_mod_marker(token):
             continue
         token_text = str(token).strip()
@@ -729,6 +736,22 @@ def _normalize_module_rule_tokens(tokens: Optional[List[str]]) -> List[str]:
         seen_bases.add(token_base)
         normalized.append(token_text)
     return normalized
+
+
+def module_editor_tokens(body, core_tokens):
+    """Keep legacy editor spelling/duplicates unless period rules are active."""
+    original = [str(token).strip() for token in parse_prompt(body or "") if str(token).strip()]
+    if projected_tokens(body or "", original) == original:
+        return original
+    return _module_rule_tokens(body, core_tokens)
+
+
+def module_rule_interpretations_conflict(body, core_tokens):
+    """Refuse saved cores that require incompatible whole/fragment views."""
+    keys = {_token_match_key(token) for token in core_tokens or []}
+    whole_keys = {_token_match_key(token) for token in _module_rule_tokens(body, legacy=True)}
+    fragment_keys = {_token_match_key(token) for token in _module_rule_tokens(body)}
+    return bool(keys & (whole_keys - fragment_keys) and keys & (fragment_keys - whole_keys))
 
 def normalize_global_module_category(category: Any) -> str:
     clean_category = str(category or "").strip()
@@ -838,7 +861,8 @@ def normalize_module_library(project_or_library) -> Dict[str, Dict[str, Any]]:
             graph = create_blank_module_graph(module_name, body, module_type)
         if not body:
             body = ", ".join(flatten_module_graph_to_tokens(graph))
-        module_tokens = _module_rule_tokens(body)
+        module_tokens = _module_rule_tokens(body, normalized_entry.get("core_tokens"),
+                                           legacy=not normalized_entry.get("core_tokens"))
         core_tokens = _normalize_module_rule_tokens(normalized_entry.get("core_tokens"))
         if not core_tokens:
             core_tokens = module_tokens[:1]
@@ -906,7 +930,7 @@ def get_module_core_tokens(project_or_library, module_name: str) -> List[str]:
 def get_module_min_match_tokens(project_or_library, module_name: str) -> int:
     entry = normalize_module_library(project_or_library).get(module_name, {})
     body = get_module_body(project_or_library, module_name)
-    module_tokens = _module_rule_tokens(body)
+    module_tokens = _module_rule_tokens(body, entry.get("core_tokens"))
     return _clamp_module_min_match(
         entry.get("min_match_tokens", _default_module_min_match_tokens(body)),
         module_tokens,
@@ -922,7 +946,7 @@ def set_module_candidate_rules(
     if module_name not in library:
         return False
     body = get_module_body(library, module_name)
-    module_tokens = _module_rule_tokens(body)
+    module_tokens = _module_rule_tokens(body, core_tokens)
     library[module_name]["core_tokens"] = _normalize_module_rule_tokens(core_tokens) or module_tokens[:1]
     library[module_name]["min_match_tokens"] = _clamp_module_min_match(min_match_tokens, module_tokens)
     return True
@@ -935,9 +959,14 @@ def preview_module_candidates(
     example_limit: Optional[int] = 50,
 ) -> Dict[str, Any]:
     module_body = get_module_body(project, module_name)
-    module_tokens = _module_rule_tokens(module_body)
-    if not module_tokens:
+    configured_core_tokens = (_normalize_module_rule_tokens(core_tokens)
+                              if core_tokens is not None
+                              else get_module_core_tokens(project, module_name))
+    module_tokens = _module_rule_tokens(module_body, configured_core_tokens)
+    rule_conflict = module_rule_interpretations_conflict(module_body, configured_core_tokens)
+    if not module_tokens or rule_conflict:
         return {
+            **({"rule_conflict": True} if rule_conflict else {}),
             "module_name": module_name,
             "module_tokens": [],
             "core_tokens": [],
@@ -945,11 +974,6 @@ def preview_module_candidates(
             "total_candidate_count": 0,
             "examples": [],
         }
-    configured_core_tokens = (
-        _normalize_module_rule_tokens(core_tokens)
-        if core_tokens is not None
-        else get_module_core_tokens(project, module_name)
-    )
     if not configured_core_tokens:
         configured_core_tokens = module_tokens[:1]
     configured_min_match = _clamp_module_min_match(
@@ -1041,11 +1065,15 @@ def scan_global_module_candidates(
         line_rows.append((line, token_keys))
 
     results = []
+    rule_conflicts = []
     skipped_empty_count = 0
     below_threshold_count = 0
     for module_name in sorted(global_library, key=str.casefold):
         module_body = get_module_body(global_library, module_name)
-        module_tokens = _module_rule_tokens(module_body)
+        if module_rule_interpretations_conflict(module_body, get_module_core_tokens(global_library, module_name)):
+            rule_conflicts.append(module_name)
+            continue
+        module_tokens = _module_rule_tokens(module_body, get_module_core_tokens(global_library, module_name))
         if not module_tokens:
             skipped_empty_count += 1
             continue
@@ -1130,6 +1158,7 @@ def scan_global_module_candidates(
         )
     )
     return {
+        **({"rule_conflicts": rule_conflicts} if rule_conflicts else {}),
         "scanned_module_count": len(global_library),
         "result_count": len(results),
         "skipped_empty_count": skipped_empty_count,
@@ -1277,6 +1306,7 @@ def preview_apply_module_candidates(
         })
 
     return {
+        **({"rule_conflict": True} if candidate_preview.get("rule_conflict") else {}),
         "module_name": module_name,
         "module_reference": module_reference,
         "module_tokens": candidate_preview["module_tokens"],
@@ -1433,6 +1463,7 @@ def preview_apply_detected_modules(
         name
         for name in selected_names
         if name in normalized_library and name not in project_library
+        and name not in scan.get("rule_conflicts", [])
     ]
 
     affected_line_count = 0
@@ -1490,6 +1521,7 @@ def preview_apply_detected_modules(
             })
 
     return {
+        **({"rule_conflicts": scan["rule_conflicts"]} if scan.get("rule_conflicts") else {}),
         "selected_module_names": selected_names,
         "import_needed": import_needed,
         "candidate_line_count": sum(
@@ -1608,6 +1640,7 @@ def _module_swap_line_preview(
     match_mode: str,
     source_module_name: str = "",
     target_module_name: str = "",
+    rule_conflict: bool = False,
 ) -> Dict[str, Any] | None:
     tokens = _module_matching_tokens(getattr(line, "current_text", "") or "", source_tokens)
     reference_preview = _module_reference_swap_line_preview(
@@ -1622,6 +1655,8 @@ def _module_swap_line_preview(
     # refuses. Never reinterpret that refusal as permission for a body swap.
     if any(extract_mod_info(token)["type"] == "open"
            and extract_mod_info(token)["name"] == source_module_name for token in tokens):
+        return None
+    if rule_conflict:
         return None
 
     source_by_key = {
@@ -1725,6 +1760,10 @@ def _module_reference_swap_line_preview(
     ]
     if not source_indices:
         return None
+    # The legacy marker recognizer accepts an opening marker plus trailing
+    # literal text. Replacing that entire token would silently swallow it.
+    if any(tokens[index].strip() != source_reference for index in source_indices):
+        return None
 
     target_exists = any(
         extract_mod_info(token)["type"] == "open"
@@ -1795,9 +1834,15 @@ def preview_module_swap(
     ):
         return _module_swap_empty_preview(source_module_name, target_module_name, match_mode)
 
-    source_tokens = _module_rule_tokens(get_module_body(module_library, source_module_name))
-    target_tokens = _module_rule_tokens(get_module_body(module_library, target_module_name))
+    source_tokens = _module_rule_tokens(get_module_body(module_library, source_module_name),
+                                       get_module_core_tokens(module_library, source_module_name))
+    target_tokens = _module_rule_tokens(get_module_body(module_library, target_module_name),
+                                       get_module_core_tokens(module_library, target_module_name))
     core_tokens = get_module_core_tokens(module_library, source_module_name)
+    rule_conflict = module_rule_interpretations_conflict(
+        get_module_body(module_library, source_module_name), core_tokens) or module_rule_interpretations_conflict(
+        get_module_body(module_library, target_module_name),
+        get_module_core_tokens(module_library, target_module_name))
     if not source_tokens or not target_tokens:
         return _module_swap_empty_preview(
             source_module_name,
@@ -1827,6 +1872,7 @@ def preview_module_swap(
             match_mode,
             source_module_name=source_module_name,
             target_module_name=target_module_name,
+            rule_conflict=rule_conflict,
         )
         if not example:
             skipped_no_match_count += 1
@@ -1836,6 +1882,7 @@ def preview_module_swap(
             examples.append(example)
 
     return {
+        **({"rule_conflict": True} if rule_conflict else {}),
         "source_module_name": source_module_name,
         "target_module_name": target_module_name,
         "match_mode": match_mode,
@@ -2363,7 +2410,7 @@ def update_module_entry_preserving_metadata(
     module_type = module_type if module_type in MODULE_TYPES else DEFAULT_MODULE_TYPE
     module_graph = create_blank_module_graph(module_name, module_body or "", module_type)
     body = ", ".join(flatten_module_graph_to_tokens(module_graph))
-    module_tokens = _module_rule_tokens(body)
+    module_tokens = _module_rule_tokens(body, core_tokens)
     updated_entry["body"] = body
     updated_entry["type"] = module_type
     updated_entry["category"] = normalize_global_module_category(category or updated_entry.get("category"))
@@ -2423,7 +2470,7 @@ def copy_outfit_module_to_character_attribute_group(
         return {"ok": False, "message": "同名のAttribute Groupが既にあります。"}
 
     outfit_body = get_module_body(library, outfit_name)
-    outfit_tokens = _module_rule_tokens(outfit_body)
+    outfit_tokens = _module_rule_tokens(outfit_body, get_module_core_tokens(library, outfit_name))
     if not outfit_tokens:
         return {"ok": False, "message": "Outfit Moduleにコピーできるtokensがありません。"}
 

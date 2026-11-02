@@ -70,7 +70,9 @@ def preview_project_module_candidates(project, module_name: str, *, core_tokens,
 
 def _prompt_state_json(project, module_name: str, prompt_library: dict, core_tokens, min_match_tokens):
     effective_body = get_module_body(prompt_library, module_name)
-    module_tokens = _module_rule_tokens(effective_body)
+    module_tokens = _module_rule_tokens(
+        effective_body, core_tokens if core_tokens is not None
+        else get_module_core_tokens(prompt_library, module_name))
     effective_core = (
         _normalize_module_rule_tokens(core_tokens)
         if core_tokens is not None else get_module_core_tokens(prompt_library, module_name)

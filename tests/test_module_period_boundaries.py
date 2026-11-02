@@ -21,7 +21,7 @@ def test_candidate_detection_legacy_tokens():
 def test_reviewed_candidate_apply():
     p=project(); plan, preview=build_module_candidate_apply_plan(p,'Source',core_tokens=['fictional character name'],min_match_tokens=1)
     assert preview['affected_line_count']==1
-    assert preview['examples'][0]['after']==TEXT.replace('fictional character name','<mod:Source>')
+    assert preview['examples'][0]['after']==TEXT.replace('pose phrase. fictional character name','pose phrase, <mod:Source>')
     result=apply_reviewed_module_candidates(p,plan,module_name='Source',core_tokens=['fictional character name'],min_match_tokens=1)
     assert result.applied
     assert result.project.prompt_lines[1].negative_prompt=='keep negative'
@@ -31,7 +31,7 @@ def test_reviewed_candidate_apply():
 def test_create_bind():
     preview=preview_create_module_replace(project(),'Created','fictional character name',token_targets=['fictional character name'])
     assert preview['affected_line_count']==1
-    assert preview['examples'][0]['after']==TEXT.replace('fictional character name','<mod:Created>')
+    assert preview['examples'][0]['after']==TEXT.replace('pose phrase. fictional character name','pose phrase, <mod:Created>')
 
 @pytest.mark.parametrize('mode',['strict','loose'])
 def test_body_swap(mode):
@@ -43,7 +43,7 @@ def test_reference_swap():
     text=TEXT.replace('fictional character name','<mod:Source>')
     preview=preview_module_swap(project(text),'Source','Target')
     assert preview['affected_line_count']==1
-    assert preview['examples'][0]['after']==text.replace('<mod:Source>','<mod:Target>')
+    assert preview['examples'][0]['after']==text.replace('pose phrase. <mod:Source>','pose phrase, <mod:Target>')
 
 def test_h1_period_preview_deterministic():
     p=project(); request=dict(scene_id='scene',source_module_name='Source',target_module_name='Target',match_mode='strict')
@@ -87,7 +87,7 @@ def test_global_reviewed_apply_and_no_entity_decoding():
     library={'Source':{'body':'fictional character name','core_tokens':['fictional character name']}}
     plan, preview=build_global_module_candidate_apply_plan(p,library,['Source'])
     assert preview['affected_line_count']==1
-    assert preview['examples'][0]['after']==(TEXT+'&#x20;').replace('fictional character name','<mod:Source>')
+    assert preview['examples'][0]['after']==(TEXT+'&#x20;').replace('pose phrase. fictional character name','pose phrase, <mod:Source>')
     result=apply_reviewed_global_module_candidates(p,library,plan)
     assert result.applied
     assert result.project.prompt_lines[1].current_text.endswith('&#x20;')
@@ -111,7 +111,7 @@ def test_applied_tokens_retain_legacy_shape_and_unrelated_state(operation):
     line=p.prompt_lines[1]; old=before.prompt_lines[1]
     assert line.current_text!=old.current_text
     assert line.tokens==_parse_prompt_for_module_preset(line.current_text)
-    assert line.tokens[0].startswith('pose phrase. ')
+    assert line.tokens[0].startswith('pose phrase. ') if operation=='swap' else line.tokens[0]=='pose phrase'
     for field in ['negative_prompt','image_path','generated_candidates','gallery_variants','source_generation_info','lineage_info']:
         assert getattr(line,field)==getattr(old,field)
     assert p.module_library['Target']==before.module_library['Target']
@@ -346,3 +346,192 @@ def test_mixed_disjoint_whole_and_fragment_creation_refuses_subset_apply():
     assert replace_preview['skipped_malformed_count']==1
     applied=apply_create_module_replace(p,'Created','new character',token_targets=targets)
     assert applied.prompt_lines[1].current_text==text
+
+@pytest.mark.parametrize('fragment',['pose phrase','fictional character name','outfit detail'])
+@pytest.mark.parametrize('operation',['candidate','create','replace','reference'])
+def test_reference_binding_is_independent_persisted_and_toggleable(fragment,operation):
+    from core.operations import get_active_tokens, apply_replace_with_module
+    from core.parser import extract_mod_info
+    text='pose phrase. fictional character name. outfit detail, scene detail'
+    p=project(text)
+    p.module_library['Source']={'body':fragment,'core_tokens':[fragment]}
+    name='Created' if operation=='create' else ('Target' if operation=='reference' else 'Source')
+    if operation=='candidate':
+        plan,preview=build_module_candidate_apply_plan(p,'Source',core_tokens=[fragment],min_match_tokens=1)
+        result=apply_reviewed_module_candidates(p,plan,module_name='Source',core_tokens=[fragment],min_match_tokens=1)
+        assert result.applied
+        p=result.project
+    elif operation=='create':
+        preview=preview_create_module_replace(p,name,fragment,token_targets=[fragment])
+        p=apply_create_module_replace(p,name,fragment,token_targets=[fragment])
+    elif operation=='replace':
+        preview=preview_replace_with_module(p,name,token_targets=[fragment])
+        p=apply_replace_with_module(p,name,token_targets=[fragment])
+    else:
+        text=text.replace(fragment,'<mod:Source>')
+        p=project(text); p.module_library['Source']={'body':fragment,'core_tokens':[fragment]}
+        preview=preview_module_swap(p,'Source','Target')
+        h1=preview_scene_module_swap(p,dict(scene_id='scene',source_module_name='Source',target_module_name='Target'))
+        if not preview['affected_line_count']:
+            assert preview['skipped_no_match_count']==1
+            assert h1['changed_count']==0
+            assert apply_module_swap(p,'Source','Target').prompt_lines[1].current_text==text
+            return
+        assert h1['review_rows'][0]['after_positive_prompt']['text']==preview['examples'][0]['after']
+        p=apply_module_swap(p,'Source','Target')
+    line=p.prompt_lines[1]
+    assert preview['examples'][0]['before']==text
+    assert preview['examples'][0]['after']==line.current_text
+    marker='<mod:'+name+'>'
+    expected=text.replace('<mod:Source>' if operation=='reference' else fragment,marker)
+    expected=expected.replace('. '+marker,', '+marker).replace(marker+'. ',marker+', ')
+    assert line.current_text==expected
+    assert marker in line.tokens
+    assert extract_mod_info(marker)['type']=='open'
+    active=get_active_tokens(line,module_library=p.module_library)
+    from core.comfy_generation_prompt import prepare_generation_injection_line
+    injected=prepare_generation_injection_line(line,set(),fallback_prompt='',module_library=p.module_library)
+    assert injected.current_text==', '.join(active)
+    assert '<mod:' not in injected.current_text
+    disabled=get_active_tokens(line,disabled_modules={name},module_library=p.module_library)
+    body='replacement character' if operation=='reference' else fragment
+    assert body in active and body not in disabled
+    assert not any('<mod:' in token for token in active+disabled)
+    for other in ['pose phrase','fictional character name','outfit detail']:
+        if other!=fragment:
+            assert any(other in token for token in disabled)
+    if name!='Target':
+        swapped=apply_module_swap(p,name,'Target')
+        assert '<mod:Target>' in swapped.prompt_lines[1].tokens
+        assert marker not in swapped.prompt_lines[1].tokens
+        assert 'replacement character' in get_active_tokens(swapped.prompt_lines[1],module_library=swapped.module_library)
+
+@pytest.mark.parametrize('explicit',[True,False])
+def test_comma_bearing_legacy_body_strict_swap_and_reviewed_candidate(explicit):
+    from core.operations import normalize_module_library
+    whole='pose phrase. fictional character name'
+    p=project(whole+', red eyes, background')
+    p.module_library['Source']={'body':whole+', red eyes'}
+    if explicit:
+        p.module_library['Source']['core_tokens']=[whole]
+    normalize_module_library(p)
+    assert p.module_library['Source']['core_tokens']==[whole]
+    assert p.module_library['Source']['min_match_tokens']==2
+    before=copy.deepcopy(p.module_library)
+    preview=preview_module_swap(p,'Source','Target',match_mode='strict')
+    assert preview['affected_line_count']==1
+    assert preview['examples'][0]['after']=='replacement character, background'
+    assert preview_module_candidates(p,'Source')['module_tokens']==[whole,'red eyes']
+    plan,preview=build_module_candidate_apply_plan(p,'Source',core_tokens=[whole],min_match_tokens=2)
+    assert preview['affected_line_count']==1
+    result=apply_reviewed_module_candidates(p,plan,module_name='Source',core_tokens=[whole],min_match_tokens=2)
+    assert result.applied
+    assert result.project.prompt_lines[1].tokens==['<mod:Source>','background']
+    assert p.module_library==before
+
+
+def test_authored_fragment_rules_and_legacy_whole_rules_stay_distinct_and_fresh():
+    from core.operations import create_library_module, normalize_module_library, set_module_candidate_rules, get_module_min_match_tokens
+    whole='pose phrase. fictional character name'
+    body=whole+', red eyes'
+    p=project(body+', fictional character name, background')
+    assert create_library_module(p,'Authored',body)
+    normalize_module_library(p)
+    assert p.module_library['Authored']['core_tokens']==['pose phrase']
+    assert p.module_library['Authored']['min_match_tokens']==3
+    assert preview_module_candidates(p,'Authored')['module_tokens']==['pose phrase','fictional character name','red eyes']
+    assert set_module_candidate_rules(p,'Authored',[whole],99)
+    assert get_module_min_match_tokens(p,'Authored')==2
+    plan,preview=build_module_candidate_apply_plan(p,'Authored',core_tokens=[whole],min_match_tokens=2)
+    assert preview['examples'][0]['after']=='<mod:Authored>, fictional character name, background'
+    assert set_module_candidate_rules(p,'Authored',['fictional character name'],3)
+    result=apply_reviewed_module_candidates(p,plan,module_name='Authored',core_tokens=['fictional character name'],min_match_tokens=3)
+    assert not result.applied and result.stale
+    assert p.prompt_lines[1].current_text==body+', fictional character name, background'
+
+
+def test_legacy_whole_candidate_global_and_duplicate_reference_safety():
+    from core.operations import normalize_module_library, get_active_tokens
+    whole='pose phrase. fictional character name'
+    p=project(whole+', red eyes, '+whole+', background')
+    library={'Legacy':{'body':whole+', red eyes','core_tokens':[whole]}}
+    normalize_module_library(p)
+    before=copy.deepcopy(p.module_library)
+    assert scan_global_module_candidates(p,library)['results'][0]['core_match_line_count']==1
+    plan,preview=build_global_module_candidate_apply_plan(p,library,['Legacy'])
+    assert preview['affected_line_count']==1
+    result=apply_reviewed_global_module_candidates(p,library,plan)
+    assert result.applied
+    assert result.project.prompt_lines[1].tokens==['<mod:Legacy>','background']
+    assert get_active_tokens(result.project.prompt_lines[1],disabled_modules={'Legacy'},module_library=result.project.module_library)==['background']
+    assert p.module_library==before
+
+@pytest.mark.parametrize('mode',['strict','loose'])
+def test_mixed_persisted_core_rules_refuse_all_body_paths(mode):
+    from core.operations import normalize_module_library, preview_apply_module_candidates, apply_module_candidates, preview_apply_detected_modules
+    whole='pose phrase. fictional character name'
+    body=whole+', outfit pose. colored dress, red eyes'
+    text=whole+', different outfit. colored dress, red eyes, background'
+    p=project(text)
+    p.module_library['Source']={'body':body,'core_tokens':[whole,'colored dress'],'min_match_tokens':2}
+    normalize_module_library(p)
+    before=copy.deepcopy(p)
+    library={'Source':copy.deepcopy(p.module_library['Source'])}
+    library_before=copy.deepcopy(library)
+    local=preview_module_candidates(p,'Source')
+    assert local['total_candidate_count']==0
+    assert local['rule_conflict']
+    apply_preview=preview_apply_module_candidates(p,'Source')
+    assert apply_preview['affected_line_count']==0 and apply_preview['rule_conflict']
+    plan,preview=build_module_candidate_apply_plan(p,'Source',core_tokens=[whole,'colored dress'],min_match_tokens=2)
+    assert preview['affected_line_count']==0
+    assert not apply_reviewed_module_candidates(p,plan,module_name='Source',core_tokens=[whole,'colored dress'],min_match_tokens=2).applied
+    assert apply_module_candidates(p,'Source')==before
+    scan=scan_global_module_candidates(p,library,min_core_match_lines=0)
+    assert scan['results']==[] and scan['rule_conflicts']==['Source']
+    global_plan,global_preview=build_global_module_candidate_apply_plan(p,library,['Source'])
+    assert global_preview['affected_line_count']==0 and global_preview['rule_conflicts']==['Source']
+    assert not apply_reviewed_global_module_candidates(p,library,global_plan).applied
+    swap=preview_module_swap(p,'Source','Target',match_mode=mode)
+    assert swap['affected_line_count']==0 and swap['rule_conflict']
+    assert apply_module_swap(p,'Source','Target',match_mode=mode)==before
+    h1=preview_scene_module_swap(p,dict(scene_id='scene',source_module_name='Source',target_module_name='Target',match_mode=mode))
+    assert h1['valid'] is False
+    assert h1['reason']=='incompatible_module_core_rules'
+    assert h1['diagnostics']==[{'code':'incompatible_module_core_rules'}]
+    assert h1['changed_count']==0
+    assert h1['review_rows']==[]
+    assert p==before and library==library_before
+
+
+@pytest.mark.parametrize('mode',['strict','loose'])
+def test_mixed_body_rules_preserve_explicit_reference_precedence_and_h1_diagnostic(mode):
+    whole='pose phrase. fictional character name'
+    p=project(whole+', different outfit. colored dress, red eyes, <mod:Source>, background')
+    p.module_library['Source']={'body':whole+', outfit pose. colored dress, red eyes',
+                                'core_tokens':[whole,'colored dress'],'min_match_tokens':2}
+    text=p.prompt_lines[1].current_text
+    preview=preview_module_swap(p,'Source','Target',match_mode=mode)
+    assert preview['affected_line_count']==1
+    assert preview['examples'][0]['swap_kind']=='reference'
+    assert preview['examples'][0]['after']==text.replace('<mod:Source>','<mod:Target>')
+    h1=preview_scene_module_swap(p,dict(scene_id='scene',source_module_name='Source',target_module_name='Target',match_mode=mode))
+    assert h1['valid'] is True and h1['reason']=='' and h1['changed_count']==1
+    assert h1['diagnostics']==[{'code':'incompatible_module_core_rules'}]
+    assert h1['review_rows'][0]['after_positive_prompt']['text']==text.replace('<mod:Source>','<mod:Target>')
+
+@pytest.mark.parametrize('mode',['strict','loose'])
+def test_mixed_target_rules_refuse_body_materialization_but_allow_reference_swap(mode):
+    whole='pose phrase. fictional character name'
+    p=project('fictional character name, background')
+    p.module_library['Target']={'body':whole+', outfit pose. colored dress, red eyes',
+                                'core_tokens':[whole,'colored dress'],'min_match_tokens':2}
+    preview=preview_module_swap(p,'Source','Target',match_mode=mode)
+    assert preview['affected_line_count']==0 and preview['rule_conflict']
+    h1=preview_scene_module_swap(p,dict(scene_id='scene',source_module_name='Source',target_module_name='Target',match_mode=mode))
+    assert h1['valid'] is False and h1['reason']=='incompatible_module_core_rules'
+    p.prompt_lines[1].current_text='<mod:Source>, background'
+    p.prompt_lines[1].tokens=['<mod:Source>','background']
+    preview=preview_module_swap(p,'Source','Target',match_mode=mode)
+    assert preview['affected_line_count']==1
+    assert preview['examples'][0]['after']=='<mod:Target>, background'
